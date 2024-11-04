@@ -109,7 +109,7 @@ You are an assistant that creates a task from the given messages.
 
 The task should include a 'title', a 'due_time' in UTC ISO 8601 format (YYYY-MM-DDTHH:MM:SSZ), and a 'description'.
 
-Given all data try to determine most appropriate and informative title unless it's explicitly specified.
+Given all data try to determine most appropriate and informative title unless it's explicitly specified. Make sure title is as informative and concrete as possible yet not verbose. 
 
 Use the 'action_message' to determine the action and due time.
 
@@ -130,7 +130,7 @@ You are an assistant that creates a task from the given message.
 
 The task should include a 'title', a 'due_time' in UTC ISO 8601 format (YYYY-MM-DDTHH:MM:SSZ), and a 'description'.
 
-Given all data try to determine most appropriate and informative title unless it's explicitly specified.
+Given all data try to determine most appropriate and informative title unless it's explicitly specified. Make sure title is as informative and concrete as possible yet not verbose.
 
 Use the 'action_message' to determine the title, due time, and description.
 
@@ -231,7 +231,10 @@ async def handle_message(message: Message, state: FSMContext):
         user_data = await state.get_data()
         first_message_text = user_data.get("first_message_text")
         first_message = user_data.get("first_message")
-        logger.debug(f"First message text: {first_message_text}")
+
+        # Ensure state transition happens only once
+        await state.set_state("processed")
+        logger.debug("Transitioned to 'processed' state to avoid re-triggering.")
 
         if message.forward_date:
             # The message is a forwarded message
@@ -269,7 +272,7 @@ async def handle_message(message: Message, state: FSMContext):
         initiator_link = get_message_link(forwarded_message)
         logger.debug(f"Initiator link: {initiator_link}")
 
-        # Combine the action message and the forwarded message
+        await state.set_state("processed")
         combined_task = TaskMessage(
             action=message.text,
             initiator_message=forwarded_message_text,
@@ -301,7 +304,7 @@ async def handle_message(message: Message, state: FSMContext):
 
             # Check if still in waiting state (no follow-up received)
             if (await state.get_state()) == ReminderState.waiting_for_second_message:
-                # No follow-up; treat the initial message as a standalone task
+                await state.set_state("processed")  # Transition to avoid duplicate
                 await process_task(message.text, message)
                 await state.clear()
 
