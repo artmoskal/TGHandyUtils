@@ -1,0 +1,26 @@
+name: bot_env
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - sqlite
+  - requests
+  - python-dotenv
+  - langchain
+  - langchain-community
+  - pydantic
+  - python-dateutil
+  - jsonschema
+  - openai
+
+  # Optional packages for extended timezone and datetime support
+  - tzdata
+  - pytz
+
+  # PIP dependencies
+  - pip:
+      - aiogram
+      - openai  # For OpenAI API access
+      - typing-extensions  # Compatibility for typing in different Python versions
