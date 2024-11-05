@@ -28,4 +28,4 @@ COPY . .
 ENV PATH="/opt/conda/envs/TGHandyUtils/bin:$PATH"
 ENV CONDA_DEFAULT_ENV=TGHandyUtils
 
-CMD ["python", "app.py"]
+CMD ["python", "main.py"]
