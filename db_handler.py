@@ -26,6 +26,17 @@ c.execute('''CREATE TABLE IF NOT EXISTS users
               location TEXT)''')
 conn.commit()
 
+# Function to drop user data from the database
+def drop_user_data(telegram_user_id):
+    try:
+        # Delete all tasks associated with the user
+        c.execute('DELETE FROM tasks WHERE user_id = ?', (telegram_user_id,))
+        # Delete the user's information from the users table
+        c.execute('DELETE FROM users WHERE telegram_user_id = ?', (telegram_user_id,))
+        conn.commit()
+        logger.info(f"All data dropped for user {telegram_user_id}")
+    except Exception as e:
+        logger.error(f"Database error while dropping user data: {e}")
 
 # Function to get all tasks from the database
 def get_tasks():

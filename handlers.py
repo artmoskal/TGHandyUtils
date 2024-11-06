@@ -8,7 +8,7 @@ from aiogram.fsm.state import StatesGroup, State
 import logging
 
 import bot
-from db_handler import get_todoist_user, save_todoist_user, get_todoist_user_info
+from db_handler import get_todoist_user, save_todoist_user, get_todoist_user_info, drop_user_data
 from langchain_parser import parse_description_with_langchain
 from task_manager import save_task_async
 
@@ -23,6 +23,31 @@ class TodoistAPIState(StatesGroup):
 thread_storage: Dict[int, Tuple[float, List[Tuple[str, str]], asyncio.Task]] = {}
 
 logger = logging.getLogger(__name__)
+
+# Define the finite state machine states
+class DropUserDataState(StatesGroup):
+    waiting_for_confirmation = State()
+
+@router.message(commands=['drop_user_data'])
+async def initiate_drop_user_data(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    await message.reply("Are you sure you want to drop all your data? Reply with 'yes' to confirm or 'no' to cancel.")
+    await state.set_state(DropUserDataState.waiting_for_confirmation)
+
+@router.message(DropUserDataState.waiting_for_confirmation)
+async def confirm_drop_user_data(message: Message, state: FSMContext):
+    user_response = message.text.strip().lower()
+    user_id = message.from_user.id
+
+    if user_response == 'yes':
+        drop_user_data(user_id)
+        await message.reply("All your data has been successfully dropped.")
+        await state.clear()
+    elif user_response == 'no':
+        await message.reply("Data drop canceled.")
+        await state.clear()
+    else:
+        await message.reply("Invalid response. Please reply with 'yes' to confirm or 'no' to cancel.")
 
 @router.message(TodoistAPIState.waiting_for_api_key)
 async def receive_todoist_key(message: Message, state: FSMContext):
