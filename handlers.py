@@ -2,6 +2,7 @@ import asyncio
 import time
 from typing import Dict, Tuple, List
 
+from aiogram.filters import Command
 from aiogram.types import Message
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
@@ -28,7 +29,7 @@ logger = logging.getLogger(__name__)
 class DropUserDataState(StatesGroup):
     waiting_for_confirmation = State()
 
-@router.message(commands=['drop_user_data'])
+@router.message(Command('drop_user_data'))
 async def initiate_drop_user_data(message: Message, state: FSMContext):
     user_id = message.from_user.id
     await message.reply("Are you sure you want to drop all your data? Reply with 'yes' to confirm or 'no' to cancel.")
