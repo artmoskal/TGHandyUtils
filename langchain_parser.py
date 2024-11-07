@@ -35,7 +35,7 @@ def parse_description_with_langchain(content_message=None, owner_name=None, loca
     The task should include a 'title', a 'due_time' in UTC ISO 8601 format (YYYY-MM-DDTHH:MM:SSZ), and a 'description'.
 
     Given the content message conversation, determine the most appropriate and informative title unless it's explicitly specified. The title should be informative, concrete, and not verbose (bad are "Decide on appointment" or "Check task good" are "Check with Iryna regarding furniture", "Decide whether to have a massage".
-    Description should contain summarization of things to do and copy of the original conversation. 
+    Description should contain summarization of things to do and copy of the original conversation (with line breaks). 
     Usually but not always first message of conversation contains task-related instruction (e.g., time, and/or full title or  tip for the title)
     Use the context of this conversation, considering {location} hour(s) offset from UTC due to the user's location.
     
