@@ -85,6 +85,7 @@ Because software never works the first time.
 
 Found a bug? Cool. You want to fix it? Even better. Make a pull request and let's talk about it like adults (or just blame it on Python).
 
+Contact 4spamartem@gmail.com (yes, it's real email).
 ## License
 
 We believe in open-source software, and we're not really in this for the money anyway. MIT License.
