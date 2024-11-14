@@ -23,7 +23,7 @@ class Task(BaseModel):
     description: str = Field(description="The description or details of the task.")
 
 
-async def handle_voice_message(message: Voice):
+async def handle_voice_message(message):
     user_id = message.from_user.id
     voice = message.voice
 
