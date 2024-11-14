@@ -16,7 +16,6 @@ from db_handler import get_todoist_user, save_todoist_user, get_todoist_user_inf
 from langchain_parser import parse_description_with_langchain, transcribe
 from task_manager import save_task_async
 from services.voice_processing import process_voice_message
-from services.task_processing import create_task_from_text
 from keyboards.inline import get_transcription_keyboard
 
 router = bot.router
