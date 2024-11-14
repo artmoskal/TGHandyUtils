@@ -1,4 +1,3 @@
-
 import sqlite3
 
 from bot import logger
@@ -94,4 +93,4 @@ def get_todoist_user_info(telegram_user_id):
 # Function to save Todoist user for a Telegram user
 
 
-__all__ = ['get_tasks', 'delete_task', 'save_task', 'get_todoist_user', 'save_todoist_user']
+__all__ = ['get_tasks', 'delete_task', 'save_task', 'get_todoist_user', 'save_todoist_user', 'get_todoist_user_info']

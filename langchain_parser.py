@@ -1,13 +1,14 @@
-from langchain import OpenAI
+from langchain_community.llms import OpenAI
 from langchain.prompts import PromptTemplate
 from langchain.output_parsers import PydanticOutputParser
-from langchain.chat_models import ChatOpenAI
+from langchain_community.chat_models import ChatOpenAI
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field
 import os
 import logging
 from datetime import datetime, timezone
-from aiogram.types import Voice
+from openai import AsyncOpenAI
+
 logger = logging.getLogger(__name__)
 
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
@@ -42,28 +43,17 @@ async def handle_voice_message(message):
 
     return parsed_task
 
-async def extract_text_from_voice(voice: Voice):
-
-    # Ensure the OpenAI API key is set
+async def transcribe(file_data):
+    """Handle OpenAI transcription with file data directly"""
     if not OPENAI_API_KEY:
         raise ValueError("Please set OPENAI_API_KEY in the .env file.")
-
-    # Download the voice file
-    file_info = await voice.get_file()
-    file_path = file_info.file_path
-    file_url = f"https://api.telegram.org/file/bot{os.getenv('TELEGRAM_BOT_TOKEN')}/{file_path}"
-
-    # Send the voice file to OpenAI for transcription
-    response = OpenAI.Audio.transcribe(
+    
+    client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+    response = await client.audio.transcriptions.create(
         model="whisper-1",
-        file=file_url,
-        api_key=OPENAI_API_KEY
+        file=file_data
     )
-
-    # Extract the text from the response
-    voice_text = response['text']
-
-    return voice_text
+    return response.text
 
 # Function to parse task descriptions using LangChain
 # Added sender information to adjust the prompt for different task formulations

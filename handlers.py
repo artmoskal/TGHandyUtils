@@ -1,17 +1,23 @@
 import asyncio
 import time
 from typing import Dict, Tuple, List
+from collections import defaultdict
 
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
+from aiogram.types import Voice
 import logging
+from aiogram import Bot
 
 import bot
 from db_handler import get_todoist_user, save_todoist_user, get_todoist_user_info, drop_user_data
-from langchain_parser import parse_description_with_langchain, handle_voice_message
+from langchain_parser import parse_description_with_langchain, transcribe
 from task_manager import save_task_async
+from services.voice_processing import process_voice_message
+from services.task_processing import create_task_from_text
+from keyboards.inline import get_transcription_keyboard
 
 router = bot.router
 
@@ -28,6 +34,11 @@ logger = logging.getLogger(__name__)
 # Define the finite state machine states
 class DropUserDataState(StatesGroup):
     waiting_for_confirmation = State()
+
+# Thread collection variables
+message_threads = defaultdict(list)
+last_message_time = defaultdict(float)
+THREAD_TIMEOUT = 1.0  # 1 second timeout
 
 @router.message(Command('drop_user_data'))
 async def initiate_drop_user_data(message: Message, state: FSMContext):
@@ -80,59 +91,72 @@ async def receive_location(message: Message, state: FSMContext):
     await message.reply(f"Location set to {location}. All tasks will now consider this time zone.")
     await state.clear()
 
+async def process_user_input(text: str, user_id: int, message_obj, state: FSMContext):
+    todoist_user, owner_name, location = get_todoist_user_info(user_id)
+    
+    if not todoist_user:
+        await message_obj.reply("Please provide your Todoist API key to link your account.")
+        await state.set_state(TodoistAPIState.waiting_for_api_key)
+        return False
 
+    # Log for debugging
+    print(f"Todoist user found: {todoist_user}")
+
+    # Determine the correct user name
+    if message_obj.forward_from:
+        user_full_name = message_obj.forward_from.full_name
+    elif message_obj.forward_sender_name:
+        user_full_name = message_obj.forward_sender_name
+    else:
+        user_full_name = message_obj.from_user.full_name
+
+    current_time = time.time()
+    message_threads[user_id].append((user_full_name, text))
+    last_message_time[user_id] = current_time
+    
+    # Check if enough time has passed since the last message
+    if len(message_threads[user_id]) > 0:
+        await asyncio.sleep(THREAD_TIMEOUT)
+        if current_time == last_message_time[user_id]:  # No new messages received
+            # Process the complete thread
+            thread_content = message_threads[user_id].copy()
+            message_threads[user_id].clear()  # Clear the thread
+            await process_thread(message_obj, thread_content, owner_name, location, message_obj.from_user.id)
+            return True
+    return True
 
 @router.message()
-async def handle_message(message: Message, state: FSMContext):
-    user_id = message.from_user.id
-    todoist_user, owner_name, location = get_todoist_user_info(user_id)
-
-    if not todoist_user:
-        await message.reply("Please provide your Todoist API key to link your account.")
-        await state.set_state(TodoistAPIState.waiting_for_api_key)
+async def handle_message(message: Message, state: FSMContext, bot: Bot):
+    if message.voice:
+        await handle_voice_message(message, state, bot)
+        return
+        
+    if message.text and message.text.startswith('/'):
+        return
+        
+    if message.reply_to_message and message.reply_to_message.from_user.is_bot:
         return
 
-    # Determine the sender name
-    sender_name = (
-        f"{message.forward_from.first_name} {message.forward_from.last_name or ''}".strip()
-        if message.forward_date and message.forward_from else
-        message.forward_from_chat.title if message.forward_date and message.forward_from_chat else
-        "Unknown sender" if message.forward_date else
-        message.from_user.full_name
+    await process_user_input(
+        message.text, 
+        message.from_user.id, 
+        message, 
+        state
     )
 
-    message_time = time.time()
-
-    # Manage thread storage and cancel existing tasks if necessary
-    thread_content = thread_storage.get(user_id, (None, [], None))[1]
-    if thread_content:
-        existing_task = thread_storage[user_id][2]
-        if existing_task:
-            existing_task.cancel()
-
-    # Send initial status message
-    status_message = await message.reply("Processing your message...")
-
-    # Check if the message is a voice message
-    if message.voice:
-        # Send the voice message to OpenAI to extract text
-        voice_text = await extract_text_from_voice(message)
-        thread_content.append((sender_name, voice_text))
-    else:
-        thread_content.append((sender_name, message.text))
-
-    # Create a new task to process the thread after 1 second of inactivity
-    processing_task = asyncio.create_task(schedule_thread_processing(user_id, owner_name, location, message))
-
-    # Update the thread storage
-    thread_storage[user_id] = (message_time, thread_content, processing_task)
-
-    # Update the status message to indicate completion
-    await status_message.edit_text("Message processed successfully, waiting for task to be scheduled.")
-
-async def extract_text_from_voice(voice):
-    return await handle_voice_message(voice)
-
+async def extract_text_from_voice(voice: Voice, bot: Bot):
+    # Download the file
+    file = await bot.get_file(voice.file_id)
+    downloaded_file = await bot.download_file(file.file_path)
+    
+    # Create a named temporary file-like object
+    from io import BytesIO
+    audio_data = BytesIO(downloaded_file.read())
+    # Voice messages in Telegram are typically in OGG format
+    audio_data.name = "voice_message.ogg"
+    
+    # Pass the properly formatted file to transcribe
+    return await transcribe(audio_data)
 
 async def schedule_thread_processing(user_id: int, owner_name: str, location: str, message: Message):
     try:
@@ -141,13 +165,13 @@ async def schedule_thread_processing(user_id: int, owner_name: str, location: st
         # If no new message has been added, process the thread
         if user_id in thread_storage:
             _, thread_content, _ = thread_storage[user_id]
-            await process_thread(message, thread_content, owner_name, location)
+            await process_thread(message, thread_content, owner_name, location, message.from_user.id)
             del thread_storage[user_id]  # Clear the thread storage after processing
     except asyncio.CancelledError:
         # Task was cancelled because a new message was received
         pass
 
-async def process_thread(message: Message, thread_content: List[Tuple[str, str]], owner_name: str, location: str):
+async def process_thread(message: Message, thread_content: List[Tuple[str, str]], owner_name: str, location: str, owner_id: int):
     concatenated_content = "\n".join([f"{sender}: {text}" for sender, text in thread_content])
     parsed_task = parse_description_with_langchain(
         concatenated_content,
@@ -155,6 +179,57 @@ async def process_thread(message: Message, thread_content: List[Tuple[str, str]]
         location=location
     )
     if parsed_task:
-        await save_task_async(parsed_task, message)
+        await save_task_async(parsed_task, message, owner_id)
+
+async def handle_voice_message(message: Message, state: FSMContext, bot: Bot):
+    # Show processing message
+    processing_msg = await message.answer("Processing voice message...")
+    
+    voice_text = await process_voice_message(message.voice, bot)
+    await state.update_data(transcribed_text=voice_text)
+    
+    # Delete processing message
+    await processing_msg.delete()
+    
+    # Determine the correct user name
+    if message.forward_from:
+        user_full_name = message.forward_from.full_name
+    elif message.forward_sender_name:
+        user_full_name = message.forward_sender_name
+    else:
+        user_full_name = message.from_user.full_name
+
+    keyboard = get_transcription_keyboard()
+    await message.answer(
+        f"I transcribed your voice message as:\n\n{voice_text}\n\nIs this correct?",
+        reply_markup=keyboard
+    )
+    
+    # Store the user name for later use
+    await state.update_data(user_full_name=user_full_name)
+
+@router.callback_query(lambda c: c.data == "transcribe_confirm")
+async def confirm_transcription(callback_query: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    user_id = callback_query.from_user.id
+    todoist_user, owner_name, location = get_todoist_user_info(user_id)
+    
+    if not todoist_user:
+        await callback_query.message.reply("Please provide your Todoist API key to link your account.")
+        await state.set_state(TodoistAPIState.waiting_for_api_key)
+        return
+
+    # Use the stored user name
+    user_full_name = data.get('user_full_name', callback_query.from_user.full_name)
+    thread_content = [(user_full_name, data['transcribed_text'])]
+    await process_thread(callback_query.message, thread_content, owner_name, location, user_id)
+    await callback_query.answer("Task created!")
+    await state.clear()
+
+@router.callback_query(lambda c: c.data == "transcribe_cancel")
+async def cancel_transcription(callback_query: CallbackQuery, state: FSMContext):
+    await callback_query.message.edit_text("Transcription cancelled. Please try sending your voice message again.")
+    await callback_query.answer()
+    await state.clear()
 
 __all__ = ['handle_message']

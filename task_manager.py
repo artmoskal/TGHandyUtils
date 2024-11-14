@@ -1,4 +1,3 @@
-
 import logging
 from db_handler import save_task, get_todoist_user
 from bot import bot
@@ -40,16 +39,15 @@ def create_todoist_task(parsed_task, todoist_user_token):
         return None
 
 # Function to save a parsed task asynchronously
-async def save_task_async(parsed_task, message, initiator_link=None):
+async def save_task_async(parsed_task, message, owner_id, initiator_link=None):
     due_time = validate_due_time(parsed_task)
     if due_time is None:
         await message.reply("Invalid due time format or due time is in the past.")
         return
 
-    user_id = message.from_user.id
     chat_id = message.chat.id
     message_id = message.message_id
-    todoist_user_token = get_todoist_user(user_id)  # Retrieve Todoist API token for this Telegram user
+    todoist_user_token = get_todoist_user(owner_id)  # Use the passed owner ID
     if not todoist_user_token:
         await message.reply("Todoist account is not linked. Please link your Todoist account first.")
         return
@@ -63,8 +61,8 @@ async def save_task_async(parsed_task, message, initiator_link=None):
 
     try:
         # Save the task to the database
-        save_task(user_id, chat_id, message_id, title, description, due_time.isoformat())
-        logger.info(f"Task saved for user {user_id}")
+        save_task(owner_id, chat_id, message_id, title, description, due_time.isoformat())
+        logger.info(f"Task saved for user {owner_id}")
 
         # Create the task in Todoist using the user's specific token
         task_id = create_todoist_task(parsed_task, todoist_user_token)
