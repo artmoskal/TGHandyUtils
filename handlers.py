@@ -10,7 +10,7 @@ import logging
 
 import bot
 from db_handler import get_todoist_user, save_todoist_user, get_todoist_user_info, drop_user_data
-from langchain_parser import parse_description_with_langchain
+from langchain_parser import parse_description_with_langchain, handle_voice_message
 from task_manager import save_task_async
 
 router = bot.router
@@ -80,6 +80,8 @@ async def receive_location(message: Message, state: FSMContext):
     await message.reply(f"Location set to {location}. All tasks will now consider this time zone.")
     await state.clear()
 
+
+
 @router.message()
 async def handle_message(message: Message, state: FSMContext):
     user_id = message.from_user.id
@@ -90,39 +92,41 @@ async def handle_message(message: Message, state: FSMContext):
         await state.set_state(TodoistAPIState.waiting_for_api_key)
         return
 
-    # Determine the sender name based on different types of forwarded messages
-    if message.forward_date:
-        # Forwarded from a user
-        if message.forward_from:
-            sender_name = f"{message.forward_from.first_name} {message.forward_from.last_name or ''}".strip()
-        # Forwarded from a channel or a group chat
-        elif message.forward_from_chat:
-            sender_name = message.forward_from_chat.title
-        # If no recognizable information is available, fallback to a default name
-        else:
-            sender_name = "Unknown sender"
-    else:
-        sender_name = message.from_user.full_name
+    # Determine the sender name
+    sender_name = (
+        f"{message.forward_from.first_name} {message.forward_from.last_name or ''}".strip()
+        if message.forward_date and message.forward_from else
+        message.forward_from_chat.title if message.forward_date and message.forward_from_chat else
+        "Unknown sender" if message.forward_date else
+        message.from_user.full_name
+    )
 
     message_time = time.time()
 
-    # Cancel any existing processing task for the user
-    if user_id in thread_storage:
-        _, thread_content, existing_task = thread_storage[user_id]
+    # Manage thread storage and cancel existing tasks if necessary
+    thread_content = thread_storage.get(user_id, (None, [], None))[1]
+    if thread_content:
+        existing_task = thread_storage[user_id][2]
         if existing_task:
             existing_task.cancel()
 
-        # Add the new message to the thread
-        thread_content.append((sender_name, message.text))
+    # Check if the message is a voice message
+    if message.voice:
+        # Send the voice message to OpenAI to extract text
+        voice_text = await extract_text_from_voice(message.voice)
+        thread_content.append((sender_name, voice_text))
     else:
-        # Start a new thread for this user
-        thread_content = [(sender_name, message.text)]
+        thread_content.append((sender_name, message.text))
 
     # Create a new task to process the thread after 1 second of inactivity
     processing_task = asyncio.create_task(schedule_thread_processing(user_id, owner_name, location, message))
 
     # Update the thread storage
     thread_storage[user_id] = (message_time, thread_content, processing_task)
+
+async def extract_text_from_voice(voice):
+    return await handle_voice_message(voice)
+
 
 async def schedule_thread_processing(user_id: int, owner_name: str, location: str, message: Message):
     try:

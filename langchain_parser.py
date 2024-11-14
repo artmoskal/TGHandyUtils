@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 import os
 import logging
 from datetime import datetime, timezone
-
+from aiogram.types import Voice
 logger = logging.getLogger(__name__)
 
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
@@ -22,6 +22,48 @@ class Task(BaseModel):
     due_time: str = Field(description="The due time in UTC ISO 8601 format (YYYY-MM-DDTHH:MM:SSZ).")
     description: str = Field(description="The description or details of the task.")
 
+
+async def handle_voice_message(message: Voice):
+    user_id = message.from_user.id
+    voice = message.voice
+
+    # Extract text from the voice message using OpenAI
+    voice_text = await extract_text_from_voice(voice)
+
+    # Log the extracted text
+    logger.info(f"Extracted text from voice message: {voice_text}")
+
+    # Use LangChain to parse the extracted text into a task
+    parsed_task = parse_description_with_langchain(
+        content_message=voice_text,
+        owner_name=message.from_user.full_name,
+        location=None  # Assuming location is not available in this context
+    )
+
+    return parsed_task
+
+async def extract_text_from_voice(voice: Voice):
+
+    # Ensure the OpenAI API key is set
+    if not OPENAI_API_KEY:
+        raise ValueError("Please set OPENAI_API_KEY in the .env file.")
+
+    # Download the voice file
+    file_info = await voice.get_file()
+    file_path = file_info.file_path
+    file_url = f"https://api.telegram.org/file/bot{os.getenv('TELEGRAM_BOT_TOKEN')}/{file_path}"
+
+    # Send the voice file to OpenAI for transcription
+    response = OpenAI.Audio.transcribe(
+        model="whisper-1",
+        file=file_url,
+        api_key=OPENAI_API_KEY
+    )
+
+    # Extract the text from the response
+    voice_text = response['text']
+
+    return voice_text
 
 # Function to parse task descriptions using LangChain
 # Added sender information to adjust the prompt for different task formulations
