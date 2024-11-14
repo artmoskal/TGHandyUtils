@@ -110,6 +110,9 @@ async def handle_message(message: Message, state: FSMContext):
         if existing_task:
             existing_task.cancel()
 
+    # Send initial status message
+    status_message = await message.reply("Processing your message...")
+
     # Check if the message is a voice message
     if message.voice:
         # Send the voice message to OpenAI to extract text
@@ -123,6 +126,9 @@ async def handle_message(message: Message, state: FSMContext):
 
     # Update the thread storage
     thread_storage[user_id] = (message_time, thread_content, processing_task)
+
+    # Update the status message to indicate completion
+    await status_message.edit_text("Message processed successfully.")
 
 async def extract_text_from_voice(voice):
     return await handle_voice_message(voice)
