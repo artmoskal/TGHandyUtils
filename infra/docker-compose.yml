@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  bot:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+    env_file: ../.env
+    volumes:
+      - ../data/db:/app/data/db
+      - ../data/logs:/app/data/logs
+    restart: unless-stopped 
