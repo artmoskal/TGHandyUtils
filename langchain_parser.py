@@ -88,7 +88,6 @@ def parse_description_with_langchain(content_message=None, owner_name=None, loca
     # Initialize the language model
     llm = ChatOpenAI(
         model="o4-mini",
-        temperature=0,
         max_tokens=None,
         openai_api_key=OPENAI_API_KEY
     )
