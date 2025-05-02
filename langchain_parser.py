@@ -1,7 +1,7 @@
-from langchain_community.llms import OpenAI
+from langchain_openai import ChatOpenAI
 from langchain.prompts import PromptTemplate
 from langchain.output_parsers import PydanticOutputParser
-from langchain_community.chat_models import ChatOpenAI
+from openai import OpenAI
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field
 import os
@@ -87,7 +87,8 @@ def parse_description_with_langchain(content_message=None, owner_name=None, loca
 
     # Initialize the language model
     llm = ChatOpenAI(
-        model="o4-mini",
+        model="gpt-4o-mini",
+        temperature=0,
         max_tokens=None,
         openai_api_key=OPENAI_API_KEY
     )

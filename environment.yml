@@ -9,7 +9,7 @@ dependencies:
   - requests
   - python-dotenv
   - langchain
-  - langchain-community
+  - langchain-openai
   - pydantic
   - python-dateutil
   - jsonschema
