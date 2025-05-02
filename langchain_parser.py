@@ -50,7 +50,7 @@ async def transcribe(file_data):
     
     client = AsyncOpenAI(api_key=OPENAI_API_KEY)
     response = await client.audio.transcriptions.create(
-        model="whisper-1",
+        model="gpt-4o-mini-transcribe",
         file=file_data
     )
     return response.text
@@ -87,7 +87,7 @@ def parse_description_with_langchain(content_message=None, owner_name=None, loca
 
     # Initialize the language model
     llm = ChatOpenAI(
-        model="gpt-4",
+        model="o4-mini",
         temperature=0,
         max_tokens=None,
         openai_api_key=OPENAI_API_KEY
