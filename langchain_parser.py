@@ -64,7 +64,13 @@ def parse_description_with_langchain(content_message=None, owner_name=None, loca
     prompt_template = """
     You are an assistant that creates a task from the provided conversation.
 
-    The task should include a 'title', a 'due_time' in UTC ISO 8601 format (YYYY-MM-DDTHH:MM:SSZ), and a 'description'. Work day starts at 9AM so if nothing specified use it as default. If no tip at all for smallish tasks (e.g., remember to buy milk) schedule it in a hour for today, for larger - next day.
+    The task should include a 'title', a 'due_time' in UTC ISO 8601 format (YYYY-MM-DDTHH:MM:SSZ), and a 'description'. 
+
+    IMPORTANT: First, check if there's a specific date/time mentioned in the conversation - this should ALWAYS take precedence. Look for any date or time phrases like "tomorrow", "next Monday", "on June 12", "at 3PM", etc. If a date/time is explicitly mentioned, use that exact date/time for scheduling.
+
+    Only if no date/time is mentioned at all:
+    - For small tasks (e.g., "remember to buy milk") schedule one hour from now
+    - For larger tasks, schedule for tomorrow at 9AM
 
     Given the content message conversation, determine the most appropriate and informative title unless it's explicitly specified. The title should be informative, concrete, and not verbose (bad are "Decide on appointment" or "Check task good" are "Check with Iryna regarding furniture", "Decide whether to have a massage".
     Description should contain summarization of things to do and copy of the original conversation (with line breaks). 
@@ -81,7 +87,7 @@ def parse_description_with_langchain(content_message=None, owner_name=None, loca
     format_instructions = parser_lc.get_format_instructions()
     prompt = PromptTemplate(
         template=prompt_template,
-        input_variables=["content_message", "cur_time", "sender_info"],
+        input_variables=["content_message", "cur_time", "owner_name", "location"],
         partial_variables={"format_instructions": format_instructions}
     )
 

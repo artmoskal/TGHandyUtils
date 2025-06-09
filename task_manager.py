@@ -2,7 +2,7 @@ import logging
 from db_handler import save_task, get_todoist_user
 from bot import bot
 from dateutil import parser
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import requests
 
 logger = logging.getLogger(__name__)
@@ -78,12 +78,25 @@ async def save_task_async(parsed_task, message, owner_id, initiator_link=None):
 # Function to validate the due time of a task
 def validate_due_time(parsed_task):
     try:
+        # Parse the ISO format date/time from the task
         due_time = parser.isoparse(parsed_task['due_time']).astimezone(timezone.utc)
         now_utc = datetime.now(timezone.utc)
+        
+        # Log the parsed time for debugging
+        logger.debug(f"Parsed due time: {due_time.isoformat()}")
+        logger.debug(f"Current UTC time: {now_utc.isoformat()}")
+        
+        # Check if the due time is in the past
         if due_time <= now_utc:
-            logger.warning("Due time is in the past.")
-            return None
+            logger.warning("Due time is in the past, adjusting to one hour from now.")
+            # Set due time to one hour from now instead of rejecting
+            due_time = now_utc.replace(microsecond=0) + timedelta(hours=1)
+            
         return due_time
     except Exception as e:
         logger.error(f"Error parsing due time: {e}")
-        return None
+        # Return a default time (tomorrow at 9 AM UTC) if parsing fails
+        tomorrow = datetime.now(timezone.utc) + timedelta(days=1)
+        default_time = tomorrow.replace(hour=9, minute=0, second=0, microsecond=0)
+        logger.warning(f"Using default due time: {default_time.isoformat()}")
+        return default_time
