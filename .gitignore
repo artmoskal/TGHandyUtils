@@ -239,10 +239,50 @@ fabric.properties
 # Android studio 3.1+ serialized cache file
 .idea/caches/build_file_checksums.ser
 
+# Database files
+*.db
 tasks.db
+
+# Test results
+test-results/
+infra/test-results/
 
 # Data directories
 data/db/*
 !data/db/.gitkeep
 data/logs/*
 !data/logs/.gitkeep
+
+# Log files anywhere in the project
+*.log
+bot.log
+
+# Coverage reports
+.coverage
+htmlcov/
+coverage.xml
+*.cover
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Python cache everywhere
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE specific
+.vscode/
+.idea/
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*~
+
+# Documentation build artifacts
+docs/_build/
+docs/_static/
+docs/_templates/

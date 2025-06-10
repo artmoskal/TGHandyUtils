@@ -21,8 +21,18 @@ dependencies:
   - tzdata
   - pytz
 
+  # Testing dependencies
+  - pytest
+  - pytest-asyncio
+  - pytest-mock
+  - pytest-cov
+  - coverage
+  
   # PIP dependencies
   - pip:
       - aiogram
       - openai  # For OpenAI API access
       - typing-extensions  # Compatibility for typing in different Python versions
+      - aioresponses  # For mocking HTTP requests in async tests
+      - factory-boy  # For test data generation
+      - dependency-injector  # Professional DI framework
