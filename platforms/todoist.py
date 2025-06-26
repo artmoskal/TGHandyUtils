@@ -158,7 +158,7 @@ class TodoistPlatform(AbstractTaskPlatform):
         Returns:
             Upload result with file_url or None if failed
         """
-        upload_url = 'https://api.todoist.com/sync/v9/uploads'
+        upload_url = 'https://api.todoist.com/sync/v9/uploads/add'
         
         # Extract token from headers for Sync API
         token = self.api_token
