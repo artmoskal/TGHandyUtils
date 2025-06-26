@@ -158,7 +158,7 @@ class TodoistPlatform(AbstractTaskPlatform):
         Returns:
             Upload result with file_url or None if failed
         """
-        upload_url = 'https://api.todoist.com/rest/v2/uploads'
+        upload_url = 'https://api.todoist.com/api/v1/uploads'
         
         files = {
             'file': (file_name, file_data, 'image/jpeg')
