@@ -22,7 +22,8 @@ class TaskService(ITaskService):
         self.user_repo = user_repo
     
     async def create_task(self, user_id: int, chat_id: int, message_id: int, 
-                         task_data: TaskCreate, initiator_link: Optional[str] = None) -> bool:
+                         task_data: TaskCreate, initiator_link: Optional[str] = None,
+                         screenshot_data: Optional[Dict[str, Any]] = None) -> bool:
         """Create a task both locally and on the platform.
         
         Args:
@@ -31,6 +32,7 @@ class TaskService(ITaskService):
             message_id: Telegram message ID
             task_data: Task creation data
             initiator_link: Optional link to original message
+            screenshot_data: Optional screenshot data (image_data, file_name, etc.)
             
         Returns:
             True if successful, False otherwise
@@ -70,7 +72,7 @@ class TaskService(ITaskService):
             logger.info(f"Task saved locally with ID {task_db_id} for user {user_id}")
             
             # Create task on platform
-            platform_task_id, error_message = self._create_platform_task(task_data, user_info)
+            platform_task_id, error_message = self._create_platform_task(task_data, user_info, initiator_link, screenshot_data)
             
             if platform_task_id:
                 # Update local task with platform ID
@@ -119,12 +121,16 @@ class TaskService(ITaskService):
             logger.warning(f"Using default due time: {default_time.isoformat()}")
             return default_time
     
-    def _create_platform_task(self, task_data: TaskCreate, user_info: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+    def _create_platform_task(self, task_data: TaskCreate, user_info: Dict[str, Any], 
+                              initiator_link: Optional[str] = None, 
+                              screenshot_data: Optional[Dict[str, Any]] = None) -> Tuple[Optional[str], Optional[str]]:
         """Create task on the user's platform.
         
         Args:
             task_data: Task creation data
             user_info: User platform information
+            initiator_link: Optional link to original message
+            screenshot_data: Optional screenshot data for attachment
             
         Returns:
             Tuple of (task_id, error_message)
@@ -145,7 +151,8 @@ class TaskService(ITaskService):
             platform_task_data = PlatformTaskData(
                 title=task_data.title,
                 description=task_data.description,
-                due_time=task_data.due_time
+                due_time=task_data.due_time,
+                source_attachment=initiator_link if initiator_link else None
             )
             
             # Add platform-specific settings
@@ -170,6 +177,22 @@ class TaskService(ITaskService):
             
             if task_id:
                 logger.debug(f"Created task with ID: {task_id} on platform {platform_type}")
+                
+                # Add screenshot attachment if provided
+                if screenshot_data and platform_type == 'trello':
+                    try:
+                        success = platform.add_attachment_to_card(
+                            task_id,
+                            screenshot_data.get('image_data'),
+                            screenshot_data.get('file_name', 'screenshot.jpg')
+                        )
+                        if success:
+                            logger.info(f"Successfully attached screenshot to Trello card {task_id}")
+                        else:
+                            logger.warning(f"Failed to attach screenshot to Trello card {task_id}")
+                    except Exception as e:
+                        logger.error(f"Error attaching screenshot to Trello card: {e}")
+                
                 return task_id, None
             else:
                 return None, f"Platform {platform_type} returned no task ID"

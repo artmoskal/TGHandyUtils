@@ -2,7 +2,7 @@
 
 from dependency_injector.wiring import inject, Provide
 from core.container import ApplicationContainer, container
-from core.interfaces import ITaskService, IParsingService, IConfig, IOpenAIService, IVoiceProcessingService
+from core.interfaces import ITaskService, IParsingService, IConfig, IOpenAIService, IVoiceProcessingService, IImageProcessingService
 
 
 def wire_application():
@@ -63,6 +63,13 @@ class ServiceLocator:
         voice_service: IVoiceProcessingService = Provide[ApplicationContainer.voice_processing_service]
     ) -> IVoiceProcessingService:
         return voice_service
+    
+    @staticmethod
+    @inject
+    def get_image_processing_service(
+        image_service: IImageProcessingService = Provide[ApplicationContainer.image_processing_service]
+    ) -> IImageProcessingService:
+        return image_service
 
 
 # Global service locator

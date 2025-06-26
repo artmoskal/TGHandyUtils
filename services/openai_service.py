@@ -1,5 +1,6 @@
 """OpenAI service for audio transcription and text processing."""
 
+import base64
 from typing import BinaryIO
 from openai import AsyncOpenAI
 
@@ -43,5 +44,59 @@ class OpenAIService(IOpenAIService):
         except Exception as e:
             logger.error(f"Failed to transcribe audio: {e}")
             raise TranscriptionError(f"Audio transcription failed: {e}")
+    
+    async def analyze_image(self, image_data: bytes, prompt: str = None) -> str:
+        """Analyze image and extract text/content using OpenAI Vision.
+        
+        Args:
+            image_data: Image file data as bytes
+            prompt: Optional specific prompt for analysis
+            
+        Returns:
+            Analyzed text content from image
+            
+        Raises:
+            TranscriptionError: If image analysis fails
+        """
+        try:
+            base64_image = base64.b64encode(image_data).decode('utf-8')
+            
+            analysis_prompt = prompt or (
+                "Analyze this image and extract ALL text visible in it. "
+                "Then provide a brief summary of what the image shows. "
+                "Format your response as:\n"
+                "TEXT EXTRACTED:\n[all text found]\n\n"
+                "SUMMARY:\n[brief description of the image content]"
+            )
+            
+            response = await self.client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": analysis_prompt
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{base64_image}"
+                                }
+                            }
+                        ]
+                    }
+                ],
+                max_tokens=1000
+            )
+            
+            result = response.choices[0].message.content
+            logger.debug(f"Successfully analyzed image: {len(result)} characters")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Failed to analyze image: {e}")
+            raise TranscriptionError(f"Image analysis failed: {e}")
 
 # Remove global instance - use DI container instead 

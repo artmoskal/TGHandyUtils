@@ -4,7 +4,7 @@ from dependency_injector import containers, providers
 from dependency_injector.wiring import Provide, inject
 
 from core.interfaces import (IConfig, ITaskRepository, IUserRepository, IParsingService, 
-                            ITaskService, IOpenAIService, IVoiceProcessingService)
+                            ITaskService, IOpenAIService, IVoiceProcessingService, IImageProcessingService)
 from config import Config
 from database.connection import DatabaseManager
 from database.repositories import TaskRepository, UserRepository
@@ -13,6 +13,7 @@ from services.task_service import TaskService
 from services.onboarding_service import OnboardingService
 from services.openai_service import OpenAIService
 from services.voice_processing import VoiceProcessingService
+from services.image_processing import ImageProcessingService
 
 
 class ApplicationContainer(containers.DeclarativeContainer):
@@ -62,6 +63,11 @@ class ApplicationContainer(containers.DeclarativeContainer):
     
     voice_processing_service = providers.Factory(
         VoiceProcessingService,
+        openai_service=openai_service
+    )
+    
+    image_processing_service = providers.Factory(
+        ImageProcessingService,
         openai_service=openai_service
     )
 
@@ -129,3 +135,11 @@ def get_voice_processing_service(
 ) -> IVoiceProcessingService:
     """Get voice processing service instance."""
     return voice_service
+
+
+@inject
+def get_image_processing_service(
+    image_service: IImageProcessingService = Provide[ApplicationContainer.image_processing_service]
+) -> IImageProcessingService:
+    """Get image processing service instance."""
+    return image_service

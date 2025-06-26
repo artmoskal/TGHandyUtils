@@ -7,7 +7,7 @@ from typing import Dict, Tuple, List
 from collections import defaultdict
 
 from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery, Voice, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, Voice, PhotoSize, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram import Bot
 
@@ -459,6 +459,10 @@ async def handle_message(message: Message, state: FSMContext, bot: Bot):
             await handle_voice_message(message, state, bot)
             return
             
+        if message.photo:
+            await handle_photo_message(message, state, bot)
+            return
+            
         if message.text and message.text.startswith('/'):
             return
             
@@ -513,6 +517,97 @@ async def handle_voice_message(message: Message, state: FSMContext, bot: Bot):
     except Exception as e:
         logger.error(f"Error handling voice message: {e}")
         await message.reply("An error occurred while processing your voice message.")
+
+async def handle_photo_message(message: Message, state: FSMContext, bot: Bot):
+    """Handle photo message processing with OCR and task creation."""
+    try:
+        processing_msg = await message.answer("📸 Processing screenshot...")
+        
+        image_service = services.get_image_processing_service()
+        image_result = await image_service.process_image_message(message.photo, bot)
+        
+        await processing_msg.delete()
+        
+        extracted_text = image_result.get('extracted_text', '')
+        summary = image_result.get('summary', '')
+        
+        if not extracted_text.strip():
+            await message.reply(
+                "📸 **Screenshot Processed**\n\n"
+                f"🔍 **Analysis:** {summary}\n\n"
+                "⚠️ No text was found in the image to create a task from."
+            )
+            return
+        
+        user_id = message.from_user.id
+        user_info = services.get_task_service().get_user_platform_info(user_id)
+        
+        if not user_info or not user_info.get('platform_token'):
+            keyboard = get_platform_selection_keyboard()
+            await message.reply(
+                "Please select your task management platform to link your account:", 
+                reply_markup=keyboard
+            )
+            await state.set_state(TaskPlatformState.selecting_platform)
+            return
+        
+        user_full_name = message.from_user.full_name
+        
+        content_for_parsing = f"Screenshot content - {summary}. Text extracted: {extracted_text}"
+        
+        owner_name = user_info.get('owner_name')
+        location = user_info.get('location')
+        
+        parsed_task_dict = services.get_parsing_service().parse_content_to_task(
+            content_for_parsing,
+            owner_name=owner_name,
+            location=location
+        )
+        
+        if not parsed_task_dict:
+            await message.reply(
+                f"📸 **Screenshot Processed**\n\n"
+                f"🔍 **Analysis:** {summary}\n\n"
+                f"📝 **Text Found:** {extracted_text}\n\n"
+                f"⚠️ Could not create a task from this content. Please send a message describing what you'd like to do with this information."
+            )
+            return
+        
+        task_data = TaskCreate(**parsed_task_dict)
+        
+        success = await services.get_task_service().create_task(
+            user_id=user_id,
+            chat_id=message.chat.id,
+            message_id=message.message_id,
+            task_data=task_data,
+            initiator_link=f"Screenshot analysis: {summary}",
+            screenshot_data=image_result
+        )
+        
+        if success:
+            platform_name = user_info.get('platform_type', 'platform').capitalize()
+            
+            try:
+                due_str = services.get_parsing_service().convert_utc_to_local_display(task_data.due_time, location)
+                await message.reply(
+                    f"✅ **Task Created from Screenshot in {platform_name}**\n\n"
+                    f"📌 **{task_data.title}**\n"
+                    f"⏰ **Due:** {due_str}\n\n"
+                    f"🔍 **Source:** {summary}\n"
+                    f"📝 **Extracted Text:** {extracted_text[:200]}{'...' if len(extracted_text) > 200 else ''}",
+                    parse_mode='Markdown'
+                )
+            except:
+                await message.reply(f"✅ Task created from screenshot in {platform_name}: {task_data.title}")
+        else:
+            await message.reply("Task saved locally but failed to create on your platform. Please check your settings.")
+            
+    except TranscriptionError as e:
+        logger.error(f"Image processing error: {e}")
+        await message.reply("Failed to process your screenshot. Please try again or send a text message.")
+    except Exception as e:
+        logger.error(f"Error handling photo message: {e}")
+        await message.reply("An error occurred while processing your screenshot.")
 
 @router.callback_query(lambda c: c.data == "transcribe_confirm")
 async def confirm_transcription(callback_query: CallbackQuery, state: FSMContext):
@@ -726,6 +821,9 @@ Use the Quick Task button for common task types with preset timing.
 
 **Voice Messages:**
 Send a voice message and I'll transcribe it, then create a task from the content.
+
+**Screenshots:**
+Send a screenshot and I'll extract text from it and analyze the content to create a task.
 
 **Natural Language:**
 I understand phrases like:

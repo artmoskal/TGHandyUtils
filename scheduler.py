@@ -1,6 +1,7 @@
 """Task scheduler for sending reminders."""
 
 import asyncio
+import html
 from datetime import datetime, timezone
 from dateutil import parser
 
@@ -85,7 +86,10 @@ async def _send_reminder(task):
     Args:
         task: TaskDB instance
     """
-    reminder_text = f"⏰ Reminder: {task.task_title}\n\n{task.task_description}"
+    # Escape special characters to prevent markdown parsing issues
+    safe_title = html.escape(task.task_title)
+    safe_description = html.escape(task.task_description)
+    reminder_text = f"⏰ Reminder: {safe_title}\n\n{safe_description}"
     
     try:
         if task.message_id:

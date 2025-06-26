@@ -3,6 +3,7 @@ import logging
 from platforms.base import AbstractTaskPlatform
 import urllib.parse
 from datetime import datetime
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,7 @@ class TrelloPlatform(AbstractTaskPlatform):
                 - due_time (str): The due time in ISO 8601 format
                 - board_id (str, optional): The board ID
                 - list_id (str, optional): The list ID
+                - source_attachment (str, optional): Additional source information
                 
         Returns:
             str: Task ID if successful, None otherwise
@@ -106,11 +108,15 @@ class TrelloPlatform(AbstractTaskPlatform):
             logger.error(error_msg)
             raise ValueError(error_msg)
         
+        description = task_data.get('description', '')
+        if 'source_attachment' in task_data and task_data['source_attachment']:
+            description += f"\n\n🔗 Source: {task_data['source_attachment']}"
+        
         params = self._get_auth_params()
         params.update({
             'idList': list_id,
             'name': task_data['title'],
-            'desc': task_data['description']
+            'desc': description
         })
         
         # Convert ISO due time to Trello format if provided
@@ -205,3 +211,35 @@ class TrelloPlatform(AbstractTaskPlatform):
         except Exception as e:
             logger.error(f"Trello API error: {e}")
             return None
+    
+    def add_attachment_to_card(self, card_id: str, file_data: bytes, file_name: str) -> bool:
+        """Add a file attachment to a Trello card.
+        
+        Args:
+            card_id: The ID of the card to attach to
+            file_data: The file data as bytes
+            file_name: Name of the file
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        url = f'{self.base_url}/cards/{card_id}/attachments'
+        
+        params = self._get_auth_params()
+        params['name'] = file_name
+        
+        files = {
+            'file': (file_name, file_data, 'image/jpeg')
+        }
+        
+        try:
+            response = requests.post(url, params=params, files=files)
+            if response.status_code in [200, 201]:
+                logger.debug(f"Successfully added attachment {file_name} to card {card_id}")
+                return True
+            else:
+                logger.error(f"Failed to add attachment to Trello card: {response.text}")
+                return False
+        except Exception as e:
+            logger.error(f"Error adding attachment to Trello card: {e}")
+            return False

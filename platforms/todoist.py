@@ -30,14 +30,20 @@ class TodoistPlatform(AbstractTaskPlatform):
                 - title (str): The task title
                 - description (str): The task description
                 - due_time (str): The due time in ISO 8601 format
+                - source_attachment (str, optional): Additional source information
                 
         Returns:
             str: Task ID if successful, None otherwise
         """
         url = f'{self.base_url}/tasks'
+        
+        description = task_data.get('description', '')
+        if 'source_attachment' in task_data and task_data['source_attachment']:
+            description += f"\n\n🔗 Source: {task_data['source_attachment']}"
+        
         data = {
             'content': task_data['title'],
-            'description': task_data['description'],
+            'description': description,
             'due_datetime': task_data['due_time']
         }
         

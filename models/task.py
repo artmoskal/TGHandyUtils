@@ -49,3 +49,4 @@ class PlatformTaskData(BaseModel):
     due_time: str
     board_id: Optional[str] = None  # For Trello
     list_id: Optional[str] = None   # For Trello
+    source_attachment: Optional[str] = None  # Additional source information

@@ -170,6 +170,11 @@ class IOpenAIService(ABC):
     async def transcribe_audio(self, audio_data: BinaryIO) -> str:
         """Transcribe audio data using OpenAI Whisper."""
         pass
+    
+    @abstractmethod
+    async def analyze_image(self, image_data: bytes, prompt: str = None) -> str:
+        """Analyze image and extract text/content using OpenAI Vision."""
+        pass
 
 
 class IVoiceProcessingService(ABC):
@@ -178,4 +183,13 @@ class IVoiceProcessingService(ABC):
     @abstractmethod
     async def process_voice_message(self, voice, bot) -> str:
         """Process a voice message and return transcribed text."""
+        pass
+
+
+class IImageProcessingService(ABC):
+    """Abstract interface for image processing service."""
+    
+    @abstractmethod
+    async def process_image_message(self, photo, bot) -> Dict[str, Any]:
+        """Process an image message and return analyzed content."""
         pass
