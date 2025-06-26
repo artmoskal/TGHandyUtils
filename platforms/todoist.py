@@ -149,7 +149,7 @@ class TodoistPlatform(AbstractTaskPlatform):
         return f"https://todoist.com/showTask?id={task_id}"
     
     def upload_file(self, file_data: bytes, file_name: str) -> dict:
-        """Upload a file to Todoist using Sync API.
+        """Upload a file to Todoist using REST API v2.
         
         Args:
             file_data: File data as bytes
@@ -158,22 +158,19 @@ class TodoistPlatform(AbstractTaskPlatform):
         Returns:
             Upload result with file_url or None if failed
         """
-        upload_url = 'https://api.todoist.com/sync/v9/uploads/add'
-        
-        # Extract token from headers for Sync API
-        token = self.api_token
+        upload_url = 'https://api.todoist.com/rest/v2/uploads'
         
         files = {
             'file': (file_name, file_data, 'image/jpeg')
         }
         
         headers = {
-            'Authorization': f'Bearer {token}'
+            'Authorization': f'Bearer {self.api_token}'
         }
         
         try:
             response = requests.post(upload_url, headers=headers, files=files)
-            if response.status_code == 200:
+            if response.status_code in [200, 201]:
                 result = response.json()
                 logger.debug(f"Successfully uploaded file to Todoist: {file_name}")
                 return result
@@ -184,57 +181,44 @@ class TodoistPlatform(AbstractTaskPlatform):
             logger.error(f"Error uploading file to Todoist: {e}")
             return None
     
-    def add_note_with_attachment(self, task_id: str, content: str, file_upload_result: dict) -> bool:
-        """Add a note with file attachment to a Todoist task using Sync API.
+    def add_comment_with_attachment(self, task_id: str, content: str, file_upload_result: dict) -> bool:
+        """Add a comment with file attachment to a Todoist task using REST API v2.
         
         Args:
             task_id: The ID of the task
-            content: Note content
-            file_upload_result: Result from upload_file method
+            content: Comment content
+            file_upload_result: Result from upload_file method containing file_url
             
         Returns:
             True if successful, False otherwise
         """
-        sync_url = 'https://api.todoist.com/sync/v9/sync'
+        url = f'{self.base_url}/comments'
         
-        # Extract token for Sync API
-        token = self.api_token
-        
-        # Create note_add command with file attachment
-        commands = [{
-            'type': 'note_add',
-            'uuid': f'note_{task_id}_{int(time.time() * 1000)}',
-            'args': {
-                'item_id': task_id,
-                'content': content,
-                'file_attachment': file_upload_result
-            }
-        }]
-        
-        data = {
-            'commands': json.dumps(commands)
+        # Create attachment object from upload result
+        attachment = {
+            'resource_type': 'file',
+            'file_url': file_upload_result.get('file_url'),
+            'file_name': file_upload_result.get('file_name'),
+            'file_type': file_upload_result.get('file_type', 'image/jpeg'),
+            'file_size': file_upload_result.get('file_size')
         }
         
-        headers = {
-            'Authorization': f'Bearer {token}',
-            'Content-Type': 'application/x-www-form-urlencoded'
+        data = {
+            'task_id': task_id,
+            'content': content,
+            'attachment': attachment
         }
         
         try:
-            response = requests.post(sync_url, headers=headers, data=data)
-            if response.status_code == 200:
-                result = response.json()
-                if result.get('sync_status'):
-                    logger.debug(f"Successfully added note with attachment to task {task_id}")
-                    return True
-                else:
-                    logger.error(f"Todoist sync command failed: {result}")
-                    return False
+            response = requests.post(url, headers=self.headers, json=data)
+            if response.status_code in [200, 201, 204]:
+                logger.debug(f"Successfully added comment with attachment to task {task_id}")
+                return True
             else:
-                logger.error(f"Todoist sync API error: {response.status_code} - {response.text}")
+                logger.error(f"Todoist comment API error: {response.status_code} - {response.text}")
                 return False
         except Exception as e:
-            logger.error(f"Error adding note with attachment to Todoist task: {e}")
+            logger.error(f"Error adding comment with attachment to Todoist task: {e}")
             return False
     
     def attach_screenshot(self, task_id: str, image_data: bytes, file_name: str) -> bool:
@@ -249,17 +233,26 @@ class TodoistPlatform(AbstractTaskPlatform):
             True if successful, False otherwise
         """
         try:
-            # Upload file to Todoist
+            # Upload file to Todoist first
             file_upload_result = self.upload_file(image_data, file_name)
             if not file_upload_result:
-                return False
+                logger.warning(f"Failed to upload screenshot to Todoist, adding text comment instead")
+                # Fallback to text comment
+                url = f'{self.base_url}/comments'
+                data = {
+                    'task_id': task_id,
+                    'content': f"📸 Screenshot processed: {file_name}\n\n*Note: Screenshot analysis was used to create this task but file upload failed.*"
+                }
+                response = requests.post(url, headers=self.headers, json=data)
+                return response.status_code in [200, 201, 204]
             
-            # Add as note attachment
-            return self.add_note_with_attachment(
+            # Add comment with file attachment
+            return self.add_comment_with_attachment(
                 task_id,
                 "📸 Screenshot attached",
                 file_upload_result
             )
+            
         except Exception as e:
             logger.error(f"Error attaching screenshot to Todoist task: {e}")
             return False
