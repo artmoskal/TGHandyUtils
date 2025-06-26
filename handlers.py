@@ -347,6 +347,78 @@ async def receive_location(message: Message, state: FSMContext):
     
     await state.clear()
 
+async def process_user_input_with_photo(text: str, user_id: int, message_obj: Message, state: FSMContext, bot: Bot) -> bool:
+    """Process user input that includes a photo, with threading support."""
+    try:
+        user_info = services.get_task_service().get_user_platform_info(user_id)
+        
+        if not user_info or not user_info.get('platform_token'):
+            # For photos, process immediately since user needs to set up platform anyway
+            await handle_photo_message(message_obj, state, bot)
+            return False
+
+        # Process the screenshot first
+        processing_msg = await message_obj.answer("📸 Processing screenshot...")
+        
+        image_service = services.get_image_processing_service()
+        image_result = await image_service.process_image_message(message_obj.photo, bot)
+        
+        await processing_msg.delete()
+        
+        extracted_text = image_result.get('extracted_text', '')
+        summary = image_result.get('summary', '')
+        
+        if not extracted_text.strip() and not text.strip():
+            await message_obj.reply(
+                "📸 **Screenshot Processed**\n\n"
+                f"🔍 **Analysis:** {summary}\n\n"
+                "⚠️ No text was found in the image and no caption provided to create a task from."
+            )
+            return False
+
+        # Determine the correct user name
+        if message_obj.forward_from:
+            user_full_name = message_obj.forward_from.full_name
+        elif message_obj.forward_sender_name:
+            user_full_name = message_obj.forward_sender_name
+        else:
+            user_full_name = message_obj.from_user.full_name
+
+        # Combine screenshot content with any text caption
+        combined_content = ""
+        if text.strip():
+            combined_content += f"Caption: {text.strip()}\n\n"
+        if extracted_text.strip():
+            combined_content += f"Screenshot text: {extracted_text}"
+        
+        # Add to threading system
+        current_time = time.time()
+        with _message_threads_lock:
+            message_threads[user_id].append((user_full_name, combined_content, image_result))
+            last_message_time[user_id] = current_time
+        
+        # Check if enough time has passed since the last message
+        if len(message_threads[user_id]) > 0:
+            await asyncio.sleep(services.get_config().THREAD_TIMEOUT)
+            if current_time == last_message_time[user_id]:  # No new messages received
+                # Process the complete thread
+                with _message_threads_lock:
+                    thread_content = message_threads[user_id].copy()
+                    message_threads[user_id].clear()  # Clear the thread
+                
+                owner_name = user_info.get('owner_name')
+                location = user_info.get('location')
+                
+                await process_thread_with_photos(message_obj, thread_content, owner_name, location, user_id)
+                return True
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error processing user input with photo: {e}")
+        await message_obj.reply("An error occurred while processing your screenshot. Please try again.")
+        return False
+
 async def process_user_input(text: str, user_id: int, message_obj: Message, state: FSMContext) -> bool:
     """Process user text input and create tasks."""
     try:
@@ -387,7 +459,7 @@ async def process_user_input(text: str, user_id: int, message_obj: Message, stat
                 owner_name = user_info.get('owner_name')
                 location = user_info.get('location')
                 
-                await process_thread(message_obj, thread_content, owner_name, location, user_id)
+                await process_thread_with_photos(message_obj, thread_content, owner_name, location, user_id)
                 return True
         
         return True
@@ -396,6 +468,83 @@ async def process_user_input(text: str, user_id: int, message_obj: Message, stat
         logger.error(f"Error processing user input: {e}")
         await message_obj.reply("An error occurred while processing your message. Please try again.")
         return False
+
+async def process_thread_with_photos(message: Message, thread_content: List[Tuple], 
+                                    owner_name: str, location: str, owner_id: int):
+    """Process a thread of messages that may include photos and create a task."""
+    try:
+        # Separate text content and find any screenshot data
+        text_content = []
+        screenshot_data = None
+        
+        for item in thread_content:
+            if len(item) == 3:  # (user, content, image_result)
+                user, content, image_result = item
+                text_content.append((user, content))
+                if not screenshot_data:  # Use first screenshot found
+                    screenshot_data = image_result
+            else:  # (user, content)
+                text_content.append(item)
+        
+        # Concatenate thread content
+        concatenated_content = "\n".join([f"{sender}: {text}" for sender, text in text_content])
+        
+        # Parse content into task
+        parsed_task_dict = services.get_parsing_service().parse_content_to_task(
+            concatenated_content,
+            owner_name=owner_name,
+            location=location
+        )
+        
+        if not parsed_task_dict:
+            await message.reply("Failed to parse your message into a task. Please try again.")
+            return
+        
+        # Create task model
+        task_data = TaskCreate(**parsed_task_dict)
+        
+        # Create task with screenshot if available
+        success, task_url = await services.get_task_service().create_task(
+            user_id=owner_id,
+            chat_id=message.chat.id,
+            message_id=message.message_id,
+            task_data=task_data,
+            screenshot_data=screenshot_data
+        )
+        
+        if success:
+            user_info = services.get_task_service().get_user_platform_info(owner_id)
+            platform_name = user_info.get('platform_type', 'platform').capitalize()
+            
+            # Format due time for display in local time
+            try:
+                user_info = services.get_task_service().get_user_platform_info(owner_id)
+                location = user_info.get('location') if user_info else None
+                due_str = services.get_parsing_service().convert_utc_to_local_display(task_data.due_time, location)
+                
+                # Build success message with optional task URL
+                success_message = f"✅ **Task Created in {platform_name}**\n\n📌 **{task_data.title}**\n⏰ Due: {due_str}"
+                if task_url:
+                    success_message += f"\n🔗 [Open Task]({task_url})"
+                
+                await message.reply(success_message, parse_mode='Markdown')
+            except:
+                success_message = f"✅ Task created in {platform_name}: {task_data.title}"
+                if task_url:
+                    success_message += f"\n🔗 {task_url}"
+                await message.reply(success_message)
+        else:
+            await message.reply("Task saved locally but failed to create on your platform. Please check your settings.")
+            
+    except ParsingError as e:
+        logger.error(f"Parsing error: {e}")
+        await message.reply("Failed to understand your message. Please try rephrasing.")
+    except TaskCreationError as e:
+        logger.error(f"Task creation error: {e}")
+        await message.reply(f"Failed to create task: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unexpected error in process_thread_with_photos: {e}")
+        await message.reply("An unexpected error occurred. Please try again.")
 
 async def process_thread(message: Message, thread_content: List[Tuple[str, str]], 
                         owner_name: str, location: str, owner_id: int):
@@ -468,22 +617,28 @@ async def handle_message(message: Message, state: FSMContext, bot: Bot):
             await handle_voice_message(message, state, bot)
             return
             
-        if message.photo:
-            await handle_photo_message(message, state, bot)
-            return
-            
         if message.text and message.text.startswith('/'):
             return
             
         if message.reply_to_message and message.reply_to_message.from_user.is_bot:
             return
 
-        await process_user_input(
-            message.text, 
-            message.from_user.id, 
-            message, 
-            state
-        )
+        # Handle both text and photos through unified threading system
+        if message.photo:
+            await process_user_input_with_photo(
+                message.text or "", 
+                message.from_user.id, 
+                message, 
+                state,
+                bot
+            )
+        else:
+            await process_user_input(
+                message.text, 
+                message.from_user.id, 
+                message, 
+                state
+            )
         
     except Exception as e:
         logger.error(f"Error in handle_message: {e}")
