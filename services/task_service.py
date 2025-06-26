@@ -184,34 +184,15 @@ class TaskService(ITaskService):
                 # Add screenshot attachment if provided
                 if screenshot_data:
                     try:
-                        if platform_type == 'trello':
-                            success = platform.add_attachment_to_card(
-                                task_id,
-                                screenshot_data.get('image_data'),
-                                screenshot_data.get('file_name', 'screenshot.jpg')
-                            )
-                            if success:
-                                logger.info(f"Successfully attached screenshot to Trello card {task_id}")
-                            else:
-                                logger.warning(f"Failed to attach screenshot to Trello card {task_id}")
-                        elif platform_type == 'todoist':
-                            # Upload file to Todoist and add as note attachment
-                            file_upload_result = platform.upload_file(
-                                screenshot_data.get('image_data'),
-                                screenshot_data.get('file_name', 'screenshot.jpg')
-                            )
-                            if file_upload_result:
-                                success = platform.add_note_with_attachment(
-                                    task_id,
-                                    "📸 Screenshot attached",
-                                    file_upload_result
-                                )
-                                if success:
-                                    logger.info(f"Successfully attached screenshot to Todoist task {task_id}")
-                                else:
-                                    logger.warning(f"Failed to attach screenshot note to Todoist task {task_id}")
-                            else:
-                                logger.warning(f"Failed to upload screenshot file to Todoist for task {task_id}")
+                        success = platform.attach_screenshot(
+                            task_id,
+                            screenshot_data.get('image_data'),
+                            screenshot_data.get('file_name', 'screenshot.jpg')
+                        )
+                        if success:
+                            logger.info(f"Successfully attached screenshot to {platform_type} task {task_id}")
+                        else:
+                            logger.warning(f"Failed to attach screenshot to {platform_type} task {task_id}")
                     except Exception as e:
                         logger.error(f"Error attaching screenshot to {platform_type} task: {e}")
                 

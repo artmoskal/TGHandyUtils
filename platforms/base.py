@@ -75,6 +75,21 @@ class AbstractTaskPlatform(ABC):
             str: Direct URL to the task
         """
         pass
+    
+    @abstractmethod
+    def attach_screenshot(self, task_id: str, image_data: bytes, file_name: str) -> bool:
+        """
+        Attach a screenshot to a task on the platform.
+        
+        Args:
+            task_id (str): The ID of the task
+            image_data (bytes): Screenshot data
+            file_name (str): Name of the file
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        pass
 
 class TaskPlatformFactory:
     """Factory for creating task platform instances."""

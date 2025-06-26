@@ -244,6 +244,19 @@ class TrelloPlatform(AbstractTaskPlatform):
             logger.error(f"Error adding attachment to Trello card: {e}")
             return False
     
+    def attach_screenshot(self, task_id: str, image_data: bytes, file_name: str) -> bool:
+        """Attach a screenshot to a Trello card.
+        
+        Args:
+            task_id: The ID of the card
+            image_data: Screenshot data
+            file_name: Name of the file
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        return self.add_attachment_to_card(task_id, image_data, file_name)
+    
     def get_task_url(self, task_id: str) -> str:
         """Generate a direct URL to a Trello card.
         

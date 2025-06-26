@@ -236,3 +236,30 @@ class TodoistPlatform(AbstractTaskPlatform):
         except Exception as e:
             logger.error(f"Error adding note with attachment to Todoist task: {e}")
             return False
+    
+    def attach_screenshot(self, task_id: str, image_data: bytes, file_name: str) -> bool:
+        """Attach a screenshot to a Todoist task.
+        
+        Args:
+            task_id: The ID of the task
+            image_data: Screenshot data
+            file_name: Name of the file
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Upload file to Todoist
+            file_upload_result = self.upload_file(image_data, file_name)
+            if not file_upload_result:
+                return False
+            
+            # Add as note attachment
+            return self.add_note_with_attachment(
+                task_id,
+                "📸 Screenshot attached",
+                file_upload_result
+            )
+        except Exception as e:
+            logger.error(f"Error attaching screenshot to Todoist task: {e}")
+            return False
