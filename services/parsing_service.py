@@ -68,10 +68,10 @@ class ParsingService(IParsingService):
         - Current year is: {current_year}
         - When a time is mentioned (like "12:00"), interpret it as LOCAL TIME in the user's location
         - Convert local time to UTC for the due_time field
-        - For Portugal/Cascais: Local time is UTC+1 (or UTC+2 during DST)
-        - Example: If user says "12:00" and they're in Portugal, the UTC time should be "11:00" (12:00 - 1 hour)
+- Timezone info: {timezone_info}
+        - Example: If user says "12:00", convert local time to UTC based on their timezone
         - Example: "12/Jun" means "June 12, {current_year}" not any other year
-        - Example: "12/Jun, 12:00" in Portugal = "2025-06-12T11:00:00Z" (June 12th at 11:00 UTC)
+        - Always convert local time to UTC for the due_time field
         - Always use the current year {current_year} unless explicitly stated otherwise
         
         DOUBLE-CHECK YOUR DATE PARSING:
@@ -87,7 +87,7 @@ class ParsingService(IParsingService):
         
         return PromptTemplate(
             template=template,
-            input_variables=["content_message", "cur_time", "owner_name", "location", "current_year"],
+            input_variables=["content_message", "cur_time", "owner_name", "location", "current_year", "timezone_info"],
             partial_variables={"format_instructions": self.parser.get_format_instructions()}
         )
     
@@ -115,8 +115,9 @@ class ParsingService(IParsingService):
                 "content_message": content_message,
                 "cur_time": current_utc.strftime("%Y-%m-%d %H:%M:%S UTC"),
                 "owner_name": owner_name or "User",
-                "location": f"{location or 'UTC'} (Current timezone: {timezone_info})",
-                "current_year": current_utc.year
+                "location": location or "UTC",
+                "current_year": current_utc.year,
+                "timezone_info": timezone_info
             }
             
             # Format the prompt
