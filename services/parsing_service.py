@@ -57,6 +57,12 @@ class ParsingService(IParsingService):
         Description should contain summarization of things to do and copy of the original conversation (with line breaks). 
         Usually but not always first message of conversation contains task-related instruction (e.g., time, and/or full title or  tip for the title)
         
+        CONTENT TYPE HANDLING:
+        - [CAPTION] content: This is the user's explicit instruction or description - PRIORITIZE THIS for task creation
+        - [SCREENSHOT TEXT]: Text extracted from images - include in description and consider for task details
+        - [SCREENSHOT DESCRIPTION]: AI analysis of image content - include in description for context
+        - When multiple content types are present, prioritize [CAPTION] for task title and timing, use others for enriching the description
+        
         CRITICAL TIMEZONE HANDLING:
         - The user is located in: {location}
         - Current year is: {current_year}
