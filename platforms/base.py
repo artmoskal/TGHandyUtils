@@ -62,6 +62,19 @@ class AbstractTaskPlatform(ABC):
             dict: Task data if successful, None otherwise
         """
         pass
+    
+    @abstractmethod
+    def get_task_url(self, task_id: str) -> str:
+        """
+        Generate a direct URL to a task on the platform.
+        
+        Args:
+            task_id (str): The ID of the task
+            
+        Returns:
+            str: Direct URL to the task
+        """
+        pass
 
 class TaskPlatformFactory:
     """Factory for creating task platform instances."""

@@ -23,7 +23,7 @@ class TaskService(ITaskService):
     
     async def create_task(self, user_id: int, chat_id: int, message_id: int, 
                          task_data: TaskCreate, initiator_link: Optional[str] = None,
-                         screenshot_data: Optional[Dict[str, Any]] = None) -> bool:
+                         screenshot_data: Optional[Dict[str, Any]] = None) -> Tuple[bool, Optional[str]]:
         """Create a task both locally and on the platform.
         
         Args:
@@ -35,7 +35,7 @@ class TaskService(ITaskService):
             screenshot_data: Optional screenshot data (image_data, file_name, etc.)
             
         Returns:
-            True if successful, False otherwise
+            Tuple of (success: bool, task_url: Optional[str])
             
         Raises:
             ValidationError: If task data is invalid
@@ -78,10 +78,13 @@ class TaskService(ITaskService):
                 # Update local task with platform ID
                 self.task_repo.update_platform_id(task_db_id, platform_task_id, platform_type)
                 logger.info(f"Task {task_db_id} created on {platform_type} with ID {platform_task_id}")
-                return True
+                
+                # Generate task URL
+                task_url = self._generate_task_url(platform_task_id, user_info)
+                return True, task_url
             else:
                 logger.warning(f"Task {task_db_id} saved locally but failed to create on {platform_type}: {error_message}")
-                return False
+                return False, None
                 
         except Exception as e:
             logger.error(f"Failed to create task: {e}")
@@ -201,6 +204,34 @@ class TaskService(ITaskService):
             error_msg = f"Error creating task on {platform_type}: {e}"
             logger.error(error_msg)
             return None, error_msg
+    
+    def _generate_task_url(self, task_id: str, user_info: Dict[str, Any]) -> Optional[str]:
+        """Generate a direct URL to the created task.
+        
+        Args:
+            task_id: Platform task ID
+            user_info: User platform information
+            
+        Returns:
+            Direct URL to the task or None if generation fails
+        """
+        try:
+            platform_type = user_info.get('platform_type', 'todoist')
+            platform_token = user_info.get('platform_token')
+            
+            if not platform_token:
+                return None
+            
+            # Get platform instance
+            platform = TaskPlatformFactory.get_platform(platform_type, platform_token)
+            if not platform:
+                return None
+            
+            return platform.get_task_url(task_id)
+            
+        except Exception as e:
+            logger.error(f"Error generating task URL: {e}")
+            return None
     
     def save_user_platform(self, telegram_user_id: int, platform_token: str, 
                           platform_type: str, owner_name: str, 

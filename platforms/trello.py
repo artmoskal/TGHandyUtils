@@ -243,3 +243,14 @@ class TrelloPlatform(AbstractTaskPlatform):
         except Exception as e:
             logger.error(f"Error adding attachment to Trello card: {e}")
             return False
+    
+    def get_task_url(self, task_id: str) -> str:
+        """Generate a direct URL to a Trello card.
+        
+        Args:
+            task_id: The ID of the card
+            
+        Returns:
+            Direct URL to the card
+        """
+        return f"https://trello.com/c/{task_id}"

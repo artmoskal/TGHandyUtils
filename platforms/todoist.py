@@ -134,3 +134,14 @@ class TodoistPlatform(AbstractTaskPlatform):
         except Exception as e:
             logger.error(f"Todoist API error: {e}")
             return None
+    
+    def get_task_url(self, task_id: str) -> str:
+        """Generate a direct URL to a Todoist task.
+        
+        Args:
+            task_id: The ID of the task
+            
+        Returns:
+            Direct URL to the task
+        """
+        return f"https://todoist.com/showTask?id={task_id}"

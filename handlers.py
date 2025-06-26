@@ -419,7 +419,7 @@ async def process_thread(message: Message, thread_content: List[Tuple[str, str]]
         task_data = TaskCreate(**parsed_task_dict)
         
         # Create task
-        success = await services.get_task_service().create_task(
+        success, task_url = await services.get_task_service().create_task(
             user_id=owner_id,
             chat_id=message.chat.id,
             message_id=message.message_id,
@@ -435,9 +435,18 @@ async def process_thread(message: Message, thread_content: List[Tuple[str, str]]
                 user_info = services.get_task_service().get_user_platform_info(owner_id)
                 location = user_info.get('location') if user_info else None
                 due_str = services.get_parsing_service().convert_utc_to_local_display(task_data.due_time, location)
-                await message.reply(f"✅ **Task Created in {platform_name}**\n\n📌 **{task_data.title}**\n⏰ Due: {due_str}")
+                
+                # Build success message with optional task URL
+                success_message = f"✅ **Task Created in {platform_name}**\n\n📌 **{task_data.title}**\n⏰ Due: {due_str}"
+                if task_url:
+                    success_message += f"\n🔗 [Open Task]({task_url})"
+                
+                await message.reply(success_message, parse_mode='Markdown')
             except:
-                await message.reply(f"✅ Task created in {platform_name}: {task_data.title}")
+                success_message = f"✅ Task created in {platform_name}: {task_data.title}"
+                if task_url:
+                    success_message += f"\n🔗 {task_url}"
+                await message.reply(success_message)
         else:
             await message.reply("Task saved locally but failed to create on your platform. Please check your settings.")
             
@@ -575,7 +584,7 @@ async def handle_photo_message(message: Message, state: FSMContext, bot: Bot):
         
         task_data = TaskCreate(**parsed_task_dict)
         
-        success = await services.get_task_service().create_task(
+        success, task_url = await services.get_task_service().create_task(
             user_id=user_id,
             chat_id=message.chat.id,
             message_id=message.message_id,
@@ -589,16 +598,24 @@ async def handle_photo_message(message: Message, state: FSMContext, bot: Bot):
             
             try:
                 due_str = services.get_parsing_service().convert_utc_to_local_display(task_data.due_time, location)
-                await message.reply(
+                
+                # Build success message with optional task URL
+                success_message = (
                     f"✅ **Task Created from Screenshot in {platform_name}**\n\n"
                     f"📌 **{task_data.title}**\n"
                     f"⏰ **Due:** {due_str}\n\n"
                     f"🔍 **Source:** {summary}\n"
-                    f"📝 **Extracted Text:** {extracted_text[:200]}{'...' if len(extracted_text) > 200 else ''}",
-                    parse_mode='Markdown'
+                    f"📝 **Extracted Text:** {extracted_text[:200]}{'...' if len(extracted_text) > 200 else ''}"
                 )
+                if task_url:
+                    success_message += f"\n\n🔗 [Open Task]({task_url})"
+                
+                await message.reply(success_message, parse_mode='Markdown')
             except:
-                await message.reply(f"✅ Task created from screenshot in {platform_name}: {task_data.title}")
+                success_message = f"✅ Task created from screenshot in {platform_name}: {task_data.title}"
+                if task_url:
+                    success_message += f"\n🔗 {task_url}"
+                await message.reply(success_message)
         else:
             await message.reply("Task saved locally but failed to create on your platform. Please check your settings.")
             
@@ -652,7 +669,7 @@ async def confirm_transcription(callback_query: CallbackQuery, state: FSMContext
                 task_data = TaskCreate(**parsed_task_dict)
                 
                 # Create task
-                success = await services.get_task_service().create_task(
+                success, task_url = await services.get_task_service().create_task(
                     user_id=user_id,
                     chat_id=callback_query.message.chat.id,
                     message_id=callback_query.message.message_id,
@@ -665,16 +682,24 @@ async def confirm_transcription(callback_query: CallbackQuery, state: FSMContext
                         location = user_info.get('location')
                         due_str = services.get_parsing_service().convert_utc_to_local_display(task_data.due_time, location)
                         platform_name = user_info.get('platform_type', 'platform').capitalize()
-                        await callback_query.message.edit_text(
+                        
+                        # Build success message with optional task URL
+                        success_message = (
                             f"✅ **Voice Task Created in {platform_name}**\n\n"
                             f"📌 **{task_data.title}**\n"
                             f"⏰ **Due:** {due_str}\n\n"
-                            f"📝 **Description:** {task_data.description}",
-                            parse_mode='Markdown'
+                            f"📝 **Description:** {task_data.description}"
                         )
+                        if task_url:
+                            success_message += f"\n\n🔗 [Open Task]({task_url})"
+                        
+                        await callback_query.message.edit_text(success_message, parse_mode='Markdown')
                     except:
                         platform_name = user_info.get('platform_type', 'platform').capitalize()
-                        await callback_query.answer(f"Task created in {platform_name}!")
+                        success_message = f"Task created in {platform_name}!"
+                        if task_url:
+                            success_message += f" {task_url}"
+                        await callback_query.answer(success_message)
                 else:
                     await callback_query.message.edit_text("Task saved locally but failed to create on your platform.")
             else:
