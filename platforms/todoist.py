@@ -1,5 +1,7 @@
 import requests
 import logging
+import json
+import time
 from platforms.base import AbstractTaskPlatform
 
 logger = logging.getLogger(__name__)
@@ -145,3 +147,92 @@ class TodoistPlatform(AbstractTaskPlatform):
             Direct URL to the task
         """
         return f"https://todoist.com/showTask?id={task_id}"
+    
+    def upload_file(self, file_data: bytes, file_name: str) -> dict:
+        """Upload a file to Todoist using Sync API.
+        
+        Args:
+            file_data: File data as bytes
+            file_name: Name of the file
+            
+        Returns:
+            Upload result with file_url or None if failed
+        """
+        upload_url = 'https://api.todoist.com/sync/v9/uploads'
+        
+        # Extract token from headers for Sync API
+        token = self.api_token
+        
+        files = {
+            'file': (file_name, file_data, 'image/jpeg')
+        }
+        
+        headers = {
+            'Authorization': f'Bearer {token}'
+        }
+        
+        try:
+            response = requests.post(upload_url, headers=headers, files=files)
+            if response.status_code == 200:
+                result = response.json()
+                logger.debug(f"Successfully uploaded file to Todoist: {file_name}")
+                return result
+            else:
+                logger.error(f"Todoist file upload error: {response.status_code} - {response.text}")
+                return None
+        except Exception as e:
+            logger.error(f"Error uploading file to Todoist: {e}")
+            return None
+    
+    def add_note_with_attachment(self, task_id: str, content: str, file_upload_result: dict) -> bool:
+        """Add a note with file attachment to a Todoist task using Sync API.
+        
+        Args:
+            task_id: The ID of the task
+            content: Note content
+            file_upload_result: Result from upload_file method
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        sync_url = 'https://api.todoist.com/sync/v9/sync'
+        
+        # Extract token for Sync API
+        token = self.api_token
+        
+        # Create note_add command with file attachment
+        commands = [{
+            'type': 'note_add',
+            'uuid': f'note_{task_id}_{int(time.time() * 1000)}',
+            'args': {
+                'item_id': task_id,
+                'content': content,
+                'file_attachment': file_upload_result
+            }
+        }]
+        
+        data = {
+            'commands': json.dumps(commands)
+        }
+        
+        headers = {
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/x-www-form-urlencoded'
+        }
+        
+        try:
+            response = requests.post(sync_url, headers=headers, data=data)
+            if response.status_code == 200:
+                result = response.json()
+                if result.get('sync_status'):
+                    logger.debug(f"Successfully added note with attachment to task {task_id}")
+                    return True
+                else:
+                    logger.error(f"Todoist sync command failed: {result}")
+                    return False
+            else:
+                logger.error(f"Todoist sync API error: {response.status_code} - {response.text}")
+                return False
+        except Exception as e:
+            logger.error(f"Error adding note with attachment to Todoist task: {e}")
+            return False
