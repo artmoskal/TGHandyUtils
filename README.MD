@@ -6,8 +6,10 @@ Are you tired of manually creating tasks in Todoist after every chat with your f
 
 - 🎯 **Smart Task Creation**: Converts your messages into structured tasks automatically
 - 🎤 **Voice Message Support**: Transcribes voice messages using OpenAI Whisper  
+- 📸 **Image Processing**: Supports both inline photos and document image attachments with OCR
+- 🔔 **Notification Control**: Toggle Telegram notifications while keeping platform task creation
 - 🌍 **Timezone Intelligence**: Properly handles local time zones (Portugal, UK, US, etc.)
-- 📋 **Multi-Platform Support**: Works with Todoist and Trello seamlessly
+- 📋 **Multi-Platform Support**: Works with Todoist and Trello seamlessly (extensible architecture)
 - 🔄 **Interactive UI**: Beautiful inline keyboards and task management interface
 - 👥 **Multi-User**: Supports unlimited users with individual configurations (data properly isolated, no chaos!)
 - ⏰ **Smart Scheduling**: Understands natural language like "tomorrow at 3 PM"
@@ -25,6 +27,12 @@ Are you tired of manually creating tasks in Todoist after every chat with your f
 2. Bot transcribes using OpenAI Whisper 
 3. Asks for confirmation of transcription
 4. Creates task with proper scheduling
+
+### **Image Messages (NEW!)**
+1. Send any image (inline photo or document attachment) with caption
+2. Bot extracts text using OCR and analyzes image content
+3. Creates task combining caption text, extracted text, and image context
+4. Supports both compressed photos and uncompressed document attachments
 
 ### **Smart Features**
 - **Timezone Conversion**: Automatically converts your local time to UTC for storage
@@ -115,7 +123,7 @@ Because even with professional architecture, software never works the first time
 - `/start` - Welcome message and onboarding
 - `/menu` - Main interactive menu  
 - `/tasks` - View and manage your pending tasks
-- `/settings` - View platform and timezone settings
+- `/settings` - View platform, timezone, and notification settings
 - `/set_platform` - Change or reconfigure your task platform
 - `/drop_user_data` - Delete all your data (with confirmation)
 
@@ -124,7 +132,8 @@ Because even with professional architecture, software never works the first time
 - **Task Management**: View, complete, edit, reschedule, delete tasks  
 - **Quick Tasks**: Pre-configured tasks (coffee break, shopping, medicine)
 - **Voice Transcription**: Confirm/cancel voice message parsing
-- **Platform Setup**: Step-by-step platform configuration
+- **Platform Setup**: Step-by-step platform configuration with multi-platform support
+- **Notification Control**: Toggle Telegram notifications in settings (tasks still created on platforms)
 
 ### **Smart Parsing Examples**
 ```
@@ -136,6 +145,9 @@ Because even with professional architecture, software never works the first time
 
 "Call mom in 2 hours" 
 → Creates task 2 hours from now
+
+[Image with caption: "Fix this bug in 3h"]
+→ Extracts text from image + caption, creates task due in 3 hours
 ```
 
 ## Contributing
@@ -151,11 +163,18 @@ We believe in open-source software, and we're not really in this for the money a
 
 ## ✅ **Latest Updates (June 2025)**
 
+### **🚀 Major New Features**
+- **📸 Universal Image Support**: Now handles both inline photos AND document image attachments with OCR
+- **🔔 Notification Control**: Toggle Telegram notifications while keeping platform task creation
+- **🔧 Plugin Architecture**: Extensible platform system with registry pattern for easy new platform additions
+- **⚙️ Multi-Platform UI**: Enhanced settings interface for managing multiple platforms
+
 ### **🔧 Bug Fixes Applied**
 - **Timezone Conversion**: Fixed Portugal/Cascais time handling (UTC+1)
 - **Date Parsing**: Fixed "12/Jun" now correctly becomes "June 12, 2025" 
 - **Local Time Display**: All times now show in your local timezone, not UTC
-- **Todoist Setup**: Corrected API token instructions (Settings → Integrations → Developer)
+- **State Management**: Fixed API key/task flow contamination issues
+- **Error Handling**: Improved validation and prevented empty message processing
 
 ### **🎯 Enhanced Features**  
 - **Interactive UI**: Complete main menu system with inline keyboards
