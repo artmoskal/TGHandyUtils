@@ -35,7 +35,8 @@ class DatabaseManager:
                 self._local.connection.row_factory = sqlite3.Row
                 # Enable WAL mode for better concurrency
                 self._local.connection.execute('PRAGMA journal_mode=WAL')
-                self._local.connection.execute('PRAGMA foreign_keys=ON')
+                # Disable foreign keys for partner system (using user_id directly)
+                self._local.connection.execute('PRAGMA foreign_keys=OFF')
                 logger.debug(f"Created new database connection for thread {threading.current_thread().name}")
             except sqlite3.Error as e:
                 logger.error(f"Failed to create database connection: {e}")
@@ -90,7 +91,7 @@ class DatabaseManager:
             )
         ''')
         
-        # Create users table
+        # Create users table (legacy - keep for backward compatibility)
         conn.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -105,10 +106,42 @@ class DatabaseManager:
             )
         ''')
         
+        # Create new partner-based tables
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS user_partners (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                partner_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                platform TEXT NOT NULL,
+                credentials TEXT NOT NULL,
+                platform_config TEXT,
+                is_self BOOLEAN DEFAULT FALSE,
+                enabled BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, partner_id)
+            )
+        ''')
+        
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS user_preferences (
+                user_id INTEGER PRIMARY KEY,
+                default_partners TEXT,
+                show_sharing_ui BOOLEAN DEFAULT FALSE,
+                telegram_notifications BOOLEAN DEFAULT TRUE,
+                location TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
         # Create indices for better performance
         conn.execute('CREATE INDEX IF NOT EXISTS idx_tasks_user_id ON tasks(user_id)')
         conn.execute('CREATE INDEX IF NOT EXISTS idx_tasks_due_time ON tasks(due_time)')
         conn.execute('CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_user_id)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_user_partners_user_id ON user_partners(user_id)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_user_partners_enabled ON user_partners(user_id, enabled)')
     
     def _migrate_schema(self, conn: sqlite3.Connection) -> None:
         """Handle schema migrations."""

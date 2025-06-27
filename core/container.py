@@ -4,12 +4,15 @@ from dependency_injector import containers, providers
 from dependency_injector.wiring import Provide, inject
 
 from core.interfaces import (IConfig, ITaskRepository, IUserRepository, IParsingService, 
-                            ITaskService, IOpenAIService, IVoiceProcessingService, IImageProcessingService)
+                            ITaskService, IOpenAIService, IVoiceProcessingService, IImageProcessingService,
+                            IPartnerRepository, IUserPreferencesRepository, IPartnerService, IUserPreferencesService)
 from config import Config
 from database.connection import DatabaseManager
 from database.repositories import TaskRepository, UserRepository
+from database.partner_repository import PartnerRepository, UserPreferencesRepository
 from services.parsing_service import ParsingService
 from services.task_service import TaskService
+from services.partner_service import PartnerService, UserPreferencesService
 from services.onboarding_service import OnboardingService
 from services.openai_service import OpenAIService
 from services.voice_processing import VoiceProcessingService
@@ -38,6 +41,14 @@ class ApplicationContainer(containers.DeclarativeContainer):
         UserRepository,
         db_manager=database_manager
     )
+    partner_repository = providers.Factory(
+        PartnerRepository,
+        db_manager=database_manager
+    )
+    user_preferences_repository = providers.Factory(
+        UserPreferencesRepository,
+        db_manager=database_manager
+    )
     
     # Services
     parsing_service = providers.Factory(
@@ -45,10 +56,22 @@ class ApplicationContainer(containers.DeclarativeContainer):
         config=config
     )
     
+    partner_service = providers.Factory(
+        PartnerService,
+        partner_repo=partner_repository,
+        prefs_repo=user_preferences_repository
+    )
+    user_preferences_service = providers.Factory(
+        UserPreferencesService,
+        prefs_repo=user_preferences_repository
+    )
+    
     task_service = providers.Factory(
         TaskService,
         task_repo=task_repository,
-        user_repo=user_repository
+        user_repo=user_repository,
+        partner_service=partner_service,
+        prefs_service=user_preferences_service
     )
     
     onboarding_service = providers.Factory(
@@ -143,3 +166,35 @@ def get_image_processing_service(
 ) -> IImageProcessingService:
     """Get image processing service instance."""
     return image_service
+
+
+@inject
+def get_partner_service(
+    partner_service: IPartnerService = Provide[ApplicationContainer.partner_service]
+) -> IPartnerService:
+    """Get partner service instance."""
+    return partner_service
+
+
+@inject
+def get_user_preferences_service(
+    prefs_service: IUserPreferencesService = Provide[ApplicationContainer.user_preferences_service]
+) -> IUserPreferencesService:
+    """Get user preferences service instance."""
+    return prefs_service
+
+
+@inject
+def get_partner_repository(
+    partner_repo: IPartnerRepository = Provide[ApplicationContainer.partner_repository]
+) -> IPartnerRepository:
+    """Get partner repository instance."""
+    return partner_repo
+
+
+@inject
+def get_user_preferences_repository(
+    prefs_repo: IUserPreferencesRepository = Provide[ApplicationContainer.user_preferences_repository]
+) -> IUserPreferencesRepository:
+    """Get user preferences repository instance."""
+    return prefs_repo

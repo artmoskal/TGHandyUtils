@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from typing import Optional, Dict, Any, List, Tuple, BinaryIO, Union
 from models.task import TaskCreate, TaskDB
 from models.user import UserCreate, UserDB
+from models.partner import Partner, PartnerCreate, PartnerUpdate, UserPreferences, UserPreferencesCreate, UserPreferencesUpdate
 
 
 class ITaskRepository(ABC):
@@ -192,4 +193,145 @@ class IImageProcessingService(ABC):
     @abstractmethod
     async def process_image_message(self, media: Union[List, Any], bot) -> Dict[str, Any]:
         """Process an image message (photo list or document) and return analyzed content."""
+        pass
+
+
+class IPartnerRepository(ABC):
+    """Abstract interface for partner repository."""
+    
+    @abstractmethod
+    def get_user_partners(self, user_id: int) -> List[Partner]:
+        """Get all partners for a user."""
+        pass
+    
+    @abstractmethod
+    def get_enabled_partners(self, user_id: int) -> List[Partner]:
+        """Get only enabled partners for a user."""
+        pass
+    
+    @abstractmethod
+    def get_self_partner(self, user_id: int) -> Optional[Partner]:
+        """Get the user's self partner."""
+        pass
+    
+    @abstractmethod
+    def get_partner_by_id(self, user_id: int, partner_id: str) -> Optional[Partner]:
+        """Get a specific partner by ID."""
+        pass
+    
+    @abstractmethod
+    def add_partner(self, user_id: int, partner: PartnerCreate) -> str:
+        """Add a new partner for a user. Returns the generated partner_id."""
+        pass
+    
+    @abstractmethod
+    def update_partner(self, user_id: int, partner_id: str, updates: PartnerUpdate) -> bool:
+        """Update a partner's information."""
+        pass
+    
+    @abstractmethod
+    def delete_partner(self, user_id: int, partner_id: str) -> bool:
+        """Delete a partner."""
+        pass
+    
+    @abstractmethod
+    def get_partners_by_ids(self, user_id: int, partner_ids: List[str]) -> List[Partner]:
+        """Get multiple partners by their IDs."""
+        pass
+
+
+class IUserPreferencesRepository(ABC):
+    """Abstract interface for user preferences repository."""
+    
+    @abstractmethod
+    def get_preferences(self, user_id: int) -> Optional[UserPreferences]:
+        """Get user preferences."""
+        pass
+    
+    @abstractmethod
+    def create_or_update_preferences(self, user_id: int, prefs: UserPreferencesCreate) -> bool:
+        """Create or update user preferences."""
+        pass
+    
+    @abstractmethod
+    def update_preferences(self, user_id: int, updates: UserPreferencesUpdate) -> bool:
+        """Update specific user preferences."""
+        pass
+
+
+class IPartnerService(ABC):
+    """Abstract interface for partner service."""
+    
+    @abstractmethod
+    def get_user_partners(self, user_id: int) -> List[Partner]:
+        """Get all partners for a user."""
+        pass
+    
+    @abstractmethod
+    def get_enabled_partners(self, user_id: int) -> List[Partner]:
+        """Get only enabled partners for a user."""
+        pass
+    
+    @abstractmethod
+    def get_default_partners(self, user_id: int) -> List[Partner]:
+        """Get the user's default partners for task creation."""
+        pass
+    
+    @abstractmethod
+    def add_partner(self, user_id: int, partner: PartnerCreate) -> str:
+        """Add a new partner for a user."""
+        pass
+    
+    @abstractmethod
+    def update_partner(self, user_id: int, partner_id: str, updates: PartnerUpdate) -> bool:
+        """Update a partner's information."""
+        pass
+    
+    @abstractmethod
+    def delete_partner(self, user_id: int, partner_id: str) -> bool:
+        """Delete a partner."""
+        pass
+    
+    @abstractmethod
+    def migrate_legacy_user(self, user_id: int, platform_type: str, credentials: str, platform_config: Optional[Dict[str, Any]] = None) -> str:
+        """Migrate a legacy user to the partner system."""
+        pass
+
+
+class IUserPreferencesService(ABC):
+    """Abstract interface for user preferences service."""
+    
+    @abstractmethod
+    def get_preferences(self, user_id: int) -> Optional[UserPreferences]:
+        """Get user preferences."""
+        pass
+    
+    @abstractmethod
+    def get_preferences_or_default(self, user_id: int) -> UserPreferences:
+        """Get user preferences or return defaults."""
+        pass
+    
+    @abstractmethod
+    def update_sharing_ui_enabled(self, user_id: int, enabled: bool) -> bool:
+        """Update the sharing UI visibility setting."""
+        pass
+    
+    @abstractmethod
+    def update_telegram_notifications(self, user_id: int, enabled: bool) -> bool:
+        """Update Telegram notifications setting."""
+        pass
+    
+    @abstractmethod
+    def update_default_partners(self, user_id: int, partner_ids: List[str]) -> bool:
+        """Update default partners for task creation."""
+        pass
+    
+    @abstractmethod
+    def is_sharing_ui_enabled(self, user_id: int) -> bool:
+        """Check if sharing UI should be shown for user."""
+        pass
+    
+    @abstractmethod
+    def get_telegram_notifications_enabled(self, user_id: int) -> bool:
+        """Check if Telegram notifications are enabled for user."""
         pass

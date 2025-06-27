@@ -15,3 +15,11 @@ class TaskPlatformState(StatesGroup):
 class DropUserDataState(StatesGroup):
     """States for user data deletion flow."""
     waiting_for_confirmation = State()
+
+class PartnerManagementState(StatesGroup):
+    """States for partner management flow."""
+    waiting_partner_name = State()
+    waiting_partner_credentials = State()
+    waiting_partner_settings = State()
+    waiting_partner_edit_name = State()
+    waiting_partner_edit_credentials = State()

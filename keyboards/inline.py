@@ -192,6 +192,116 @@ def get_quick_task_keyboard():
     ])
     return keyboard
 
+def get_partner_management_keyboard(partners=None):
+    """Get keyboard for partner management."""
+    buttons = []
+    
+    if partners:
+        # Show existing partners
+        for partner in partners:
+            status = "✅" if partner.enabled else "❌"
+            partner_text = f"{partner.name} ({partner.platform.title()}) {status}"
+            buttons.append([InlineKeyboardButton(
+                text=partner_text,
+                callback_data=f"edit_partner_{partner.id}"
+            )])
+    
+    # Add management buttons
+    buttons.extend([
+        [InlineKeyboardButton(text="➕ Add Partner", callback_data="add_partner")],
+        [InlineKeyboardButton(text="⚙️ Sharing Settings", callback_data="sharing_settings")],
+        [InlineKeyboardButton(text="« Back to Settings", callback_data="show_settings")]
+    ])
+    
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def get_partner_edit_keyboard(partner_id: str):
+    """Get keyboard for editing a partner."""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✏️ Edit Name", callback_data=f"edit_partner_name_{partner_id}"),
+            InlineKeyboardButton(text="🔑 Edit Credentials", callback_data=f"edit_partner_creds_{partner_id}")
+        ],
+        [
+            InlineKeyboardButton(text="⚙️ Edit Settings", callback_data=f"edit_partner_settings_{partner_id}"),
+            InlineKeyboardButton(text="🔄 Toggle Enable", callback_data=f"toggle_partner_{partner_id}")
+        ],
+        [
+            InlineKeyboardButton(text="🗑️ Delete Partner", callback_data=f"delete_partner_{partner_id}"),
+            InlineKeyboardButton(text="« Back", callback_data="partner_management")
+        ]
+    ])
+    return keyboard
+
+def get_add_partner_keyboard():
+    """Get keyboard for adding a new partner."""
+    from platforms import TaskPlatformFactory
+    
+    # Get available platforms
+    available_platforms = TaskPlatformFactory.get_registered_platforms()
+    
+    buttons = []
+    for i in range(0, len(available_platforms), 2):
+        row = []
+        for j in range(i, min(i + 2, len(available_platforms))):
+            platform = available_platforms[j]
+            row.append(InlineKeyboardButton(
+                text=platform.title(),
+                callback_data=f"new_partner_{platform}"
+            ))
+        buttons.append(row)
+    
+    # Add back button
+    buttons.append([
+        InlineKeyboardButton(text="« Back", callback_data="partner_management")
+    ])
+    
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def get_sharing_settings_keyboard(show_sharing_ui=False, default_partners=None):
+    """Get keyboard for sharing settings."""
+    sharing_status = "Enabled" if show_sharing_ui else "Disabled"
+    
+    buttons = [
+        [InlineKeyboardButton(
+            text=f"👥 Show Sharing UI: {sharing_status}",
+            callback_data="toggle_sharing_ui"
+        )]
+    ]
+    
+    if default_partners:
+        buttons.append([InlineKeyboardButton(
+            text="🎯 Change Default Partners",
+            callback_data="change_default_partners"
+        )])
+    
+    buttons.append([
+        InlineKeyboardButton(text="« Back", callback_data="partner_management")
+    ])
+    
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def get_default_partners_keyboard(partners=None, current_defaults=None):
+    """Get keyboard for selecting default partners."""
+    buttons = []
+    
+    if partners:
+        current_defaults = current_defaults or []
+        for partner in partners:
+            is_default = partner.id in current_defaults
+            status = "✅" if is_default else "❌"
+            buttons.append([InlineKeyboardButton(
+                text=f"{status} {partner.name} ({partner.platform.title()})",
+                callback_data=f"toggle_default_{partner.id}"
+            )])
+    
+    buttons.extend([
+        [InlineKeyboardButton(text="💾 Save Defaults", callback_data="save_defaults")],
+        [InlineKeyboardButton(text="« Back", callback_data="sharing_settings")]
+    ])
+    
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
 __all__ = [
     'get_transcription_keyboard',
     'get_platform_selection_keyboard',
@@ -201,5 +311,10 @@ __all__ = [
     'get_main_menu_keyboard',
     'get_task_action_keyboard',
     'get_task_list_keyboard',
-    'get_quick_task_keyboard'
+    'get_quick_task_keyboard',
+    'get_partner_management_keyboard',
+    'get_partner_edit_keyboard',
+    'get_add_partner_keyboard',
+    'get_sharing_settings_keyboard',
+    'get_default_partners_keyboard'
 ]

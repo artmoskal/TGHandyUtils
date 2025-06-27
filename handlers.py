@@ -12,7 +12,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram import Bot
 
 from bot import router
-from states.platform_states import TaskPlatformState, DropUserDataState
+from states.platform_states import TaskPlatformState, DropUserDataState, PartnerManagementState
 from core.initialization import services
 # Onboarding service via services.get_onboarding_service()
 from keyboards.inline import (
@@ -117,6 +117,7 @@ async def show_user_settings(message: Message, state: FSMContext):
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⚙️ Configure Platforms", callback_data="configure_platforms")],
             [InlineKeyboardButton(text="🔄 Change Platform", callback_data="change_platform")],
+            [InlineKeyboardButton(text="👥 Partner Management", callback_data="partner_management")],
             [InlineKeyboardButton(text=f"🔔 Notifications: {notification_status}", callback_data="toggle_notifications")],
             [InlineKeyboardButton(text="« Main Menu", callback_data="main_menu")]
         ])
@@ -610,7 +611,11 @@ async def process_thread(message: Message, thread_content: List[Tuple],
         # Create task model
         task_data = TaskCreate(**parsed_task_dict)
         
-        # Create task with screenshot if available
+        # Check if user has partner sharing enabled
+        if await should_show_partner_selection(owner_id, task_data, message, screenshot_data):
+            return  # Partner selection UI shown, will continue via callback
+        
+        # Create task with screenshot if available (default partners or legacy)
         success, task_url = await services.get_task_service().create_task(
             user_id=owner_id,
             chat_id=message.chat.id,
@@ -1027,6 +1032,7 @@ async def show_settings_callback(callback_query: CallbackQuery, state: FSMContex
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⚙️ Configure Platforms", callback_data="configure_platforms")],
             [InlineKeyboardButton(text="🔄 Change Platform", callback_data="change_platform")],
+            [InlineKeyboardButton(text="👥 Partner Management", callback_data="partner_management")],
             [InlineKeyboardButton(text=f"🔔 Notifications: {notification_status}", callback_data="toggle_notifications")],
             [InlineKeyboardButton(text="« Main Menu", callback_data="main_menu")]
         ])
@@ -1207,5 +1213,750 @@ async def change_tasks_page(callback_query: CallbackQuery, state: FSMContext):
     page = int(callback_query.data.replace("tasks_page_", ""))
     await show_user_tasks(callback_query.message, callback_query.from_user.id, edit=True, page=page)
     await callback_query.answer()
+
+# Partner Selection for Task Creation
+
+async def should_show_partner_selection(user_id: int, task_data, message: Message, screenshot_data: dict = None) -> bool:
+    """Check if we should show partner selection UI for task creation."""
+    try:
+        # Check if partner services are available
+        container = services.get_container()
+        if not hasattr(container, 'partner_service'):
+            return False  # Partner system not available, use legacy
+        
+        from core.container import get_partner_service, get_user_preferences_service
+        partner_service = get_partner_service()
+        prefs_service = get_user_preferences_service()
+        
+        # Check if user has sharing UI enabled
+        prefs = prefs_service.get_preferences_or_default(user_id)
+        if not prefs.show_sharing_ui:
+            return False  # User disabled sharing UI
+        
+        # Get user's partners
+        partners = partner_service.get_enabled_partners(user_id)
+        if len(partners) <= 1:
+            return False  # User has only one partner (or none), no need to select
+        
+        # Show partner selection UI
+        await show_partner_selection_for_task(user_id, task_data, message, partners, screenshot_data)
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error checking partner selection for user {user_id}: {e}")
+        return False  # Fall back to default behavior
+
+async def show_partner_selection_for_task(user_id: int, task_data, message: Message, partners: list, screenshot_data: dict = None):
+    """Show partner selection UI for task creation."""
+    try:
+        # Store task data in memory with a unique key
+        task_key = f"task_creation_{user_id}_{int(time.time())}"
+        
+        # Store in a simple global dict (you could use Redis or other storage)
+        if not hasattr(show_partner_selection_for_task, 'pending_tasks'):
+            show_partner_selection_for_task.pending_tasks = {}
+        
+        show_partner_selection_for_task.pending_tasks[task_key] = {
+            'task_data': task_data,
+            'message': message,
+            'screenshot_data': screenshot_data,
+            'user_id': user_id,
+            'timestamp': time.time()
+        }
+        
+        # Build partner selection keyboard
+        keyboard = get_task_sharing_keyboard(partners, task_key)
+        
+        # Format task preview
+        due_str = "not set"
+        if task_data.due_time:
+            try:
+                from dateutil import parser as date_parser
+                due_time = date_parser.isoparse(task_data.due_time)
+                user_info = services.get_task_service().get_user_platform_info(user_id)
+                location = user_info.get('location') if user_info else None
+                due_str = services.get_parsing_service().convert_utc_to_local_display(task_data.due_time, location)
+            except:
+                due_str = "not set"
+        
+        preview_text = (
+            f"📋 **Task Preview**\n\n"
+            f"📌 **{task_data.title}**\n"
+            f"⏰ **Due:** {due_str}\n"
+        )
+        
+        if task_data.description and task_data.description != task_data.title:
+            preview_text += f"📝 **Description:** {task_data.description}\n"
+        
+        preview_text += f"\n👥 **Select partners to share this task with:**"
+        
+        await message.reply(
+            preview_text,
+            reply_markup=keyboard,
+            parse_mode='Markdown'
+        )
+        
+    except Exception as e:
+        logger.error(f"Error showing partner selection for user {user_id}: {e}")
+        # Fall back to default task creation
+        success, task_url = await services.get_task_service().create_task(
+            user_id=user_id,
+            chat_id=message.chat.id,
+            message_id=message.message_id,
+            task_data=task_data,
+            screenshot_data=screenshot_data
+        )
+
+def get_task_sharing_keyboard(partners: list, task_key: str):
+    """Generate keyboard for task sharing partner selection."""
+    buttons = []
+    
+    # Add partner selection buttons (up to 2 per row)
+    for i in range(0, len(partners), 2):
+        row = []
+        for j in range(i, min(i + 2, len(partners))):
+            partner = partners[j]
+            button_text = f"✅ {partner.name} ({partner.platform.title()})"
+            row.append(InlineKeyboardButton(
+                text=button_text,
+                callback_data=f"select_partner_{task_key}_{partner.id}"
+            ))
+        buttons.append(row)
+    
+    # Add action buttons
+    buttons.extend([
+        [
+            InlineKeyboardButton(text="🎯 Select All", callback_data=f"select_all_{task_key}"),
+            InlineKeyboardButton(text="👤 Self Only", callback_data=f"select_self_{task_key}")
+        ],
+        [
+            InlineKeyboardButton(text="✅ Create Task", callback_data=f"create_task_{task_key}"),
+            InlineKeyboardButton(text="❌ Cancel", callback_data=f"cancel_task_{task_key}")
+        ]
+    ])
+    
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+# Task Sharing Callback Handlers
+
+@router.callback_query(lambda c: c.data.startswith("select_partner_"))
+async def toggle_partner_selection(callback_query: CallbackQuery, state: FSMContext):
+    """Toggle partner selection for task creation."""
+    try:
+        # Parse callback data
+        parts = callback_query.data.split("_", 3)
+        if len(parts) < 4:
+            await callback_query.answer("Invalid selection.")
+            return
+        
+        task_key = parts[2] + "_" + parts[3].split("_")[0] + "_" + parts[3].split("_")[1] 
+        partner_id = "_".join(parts[3].split("_")[2:])
+        
+        # Get pending task
+        if not hasattr(show_partner_selection_for_task, 'pending_tasks'):
+            await callback_query.answer("Task expired. Please try again.")
+            return
+        
+        pending_task = show_partner_selection_for_task.pending_tasks.get(task_key)
+        if not pending_task:
+            await callback_query.answer("Task expired. Please try again.")
+            return
+        
+        # Initialize selected partners if not exists
+        if 'selected_partners' not in pending_task:
+            pending_task['selected_partners'] = set()
+        
+        # Toggle partner selection
+        if partner_id in pending_task['selected_partners']:
+            pending_task['selected_partners'].remove(partner_id)
+        else:
+            pending_task['selected_partners'].add(partner_id)
+        
+        # Update keyboard to reflect selection
+        from core.container import get_partner_service
+        partner_service = get_partner_service()
+        user_id = pending_task['user_id']
+        partners = partner_service.get_enabled_partners(user_id)
+        
+        # Update button states
+        keyboard = get_updated_task_sharing_keyboard(partners, task_key, pending_task['selected_partners'])
+        
+        await callback_query.message.edit_reply_markup(reply_markup=keyboard)
+        await callback_query.answer(f"Partner selection updated.")
+        
+    except Exception as e:
+        logger.error(f"Error toggling partner selection: {e}")
+        await callback_query.answer("Error updating selection.")
+
+def get_updated_task_sharing_keyboard(partners: list, task_key: str, selected_partners: set):
+    """Generate updated keyboard showing current partner selections."""
+    buttons = []
+    
+    # Add partner selection buttons with current state
+    for i in range(0, len(partners), 2):
+        row = []
+        for j in range(i, min(i + 2, len(partners))):
+            partner = partners[j]
+            is_selected = partner.id in selected_partners
+            status = "✅" if is_selected else "❌"
+            button_text = f"{status} {partner.name} ({partner.platform.title()})"
+            row.append(InlineKeyboardButton(
+                text=button_text,
+                callback_data=f"select_partner_{task_key}_{partner.id}"
+            ))
+        buttons.append(row)
+    
+    # Add action buttons
+    buttons.extend([
+        [
+            InlineKeyboardButton(text="🎯 Select All", callback_data=f"select_all_{task_key}"),
+            InlineKeyboardButton(text="👤 Self Only", callback_data=f"select_self_{task_key}")
+        ],
+        [
+            InlineKeyboardButton(text="✅ Create Task", callback_data=f"create_task_{task_key}"),
+            InlineKeyboardButton(text="❌ Cancel", callback_data=f"cancel_task_{task_key}")
+        ]
+    ])
+    
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+@router.callback_query(lambda c: c.data.startswith("select_all_"))
+async def select_all_partners(callback_query: CallbackQuery, state: FSMContext):
+    """Select all partners for task creation."""
+    try:
+        task_key = callback_query.data.replace("select_all_", "")
+        
+        # Get pending task
+        if not hasattr(show_partner_selection_for_task, 'pending_tasks'):
+            await callback_query.answer("Task expired. Please try again.")
+            return
+        
+        pending_task = show_partner_selection_for_task.pending_tasks.get(task_key)
+        if not pending_task:
+            await callback_query.answer("Task expired. Please try again.")
+            return
+        
+        # Select all partners
+        from core.container import get_partner_service
+        partner_service = get_partner_service()
+        user_id = pending_task['user_id']
+        partners = partner_service.get_enabled_partners(user_id)
+        
+        pending_task['selected_partners'] = {partner.id for partner in partners}
+        
+        # Update keyboard
+        keyboard = get_updated_task_sharing_keyboard(partners, task_key, pending_task['selected_partners'])
+        await callback_query.message.edit_reply_markup(reply_markup=keyboard)
+        await callback_query.answer("All partners selected.")
+        
+    except Exception as e:
+        logger.error(f"Error selecting all partners: {e}")
+        await callback_query.answer("Error selecting all partners.")
+
+@router.callback_query(lambda c: c.data.startswith("select_self_"))
+async def select_self_only(callback_query: CallbackQuery, state: FSMContext):
+    """Select only self partner for task creation."""
+    try:
+        task_key = callback_query.data.replace("select_self_", "")
+        
+        # Get pending task
+        if not hasattr(show_partner_selection_for_task, 'pending_tasks'):
+            await callback_query.answer("Task expired. Please try again.")
+            return
+        
+        pending_task = show_partner_selection_for_task.pending_tasks.get(task_key)
+        if not pending_task:
+            await callback_query.answer("Task expired. Please try again.")
+            return
+        
+        # Select only self partner
+        from core.container import get_partner_service
+        partner_service = get_partner_service()
+        user_id = pending_task['user_id']
+        partners = partner_service.get_enabled_partners(user_id)
+        
+        # Find self partner
+        self_partner = None
+        for partner in partners:
+            if partner.is_self:
+                self_partner = partner
+                break
+        
+        if self_partner:
+            pending_task['selected_partners'] = {self_partner.id}
+        else:
+            pending_task['selected_partners'] = set()
+        
+        # Update keyboard
+        keyboard = get_updated_task_sharing_keyboard(partners, task_key, pending_task['selected_partners'])
+        await callback_query.message.edit_reply_markup(reply_markup=keyboard)
+        await callback_query.answer("Self-only selected.")
+        
+    except Exception as e:
+        logger.error(f"Error selecting self only: {e}")
+        await callback_query.answer("Error selecting self only.")
+
+@router.callback_query(lambda c: c.data.startswith("create_task_"))
+async def create_task_with_selected_partners(callback_query: CallbackQuery, state: FSMContext):
+    """Create task with selected partners."""
+    try:
+        task_key = callback_query.data.replace("create_task_", "")
+        
+        # Get pending task
+        if not hasattr(show_partner_selection_for_task, 'pending_tasks'):
+            await callback_query.answer("Task expired. Please try again.")
+            return
+        
+        pending_task = show_partner_selection_for_task.pending_tasks.get(task_key)
+        if not pending_task:
+            await callback_query.answer("Task expired. Please try again.")
+            return
+        
+        # Get selected partners (default to all if none selected)
+        selected_partner_ids = pending_task.get('selected_partners', set())
+        if not selected_partner_ids:
+            from core.container import get_partner_service
+            partner_service = get_partner_service()
+            partners = partner_service.get_enabled_partners(pending_task['user_id'])
+            selected_partner_ids = {partner.id for partner in partners}
+        
+        # Update message to show creation in progress
+        await callback_query.message.edit_text(
+            "⏳ Creating task with selected partners...",
+            parse_mode='Markdown'
+        )
+        
+        # TODO: Create task with specific partners
+        # For now, use default behavior
+        task_data = pending_task['task_data']
+        message = pending_task['message']
+        screenshot_data = pending_task['screenshot_data']
+        user_id = pending_task['user_id']
+        
+        success, task_url = await services.get_task_service().create_task(
+            user_id=user_id,
+            chat_id=message.chat.id,
+            message_id=message.message_id,
+            task_data=task_data,
+            screenshot_data=screenshot_data
+        )
+        
+        if success:
+            # Send success message
+            await send_task_creation_success(user_id, task_data, task_url, callback_query.message, selected_partner_ids)
+        else:
+            await callback_query.message.edit_text(
+                "❌ Failed to create task. Please try again.",
+                parse_mode='Markdown'
+            )
+        
+        # Clean up pending task
+        del show_partner_selection_for_task.pending_tasks[task_key]
+        
+    except Exception as e:
+        logger.error(f"Error creating task with selected partners: {e}")
+        await callback_query.answer("Error creating task.")
+
+@router.callback_query(lambda c: c.data.startswith("cancel_task_"))
+async def cancel_task_creation(callback_query: CallbackQuery, state: FSMContext):
+    """Cancel task creation."""
+    try:
+        task_key = callback_query.data.replace("cancel_task_", "")
+        
+        # Clean up pending task
+        if hasattr(show_partner_selection_for_task, 'pending_tasks'):
+            show_partner_selection_for_task.pending_tasks.pop(task_key, None)
+        
+        await callback_query.message.edit_text(
+            "❌ Task creation cancelled.",
+            parse_mode='Markdown'
+        )
+        await callback_query.answer("Task creation cancelled.")
+        
+    except Exception as e:
+        logger.error(f"Error cancelling task creation: {e}")
+        await callback_query.answer("Error cancelling task.")
+
+async def send_task_creation_success(user_id: int, task_data, task_url: str, message: Message, selected_partner_ids: set):
+    """Send task creation success message with partner info."""
+    try:
+        # Get partner names
+        from core.container import get_partner_service
+        partner_service = get_partner_service()
+        
+        partner_names = []
+        for partner_id in selected_partner_ids:
+            partner = partner_service.get_partner_by_id(user_id, partner_id)
+            if partner:
+                partner_names.append(f"{partner.name} ({partner.platform.title()})")
+        
+        # Format due time
+        due_str = "not set"
+        if task_data.due_time:
+            try:
+                user_info = services.get_task_service().get_user_platform_info(user_id)
+                location = user_info.get('location') if user_info else None
+                due_str = services.get_parsing_service().convert_utc_to_local_display(task_data.due_time, location)
+            except:
+                due_str = "not set"
+        
+        # Build success message
+        partners_text = ", ".join(partner_names) if partner_names else "Default partners"
+        success_message = (
+            f"✅ **Task Created for {partners_text}**\n\n"
+            f"📌 **{task_data.title}**\n"
+            f"⏰ **Due:** {due_str}"
+        )
+        
+        # Add task URLs
+        if task_url:
+            if '\n' in task_url:  # Multiple URLs
+                success_message += "\n\n**Task Links:**\n" + task_url
+            else:  # Single URL  
+                success_message += f"\n🔗 [Open Task]({task_url})"
+        
+        await message.edit_text(
+            success_message,
+            parse_mode='Markdown',
+            disable_web_page_preview=True
+        )
+        
+    except Exception as e:
+        logger.error(f"Error sending task success message: {e}")
+        await message.edit_text(
+            "✅ Task created successfully!",
+            parse_mode='Markdown'
+        )
+
+# Partner Management Handlers
+
+@router.callback_query(lambda c: c.data == "partner_management")
+async def show_partner_management(callback_query: CallbackQuery, state: FSMContext):
+    """Show partner management interface."""
+    await state.clear()
+    
+    user_id = callback_query.from_user.id
+    
+    try:
+        # Check if partner services are available
+        container = services.get_container()
+        if not hasattr(container, 'partner_service'):
+            await callback_query.message.edit_text(
+                "Partner management is not available yet. Please use the platform configuration for now.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="« Back to Settings", callback_data="show_settings")]
+                ]),
+                parse_mode='Markdown'
+            )
+            await callback_query.answer()
+            return
+        
+        # Get partner service
+        from core.container import get_partner_service, get_user_preferences_service
+        partner_service = get_partner_service()
+        prefs_service = get_user_preferences_service()
+        
+        # Get user's partners
+        partners = partner_service.get_user_partners(user_id)
+        
+        # Get keyboard with partners
+        from keyboards.inline import get_partner_management_keyboard
+        keyboard = get_partner_management_keyboard(partners)
+        
+        # Build message
+        if partners:
+            partner_list = "\n".join([
+                f"• {partner.name} ({partner.platform.title()}) {'✅' if partner.enabled else '❌'}"
+                for partner in partners
+            ])
+            message_text = f"👥 **Partner Management**\n\n**Current Partners:**\n{partner_list}\n\nUse the buttons below to manage your partners."
+        else:
+            message_text = "👥 **Partner Management**\n\nNo partners configured yet. Add a partner to start sharing tasks!"
+        
+        await callback_query.message.edit_text(
+            message_text,
+            reply_markup=keyboard,
+            parse_mode='Markdown'
+        )
+        
+    except Exception as e:
+        logger.error(f"Failed to show partner management for user {user_id}: {e}")
+        await callback_query.message.edit_text(
+            "Failed to load partner management. Please try again later.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="« Back to Settings", callback_data="show_settings")]
+            ])
+        )
+    
+    await callback_query.answer()
+
+@router.callback_query(lambda c: c.data == "add_partner")
+async def show_add_partner(callback_query: CallbackQuery, state: FSMContext):
+    """Show platform selection for adding a new partner."""
+    await state.clear()
+    
+    from keyboards.inline import get_add_partner_keyboard
+    keyboard = get_add_partner_keyboard()
+    
+    await callback_query.message.edit_text(
+        "➕ **Add New Partner**\n\nSelect the platform for your new partner:",
+        reply_markup=keyboard,
+        parse_mode='Markdown'
+    )
+    await callback_query.answer()
+
+@router.callback_query(lambda c: c.data.startswith("new_partner_"))
+async def start_new_partner_setup(callback_query: CallbackQuery, state: FSMContext):
+    """Start setup for a new partner."""
+    platform = callback_query.data.replace("new_partner_", "")
+    
+    # Store platform in state
+    await state.update_data(new_partner_platform=platform)
+    await state.set_state(PartnerManagementState.waiting_partner_name)
+    
+    await callback_query.message.edit_text(
+        f"➕ **Add {platform.title()} Partner**\n\n"
+        f"Please enter a name for this partner (e.g., 'Wife', 'John', 'Team Lead'):",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="« Back", callback_data="add_partner")]
+        ]),
+        parse_mode='Markdown'
+    )
+    await callback_query.answer()
+
+@router.callback_query(lambda c: c.data == "sharing_settings")
+async def show_sharing_settings(callback_query: CallbackQuery, state: FSMContext):
+    """Show sharing settings interface."""
+    await state.clear()
+    
+    user_id = callback_query.from_user.id
+    
+    try:
+        from core.container import get_user_preferences_service, get_partner_service
+        prefs_service = get_user_preferences_service()
+        partner_service = get_partner_service()
+        
+        # Get user preferences
+        prefs = prefs_service.get_preferences_or_default(user_id)
+        partners = partner_service.get_user_partners(user_id)
+        
+        from keyboards.inline import get_sharing_settings_keyboard
+        keyboard = get_sharing_settings_keyboard(prefs.show_sharing_ui, prefs.default_partners)
+        
+        # Build message
+        sharing_status = "Enabled" if prefs.show_sharing_ui else "Disabled"
+        default_partners_text = "None"
+        if prefs.default_partners:
+            partner_names = []
+            for partner_id in prefs.default_partners:
+                partner = partner_service.get_partner_by_id(user_id, partner_id)
+                if partner:
+                    partner_names.append(partner.name)
+            default_partners_text = ", ".join(partner_names) if partner_names else "None"
+        
+        message_text = (
+            f"⚙️ **Sharing Settings**\n\n"
+            f"**Show Sharing UI:** {sharing_status}\n"
+            f"**Default Partners:** {default_partners_text}\n\n"
+            f"The sharing UI allows you to choose which partners to share tasks with during creation."
+        )
+        
+        await callback_query.message.edit_text(
+            message_text,
+            reply_markup=keyboard,
+            parse_mode='Markdown'
+        )
+        
+    except Exception as e:
+        logger.error(f"Failed to show sharing settings for user {user_id}: {e}")
+        await callback_query.message.edit_text(
+            "Failed to load sharing settings. Please try again later.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="« Back", callback_data="partner_management")]
+            ])
+        )
+    
+    await callback_query.answer()
+
+@router.callback_query(lambda c: c.data == "toggle_sharing_ui")
+async def toggle_sharing_ui(callback_query: CallbackQuery, state: FSMContext):
+    """Toggle the sharing UI setting."""
+    user_id = callback_query.from_user.id
+    
+    try:
+        from core.container import get_user_preferences_service
+        prefs_service = get_user_preferences_service()
+        
+        # Get current setting and toggle it
+        prefs = prefs_service.get_preferences_or_default(user_id)
+        new_value = not prefs.show_sharing_ui
+        
+        # Update setting
+        prefs_service.update_sharing_ui_enabled(user_id, new_value)
+        
+        # Refresh the sharing settings view
+        await show_sharing_settings(callback_query, state)
+        
+    except Exception as e:
+        logger.error(f"Failed to toggle sharing UI for user {user_id}: {e}")
+        await callback_query.answer("Failed to update setting.", show_alert=True)
+
+# Partner Creation Message Handlers
+
+@router.message(PartnerManagementState.waiting_partner_name)
+async def handle_partner_name_input(message: Message, state: FSMContext):
+    """Handle partner name input."""
+    user_id = message.from_user.id
+    partner_name = message.text.strip()
+    
+    if not partner_name:
+        await message.reply("Please enter a valid name for your partner.")
+        return
+    
+    # Store name and ask for credentials
+    await state.update_data(new_partner_name=partner_name)
+    
+    # Get platform from state
+    data = await state.get_data()
+    platform = data.get('new_partner_platform', 'todoist')
+    
+    await state.set_state(PartnerManagementState.waiting_partner_credentials)
+    
+    if platform == 'todoist':
+        await message.reply(
+            f"Great! Now please enter the Todoist API token for **{partner_name}**.\n\n"
+            f"They can find their API token at: https://todoist.com/prefs/integrations",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="« Cancel", callback_data="add_partner")]
+            ])
+        )
+    elif platform == 'trello':
+        await message.reply(
+            f"Great! Now please enter the Trello credentials for **{partner_name}** in format:\n"
+            f"`api_key:token`\n\n"
+            f"They can get their credentials from: https://trello.com/app-key",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="« Cancel", callback_data="add_partner")]
+            ])
+        )
+    else:
+        await message.reply(
+            f"Great! Now please enter the {platform} credentials for **{partner_name}**:",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="« Cancel", callback_data="add_partner")]
+            ])
+        )
+
+@router.message(PartnerManagementState.waiting_partner_credentials)
+async def handle_partner_credentials_input(message: Message, state: FSMContext):
+    """Handle partner credentials input."""
+    user_id = message.from_user.id
+    credentials = message.text.strip()
+    
+    if not credentials:
+        await message.reply("Please enter valid credentials for your partner.")
+        return
+    
+    try:
+        # Get data from state
+        data = await state.get_data()
+        partner_name = data.get('new_partner_name')
+        platform = data.get('new_partner_platform')
+        
+        if not partner_name or not platform:
+            await message.reply("Something went wrong. Please start over.")
+            await state.clear()
+            return
+        
+        # Validate credentials
+        if not await _validate_partner_credentials(message, platform, credentials):
+            return
+        
+        # Handle platform-specific configuration
+        if platform == 'trello':
+            await _handle_trello_partner_setup(message, state, credentials, partner_name)
+        else:
+            await _create_partner_directly(message, state, user_id, partner_name, platform, credentials)
+            
+    except Exception as e:
+        logger.error(f"Failed to add partner for user {user_id}: {e}")
+        await _send_partner_error_message(message, state)
+
+async def _validate_partner_credentials(message: Message, platform: str, credentials: str) -> bool:
+    """Validate partner credentials by creating platform instance."""
+    from platforms import TaskPlatformFactory
+    platform_instance = TaskPlatformFactory.get_platform(platform, credentials)
+    if not platform_instance:
+        await message.reply(
+            f"❌ Invalid {platform} credentials. Please check and try again.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="« Cancel", callback_data="add_partner")]
+            ])
+        )
+        return False
+    return True
+
+async def _handle_trello_partner_setup(message: Message, state: FSMContext, credentials: str, partner_name: str):
+    """Handle Trello-specific partner setup with board selection."""
+    await state.update_data(new_partner_credentials=credentials)
+    await state.set_state(PartnerManagementState.waiting_partner_settings)
+    
+    try:
+        from platforms import TaskPlatformFactory
+        platform_instance = TaskPlatformFactory.get_platform('trello', credentials)
+        boards = platform_instance.get_boards()
+        if not boards:
+            await message.reply("❌ No boards found. Please check your Trello credentials.")
+            return
+        
+        from keyboards.inline import get_trello_board_selection_keyboard
+        keyboard = get_trello_board_selection_keyboard(boards)
+        
+        await message.reply(
+            f"✅ Credentials verified! Now select a board for **{partner_name}**:",
+            reply_markup=keyboard,
+            parse_mode='Markdown'
+        )
+    except Exception as e:
+        logger.error(f"Failed to get Trello boards: {e}")
+        await message.reply("❌ Failed to fetch boards. Please check your credentials.")
+
+async def _create_partner_directly(message: Message, state: FSMContext, user_id: int, partner_name: str, platform: str, credentials: str):
+    """Create partner directly for non-Trello platforms."""
+    from core.container import get_partner_service
+    from models.partner import PartnerCreate
+    
+    partner_service = get_partner_service()
+    new_partner = PartnerCreate(
+        name=partner_name,
+        platform=platform,
+        credentials=credentials,
+        is_self=False,
+        enabled=True
+    )
+    
+    partner_id = partner_service.add_partner(user_id, new_partner)
+    
+    await message.reply(
+        f"✅ **{partner_name}** has been added as a {platform.title()} partner!",
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="👥 Back to Partners", callback_data="partner_management")]
+        ])
+    )
+    await state.clear()
+
+async def _send_partner_error_message(message: Message, state: FSMContext):
+    """Send error message for partner creation failure."""
+    await message.reply(
+        "❌ Failed to add partner. Please try again later.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="👥 Back to Partners", callback_data="partner_management")]
+        ])
+    )
+    await state.clear()
 
 __all__ = ['handle_message']

@@ -14,6 +14,7 @@ Are you tired of manually creating tasks in Todoist after every chat with your f
 - 👥 **Multi-User**: Supports unlimited users with individual configurations (data properly isolated, no chaos!)
 - ⏰ **Smart Scheduling**: Understands natural language like "tomorrow at 3 PM"
 - 🏥 **Real-World Ready**: Handles appointment reminders, meeting scheduling, etc.
+- 🤝 **Partner Sharing**: Share tasks with family/colleagues across different platforms (e.g., your Todoist + partner's Trello)
 
 ## 🚀 How it Works
 
@@ -34,11 +35,18 @@ Are you tired of manually creating tasks in Todoist after every chat with your f
 3. Creates task combining caption text, extracted text, and image context
 4. Supports both compressed photos and uncompressed document attachments
 
+### **Partner Sharing (NEW!)**
+1. Set up multiple partners in Settings → Partner Management
+2. Add your partner's platform credentials (e.g., wife's Trello, colleague's Todoist)
+3. Enable sharing UI to choose partners when creating tasks
+4. Create tasks that appear on multiple platforms simultaneously
+
 ### **Smart Features**
 - **Timezone Conversion**: Automatically converts your local time to UTC for storage
 - **Natural Language**: Understands "tomorrow", "next Monday", "in 2 hours"
 - **Date Formats**: Handles "12/Jun", "June 12", "Dec 15" formats  
 - **Interactive Menus**: Browse tasks, quick actions, settings via inline keyboards
+- **Partner Management**: Add/edit/disable partners without affecting existing tasks
 
 ### **Calendar Integration** 
 Connect your tasks to calendars:

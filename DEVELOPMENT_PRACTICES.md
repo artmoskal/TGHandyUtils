@@ -128,6 +128,68 @@
 - **Abstract Interfaces**: Platform logic abstracted behind interfaces
 - **Configuration**: Environment-based, no hardcoded values
 
+### Dependency Injection Guidelines:
+
+#### 1. **Container Setup** (`core/container.py`):
+```python
+from dependency_injector import containers, providers
+from core.interfaces import ITaskService, IPartnerService
+
+class ApplicationContainer(containers.DeclarativeContainer):
+    # Configuration
+    config = providers.Singleton(Config)
+    
+    # Database
+    database_manager = providers.Singleton(DatabaseManager, ...)
+    
+    # Repositories
+    partner_repository = providers.Factory(PartnerRepository, db_manager=database_manager)
+    
+    # Services
+    partner_service = providers.Factory(PartnerService, partner_repo=partner_repository, ...)
+    task_service = providers.Factory(TaskService, partner_service=partner_service, ...)
+```
+
+#### 2. **Service Injection Patterns**:
+- **Constructor Injection**: Primary pattern for service dependencies
+- **Optional Dependencies**: Services can gracefully degrade without optional dependencies
+- **Interface-Based**: Always inject interfaces, not concrete implementations
+
+#### 3. **Service Access** (`core/container.py`):
+```python
+@inject
+def get_partner_service(
+    partner_service: IPartnerService = Provide[ApplicationContainer.partner_service]
+) -> IPartnerService:
+    return partner_service
+
+# Usage in handlers/services:
+from core.container import get_partner_service
+partner_service = get_partner_service()
+```
+
+#### 4. **Container Integration**:
+- **Global Container**: Single container instance (`container = ApplicationContainer()`)
+- **Wiring**: Container automatically wires dependencies
+- **Lazy Loading**: Services instantiated on first access
+- **Singleton vs Factory**: Use Singleton for stateless services, Factory for stateful
+
+#### 5. **Testing with DI**:
+```python
+# Override dependencies for testing
+container.partner_service.override(MockPartnerService())
+# Reset after test
+container.reset_override()
+```
+
+#### 6. **Best Practices**:
+- ✅ **Constructor Injection Only**: No property or method injection
+- ✅ **Interface Dependencies**: Depend on abstractions, not implementations
+- ✅ **Optional Dependencies**: Use `Optional[IService] = None` for optional services
+- ✅ **Graceful Degradation**: Services work even if optional dependencies unavailable
+- ✅ **No Service Locator**: Don't pass container around, use injection
+- ❌ **Avoid Circular Dependencies**: Service A shouldn't depend on service B if B depends on A
+
 ### Platform Extension:
 - **New Platform Addition**: Follow `platforms/README_PLATFORM_EXTENSION.md`
 - **No Code Modification**: Existing code unchanged when adding platforms
