@@ -61,36 +61,41 @@ class TaskService(ITaskService):
                 raise TaskCreationError("No platforms configured")
             
             logger.info(f"Creating task on configured platforms: {configured_platforms}")
+            logger.debug(f"Task data: {task_data.dict()}")
             
-            # Create tasks on all configured platforms
+            # Create ONE task in database, then sync to all platforms
+            # First, save task to local database with primary platform
+            primary_platform = configured_platforms[0]
+            logger.debug(f"Using {primary_platform} as primary platform for database storage")
+            task_db_id = self.task_repo.create(
+                user_id=user_id,
+                chat_id=chat_id,
+                message_id=message_id,
+                task_data=task_data,
+                platform_type=primary_platform
+            )
+            
+            if not task_db_id:
+                raise TaskCreationError("Failed to save task to local database")
+            
+            logger.info(f"Task saved locally with ID {task_db_id} for user {user_id}")
+            
+            # Now sync this ONE task to all configured platforms
             created_tasks = []
             task_urls = []
             
             for platform_type in configured_platforms:
                 try:
-                    # Save task to local database first
-                    task_db_id = self.task_repo.create(
-                        user_id=user_id,
-                        chat_id=chat_id,
-                        message_id=message_id,
-                        task_data=task_data,
-                        platform_type=platform_type
-                    )
-                    
-                    if not task_db_id:
-                        logger.error(f"Failed to save task to local database for {platform_type}")
-                        continue
-                    
-                    logger.info(f"Task saved locally with ID {task_db_id} for user {user_id} on {platform_type}")
-                    
                     # Create task on platform
                     platform_task_id, error_message = self._create_platform_task(
                         task_data, user_info, initiator_link, screenshot_data, platform_type
                     )
                     
                     if platform_task_id:
-                        # Update local task with platform ID
-                        self.task_repo.update_platform_id(task_db_id, platform_task_id, platform_type)
+                        # Update local task with platform ID (only for primary platform in DB)
+                        if platform_type == primary_platform:
+                            self.task_repo.update_platform_id(task_db_id, platform_task_id, platform_type)
+                        
                         logger.info(f"Task {task_db_id} created on {platform_type} with ID {platform_task_id}")
                         
                         # Generate task URL
@@ -100,7 +105,7 @@ class TaskService(ITaskService):
                         
                         created_tasks.append(platform_type)
                     else:
-                        logger.warning(f"Task {task_db_id} saved locally but failed to create on {platform_type}: {error_message}")
+                        logger.warning(f"Task {task_db_id} failed to create on {platform_type}: {error_message}")
                         
                 except Exception as e:
                     logger.error(f"Failed to create task on {platform_type}: {e}")
@@ -109,8 +114,16 @@ class TaskService(ITaskService):
                 # Return success with combined URLs
                 combined_urls = "\n".join(task_urls) if task_urls else None
                 logger.info(f"Successfully created task on platforms: {', '.join(created_tasks)}")
+                
+                # If only some platforms succeeded, add warning to URLs
+                if len(created_tasks) < len(configured_platforms):
+                    failed_platforms = [p for p in configured_platforms if p not in created_tasks]
+                    warning = f"\n\n⚠️ Failed to create on: {', '.join(failed_platforms)}"
+                    combined_urls = (combined_urls or "") + warning
+                
                 return True, combined_urls
             else:
+                logger.error(f"Failed to create task on all configured platforms: {configured_platforms}")
                 return False, None
                 
         except Exception as e:
@@ -235,10 +248,11 @@ class TaskService(ITaskService):
                         return None, "Incomplete Trello configuration"
             
             # Create task on platform
+            logger.debug(f"Attempting to create task on {platform_type} with data: {platform_task_data.dict()}")
             task_id = platform.create_task(platform_task_data.dict())
             
             if task_id:
-                logger.debug(f"Created task with ID: {task_id} on platform {platform_type}")
+                logger.info(f"Successfully created task with ID: {task_id} on platform {platform_type}")
                 
                 # Add screenshot attachment if provided
                 if screenshot_data:
@@ -257,7 +271,9 @@ class TaskService(ITaskService):
                 
                 return task_id, None
             else:
-                return None, f"Platform {platform_type} returned no task ID"
+                error_msg = f"Platform {platform_type} returned no task ID - likely authentication failure"
+                logger.error(error_msg)
+                return None, error_msg
                 
         except Exception as e:
             error_msg = f"Error creating task on {platform_type}: {e}"
@@ -408,5 +424,9 @@ class TaskService(ITaskService):
     def get_configured_platforms(self, telegram_user_id: int) -> list:
         """Get list of configured platforms for a user."""
         return self.user_repo.get_configured_platforms(telegram_user_id)
+    
+    def update_notification_preference(self, telegram_user_id: int, enabled: bool) -> bool:
+        """Update user's Telegram notification preference."""
+        return self.user_repo.update_notification_preference(telegram_user_id, enabled)
 
 # Remove global instance - use DI container instead

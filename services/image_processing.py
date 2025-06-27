@@ -1,8 +1,8 @@
 """Image processing service for screenshot analysis and text extraction."""
 
 import io
-from typing import Dict, Any
-from aiogram.types import PhotoSize
+from typing import Dict, Any, Union, List
+from aiogram.types import PhotoSize, Document
 
 from core.exceptions import TranscriptionError
 from core.logging import get_logger
@@ -17,11 +17,11 @@ class ImageProcessingService(IImageProcessingService):
     def __init__(self, openai_service: IOpenAIService):
         self.openai_service = openai_service
     
-    async def process_image_message(self, photo: list[PhotoSize], bot) -> Dict[str, Any]:
+    async def process_image_message(self, media: Union[List[PhotoSize], Document], bot) -> Dict[str, Any]:
         """Process an image message and return analyzed content.
         
         Args:
-            photo: List of PhotoSize objects from Telegram
+            media: List of PhotoSize objects (inline photos) or Document object (attachment)
             bot: Telegram bot instance
             
         Returns:
@@ -31,9 +31,20 @@ class ImageProcessingService(IImageProcessingService):
             TranscriptionError: If image processing fails
         """
         try:
-            largest_photo = max(photo, key=lambda p: p.file_size or 0)
+            # Handle both inline photos and document attachments
+            if isinstance(media, list):
+                # Inline photo (list of PhotoSize)
+                largest_photo = max(media, key=lambda p: p.file_size or 0)
+                file_id = largest_photo.file_id
+                file_name = f"screenshot_{file_id}.jpg"
+                logger.debug(f"Processing inline photo: {file_id}")
+            else:
+                # Document attachment
+                file_id = media.file_id
+                file_name = media.file_name or f"attachment_{file_id}.jpg"
+                logger.debug(f"Processing document attachment: {file_id}, name: {file_name}")
             
-            file_info = await bot.get_file(largest_photo.file_id)
+            file_info = await bot.get_file(file_id)
             image_data = io.BytesIO()
             await bot.download_file(file_info.file_path, image_data)
             
@@ -52,7 +63,7 @@ class ImageProcessingService(IImageProcessingService):
                 'raw_analysis': analysis_result,
                 'source_type': 'screenshot',
                 'image_data': image_bytes,
-                'file_name': f"screenshot_{largest_photo.file_id}.jpg"
+                'file_name': file_name
             }
             
         except Exception as e:

@@ -23,7 +23,9 @@ class TrelloPlatform(AbstractTaskPlatform):
         try:
             self.api_key, self.token = api_token.split(':')
         except ValueError:
-            logger.error("Invalid Trello API token format. Expected 'key:token'")
+            # Only log error for non-dummy tokens to avoid noise in logs
+            if api_token != "dummy":
+                logger.error("Invalid Trello API token format. Expected 'key:token'")
             self.api_key = ''
             self.token = ''
             

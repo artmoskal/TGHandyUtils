@@ -86,6 +86,14 @@ async def _send_reminder(task):
     Args:
         task: TaskDB instance
     """
+    # Check if user has notifications enabled
+    user_info = services.get_task_service().get_user_platform_info(task.user_id)
+    telegram_notifications = user_info.get('telegram_notifications', True) if user_info else True
+    
+    if not telegram_notifications:
+        logger.info(f"Skipping reminder for user {task.user_id} (notifications disabled): {task.task_title}")
+        return
+    
     # Escape special characters to prevent markdown parsing issues
     safe_title = html.escape(task.task_title)
     safe_description = html.escape(task.task_description)

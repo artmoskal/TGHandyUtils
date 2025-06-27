@@ -100,6 +100,8 @@ async def show_user_settings(message: Message, state: FSMContext):
         
         platform_type = user_info.get('platform_type', 'todoist')
         location = user_info.get('location', 'not set')
+        telegram_notifications = user_info.get('telegram_notifications', True)
+        notification_status = "Enabled" if telegram_notifications else "Disabled"
         
         # For Trello, show board and list settings
         platform_settings_info = ""
@@ -115,13 +117,15 @@ async def show_user_settings(message: Message, state: FSMContext):
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⚙️ Configure Platforms", callback_data="configure_platforms")],
             [InlineKeyboardButton(text="🔄 Change Platform", callback_data="change_platform")],
+            [InlineKeyboardButton(text=f"🔔 Notifications: {notification_status}", callback_data="toggle_notifications")],
             [InlineKeyboardButton(text="« Main Menu", callback_data="main_menu")]
         ])
         
         await message.reply(
             f"⚙️ **Your Settings:**\n\n"
             f"**Platform:** {platform_type.capitalize()}\n"
-            f"**Location:** {location}"
+            f"**Location:** {location}\n"
+            f"**Telegram Notifications:** {notification_status}"
             f"{platform_settings_info}\n\n"
             f"To change these settings, use the buttons below.",
             reply_markup=keyboard,
@@ -186,8 +190,20 @@ async def process_platform_selection(callback_query: CallbackQuery, state: FSMCo
 async def receive_platform_key(message: Message, state: FSMContext):
     """Handle platform API key input."""
     user_id = message.from_user.id
+    
+    # Basic validation to prevent processing normal messages as API keys
+    if not message.text or len(message.text.strip()) < 10:
+        await message.reply("❌ Invalid API key format. Please provide a valid API key or use /settings to cancel.")
+        return
+    
     api_key = message.text.strip()
     owner_name = message.from_user.full_name
+    
+    # Check for common task-like phrases that shouldn't be treated as API keys
+    task_indicators = ["remind me", "schedule", "todo", "task", "buy", "call", "meet", "tomorrow", "today"]
+    if any(indicator in api_key.lower() for indicator in task_indicators):
+        await message.reply("❌ This looks like a task, not an API key. Please provide your platform API key or use /settings to cancel.")
+        return
     
     try:
         # Get the selected platform from state
@@ -414,7 +430,7 @@ async def receive_location(message: Message, state: FSMContext):
 async def process_user_input_with_photo(text: str, user_id: int, message_obj: Message, state: FSMContext, bot: Bot) -> bool:
     """Process user input that includes a photo, with threading support."""
     try:
-        logger.debug(f"process_user_input_with_photo called with text: '{text}'")
+        logger.debug(f"Processing photo message for user {user_id} with caption: '{text}'")
         user_info = services.get_task_service().get_user_platform_info(user_id)
         
         if not user_info or not user_info.get('platform_token'):
@@ -427,11 +443,18 @@ async def process_user_input_with_photo(text: str, user_id: int, message_obj: Me
             await state.set_state(TaskPlatformState.selecting_platform)
             return False
 
-        # Process the screenshot first
-        processing_msg = await message_obj.answer("📸 Processing screenshot...")
+        # Process the image first (handle both inline photos and document attachments)
+        processing_msg = await message_obj.answer("📸 Processing image...")
         
         image_service = services.get_image_processing_service()
-        image_result = await image_service.process_image_message(message_obj.photo, bot)
+        if message_obj.photo:
+            image_result = await image_service.process_image_message(message_obj.photo, bot)
+        elif message_obj.document:
+            image_result = await image_service.process_image_message(message_obj.document, bot)
+        else:
+            await processing_msg.delete()
+            await message_obj.reply("❌ No image found in message.")
+            return False
         
         await processing_msg.delete()
         
@@ -501,6 +524,7 @@ async def process_user_input_with_photo(text: str, user_id: int, message_obj: Me
 async def process_user_input(text: str, user_id: int, message_obj: Message, state: FSMContext) -> bool:
     """Process user text input and create tasks."""
     try:
+        logger.debug(f"Processing text message for user {user_id}: '{text}'")
         user_info = services.get_task_service().get_user_platform_info(user_id)
         
         if not user_info or not user_info.get('platform_token'):
@@ -570,6 +594,7 @@ async def process_thread(message: Message, thread_content: List[Tuple],
         concatenated_content = "\n".join([f"{sender}: {text}" for sender, text in text_content])
         
         logger.debug(f"Processing thread with {len(thread_content)} items, screenshot_data: {bool(screenshot_data)}")
+        logger.debug(f"Concatenated content: '{concatenated_content}'")
         
         # Parse content into task
         parsed_task_dict = services.get_parsing_service().parse_content_to_task(
@@ -595,39 +620,50 @@ async def process_thread(message: Message, thread_content: List[Tuple],
         )
         
         if success:
-            # Get configured platforms to show in message
-            configured_platforms = services.get_task_service().get_configured_platforms(owner_id)
+            # Check if user wants Telegram notifications
+            user_info = services.get_task_service().get_user_platform_info(owner_id)
+            telegram_notifications = user_info.get('telegram_notifications', True) if user_info else True
+            logger.info(f"User {owner_id} notification preference: {telegram_notifications}")
             
-            # Format due time for display in local time
-            try:
-                user_info = services.get_task_service().get_user_platform_info(owner_id)
-                location = user_info.get('location') if user_info else None
-                due_str = services.get_parsing_service().convert_utc_to_local_display(task_data.due_time, location)
+            if telegram_notifications:
+                # Get configured platforms to show in message
+                configured_platforms = services.get_task_service().get_configured_platforms(owner_id)
                 
-                # Build success message
-                if len(configured_platforms) > 1:
-                    platform_names = ", ".join([p.capitalize() for p in configured_platforms])
-                    success_message = f"✅ **Task Created on {platform_names}**\n\n📌 **{task_data.title}**\n⏰ Due: {due_str}"
-                else:
-                    platform_name = configured_platforms[0].capitalize() if configured_platforms else "Platform"
-                    success_message = f"✅ **Task Created in {platform_name}**\n\n📌 **{task_data.title}**\n⏰ Due: {due_str}"
-                
-                # Add task URLs (might be multiple)
-                if task_url:
-                    if '\n' in task_url:  # Multiple URLs
-                        success_message += "\n\n**Task Links:**\n" + task_url
-                    else:  # Single URL
-                        success_message += f"\n🔗 [Open Task]({task_url})"
-                
-                await message.reply(success_message, parse_mode='Markdown')
-            except Exception as e:
-                logger.error(f"Error formatting success message: {e}")
-                success_message = f"✅ Task created: {task_data.title}"
-                if task_url:
-                    success_message += f"\n\n{task_url}"
-                await message.reply(success_message)
+                # Format due time for display in local time
+                try:
+                    location = user_info.get('location') if user_info else None
+                    due_str = services.get_parsing_service().convert_utc_to_local_display(task_data.due_time, location)
+                    
+                    # Build success message
+                    if len(configured_platforms) > 1:
+                        platform_names = ", ".join([p.capitalize() for p in configured_platforms])
+                        success_message = f"✅ **Task Created on {platform_names}**\n\n📌 **{task_data.title}**\n⏰ Due: {due_str}"
+                    else:
+                        platform_name = configured_platforms[0].capitalize() if configured_platforms else "Platform"
+                        success_message = f"✅ **Task Created in {platform_name}**\n\n📌 **{task_data.title}**\n⏰ Due: {due_str}"
+                    
+                    # Add task URLs (might be multiple)
+                    if task_url:
+                        if '\n' in task_url:  # Multiple URLs
+                            success_message += "\n\n**Task Links:**\n" + task_url
+                        else:  # Single URL
+                            success_message += f"\n🔗 [Open Task]({task_url})"
+                    
+                    await message.reply(success_message, parse_mode='Markdown', disable_web_page_preview=True)
+                except Exception as e:
+                    logger.error(f"Error formatting success message: {e}")
+                    success_message = f"✅ Task created: {task_data.title}"
+                    if task_url:
+                        success_message += f"\n\n{task_url}"
+                    await message.reply(success_message, disable_web_page_preview=True)
+            else:
+                # Silent mode - just log the task creation
+                logger.info(f"Task created silently for user {owner_id}: {task_data.title}")
         else:
-            await message.reply("Failed to create task on any platform. Please check your settings.")
+            # Get configured platforms for better error message
+            configured_platforms = services.get_task_service().get_configured_platforms(owner_id)
+            platform_names = ", ".join([p.capitalize() for p in configured_platforms]) if configured_platforms else "configured platforms"
+            await message.reply(f"❌ Failed to create task on {platform_names}. Please check your API credentials in settings.")
             
     except ParsingError as e:
         logger.error(f"Parsing error: {e}")
@@ -643,7 +679,7 @@ async def process_thread(message: Message, thread_content: List[Tuple],
 async def handle_message(message: Message, state: FSMContext, bot: Bot):
     """Main message handler."""
     try:
-        logger.debug(f"Handler entry - user_id: {message.from_user.id}, type: photo={bool(message.photo)}, voice={bool(message.voice)}, text={bool(message.text)}")
+        logger.debug(f"Processing message from user {message.from_user.id}: photo={bool(message.photo)}, document={bool(message.document)}, text={bool(message.text)}")
         
         if message.voice:
             await handle_voice_message(message, state, bot)
@@ -655,10 +691,10 @@ async def handle_message(message: Message, state: FSMContext, bot: Bot):
         if message.reply_to_message and message.reply_to_message.from_user.is_bot:
             return
 
-        # Handle both text and photos through unified threading system
+        # Handle images (both inline photos and document attachments)
         if message.photo:
-            caption_text = message.caption or message.text or ""
-            logger.debug(f"Processing photo with caption: '{caption_text}'")
+            caption_text = message.caption or ""
+            logger.debug(f"Processing inline photo with caption: '{caption_text}'")
             await process_user_input_with_photo(
                 caption_text, 
                 message.from_user.id, 
@@ -666,13 +702,25 @@ async def handle_message(message: Message, state: FSMContext, bot: Bot):
                 state,
                 bot
             )
-        else:
+        elif message.document and message.document.mime_type and message.document.mime_type.startswith('image/'):
+            caption_text = message.caption or ""
+            logger.debug(f"Processing document image attachment with caption: '{caption_text}'")
+            await process_user_input_with_photo(
+                caption_text, 
+                message.from_user.id, 
+                message, 
+                state,
+                bot
+            )
+        elif message.text:
             await process_user_input(
                 message.text, 
                 message.from_user.id, 
                 message, 
                 state
             )
+        else:
+            logger.warning(f"Unhandled message type from user {message.from_user.id}: document={message.document}, mime_type={message.document.mime_type if message.document else None}")
         
     except Exception as e:
         logger.error(f"Error in handle_message: {e}")
@@ -818,6 +866,9 @@ async def cancel_transcription(callback_query: CallbackQuery, state: FSMContext)
 @router.callback_query(lambda c: c.data == "main_menu")
 async def show_main_menu(callback_query: CallbackQuery, state: FSMContext):
     """Show main menu."""
+    # Clear any existing state to prevent contamination
+    await state.clear()
+    
     keyboard = get_main_menu_keyboard()
     await callback_query.message.edit_text(
         "🎯 **Main Menu**\n\nChoose what you'd like to do:",
@@ -841,6 +892,9 @@ async def change_platform(callback_query: CallbackQuery, state: FSMContext):
 @router.callback_query(lambda c: c.data == "configure_platforms")
 async def configure_platforms(callback_query: CallbackQuery, state: FSMContext):
     """Handle platform configuration request."""
+    # Clear any existing state to prevent contamination
+    await state.clear()
+    
     user_id = callback_query.from_user.id
     user_info = services.get_task_service().get_user_platform_info(user_id)
     
@@ -876,9 +930,67 @@ async def handle_platform_config(callback_query: CallbackQuery, state: FSMContex
     await state.update_data(platform_type=platform_type, config_mode="multi")
     await callback_query.answer()
 
+@router.callback_query(lambda c: c.data == "toggle_notifications")
+async def toggle_notifications(callback_query: CallbackQuery, state: FSMContext):
+    """Toggle Telegram notification preference."""
+    user_id = callback_query.from_user.id
+    
+    try:
+        user_info = services.get_task_service().get_user_platform_info(user_id)
+        current_setting = user_info.get('telegram_notifications', True) if user_info else True
+        new_setting = not current_setting
+        
+        success = services.get_task_service().update_notification_preference(user_id, new_setting)
+        
+        if success:
+            status = "enabled" if new_setting else "disabled"
+            await callback_query.answer(f"Telegram notifications {status}!")
+            
+            # Refresh settings display
+            user_info = services.get_task_service().get_user_platform_info(user_id)
+            if user_info:
+                platform_type = user_info.get('platform_type', 'todoist')
+                location = user_info.get('location', 'not set')
+                notification_status = "Enabled" if new_setting else "Disabled"
+                
+                platform_settings_info = ""
+                if platform_type == 'trello' and user_info.get('platform_settings'):
+                    settings = user_info['platform_settings']
+                    if isinstance(settings, dict):
+                        board_id = settings.get('board_id', 'not set')
+                        list_id = settings.get('list_id', 'not set')
+                        platform_settings_info = f"\nBoard ID: {board_id}\nList ID: {list_id}"
+                
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⚙️ Configure Platforms", callback_data="configure_platforms")],
+                    [InlineKeyboardButton(text="🔄 Change Platform", callback_data="change_platform")],
+                    [InlineKeyboardButton(text=f"🔔 Notifications: {notification_status}", callback_data="toggle_notifications")],
+                    [InlineKeyboardButton(text="« Main Menu", callback_data="main_menu")]
+                ])
+                
+                await callback_query.message.edit_text(
+                    f"⚙️ **Your Settings:**\n\n"
+                    f"**Platform:** {platform_type.capitalize()}\n"
+                    f"**Location:** {location}\n"
+                    f"**Telegram Notifications:** {notification_status}"
+                    f"{platform_settings_info}\n\n"
+                    f"To change these settings, use the buttons below.",
+                    reply_markup=keyboard,
+                    parse_mode='Markdown'
+                )
+        else:
+            await callback_query.answer("Failed to update notification setting.")
+            
+    except Exception as e:
+        logger.error(f"Error toggling notifications for user {user_id}: {e}")
+        await callback_query.answer("Error updating notification setting.")
+
 @router.callback_query(lambda c: c.data == "show_settings")
 async def show_settings_callback(callback_query: CallbackQuery, state: FSMContext):
     """Show user settings via callback."""
+    # Clear any existing state to prevent contamination
+    await state.clear()
+    
     user_id = callback_query.from_user.id
     
     try:
@@ -898,6 +1010,8 @@ async def show_settings_callback(callback_query: CallbackQuery, state: FSMContex
         
         platform_type = user_info.get('platform_type', 'todoist')
         location = user_info.get('location', 'not set')
+        telegram_notifications = user_info.get('telegram_notifications', True)
+        notification_status = "Enabled" if telegram_notifications else "Disabled"
         
         # For Trello, show board and list settings
         platform_settings_info = ""
@@ -911,14 +1025,17 @@ async def show_settings_callback(callback_query: CallbackQuery, state: FSMContex
                 platform_settings_info = "\nWarning: Your Trello settings appear to be corrupted. Use 'Change Platform' to reconfigure."
         
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⚙️ Configure Platforms", callback_data="configure_platforms")],
             [InlineKeyboardButton(text="🔄 Change Platform", callback_data="change_platform")],
+            [InlineKeyboardButton(text=f"🔔 Notifications: {notification_status}", callback_data="toggle_notifications")],
             [InlineKeyboardButton(text="« Main Menu", callback_data="main_menu")]
         ])
         
         await callback_query.message.edit_text(
             f"⚙️ **Your Settings:**\n\n"
             f"**Platform:** {platform_type.capitalize()}\n"
-            f"**Location:** {location}"
+            f"**Location:** {location}\n"
+            f"**Telegram Notifications:** {notification_status}"
             f"{platform_settings_info}\n\n"
             f"To change these settings, use the buttons below.",
             reply_markup=keyboard,

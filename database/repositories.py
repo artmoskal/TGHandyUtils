@@ -244,6 +244,40 @@ class UserRepository(BaseRepository, IUserRepository):
             logger.error(f"Invalid platform settings JSON for user {telegram_user_id}")
             return []
     
+    def update_notification_preference(self, telegram_user_id: int, enabled: bool) -> bool:
+        """Update user's Telegram notification preference."""
+        try:
+            user = self.get_by_telegram_id(telegram_user_id)
+            if not user:
+                return False
+            
+            # Get existing platform settings or create new
+            platform_settings = {}
+            if user.platform_settings:
+                try:
+                    platform_settings = json.loads(user.platform_settings)
+                except json.JSONDecodeError:
+                    logger.warning(f"Invalid platform settings JSON for user {telegram_user_id}, resetting")
+                    platform_settings = {}
+            
+            # Update notification preference
+            platform_settings['telegram_notifications'] = enabled
+            platform_settings_json = json.dumps(platform_settings)
+            
+            with self.db_manager.get_connection() as conn:
+                conn.execute('''
+                    UPDATE users 
+                    SET platform_settings = ?
+                    WHERE telegram_user_id = ?
+                ''', (platform_settings_json, telegram_user_id))
+                
+                logger.info(f"Updated notification preference for user {telegram_user_id}: {enabled}")
+                return True
+                
+        except sqlite3.Error as e:
+            logger.error(f"Failed to update notification preference: {e}")
+            raise DatabaseError(f"Failed to update notification preference: {e}")
+    
     def get_by_telegram_id(self, telegram_user_id: int) -> Optional[UserDB]:
         """Get user by Telegram user ID."""
         try:
@@ -284,7 +318,8 @@ class UserRepository(BaseRepository, IUserRepository):
                 'platform_type': user.platform_type,
                 'owner_name': user.owner_name,
                 'location': user.location,
-                'platform_settings': platform_settings
+                'platform_settings': platform_settings,
+                'telegram_notifications': platform_settings.get('telegram_notifications', True) if platform_settings else True
             }
         
         return None

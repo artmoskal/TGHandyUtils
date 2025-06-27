@@ -75,13 +75,32 @@
 
 ## Development Workflow
 
+### Docker Development Flow:
+**IMPORTANT**: The bot runs in Docker container, code changes require container rebuild!
+
+1. **Local Development**: Make changes to source files
+2. **Hot Copy (Debug Only)**: 
+   ```bash
+   # Quick copy for debugging (temporary, lost on restart)
+   docker cp handlers.py infra-bot-1:/app/handlers.py
+   docker exec infra-bot-1 pkill -f python  # Force restart
+   ```
+3. **Proper Rebuild** (Required for permanent changes):
+   ```bash
+   # Rebuild container with new code
+   docker-compose build bot
+   docker-compose up -d
+   ```
+4. **Verify Changes**: `docker logs infra-bot-1 --tail 20`
+
 ### Before Committing:
 1. **Run Tests**: `./test.sh` (unit and integration tests)
 2. **Code Review**: Self-review against checklist above
-3. **Container Testing**: Ensure container runs with changes
-4. **Log Level Check**: Appropriate logging levels used
-5. **Security Review**: No sensitive data exposed
-6. **Performance Check**: No obvious performance regressions
+3. **Container Rebuild**: `docker-compose build bot && docker-compose up -d`
+4. **Container Testing**: Verify changes work in Docker environment
+5. **Log Level Check**: Appropriate logging levels used
+6. **Security Review**: No sensitive data exposed
+7. **Performance Check**: No obvious performance regressions
 
 ### Commit Standards:
 - **Message Format**: Descriptive, action-oriented (add/fix/update/refactor)

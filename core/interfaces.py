@@ -1,7 +1,7 @@
 """Abstract interfaces for dependency injection."""
 
 from abc import ABC, abstractmethod
-from typing import Optional, Dict, Any, List, Tuple, BinaryIO
+from typing import Optional, Dict, Any, List, Tuple, BinaryIO, Union
 from models.task import TaskCreate, TaskDB
 from models.user import UserCreate, UserDB
 
@@ -190,6 +190,6 @@ class IImageProcessingService(ABC):
     """Abstract interface for image processing service."""
     
     @abstractmethod
-    async def process_image_message(self, photo, bot) -> Dict[str, Any]:
-        """Process an image message and return analyzed content."""
+    async def process_image_message(self, media: Union[List, Any], bot) -> Dict[str, Any]:
+        """Process an image message (photo list or document) and return analyzed content."""
         pass
