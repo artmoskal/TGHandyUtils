@@ -24,7 +24,7 @@ class TaskService(ITaskService):
     async def create_task(self, user_id: int, chat_id: int, message_id: int, 
                          task_data: TaskCreate, initiator_link: Optional[str] = None,
                          screenshot_data: Optional[Dict[str, Any]] = None) -> Tuple[bool, Optional[str]]:
-        """Create a task both locally and on the platform.
+        """Create a task both locally and on all configured platforms.
         
         Args:
             user_id: Telegram user ID
@@ -52,38 +52,65 @@ class TaskService(ITaskService):
             
             # Get user platform info
             user_info = self.user_repo.get_platform_info(user_id)
-            if not user_info or not user_info.get('platform_token'):
-                raise TaskCreationError("User platform not configured")
+            if not user_info:
+                raise TaskCreationError("User not found")
             
-            platform_type = user_info.get('platform_type', 'todoist')
+            # Get configured platforms
+            configured_platforms = self.user_repo.get_configured_platforms(user_id)
+            if not configured_platforms:
+                raise TaskCreationError("No platforms configured")
             
-            # Save task to local database first
-            task_db_id = self.task_repo.create(
-                user_id=user_id,
-                chat_id=chat_id,
-                message_id=message_id,
-                task_data=task_data,
-                platform_type=platform_type
-            )
+            logger.info(f"Creating task on configured platforms: {configured_platforms}")
             
-            if not task_db_id:
-                raise TaskCreationError("Failed to save task to local database")
+            # Create tasks on all configured platforms
+            created_tasks = []
+            task_urls = []
             
-            logger.info(f"Task saved locally with ID {task_db_id} for user {user_id}")
+            for platform_type in configured_platforms:
+                try:
+                    # Save task to local database first
+                    task_db_id = self.task_repo.create(
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        task_data=task_data,
+                        platform_type=platform_type
+                    )
+                    
+                    if not task_db_id:
+                        logger.error(f"Failed to save task to local database for {platform_type}")
+                        continue
+                    
+                    logger.info(f"Task saved locally with ID {task_db_id} for user {user_id} on {platform_type}")
+                    
+                    # Create task on platform
+                    platform_task_id, error_message = self._create_platform_task(
+                        task_data, user_info, initiator_link, screenshot_data, platform_type
+                    )
+                    
+                    if platform_task_id:
+                        # Update local task with platform ID
+                        self.task_repo.update_platform_id(task_db_id, platform_task_id, platform_type)
+                        logger.info(f"Task {task_db_id} created on {platform_type} with ID {platform_task_id}")
+                        
+                        # Generate task URL
+                        task_url = self._generate_task_url(platform_task_id, user_info, platform_type)
+                        if task_url:
+                            task_urls.append(f"{platform_type.title()}: {task_url}")
+                        
+                        created_tasks.append(platform_type)
+                    else:
+                        logger.warning(f"Task {task_db_id} saved locally but failed to create on {platform_type}: {error_message}")
+                        
+                except Exception as e:
+                    logger.error(f"Failed to create task on {platform_type}: {e}")
             
-            # Create task on platform
-            platform_task_id, error_message = self._create_platform_task(task_data, user_info, initiator_link, screenshot_data)
-            
-            if platform_task_id:
-                # Update local task with platform ID
-                self.task_repo.update_platform_id(task_db_id, platform_task_id, platform_type)
-                logger.info(f"Task {task_db_id} created on {platform_type} with ID {platform_task_id}")
-                
-                # Generate task URL
-                task_url = self._generate_task_url(platform_task_id, user_info)
-                return True, task_url
+            if created_tasks:
+                # Return success with combined URLs
+                combined_urls = "\n".join(task_urls) if task_urls else None
+                logger.info(f"Successfully created task on platforms: {', '.join(created_tasks)}")
+                return True, combined_urls
             else:
-                logger.warning(f"Task {task_db_id} saved locally but failed to create on {platform_type}: {error_message}")
                 return False, None
                 
         except Exception as e:
@@ -126,24 +153,54 @@ class TaskService(ITaskService):
     
     def _create_platform_task(self, task_data: TaskCreate, user_info: Dict[str, Any], 
                               initiator_link: Optional[str] = None, 
-                              screenshot_data: Optional[Dict[str, Any]] = None) -> Tuple[Optional[str], Optional[str]]:
-        """Create task on the user's platform.
+                              screenshot_data: Optional[Dict[str, Any]] = None,
+                              platform_type: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
+        """Create task on the specified platform.
         
         Args:
             task_data: Task creation data
             user_info: User platform information
             initiator_link: Optional link to original message
             screenshot_data: Optional screenshot data for attachment
+            platform_type: Specific platform to create task on
             
         Returns:
             Tuple of (task_id, error_message)
         """
         try:
-            platform_type = user_info.get('platform_type', 'todoist')
-            platform_token = user_info.get('platform_token')
+            if not platform_type:
+                platform_type = user_info.get('platform_type', 'todoist')
+            
+            # Get platform token from settings
+            platform_token = None
+            if user_info.get('platform_settings'):
+                settings = user_info['platform_settings']
+                if isinstance(settings, str):
+                    try:
+                        settings = json.loads(settings)
+                    except json.JSONDecodeError:
+                        return None, f"Invalid platform settings format"
+                
+                # Use platform abstraction to get token
+                platform_class = TaskPlatformFactory._get_registry().get(platform_type)
+                if platform_class:
+                    try:
+                        # Create temporary instance to get token
+                        temp_platform = platform_class("dummy")
+                        platform_token = temp_platform.get_token_from_settings(settings)
+                    except:
+                        # Fallback to generic pattern
+                        platform_token = settings.get(f'{platform_type}_token')
+                else:
+                    # Fallback for unregistered platforms
+                    platform_token = settings.get(f'{platform_type}_token')
+            
+            # Fallback to legacy token
+            if not platform_token:
+                platform_token = user_info.get('platform_token')
             
             if not platform_token:
-                return None, "Platform token not found"
+                return None, f"No {platform_type} token found"
             
             # Get platform instance
             platform = TaskPlatformFactory.get_platform(platform_type, platform_token)
@@ -169,10 +226,12 @@ class TaskService(ITaskService):
                 
                 # Add settings to task data
                 if platform_type == 'trello':
-                    platform_task_data.board_id = settings.get('board_id')
-                    platform_task_data.list_id = settings.get('list_id')
+                    # Try both naming conventions (for backward compatibility)
+                    platform_task_data.board_id = settings.get('trello_board_id') or settings.get('board_id')
+                    platform_task_data.list_id = settings.get('trello_list_id') or settings.get('list_id')
                     
                     if not platform_task_data.board_id or not platform_task_data.list_id:
+                        logger.error(f"Incomplete Trello configuration. Settings: {settings}")
                         return None, "Incomplete Trello configuration"
             
             # Create task on platform
@@ -205,19 +264,48 @@ class TaskService(ITaskService):
             logger.error(error_msg)
             return None, error_msg
     
-    def _generate_task_url(self, task_id: str, user_info: Dict[str, Any]) -> Optional[str]:
+    def _generate_task_url(self, task_id: str, user_info: Dict[str, Any], platform_type: Optional[str] = None) -> Optional[str]:
         """Generate a direct URL to the created task.
         
         Args:
             task_id: Platform task ID
             user_info: User platform information
+            platform_type: Specific platform type
             
         Returns:
             Direct URL to the task or None if generation fails
         """
         try:
-            platform_type = user_info.get('platform_type', 'todoist')
-            platform_token = user_info.get('platform_token')
+            if not platform_type:
+                platform_type = user_info.get('platform_type', 'todoist')
+            
+            # Get platform token from settings
+            platform_token = None
+            if user_info.get('platform_settings'):
+                settings = user_info['platform_settings']
+                if isinstance(settings, str):
+                    try:
+                        settings = json.loads(settings)
+                    except json.JSONDecodeError:
+                        return None
+                
+                # Use platform abstraction to get token
+                platform_class = TaskPlatformFactory._get_registry().get(platform_type)
+                if platform_class:
+                    try:
+                        # Create temporary instance to get token
+                        temp_platform = platform_class("dummy")
+                        platform_token = temp_platform.get_token_from_settings(settings)
+                    except:
+                        # Fallback to generic pattern
+                        platform_token = settings.get(f'{platform_type}_token')
+                else:
+                    # Fallback for unregistered platforms
+                    platform_token = settings.get(f'{platform_type}_token')
+            
+            # Fallback to legacy token
+            if not platform_token:
+                platform_token = user_info.get('platform_token')
             
             if not platform_token:
                 return None
@@ -312,5 +400,13 @@ class TaskService(ITaskService):
             True if successful
         """
         return self.user_repo.delete(telegram_user_id)
+    
+    def update_platform_config(self, telegram_user_id: int, platform_type: str, token: str, additional_data: dict = None) -> bool:
+        """Update platform configuration for multi-platform support."""
+        return self.user_repo.update_platform_config(telegram_user_id, platform_type, token, additional_data)
+    
+    def get_configured_platforms(self, telegram_user_id: int) -> list:
+        """Get list of configured platforms for a user."""
+        return self.user_repo.get_configured_platforms(telegram_user_id)
 
 # Remove global instance - use DI container instead

@@ -1,12 +1,13 @@
 import requests
 import logging
-from platforms.base import AbstractTaskPlatform
+from platforms.base import AbstractTaskPlatform, register_platform
 import urllib.parse
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict, Any
 
 logger = logging.getLogger(__name__)
 
+@register_platform('trello')
 class TrelloPlatform(AbstractTaskPlatform):
     """Implementation of the task platform interface for Trello."""
     
@@ -267,3 +268,26 @@ class TrelloPlatform(AbstractTaskPlatform):
             Direct URL to the card
         """
         return f"https://trello.com/c/{task_id}"
+    
+    def get_token_from_settings(self, platform_settings: Dict[str, Any]) -> Optional[str]:
+        """Extract Trello token from settings."""
+        trello_key = platform_settings.get('trello_key')
+        trello_token = platform_settings.get('trello_token')
+        if trello_key and trello_token:
+            return f"{trello_key}:{trello_token}"
+        return None
+    
+    def is_configured(self, platform_settings: Dict[str, Any]) -> bool:
+        """Check if Trello is configured."""
+        return bool(platform_settings.get('trello_key') and 
+                   platform_settings.get('trello_token') and
+                   platform_settings.get('trello_board_id') and
+                   platform_settings.get('trello_list_id'))
+    
+    @classmethod
+    def is_configured_static(cls, platform_settings: Dict[str, Any]) -> bool:
+        """Check if Trello is configured without instantiation."""
+        return bool(platform_settings.get('trello_key') and 
+                   platform_settings.get('trello_token') and
+                   platform_settings.get('trello_board_id') and
+                   platform_settings.get('trello_list_id'))

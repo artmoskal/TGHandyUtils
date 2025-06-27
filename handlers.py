@@ -18,6 +18,7 @@ from core.initialization import services
 from keyboards.inline import (
     get_transcription_keyboard, 
     get_platform_selection_keyboard,
+    get_platform_config_keyboard,
     get_trello_board_selection_keyboard,
     get_trello_list_selection_keyboard,
     get_main_menu_keyboard,
@@ -112,6 +113,7 @@ async def show_user_settings(message: Message, state: FSMContext):
                 platform_settings_info = "\nWarning: Your Trello settings appear to be corrupted. Use /set_platform to reconfigure."
         
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⚙️ Configure Platforms", callback_data="configure_platforms")],
             [InlineKeyboardButton(text="🔄 Change Platform", callback_data="change_platform")],
             [InlineKeyboardButton(text="« Main Menu", callback_data="main_menu")]
         ])
@@ -221,20 +223,43 @@ async def receive_platform_key(message: Message, state: FSMContext):
                 await message.reply("Error validating Trello credentials. Please check and try again.")
                 return
         
-        # For other platforms (Todoist), save directly
-        services.get_task_service().save_user_platform(user_id, api_key, platform_type, owner_name)
-        await message.reply(f"Your {platform_type.capitalize()} account has been linked successfully, {owner_name}!")
+        # Check if this is multi-platform configuration
+        config_mode = state_data.get('config_mode')
         
-        # Check if location is needed
-        user_info = services.get_task_service().get_user_platform_info(user_id)
-        if user_info and not user_info.get('location'):
-            location_help = services.get_onboarding_service().get_location_help_text()
-            await message.reply(location_help, parse_mode='Markdown')
-            await state.set_state(TaskPlatformState.waiting_for_location)
-        else:
+        if config_mode == 'multi':
+            # Multi-platform configuration: update platform config
+            services.get_task_service().update_platform_config(user_id, platform_type, api_key)
+            await message.reply(f"✅ {platform_type.capitalize()} has been configured successfully!")
+            
+            # Return to platform configuration menu
+            user_info = services.get_task_service().get_user_platform_info(user_id)
+            keyboard = get_platform_config_keyboard(user_info)
+            
+            await message.reply(
+                "⚙️ **Platform Configuration**\n\n"
+                "Configure your task management platforms:\n"
+                "✅ = Configured\n"
+                "❌ = Not configured\n\n"
+                "You can configure multiple platforms to create tasks on all of them simultaneously.",
+                reply_markup=keyboard,
+                parse_mode='Markdown'
+            )
             await state.clear()
-            # Send completion message
-            await services.get_onboarding_service().send_progress_update(message, user_id)
+        else:
+            # Single platform setup (legacy flow)
+            services.get_task_service().save_user_platform(user_id, api_key, platform_type, owner_name)
+            await message.reply(f"Your {platform_type.capitalize()} account has been linked successfully, {owner_name}!")
+            
+            # Check if location is needed
+            user_info = services.get_task_service().get_user_platform_info(user_id)
+            if user_info and not user_info.get('location'):
+                location_help = services.get_onboarding_service().get_location_help_text()
+                await message.reply(location_help, parse_mode='Markdown')
+                await state.set_state(TaskPlatformState.waiting_for_location)
+            else:
+                await state.clear()
+                # Send completion message
+                await services.get_onboarding_service().send_progress_update(message, user_id)
             
     except Exception as e:
         logger.error(f"Failed to save platform key for user {user_id}: {e}")
@@ -282,19 +307,58 @@ async def process_list_selection(callback_query: CallbackQuery, state: FSMContex
         api_key = state_data.get('api_key')
         board_id = state_data.get('board_id')
         
-        # Create platform settings
-        platform_settings = {
-            'board_id': board_id,
-            'list_id': list_id
-        }
+        # Check if this is multi-platform configuration
+        config_mode = state_data.get('config_mode')
         
-        # Save all Trello information
-        services.get_task_service().save_user_platform(
-            user_id, api_key, 'trello', owner_name, 
-            platform_settings=platform_settings
-        )
-        
-        await callback_query.message.edit_text(f"Your Trello account has been linked successfully, {owner_name}!")
+        if config_mode == 'multi':
+            # Multi-platform configuration: update platform config with Trello settings
+            try:
+                key_parts = api_key.split(':')
+                if len(key_parts) != 2:
+                    await callback_query.message.edit_text("❌ Invalid Trello credentials format. Expected 'key:token'.")
+                    return
+                
+                additional_data = {
+                    'key': key_parts[0],
+                    'board_id': board_id,
+                    'list_id': list_id
+                }
+                trello_token = key_parts[1]
+                services.get_task_service().update_platform_config(user_id, 'trello', trello_token, additional_data)
+            except Exception as e:
+                logger.error(f"Error processing Trello configuration: {e}")
+                await callback_query.message.edit_text("❌ Error processing Trello configuration.")
+                return
+            
+            await callback_query.message.edit_text("✅ Trello has been configured successfully!")
+            
+            # Return to platform configuration menu
+            user_info = services.get_task_service().get_user_platform_info(user_id)
+            keyboard = get_platform_config_keyboard(user_info)
+            
+            await callback_query.message.reply(
+                "⚙️ **Platform Configuration**\n\n"
+                "Configure your task management platforms:\n"
+                "✅ = Configured\n"
+                "❌ = Not configured\n\n"
+                "You can configure multiple platforms to create tasks on all of them simultaneously.",
+                reply_markup=keyboard,
+                parse_mode='Markdown'
+            )
+            await state.clear()
+        else:
+            # Single platform setup (legacy flow)
+            platform_settings = {
+                'board_id': board_id,
+                'list_id': list_id
+            }
+            
+            services.get_task_service().save_user_platform(
+                user_id, api_key, 'trello', owner_name, 
+                platform_settings=platform_settings
+            )
+            
+            await callback_query.message.edit_text(f"Your Trello account has been linked successfully, {owner_name}!")
         
         # Ask for location if not set
         user_info = services.get_task_service().get_user_platform_info(user_id)
@@ -531,8 +595,8 @@ async def process_thread(message: Message, thread_content: List[Tuple],
         )
         
         if success:
-            user_info = services.get_task_service().get_user_platform_info(owner_id)
-            platform_name = user_info.get('platform_type', 'platform').capitalize()
+            # Get configured platforms to show in message
+            configured_platforms = services.get_task_service().get_configured_platforms(owner_id)
             
             # Format due time for display in local time
             try:
@@ -540,19 +604,30 @@ async def process_thread(message: Message, thread_content: List[Tuple],
                 location = user_info.get('location') if user_info else None
                 due_str = services.get_parsing_service().convert_utc_to_local_display(task_data.due_time, location)
                 
-                # Build success message with optional task URL
-                success_message = f"✅ **Task Created in {platform_name}**\n\n📌 **{task_data.title}**\n⏰ Due: {due_str}"
+                # Build success message
+                if len(configured_platforms) > 1:
+                    platform_names = ", ".join([p.capitalize() for p in configured_platforms])
+                    success_message = f"✅ **Task Created on {platform_names}**\n\n📌 **{task_data.title}**\n⏰ Due: {due_str}"
+                else:
+                    platform_name = configured_platforms[0].capitalize() if configured_platforms else "Platform"
+                    success_message = f"✅ **Task Created in {platform_name}**\n\n📌 **{task_data.title}**\n⏰ Due: {due_str}"
+                
+                # Add task URLs (might be multiple)
                 if task_url:
-                    success_message += f"\n🔗 [Open Task]({task_url})"
+                    if '\n' in task_url:  # Multiple URLs
+                        success_message += "\n\n**Task Links:**\n" + task_url
+                    else:  # Single URL
+                        success_message += f"\n🔗 [Open Task]({task_url})"
                 
                 await message.reply(success_message, parse_mode='Markdown')
-            except:
-                success_message = f"✅ Task created in {platform_name}: {task_data.title}"
+            except Exception as e:
+                logger.error(f"Error formatting success message: {e}")
+                success_message = f"✅ Task created: {task_data.title}"
                 if task_url:
-                    success_message += f"\n🔗 {task_url}"
+                    success_message += f"\n\n{task_url}"
                 await message.reply(success_message)
         else:
-            await message.reply("Task saved locally but failed to create on your platform. Please check your settings.")
+            await message.reply("Failed to create task on any platform. Please check your settings.")
             
     except ParsingError as e:
         logger.error(f"Parsing error: {e}")
@@ -761,6 +836,44 @@ async def change_platform(callback_query: CallbackQuery, state: FSMContext):
         parse_mode='Markdown'
     )
     await state.set_state(TaskPlatformState.selecting_platform)
+    await callback_query.answer()
+
+@router.callback_query(lambda c: c.data == "configure_platforms")
+async def configure_platforms(callback_query: CallbackQuery, state: FSMContext):
+    """Handle platform configuration request."""
+    user_id = callback_query.from_user.id
+    user_info = services.get_task_service().get_user_platform_info(user_id)
+    
+    keyboard = get_platform_config_keyboard(user_info)
+    
+    await callback_query.message.edit_text(
+        "⚙️ **Platform Configuration**\n\n"
+        "Configure your task management platforms:\n"
+        "✅ = Configured\n"
+        "❌ = Not configured\n\n"
+        "You can configure multiple platforms to create tasks on all of them simultaneously.",
+        reply_markup=keyboard,
+        parse_mode='Markdown'
+    )
+    await callback_query.answer()
+
+@router.callback_query(lambda c: c.data.startswith("config_"))
+async def handle_platform_config(callback_query: CallbackQuery, state: FSMContext):
+    """Handle individual platform configuration."""
+    platform_type = callback_query.data.replace("config_", "")
+    
+    help_text = services.get_onboarding_service().get_platform_help_text(platform_type)
+    
+    await callback_query.message.edit_text(
+        help_text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="« Back to Platform Config", callback_data="configure_platforms")]
+        ]),
+        parse_mode='Markdown'
+    )
+    
+    await state.set_state(TaskPlatformState.waiting_for_api_key)
+    await state.update_data(platform_type=platform_type, config_mode="multi")
     await callback_query.answer()
 
 @router.callback_query(lambda c: c.data == "show_settings")

@@ -20,6 +20,50 @@ def get_platform_selection_keyboard():
     ])
     return keyboard
 
+def get_platform_config_keyboard(user_info=None):
+    """Get keyboard for configuring platforms with status indicators."""
+    from platforms import TaskPlatformFactory
+    
+    # Get all registered platforms
+    available_platforms = TaskPlatformFactory.get_registered_platforms()
+    
+    # Check configuration status for each platform using platform abstractions
+    platform_statuses = {}
+    if user_info and user_info.get('platform_settings'):
+        platform_settings = user_info.get('platform_settings', {})
+        
+        for platform_type in available_platforms:
+            try:
+                # Check configuration without instantiation
+                is_configured = TaskPlatformFactory.is_platform_configured(platform_type, platform_settings)
+                platform_statuses[platform_type] = "✅" if is_configured else "❌"
+            except Exception:
+                # If check fails, mark as unconfigured
+                platform_statuses[platform_type] = "❌"
+    else:
+        # All platforms unconfigured
+        platform_statuses = {p: "❌" for p in available_platforms}
+    
+    # Build keyboard buttons dynamically
+    buttons = []
+    for i in range(0, len(available_platforms), 2):
+        row = []
+        for j in range(i, min(i + 2, len(available_platforms))):
+            platform = available_platforms[j]
+            status = platform_statuses.get(platform, "❌")
+            row.append(InlineKeyboardButton(
+                text=f"{platform.title()} {status}", 
+                callback_data=f"config_{platform}"
+            ))
+        buttons.append(row)
+    
+    # Add back button
+    buttons.append([
+        InlineKeyboardButton(text="« Back to Settings", callback_data="show_settings")
+    ])
+    
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
 def get_trello_board_selection_keyboard(boards):
     """Get a keyboard for selecting a Trello board."""
     buttons = []
@@ -151,6 +195,7 @@ def get_quick_task_keyboard():
 __all__ = [
     'get_transcription_keyboard',
     'get_platform_selection_keyboard',
+    'get_platform_config_keyboard',
     'get_trello_board_selection_keyboard',
     'get_trello_list_selection_keyboard',
     'get_main_menu_keyboard',

@@ -163,6 +163,87 @@ class UserRepository(BaseRepository, IUserRepository):
             logger.error(f"Failed to create/update user: {e}")
             raise DatabaseError(f"Failed to create/update user: {e}")
     
+    def update_platform_config(self, telegram_user_id: int, platform_type: str, token: str, additional_data: dict = None) -> bool:
+        """Update platform configuration for multi-platform support."""
+        try:
+            user = self.get_by_telegram_id(telegram_user_id)
+            if not user:
+                return False
+            
+            # Get existing platform settings or create new
+            platform_settings = {}
+            if user.platform_settings:
+                try:
+                    platform_settings = json.loads(user.platform_settings)
+                except json.JSONDecodeError:
+                    logger.warning(f"Invalid platform settings JSON for user {telegram_user_id}, resetting")
+                    platform_settings = {}
+            
+            # Update platform-specific settings
+            if platform_type == 'todoist':
+                platform_settings['todoist_token'] = token
+            elif platform_type == 'trello':
+                if additional_data and 'key' in additional_data:
+                    platform_settings['trello_key'] = additional_data['key']
+                    platform_settings['trello_token'] = token
+                    if 'board_id' in additional_data:
+                        platform_settings['trello_board_id'] = additional_data['board_id']
+                    if 'list_id' in additional_data:
+                        platform_settings['trello_list_id'] = additional_data['list_id']
+            else:
+                # Support for future platforms - store token with platform prefix
+                platform_settings[f'{platform_type}_token'] = token
+                if additional_data:
+                    # Store additional data with platform prefix
+                    for key, value in additional_data.items():
+                        platform_settings[f'{platform_type}_{key}'] = value
+            
+            platform_settings_json = json.dumps(platform_settings)
+            
+            with self.db_manager.get_connection() as conn:
+                conn.execute('''
+                    UPDATE users 
+                    SET platform_settings = ?
+                    WHERE telegram_user_id = ?
+                ''', (platform_settings_json, telegram_user_id))
+                
+                logger.info(f"Updated {platform_type} configuration for user {telegram_user_id}")
+                return True
+                
+        except sqlite3.Error as e:
+            logger.error(f"Failed to update platform config: {e}")
+            raise DatabaseError(f"Failed to update platform config: {e}")
+    
+    def get_configured_platforms(self, telegram_user_id: int) -> List[str]:
+        """Get list of configured platforms for a user."""
+        user = self.get_by_telegram_id(telegram_user_id)
+        if not user or not user.platform_settings:
+            return []
+        
+        try:
+            platform_settings = json.loads(user.platform_settings)
+            configured = []
+            
+            # Check known platforms
+            if platform_settings.get('todoist_token'):
+                configured.append('todoist')
+            
+            if platform_settings.get('trello_key') and platform_settings.get('trello_token'):
+                configured.append('trello')
+            
+            # Check for future platforms (any key ending with _token)
+            for key in platform_settings:
+                if key.endswith('_token') and key not in ['todoist_token', 'trello_token']:
+                    platform_name = key.replace('_token', '')
+                    if platform_settings.get(key):
+                        configured.append(platform_name)
+            
+            return configured
+            
+        except json.JSONDecodeError:
+            logger.error(f"Invalid platform settings JSON for user {telegram_user_id}")
+            return []
+    
     def get_by_telegram_id(self, telegram_user_id: int) -> Optional[UserDB]:
         """Get user by Telegram user ID."""
         try:

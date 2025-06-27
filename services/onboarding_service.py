@@ -152,17 +152,21 @@ To connect your Todoist account:
 
 To connect your Trello account:
 
-1. **Go to:** https://trello.com/power-ups/admin
-2. **Create a Power-Up** (or use existing one)
-3. **Go to "API Key" tab** in your Power-Up settings
-4. **Copy your API Key**
-5. **Generate a Token** (click "Generate a new API Token")
-6. **Authorize the token** for your account
-7. **Send me:** `YOUR_API_KEY:YOUR_TOKEN`
+1. **Get your API Key:** https://trello.com/app-key
+   - Copy the API Key (NOT the secret)
 
-**Example:** `abc123def456:xyz789abc123def456`
+2. **Generate a Token:** 
+   - On the same page, click the **"generate a Token"** link
+   - Or use this URL (replace YOUR_API_KEY): 
+     `https://trello.com/1/authorize?expiration=never&scope=read,write&response_type=token&name=TGHandyUtils&key=YOUR_API_KEY`
 
-**Alternative (legacy):** Try https://trello.com/app-key if above doesn't work
+3. **Authorize the app** to access your Trello account
+
+4. **Send me:** `YOUR_API_KEY:YOUR_TOKEN`
+
+**Example:** `26e1173a5017c1f3e1618a30edb35781:your_generated_token_here`
+
+⚠️ **Important:** You need the TOKEN, not the SECRET. The token is generated after authorizing the app.
 
 🔒 Your credentials are stored securely and only used for task creation.
             """

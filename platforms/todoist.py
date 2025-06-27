@@ -2,10 +2,12 @@ import requests
 import logging
 import json
 import time
-from platforms.base import AbstractTaskPlatform
+from typing import Dict, Any, Optional
+from platforms.base import AbstractTaskPlatform, register_platform
 
 logger = logging.getLogger(__name__)
 
+@register_platform('todoist')
 class TodoistPlatform(AbstractTaskPlatform):
     """Implementation of the task platform interface for Todoist."""
     
@@ -256,3 +258,16 @@ class TodoistPlatform(AbstractTaskPlatform):
         except Exception as e:
             logger.error(f"Error attaching screenshot to Todoist task: {e}")
             return False
+    
+    def get_token_from_settings(self, platform_settings: Dict[str, Any]) -> Optional[str]:
+        """Extract Todoist token from settings."""
+        return platform_settings.get('todoist_token')
+    
+    def is_configured(self, platform_settings: Dict[str, Any]) -> bool:
+        """Check if Todoist is configured."""
+        return bool(platform_settings.get('todoist_token'))
+    
+    @classmethod
+    def is_configured_static(cls, platform_settings: Dict[str, Any]) -> bool:
+        """Check if Todoist is configured without instantiation."""
+        return bool(platform_settings.get('todoist_token'))
