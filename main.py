@@ -12,16 +12,17 @@ logger = get_logger(__name__)
 wire_application()
 
 # Import handlers module to register all handlers (after DI is wired)
-import handlers
+import handlers  # Clean recipient-only handlers
 
 # Initialize bot with proper configuration
 bot = initialize_bot()
 
-# Initialize database schema
+# Initialize unified database schema
 from core.container import container
+from database.unified_recipient_schema import initialize_unified_schema
 db_manager = container.database_manager()
-db_manager.initialize_schema()
-logger.info("Database schema initialized")
+initialize_unified_schema(db_manager)
+logger.info("Unified recipient schema initialized")
 
 # Log configuration
 config = services.get_config()

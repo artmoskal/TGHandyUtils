@@ -14,7 +14,7 @@ Are you tired of manually creating tasks in Todoist after every chat with your f
 - 👥 **Multi-User**: Supports unlimited users with individual configurations (data properly isolated, no chaos!)
 - ⏰ **Smart Scheduling**: Understands natural language like "tomorrow at 3 PM"
 - 🏥 **Real-World Ready**: Handles appointment reminders, meeting scheduling, etc.
-- 🤝 **Partner Sharing**: Share tasks with family/colleagues across different platforms (e.g., your Todoist + partner's Trello)
+- 🤝 **Recipient System**: Share tasks with family/colleagues across different platforms (e.g., your Todoist + wife's Trello)
 
 ## 🚀 How it Works
 
@@ -35,18 +35,19 @@ Are you tired of manually creating tasks in Todoist after every chat with your f
 3. Creates task combining caption text, extracted text, and image context
 4. Supports both compressed photos and uncompressed document attachments
 
-### **Partner Sharing (NEW!)**
-1. Set up multiple partners in Settings → Partner Management
-2. Add your partner's platform credentials (e.g., wife's Trello, colleague's Todoist)
-3. Enable sharing UI to choose partners when creating tasks
-4. Create tasks that appear on multiple platforms simultaneously
+### **Recipient System (NEW!)**
+1. Use `/recipients` to manage your platforms and shared recipients
+2. Add your own platforms (My Todoist, My Trello)
+3. Add shared recipients with others' credentials (Wife's Trello, Team Todoist)
+4. Enable recipient selection UI to choose where tasks go
+5. Create tasks that appear on multiple platforms simultaneously
 
 ### **Smart Features**
 - **Timezone Conversion**: Automatically converts your local time to UTC for storage
 - **Natural Language**: Understands "tomorrow", "next Monday", "in 2 hours"
 - **Date Formats**: Handles "12/Jun", "June 12", "Dec 15" formats  
 - **Interactive Menus**: Browse tasks, quick actions, settings via inline keyboards
-- **Partner Management**: Add/edit/disable partners without affecting existing tasks
+- **Recipient Management**: Add/edit/disable recipients without affecting existing tasks
 
 ### **Calendar Integration** 
 Connect your tasks to calendars:
@@ -119,29 +120,26 @@ If you're testing locally and Docker isn't your thing, you can still run it the 
 
 SQLite will create the database file automatically if it doesn't exist. Hopefully, the bot starts up without too much judgment from Python itself.
 
-### Step 5: Marvel at the Architecture 🏗️
-This thing has more interfaces than a spaceship and enough dependency injection to make Spring Boot jealous. But hey, at least it works and won't explode when multiple users try to create tasks simultaneously!
+### Step 5: Enjoy! 🎉
+The bot is now running and ready to handle your tasks. Send it a message and watch the magic happen!
 
-### Step 6: Pray 🙏
-Because even with professional architecture, software never works the first time.
+### Step 6: Share with Friends 🤝
+Because everyone deserves to escape the task management nightmare.
 
 ## 📱 Commands & Features
 
 ### **Bot Commands**
-- `/start` - Welcome message and onboarding
-- `/menu` - Main interactive menu  
-- `/tasks` - View and manage your pending tasks
-- `/settings` - View platform, timezone, and notification settings
-- `/set_platform` - Change or reconfigure your task platform
-- `/drop_user_data` - Delete all your data (with confirmation)
+- `/start` - Welcome message and quick start guide
+- `/recipients` - Manage your platforms and shared recipients
+- `/create_task` - Create a new task with recipient selection
 
 ### **Interactive Features** 
-- **Main Menu**: Task overview, quick tasks, settings, help
-- **Task Management**: View, complete, edit, reschedule, delete tasks  
-- **Quick Tasks**: Pre-configured tasks (coffee break, shopping, medicine)
+- **Platform Management**: Add/edit/disable your platforms and shared recipients
+- **Recipient Settings**: Toggle UI selection, enable/disable Telegram notifications
+- **Task Creation**: Choose recipients or use default platforms
 - **Voice Transcription**: Confirm/cancel voice message parsing
-- **Platform Setup**: Step-by-step platform configuration with multi-platform support
-- **Notification Control**: Toggle Telegram notifications in settings (tasks still created on platforms)
+- **Smart Setup**: Direct links to get API tokens with step-by-step guides
+- **Visual Status**: Platform emojis (📝 Todoist, 📋 Trello) and active/disabled indicators
 
 ### **Smart Parsing Examples**
 ```
@@ -199,37 +197,20 @@ Portugal, Spain, France, Germany, UK, New York, California, and more!
 ### **⚠️ Disclaimer** 
 This bot handles real appointments and reminders. While extensively tested, always double-check important scheduling. Voice transcription accuracy depends on audio quality and OpenAI Whisper performance.
 
-**Architecture**: Built with modern Python, Docker, SQLite, and ~~probably too much~~ proper dependency injection. Production-ready with error handling, logging, user data isolation, and enough abstraction layers to make a senior architect weep with joy (or terror). Features thread-safe multi-user support, encrypted token storage, and a test suite that actually passes! 🎯
+**Architecture**: Built with modern Python, Docker, and ~~probably too much~~ proper engineering. Production-ready with thread-safe multi-user support and a test suite that actually passes! 🎯
 
-## 🧪 **Testing**
+## 🧪 **Testing & Quality**
 
-Comprehensive test suite with unit and integration tests running in Docker:
+Comprehensive test suite ensures reliability:
 
-### **Quick Testing**
 ```bash
-# Run all unit tests (recommended for development)
-./test-dev.sh unit
-
-# Run all integration tests  
-./test-dev.sh integration
-
-# Run all tests with full coverage report
+# Run all tests
 ./test.sh
 ```
 
-### **Test Categories**
-- **Unit Tests**: Services, platforms, database repositories, models
-- **Integration Tests**: End-to-end workflows, multi-component interactions
-- **Coverage**: Targeting 80%+ code coverage across core components
-
-### **What's Tested**
-- ✅ **Parsing Service**: Timezone conversion, LLM integration, error handling
-- ✅ **Task Service**: CRUD operations, platform integration, user management  
-- ✅ **Platform APIs**: Todoist/Trello integration, authentication, error handling
-- ✅ **Database Layer**: Repository pattern, data persistence, transactions
-- ✅ **Workflows**: Complete task creation from message to platform
-
-**Note**: Tests run in isolated Docker containers matching production environment.
+✅ **Thoroughly tested** with unit and integration tests  
+✅ **Production-ready** architecture with proper error handling  
+✅ **Multi-user safe** with isolated data and thread-safe operations
 
 ## 🔒 **Multi-User & Security**
 

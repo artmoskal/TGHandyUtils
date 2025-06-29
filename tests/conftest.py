@@ -1,4 +1,4 @@
-"""Test configuration and fixtures."""
+"""Test configuration and fixtures - clean recipient system only."""
 
 import pytest
 import tempfile
@@ -13,9 +13,13 @@ from dependency_injector import containers, providers
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.interfaces import ITaskRepository, IUserRepository, IParsingService, ITaskService, IConfig
+from core.interfaces import ITaskRepository, IParsingService, IConfig
+from core.recipient_interfaces import IRecipientService, IUserPlatformRepository, ISharedRecipientRepository, IUserPreferencesV2Repository
 from models.task import TaskCreate
-from models.user import UserCreate
+from models.recipient import (
+    UserPlatform, UserPlatformCreate, SharedRecipient, SharedRecipientCreate,
+    Recipient, UserPreferencesV2
+)
 
 
 @pytest.fixture(scope="session")
@@ -107,51 +111,7 @@ class MockTaskRepository(ITaskRepository):
         return False
 
 
-class MockUserRepository(IUserRepository):
-    """Mock user repository for testing."""
-    
-    def __init__(self):
-        self.users = {}
-    
-    def create_or_update(self, user_data: UserCreate) -> bool:
-        self.users[user_data.telegram_user_id] = {
-            'telegram_user_id': user_data.telegram_user_id,
-            'platform_token': user_data.platform_token,
-            'platform_type': user_data.platform_type,
-            'owner_name': user_data.owner_name,
-            'location': user_data.location,
-            'platform_settings': user_data.platform_settings
-        }
-        return True
-    
-    def get_by_telegram_id(self, telegram_user_id: int):
-        return self.users.get(telegram_user_id)
-    
-    def get_platform_info(self, telegram_user_id: int):
-        user = self.users.get(telegram_user_id)
-        if user:
-            return {
-                'platform_token': user['platform_token'],
-                'platform_type': user['platform_type'],
-                'owner_name': user['owner_name'],
-                'location': user['location'],
-                'platform_settings': user['platform_settings']
-            }
-        return None
-    
-    def get_platform_token(self, telegram_user_id: int):
-        user = self.users.get(telegram_user_id)
-        return user['platform_token'] if user else None
-    
-    def get_platform_type(self, telegram_user_id: int):
-        user = self.users.get(telegram_user_id)
-        return user['platform_type'] if user else 'todoist'
-    
-    def delete(self, telegram_user_id: int) -> bool:
-        if telegram_user_id in self.users:
-            del self.users[telegram_user_id]
-            return True
-        return False
+# Legacy MockUserRepository removed - using recipient system only
 
 
 class MockParsingService(IParsingService):
@@ -183,14 +143,13 @@ class MockParsingService(IParsingService):
 
 
 class TestContainer(containers.DeclarativeContainer):
-    """Test dependency injection container."""
+    """Test dependency injection container - clean recipient system only."""
     
     # Configuration
     config = providers.Singleton(MockConfig)
     
     # Repositories  
     task_repository = providers.Factory(MockTaskRepository)
-    user_repository = providers.Factory(MockUserRepository)
     
     # Services
     parsing_service = providers.Factory(MockParsingService)
@@ -216,12 +175,6 @@ def mock_task_repository():
 
 
 @pytest.fixture
-def mock_user_repository():
-    """Mock user repository fixture."""
-    return MockUserRepository()
-
-
-@pytest.fixture
 def mock_parsing_service():
     """Mock parsing service fixture."""
     return MockParsingService()
@@ -238,16 +191,42 @@ def sample_task_data():
 
 
 @pytest.fixture
-def sample_user_data():
-    """Sample user data fixture."""
-    return {
-        'telegram_user_id': 12345,
-        'platform_token': 'test_token',
-        'platform_type': 'todoist',
-        'owner_name': 'Test User',
-        'location': 'Portugal',
-        'platform_settings': None
-    }
+def sample_user_platform():
+    """Sample user platform for testing."""
+    return UserPlatform(
+        id=1,
+        telegram_user_id=12345,
+        platform_type="todoist",
+        credentials="token123",
+        platform_config=None,
+        enabled=True
+    )
+
+
+@pytest.fixture
+def sample_shared_recipient():
+    """Sample shared recipient for testing."""
+    return SharedRecipient(
+        id=1,
+        telegram_user_id=12345,
+        name="Team Trello",
+        platform_type="trello",
+        credentials="key123:token456",
+        platform_config={"board_id": "board123", "list_id": "list456"},
+        enabled=True
+    )
+
+
+@pytest.fixture
+def sample_recipient():
+    """Sample unified recipient for testing."""
+    return Recipient(
+        id="platform_1",
+        name="My Todoist",
+        platform_type="todoist",
+        type="user_platform",
+        enabled=True
+    )
 
 
 @pytest.fixture

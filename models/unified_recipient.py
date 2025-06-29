@@ -1,4 +1,4 @@
-"""Partner model definitions for shared task functionality."""
+"""Unified recipient models - single entity for all recipients."""
 
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
@@ -6,72 +6,71 @@ from datetime import datetime
 
 
 @dataclass
-class Partner:
-    """Represents a partner (including self) for task sharing."""
-    
-    id: str  # 'self', 'wife_001', etc.
+class UnifiedRecipient:
+    """Single recipient entity for all account types."""
+    id: int
+    user_id: int
     name: str
-    platform: str
+    platform_type: str
     credentials: str
     platform_config: Optional[Dict[str, Any]] = None
-    is_self: bool = False
+    is_personal: bool = False
+    is_default: bool = False
     enabled: bool = True
+    shared_by: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
 
 @dataclass
-class PartnerCreate:
-    """Data for creating a new partner."""
-    
+class UnifiedRecipientCreate:
+    """Data for creating a unified recipient."""
     name: str
-    platform: str
+    platform_type: str
     credentials: str
     platform_config: Optional[Dict[str, Any]] = None
-    is_self: bool = False
+    is_personal: bool = False
+    is_default: bool = False
     enabled: bool = True
+    shared_by: Optional[str] = None
 
 
 @dataclass
-class PartnerUpdate:
-    """Data for updating an existing partner."""
-    
+class UnifiedRecipientUpdate:
+    """Data for updating a unified recipient."""
     name: Optional[str] = None
-    platform: Optional[str] = None
     credentials: Optional[str] = None
     platform_config: Optional[Dict[str, Any]] = None
+    is_default: Optional[bool] = None
     enabled: Optional[bool] = None
+    shared_by: Optional[str] = None
 
 
 @dataclass
-class UserPreferences:
-    """User preferences for partner sharing and notifications."""
-    
+class UnifiedUserPreferences:
+    """Clean user preferences without recipient list."""
     user_id: int
-    default_partners: Optional[list] = None  # List of partner IDs
-    show_sharing_ui: bool = False
+    show_recipient_ui: bool = False
     telegram_notifications: bool = True
+    owner_name: Optional[str] = None
     location: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
 
 @dataclass
-class UserPreferencesCreate:
+class UnifiedUserPreferencesCreate:
     """Data for creating user preferences."""
-    
-    user_id: int
-    default_partners: Optional[list] = None
-    show_sharing_ui: bool = False
+    show_recipient_ui: bool = False
     telegram_notifications: bool = True
+    owner_name: Optional[str] = None
     location: Optional[str] = None
 
 
 @dataclass
-class UserPreferencesUpdate:
+class UnifiedUserPreferencesUpdate:
     """Data for updating user preferences."""
-    
-    default_partners: Optional[list] = None
-    show_sharing_ui: Optional[bool] = None
+    show_recipient_ui: Optional[bool] = None
     telegram_notifications: Optional[bool] = None
+    owner_name: Optional[str] = None
     location: Optional[str] = None

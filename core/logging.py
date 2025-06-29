@@ -7,7 +7,7 @@ from typing import Optional
 
 
 def setup_logging(log_level: str = "DEBUG", log_file: str = "data/logs/bot.log", 
-                 log_format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s") -> logging.Logger:
+                 log_format: str = "%(asctime)s - %(name)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s") -> logging.Logger:
     """Set up centralized logging configuration."""
     
     # Ensure directories exist

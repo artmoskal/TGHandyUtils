@@ -55,28 +55,16 @@
 - ✅ **Layered Architecture**: Clear separation of concerns
 - ✅ **Single Source of Truth**: No conflicting data sources
 
-### Fixed Issues from Recent Review:
-
-1. **Shared Mutable State Anti-Pattern** ❌ → ✅
-   - **Problem**: Class variable `_registry: Dict[str, type] = {}` shared across instances
-   - **Solution**: Lazy initialization with `_get_registry()` method
-
-2. **Open/Closed Principle Violations** ❌ → ✅
-   - **Problem**: If/else chains for platform-specific logic
-   - **Solution**: Abstract methods `get_token_from_settings()` and `is_configured_static()`
-
-3. **Unsafe String Operations** ❌ → ✅
-   - **Problem**: `api_key.split(':')[0]` without bounds checking
-   - **Solution**: Proper length validation before array access
-
-4. **Inconsistent Abstraction** ❌ → ✅
-   - **Problem**: Platform-specific logic scattered throughout codebase
-   - **Solution**: Platform abstractions handle their own configuration logic
+#### 9. **Anti-Pattern Prevention**
+- ❌ **Shared Mutable State**: Never use class variables for mutable data shared across instances
+- ❌ **Hard-Coded Logic**: Avoid if/else chains for extensible behavior; use abstractions
+- ❌ **Unsafe Operations**: Always validate array bounds, string operations, and data access
+- ❌ **Scattered Logic**: Keep related functionality centralized, not spread across files
 
 ## Development Workflow
 
 ### Docker Development Flow:
-**IMPORTANT**: The bot runs in Docker container, code changes require container rebuild!
+**CRITICAL**: ALL development happens in Docker! NEVER run code on host machine!
 
 1. **Local Development**: Make changes to source files
 2. **Hot Copy (Debug Only)**: 
@@ -88,10 +76,11 @@
 3. **Proper Rebuild** (Required for permanent changes):
    ```bash
    # Rebuild container with new code
-   docker-compose build bot
-   docker-compose up -d
+   docker-compose -f infra/docker-compose.yml build bot
+   docker-compose -f infra/docker-compose.yml up -d
    ```
 4. **Verify Changes**: `docker logs infra-bot-1 --tail 20`
+5. **Run Tests**: ALWAYS use Docker for testing - see Test Commands section
 
 ### Before Committing:
 1. **Run Tests**: `./test.sh` (unit and integration tests)
@@ -101,6 +90,13 @@
 5. **Log Level Check**: Appropriate logging levels used
 6. **Security Review**: No sensitive data exposed
 7. **Performance Check**: No obvious performance regressions
+8. **Callback Handler Conflicts**: Check for conflicting aiogram callback patterns
+
+#### **Callback Handler Pattern Conflicts**:
+- **Issue**: Overlapping lambda filters can cause routing conflicts
+- **Example**: `c.data.startswith("toggle_recipient_")` matches `"toggle_recipient_ui"`
+- **Solution**: Use exclusion patterns: `c.data.startswith("toggle_recipient_") and c.data != "toggle_recipient_ui"`
+- **Best Practice**: Order handlers from most specific to most general
 
 ### Commit Standards:
 - **Message Format**: Descriptive, action-oriented (add/fix/update/refactor)
@@ -109,17 +105,104 @@
 - **Co-Authoring**: Include Claude co-authoring when applicable
 
 ### Testing Practices:
-- **Unit Tests**: Test business logic in isolation
-- **Integration Tests**: Test component interactions
+- **Unit Tests**: Test business logic in isolation (fast, no external dependencies)
+- **Integration Tests**: Test component interactions (database, multi-service)
+- **OpenAI Integration Tests**: Real API calls for parsing/timezone logic (token-consuming, expensive)
 - **Container Tests**: Test in Docker environment
 - **Manual Testing**: Verify UI flows work correctly
+
+#### **Test Commands**:
+**IMPORTANT**: Tests run in isolated Docker containers for consistency!
+
+```bash
+# Unit tests (fast, no external dependencies) - ISOLATED CONTAINER
+./test-dev.sh unit
+
+# Integration tests (COSTS MONEY! Uses real APIs) - ISOLATED CONTAINER
+./test-integration.sh                                    # All integration tests
+./test-integration.sh test_scheduling_validation.py      # Specific test file
+./test-integration.sh test_scheduling_validation.py "-k midnight"  # Specific test by name
+
+# All tests with coverage - ISOLATED CONTAINER
+./test.sh
+
+# Running tests in live bot container (NOT RECOMMENDED)
+docker exec infra-bot-1 /bin/bash -c "cd /app && source activate TGHandyUtils && pytest tests/unit/ -v"
+```
+
+**Integration Test Requirements**:
+- ✅ Real `.env` file with valid API keys (OPENAI_API_KEY, etc.)
+- ✅ Uses `docker-compose.test-integration.yml` for consistent environment
+- ✅ Automatically loads environment variables from `.env`
+- ✅ Supports running specific tests or test patterns
+- ✅ Provides clear error messages if configuration missing
+
+#### **Test Design Principles**:
+- **DST Independence**: Tests handle seasonal timezone changes automatically
+- **Real API Testing**: Integration tests use actual external services (no mocking for integration)
+- **Unit Test Isolation**: Unit tests mock external dependencies for speed
+- **Timezone Flexibility**: Tests accept multiple timezone scenarios and DST variations
+- **Prompt Validation**: Tests use actual templates, not duplicated logic
+- **Time-Sensitive Testing**: Test edge cases around day boundaries and past/future time parsing
+- **External Service Coverage**: Include comprehensive test scenarios for critical external API integrations
+
+### LLM Prompt Engineering Principles:
+
+#### **Temporal Logic in LLM Prompts**:
+- **Explicit Past-Time Handling**: LLM prompts must explicitly define behavior for past times within same day
+- **Future-Forward Scheduling**: Always instruct LLM to schedule for future times unless explicitly requesting past times
+- **Ambiguity Resolution**: Add CRITICAL rules for edge cases like "today [time]" when that time has passed
+- **Integration Testing**: Use real LLM API calls (not mocks) to test prompt changes with actual time conditions
+
+### Testing Principles:
+
+#### **Bug Prevention Strategy**:
+1. **Test Production Services**: Always test the actual service classes used in production, not legacy/unused services
+2. **Integration Over Mocks**: Include integration tests that use real repositories to catch missing methods and interface mismatches
+3. **User Journey Coverage**: Test complete user workflows, not just isolated methods
+4. **Coverage Monitoring**: Ensure all public methods have at least basic test coverage
+5. **Interface Validation**: Test that required methods exist on dependencies (avoid "method not found" errors)
+
+#### **Testing Checklist**:
+- [ ] All public methods have unit tests
+- [ ] Integration tests cover critical user journeys  
+- [ ] Service tests match production service usage
+- [ ] Repository tests verify all required methods exist
+- [ ] UI action handlers have test coverage
+- [ ] End-to-end tests validate complete workflows
+
+#### **Bug Fix Protocol**:
+**MANDATORY**: After fixing any bug, you MUST:
+1. **Write Test**: Create minimal but comprehensive test (unit or integration) that would have caught the bug
+2. **Run Full Suite**: Execute `./test.sh` to ensure no regressions
+3. **Verify Pass Rate**: Target 95%+ pass rate, investigate failures
+4. **Keep it Minimal**: Write the smallest test that validates the fix
+
+**Test Selection Guide**:
+- **Unit Test**: For logic errors, validation failures, method-level bugs
+- **Integration Test**: For service interaction bugs, dependency injection issues, workflow failures
+- **Always**: Choose the minimal test type that would catch the specific bug
+
+### Documentation Standards:
+- **Principles Only**: Document universal principles, not specific cases or implementation details
+- **Future-Focused**: Include only conclusions useful for future development decisions
+- **No Concrete Examples**: Avoid cluttering with specific bug cases, dates, or technical details
+- **Universal Application**: Ensure documented principles apply beyond current context
 
 ### Code Quality Standards:
 - **Type Annotations**: All functions properly typed
 - **Documentation**: Complex logic documented
 - **Error Handling**: All failure paths handled
-- **Logging**: Appropriate debug/info/warning/error levels
+- **Logging**: Comprehensive multi-level logging with workflow tracking
 - **Clean Code**: Self-documenting, minimal comments needed
+- **No Dead Code**: Remove unused functions, commented-out code, and broken implementations immediately
+
+### Logging Standards:
+- **Format**: Includes function name and line numbers for debugging
+- **Workflow Logging**: Entry/exit of critical functions with parameters
+- **State Logging**: Application state changes (preferences, recipients)
+- **Database Logging**: All DB operations with query details and results
+- **Error Logging**: Full exception traces with context
 
 ### Architecture Principles:
 - **SOLID Principles**: All five principles followed
@@ -128,66 +211,14 @@
 - **Abstract Interfaces**: Platform logic abstracted behind interfaces
 - **Configuration**: Environment-based, no hardcoded values
 
-### Dependency Injection Guidelines:
-
-#### 1. **Container Setup** (`core/container.py`):
-```python
-from dependency_injector import containers, providers
-from core.interfaces import ITaskService, IPartnerService
-
-class ApplicationContainer(containers.DeclarativeContainer):
-    # Configuration
-    config = providers.Singleton(Config)
-    
-    # Database
-    database_manager = providers.Singleton(DatabaseManager, ...)
-    
-    # Repositories
-    partner_repository = providers.Factory(PartnerRepository, db_manager=database_manager)
-    
-    # Services
-    partner_service = providers.Factory(PartnerService, partner_repo=partner_repository, ...)
-    task_service = providers.Factory(TaskService, partner_service=partner_service, ...)
-```
-
-#### 2. **Service Injection Patterns**:
-- **Constructor Injection**: Primary pattern for service dependencies
-- **Optional Dependencies**: Services can gracefully degrade without optional dependencies
-- **Interface-Based**: Always inject interfaces, not concrete implementations
-
-#### 3. **Service Access** (`core/container.py`):
-```python
-@inject
-def get_partner_service(
-    partner_service: IPartnerService = Provide[ApplicationContainer.partner_service]
-) -> IPartnerService:
-    return partner_service
-
-# Usage in handlers/services:
-from core.container import get_partner_service
-partner_service = get_partner_service()
-```
-
-#### 4. **Container Integration**:
-- **Global Container**: Single container instance (`container = ApplicationContainer()`)
-- **Wiring**: Container automatically wires dependencies
-- **Lazy Loading**: Services instantiated on first access
-- **Singleton vs Factory**: Use Singleton for stateless services, Factory for stateful
-
-#### 5. **Testing with DI**:
-```python
-# Override dependencies for testing
-container.partner_service.override(MockPartnerService())
-# Reset after test
-container.reset_override()
-```
-
-#### 6. **Best Practices**:
+### Dependency Injection Principles:
 - ✅ **Constructor Injection Only**: No property or method injection
 - ✅ **Interface Dependencies**: Depend on abstractions, not implementations
 - ✅ **Optional Dependencies**: Use `Optional[IService] = None` for optional services
 - ✅ **Graceful Degradation**: Services work even if optional dependencies unavailable
 - ✅ **No Service Locator**: Don't pass container around, use injection
+- ✅ **Container Patterns**: Single global container, lazy loading, appropriate lifetime management
+- ✅ **Test Overrides**: Support dependency overriding for testing scenarios
 - ❌ **Avoid Circular Dependencies**: Service A shouldn't depend on service B if B depends on A
 
 ### Platform Extension:

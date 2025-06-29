@@ -1,0 +1,22 @@
+# Core dependencies
+aiogram==3.7.0
+pydantic==2.7.1
+dependency-injector==4.41.0
+python-dateutil==2.8.2
+requests==2.31.0
+
+# OpenAI integration
+openai==1.33.0
+langchain-openai==0.1.8
+langchain==0.2.5
+langchain-core==0.2.10
+
+# Development dependencies
+pytest==8.2.2
+pytest-asyncio==0.23.7
+pytest-cov==5.0.0
+flake8==7.0.0
+
+# Optional dependencies for development
+black==24.4.2
+isort==5.13.2

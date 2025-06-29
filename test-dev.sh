@@ -65,12 +65,13 @@ services:
     volumes:
       - ../:/app
       - ./test-results:/app/test-results
+      - ../.env:/app/.env
     working_dir: /app
     command: >
       bash -c "
         echo 'Installing test dependencies...' &&
         mamba install -y pytest pytest-asyncio pytest-mock pytest-cov coverage -c conda-forge &&
-        pip install aioresponses factory-boy &&
+        pip install aioresponses factory-boy python-dotenv &&
         echo 'Running $TEST_TYPE tests...' &&
         python -m pytest $TEST_PATH $VERBOSE_FLAG --cov=services --cov=platforms --cov=database --cov=models --cov=core --cov-report=term-missing
       "

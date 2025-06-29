@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  bot-test-integration:
+    build:
+      context: ../
+      dockerfile: infra/Dockerfile
+    env_file:
+      - ../.env  # Load real environment variables including API keys
+    environment:
+      - PYTHONPATH=/app
+      - TEST_TYPE=integration  # Marker for integration tests
+    volumes:
+      - ../:/app
+      - ./test-results:/app/test-results
+    working_dir: /app
+    command: >
+      bash -c "
+        echo '=== Installing test dependencies ===' &&
+        mamba install -y pytest pytest-asyncio pytest-mock pytest-cov coverage -c conda-forge &&
+        pip install aioresponses factory-boy python-dotenv &&
+        echo '=== Running integration tests ===' &&
+        python -m pytest ${TEST_PATH:-tests/integration/} ${PYTEST_ARGS:--v} --tb=short
+      "
+    networks:
+      - test-network
+
+networks:
+  test-network:
+    driver: bridge

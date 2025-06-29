@@ -36,7 +36,8 @@ async def _check_and_process_due_tasks():
     """Check for due tasks and process them."""
     try:
         now = datetime.now(timezone.utc)
-        tasks = services.get_task_service().task_repo.get_all()
+        task_service = services.get_clean_recipient_task_service()
+        tasks = task_service.task_repo.get_all()
         
         if not tasks:
             return
@@ -67,7 +68,8 @@ async def _process_task_reminder(task, current_time: datetime):
     except Exception as e:
         logger.error(f"Error parsing due_time for task {task.id}: {e}")
         # Delete tasks with invalid due time to prevent repeated errors
-        services.get_task_service().task_repo.delete(task.id)
+        task_service = services.get_clean_recipient_task_service()
+        task_service.task_repo.delete(task.id)
         return
     
     # Check if task is due
@@ -75,7 +77,8 @@ async def _process_task_reminder(task, current_time: datetime):
         try:
             await _send_reminder(task)
             # Delete the task after the reminder is sent
-            services.get_task_service().task_repo.delete(task.id)
+            task_service = services.get_clean_recipient_task_service()
+            task_service.task_repo.delete(task.id)
             logger.info(f"Processed and deleted due task {task.id}: {task.task_title}")
         except Exception as e:
             logger.error(f"Error sending reminder for task {task.id}: {e}")
@@ -86,9 +89,14 @@ async def _send_reminder(task):
     Args:
         task: TaskDB instance
     """
-    # Check if user has notifications enabled
-    user_info = services.get_task_service().get_user_platform_info(task.user_id)
-    telegram_notifications = user_info.get('telegram_notifications', True) if user_info else True
+    # Check user's notification preferences
+    try:
+        from core.container import container
+        recipient_service = container.clean_recipient_service()
+        telegram_notifications = recipient_service.are_telegram_notifications_enabled(task.user_id)
+    except Exception:
+        # Fallback for testing or when DI is not wired - default to enabled
+        telegram_notifications = True
     
     if not telegram_notifications:
         logger.info(f"Skipping reminder for user {task.user_id} (notifications disabled): {task.task_title}")

@@ -1,0 +1,30 @@
+FROM python:3.10-alpine
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies (Alpine uses apk instead of apt)
+RUN apk add --no-cache git
+
+# Copy requirements first for better caching
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install additional test dependencies
+RUN pip install pytest pytest-asyncio pytest-cov
+
+# Copy the entire application
+COPY . .
+
+# Set environment variables
+ENV PYTHONPATH=/app
+ENV TELEGRAM_BOT_TOKEN=test_token_for_testing
+ENV OPENAI_API_KEY=test_key_for_testing
+
+# Create data directory
+RUN mkdir -p data/db
+
+# Run tests by default
+CMD ["python", "-m", "pytest", "tests/", "-v", "--tb=short"]

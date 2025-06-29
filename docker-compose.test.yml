@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    volumes:
+      - .:/app
+    environment:
+      - PYTHONPATH=/app
+      - TELEGRAM_BOT_TOKEN=test_token_for_testing
+      - OPENAI_API_KEY=test_key_for_testing
+    command: >
+      sh -c "
+        echo '=== RUNNING COMPREHENSIVE TESTS ===' &&
+        echo '1. Import tests...' &&
+        python -c 'import sys; sys.path.append(\".\"); from services.recipient_service import RecipientService; print(\"✅ Core imports work\")' &&
+        echo '2. Unit tests...' &&
+        python -m pytest tests/unit/ -v &&
+        echo '3. Integration tests...' &&
+        python test_integration.py &&
+        echo '4. Architecture validation...' &&
+        python validate_architecture.py &&
+        echo '=== ALL TESTS COMPLETE ==='
+      "
+
+  lint:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    volumes:
+      - .:/app
+    command: >
+      sh -c "
+        echo '=== RUNNING CODE QUALITY CHECKS ===' &&
+        python -m flake8 --max-line-length=120 --ignore=E501,W503 services/ core/ database/ models/ &&
+        echo '✅ Code quality checks passed'
+      "

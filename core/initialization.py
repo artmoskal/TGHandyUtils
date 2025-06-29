@@ -2,16 +2,19 @@
 
 from dependency_injector.wiring import inject, Provide
 from core.container import ApplicationContainer, container
-from core.interfaces import ITaskService, IParsingService, IConfig, IOpenAIService, IVoiceProcessingService, IImageProcessingService
+from core.interfaces import IParsingService, IConfig, IOpenAIService, IVoiceProcessingService, IImageProcessingService
+from services.clean_recipient_task_service import CleanRecipientTaskService
+from services.clean_recipient_service import CleanRecipientService
 
 
 def wire_application():
     """Wire the application modules with the DI container."""
     container.wire(modules=[
         "core.initialization",
-        "handlers",
-        "keyboards.inline"
+        "handlers"
     ])
+    
+    # Container is already wired
 
 
 def unwire_application():
@@ -24,10 +27,17 @@ class ServiceLocator:
     
     @staticmethod
     @inject
-    def get_task_service(
-        task_service: ITaskService = Provide[ApplicationContainer.task_service]
-    ) -> ITaskService:
-        return task_service
+    def get_clean_recipient_task_service(
+        service: CleanRecipientTaskService = Provide[ApplicationContainer.clean_recipient_task_service]
+    ) -> CleanRecipientTaskService:
+        return service
+    
+    @staticmethod
+    @inject
+    def get_clean_recipient_service(
+        service: CleanRecipientService = Provide[ApplicationContainer.clean_recipient_service]
+    ) -> CleanRecipientService:
+        return service
     
     @staticmethod
     @inject
@@ -43,12 +53,6 @@ class ServiceLocator:
     ) -> IConfig:
         return config
     
-    @staticmethod
-    @inject
-    def get_onboarding_service(
-        onboarding_service = Provide[ApplicationContainer.onboarding_service]
-    ):
-        return onboarding_service
     
     @staticmethod
     @inject
@@ -70,6 +74,7 @@ class ServiceLocator:
         image_service: IImageProcessingService = Provide[ApplicationContainer.image_processing_service]
     ) -> IImageProcessingService:
         return image_service
+    
 
 
 # Global service locator

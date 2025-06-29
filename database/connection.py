@@ -35,8 +35,8 @@ class DatabaseManager:
                 self._local.connection.row_factory = sqlite3.Row
                 # Enable WAL mode for better concurrency
                 self._local.connection.execute('PRAGMA journal_mode=WAL')
-                # Disable foreign keys for partner system (using user_id directly)
-                self._local.connection.execute('PRAGMA foreign_keys=OFF')
+                # Enable foreign keys for clean recipient system
+                self._local.connection.execute('PRAGMA foreign_keys=ON')
                 logger.debug(f"Created new database connection for thread {threading.current_thread().name}")
             except sqlite3.Error as e:
                 logger.error(f"Failed to create database connection: {e}")
@@ -68,11 +68,17 @@ class DatabaseManager:
             with self.get_connection() as conn:
                 self._create_tables(conn)
                 self._migrate_schema(conn)
+                self._initialize_recipient_schema(conn)
                 self._initialized = True
                 logger.info("Database schema initialized")
     
+    def _initialize_recipient_schema(self, conn) -> None:
+        """Initialize clean recipient schema."""
+        from database.recipient_schema import create_recipient_tables
+        create_recipient_tables(conn)
+    
     def _create_tables(self, conn: sqlite3.Connection) -> None:
-        """Create database tables if they don't exist."""
+        """Create clean database tables for recipient system only."""
         
         # Create tasks table
         conn.execute('''
@@ -91,93 +97,12 @@ class DatabaseManager:
             )
         ''')
         
-        # Create users table (legacy - keep for backward compatibility)
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                telegram_user_id INTEGER UNIQUE NOT NULL,
-                platform_token TEXT NOT NULL,
-                platform_type TEXT NOT NULL DEFAULT 'todoist',
-                owner_name TEXT NOT NULL,
-                location TEXT,
-                platform_settings TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        # Create new partner-based tables
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS user_partners (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                partner_id TEXT NOT NULL,
-                name TEXT NOT NULL,
-                platform TEXT NOT NULL,
-                credentials TEXT NOT NULL,
-                platform_config TEXT,
-                is_self BOOLEAN DEFAULT FALSE,
-                enabled BOOLEAN DEFAULT TRUE,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(user_id, partner_id)
-            )
-        ''')
-        
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS user_preferences (
-                user_id INTEGER PRIMARY KEY,
-                default_partners TEXT,
-                show_sharing_ui BOOLEAN DEFAULT FALSE,
-                telegram_notifications BOOLEAN DEFAULT TRUE,
-                location TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
         # Create indices for better performance
         conn.execute('CREATE INDEX IF NOT EXISTS idx_tasks_user_id ON tasks(user_id)')
         conn.execute('CREATE INDEX IF NOT EXISTS idx_tasks_due_time ON tasks(due_time)')
-        conn.execute('CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_user_id)')
-        conn.execute('CREATE INDEX IF NOT EXISTS idx_user_partners_user_id ON user_partners(user_id)')
-        conn.execute('CREATE INDEX IF NOT EXISTS idx_user_partners_enabled ON user_partners(user_id, enabled)')
     
     def _migrate_schema(self, conn: sqlite3.Connection) -> None:
-        """Handle schema migrations."""
-        # Check if migration is needed from old schema
-        cursor = conn.execute("PRAGMA table_info(users)")
-        columns = cursor.fetchall()
-        column_names = [column[1] for column in columns]
-        
-        if 'todoist_user' in column_names and 'platform_type' not in column_names:
-            logger.info("Migrating users table to support multiple platforms")
-            
-            # Create temporary table with new schema
-            conn.execute('''
-                CREATE TABLE users_temp (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    telegram_user_id INTEGER UNIQUE NOT NULL,
-                    platform_token TEXT NOT NULL,
-                    platform_type TEXT NOT NULL DEFAULT 'todoist',
-                    owner_name TEXT NOT NULL,
-                    location TEXT,
-                    platform_settings TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            
-            # Copy data from old table
-            conn.execute('''
-                INSERT INTO users_temp (telegram_user_id, platform_token, platform_type, owner_name, location)
-                SELECT telegram_user_id, todoist_user, 'todoist', owner_name, location FROM users
-            ''')
-            
-            # Replace old table
-            conn.execute("DROP TABLE users")
-            conn.execute("ALTER TABLE users_temp RENAME TO users")
-            
-            logger.info("Users table migration completed")
+        """Clean recipient system - no legacy migrations needed."""
+        pass
 
 # Remove global instance - use DI container instead

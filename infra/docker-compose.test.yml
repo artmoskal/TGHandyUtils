@@ -5,10 +5,10 @@ services:
     build:
       context: ../
       dockerfile: infra/Dockerfile
+    env_file: ../.env
     environment:
       # Test environment variables
       - TELEGRAM_BOT_TOKEN=test_token_not_used
-      - OPENAI_API_KEY=test_key_not_used
       - PYTHONPATH=/app
     volumes:
       # Mount source code for development
