@@ -79,7 +79,7 @@ async def _process_task_reminder(task, current_time: datetime):
             # Delete the task after the reminder is sent
             task_service = services.get_recipient_task_service()
             task_service.task_repo.delete(task.id)
-            logger.info(f"Processed and deleted due task {task.id}: {task.task_title}")
+            logger.info(f"Processed and deleted due task {task.id}: {task.title}")
         except Exception as e:
             logger.error(f"Error sending reminder for task {task.id}: {e}")
 
@@ -99,12 +99,12 @@ async def _send_reminder(task):
         telegram_notifications = True
     
     if not telegram_notifications:
-        logger.info(f"Skipping reminder for user {task.user_id} (notifications disabled): {task.task_title}")
+        logger.info(f"Skipping reminder for user {task.user_id} (notifications disabled): {task.title}")
         return
     
     # Escape special characters to prevent markdown parsing issues
-    safe_title = html.escape(task.task_title)
-    safe_description = html.escape(task.task_description)
+    safe_title = html.escape(task.title)
+    safe_description = html.escape(task.description)
     reminder_text = f"⏰ Reminder: {safe_title}\n\n{safe_description}"
     
     try:
@@ -119,7 +119,7 @@ async def _send_reminder(task):
             # Send a new message if reply is not possible
             await bot.send_message(chat_id=task.chat_id, text=reminder_text)
         
-        logger.info(f"Sent reminder to user {task.user_id}: {task.task_title}")
+        logger.info(f"Sent reminder to user {task.user_id}: {task.title}")
         
     except Exception as e:
         logger.error(f"Failed to send reminder message: {e}")
