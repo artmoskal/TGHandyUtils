@@ -1,6 +1,7 @@
 """Main application entry point."""
 
 import asyncio
+import sys
 from bot import dp, initialize_bot
 from scheduler import task_scheduler
 from core.initialization import wire_application, unwire_application, services
@@ -17,12 +18,25 @@ import telegram_handlers  # Phase 2 transition: hybrid modular + monolithic
 # Initialize bot with proper configuration
 bot = initialize_bot()
 
-# Initialize unified database schema
+# Database initialization with migration support
 from core.container import container
+from database.migrations import ensure_database_ready
 from database.unified_recipient_schema import initialize_unified_schema
+
+logger.info("Checking database status...")
+config = services.get_config()
+if not ensure_database_ready(config.DATABASE_PATH):
+    logger.error("Database initialization failed. Exiting.")
+    sys.exit(1)
+
+# Legacy schema initialization (for compatibility)
 db_manager = container.database_manager()
-initialize_unified_schema(db_manager)
-logger.info("Unified recipient schema initialized")
+try:
+    initialize_unified_schema(db_manager)
+    logger.info("Database ready and schema verified")
+except Exception as e:
+    logger.warning(f"Legacy schema initialization warning: {e}")
+    # Continue anyway since the new migration system should handle this
 
 # Log configuration
 config = services.get_config()
