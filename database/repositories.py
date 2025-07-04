@@ -31,7 +31,7 @@ class TaskRepository(BaseRepository, ITaskRepository):
             with self.db_manager.get_connection() as conn:
                 cursor = conn.execute('''
                     INSERT INTO tasks (
-                        user_id, chat_id, message_id, task_title, task_description, 
+                        user_id, chat_id, message_id, title, description, 
                         due_time, platform_task_id, platform_type, screenshot_file_id, screenshot_filename
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
@@ -53,8 +53,8 @@ class TaskRepository(BaseRepository, ITaskRepository):
         try:
             with self.db_manager.get_connection() as conn:
                 cursor = conn.execute('''
-                    SELECT id, user_id, chat_id, message_id, task_title, 
-                           task_description, due_time, platform_task_id, platform_type,
+                    SELECT id, user_id, chat_id, message_id, title, 
+                           description, due_time, platform_task_id, platform_type,
                            screenshot_file_id, screenshot_filename
                     FROM tasks ORDER BY due_time ASC
                 ''')
@@ -62,7 +62,7 @@ class TaskRepository(BaseRepository, ITaskRepository):
                 return [
                     TaskDB(
                         id=row[0], user_id=row[1], chat_id=row[2], message_id=row[3],
-                        task_title=row[4], task_description=row[5], due_time=row[6],
+                        title=row[4], description=row[5], due_time=row[6],
                         platform_task_id=row[7], platform_type=row[8],
                         screenshot_file_id=row[9], screenshot_filename=row[10]
                     )
@@ -78,8 +78,8 @@ class TaskRepository(BaseRepository, ITaskRepository):
         try:
             with self.db_manager.get_connection() as conn:
                 cursor = conn.execute('''
-                    SELECT id, user_id, chat_id, message_id, task_title, 
-                           task_description, due_time, platform_task_id, platform_type,
+                    SELECT id, user_id, chat_id, message_id, title, 
+                           description, due_time, platform_task_id, platform_type,
                            screenshot_file_id, screenshot_filename
                     FROM tasks WHERE user_id = ? ORDER BY due_time ASC
                 ''', (user_id,))
@@ -87,7 +87,7 @@ class TaskRepository(BaseRepository, ITaskRepository):
                 return [
                     TaskDB(
                         id=row[0], user_id=row[1], chat_id=row[2], message_id=row[3],
-                        task_title=row[4], task_description=row[5], due_time=row[6],
+                        title=row[4], description=row[5], due_time=row[6],
                         platform_task_id=row[7], platform_type=row[8],
                         screenshot_file_id=row[9], screenshot_filename=row[10]
                     )
@@ -103,8 +103,8 @@ class TaskRepository(BaseRepository, ITaskRepository):
         try:
             with self.db_manager.get_connection() as conn:
                 cursor = conn.execute('''
-                    SELECT id, user_id, chat_id, message_id, task_title, 
-                           task_description, due_time, platform_task_id, platform_type,
+                    SELECT id, user_id, chat_id, message_id, title, 
+                           description, due_time, platform_task_id, platform_type,
                            screenshot_file_id, screenshot_filename
                     FROM tasks WHERE id = ?
                 ''', (task_id,))
@@ -113,7 +113,7 @@ class TaskRepository(BaseRepository, ITaskRepository):
                 if row:
                     return TaskDB(
                         id=row[0], user_id=row[1], chat_id=row[2], message_id=row[3],
-                        task_title=row[4], task_description=row[5], due_time=row[6],
+                        title=row[4], description=row[5], due_time=row[6],
                         platform_task_id=row[7], platform_type=row[8],
                         screenshot_file_id=row[9], screenshot_filename=row[10]
                     )

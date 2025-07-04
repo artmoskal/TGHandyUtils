@@ -12,8 +12,8 @@ class TaskDB:
     user_id: int
     chat_id: int
     message_id: int
-    task_title: str
-    task_description: str
+    title: str
+    description: str
     due_time: str
     platform_task_id: Optional[str]
     platform_type: str
