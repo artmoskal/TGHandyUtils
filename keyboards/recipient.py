@@ -2,11 +2,14 @@
 
 from typing import List, Dict, Any
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from models.recipient import Recipient
+from models.unified_recipient import UnifiedRecipient
 
 
-def get_recipient_management_keyboard(recipients: List[Recipient]) -> InlineKeyboardMarkup:
+def get_recipient_management_keyboard(recipients: List[UnifiedRecipient]) -> InlineKeyboardMarkup:
     """Get account management keyboard."""
+    import logging
+    logger = logging.getLogger(__name__)
+    
     keyboard = []
     
     # Show existing accounts first
@@ -17,10 +20,12 @@ def get_recipient_management_keyboard(recipients: List[Recipient]) -> InlineKeyb
             status = "✅" if recipient.enabled else "⚠️"
             platform_emoji = "📝" if recipient.platform_type == "todoist" else "📋"
             account_type = "👤" if recipient.is_personal else "👥"
+            callback_data = f"recipient_edit_{recipient.id}"
+            logger.error(f"🔍 DEBUG: Creating button for {recipient.name} with callback_data='{callback_data}'")
             keyboard.append([
                 InlineKeyboardButton(
                     text=f"{status} {account_type} {platform_emoji} {recipient.name}", 
-                    callback_data=f"recipient_edit_{recipient.id}"
+                    callback_data=callback_data
                 )
             ])
         keyboard.append([InlineKeyboardButton(text="━━━━━━━━━━━━━━━━━━", callback_data="noop")])
@@ -45,7 +50,7 @@ def get_platform_selection_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
-def get_recipient_selection_keyboard(recipients: List[Recipient], selected_recipients: List[str] = None) -> InlineKeyboardMarkup:
+def get_recipient_selection_keyboard(recipients: List[UnifiedRecipient], selected_recipients: List[str] = None) -> InlineKeyboardMarkup:
     """Get recipient selection keyboard for task creation."""
     keyboard = []
     selected_recipients = selected_recipients or []

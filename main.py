@@ -12,7 +12,7 @@ logger = get_logger(__name__)
 wire_application()
 
 # Import handlers module to register all handlers (after DI is wired)
-import handlers  # Clean recipient-only handlers
+import telegram_handlers  # Phase 2 transition: hybrid modular + monolithic
 
 # Initialize bot with proper configuration
 bot = initialize_bot()

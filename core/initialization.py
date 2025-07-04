@@ -3,8 +3,8 @@
 from dependency_injector.wiring import inject, Provide
 from core.container import ApplicationContainer, container
 from core.interfaces import IParsingService, IConfig, IOpenAIService, IVoiceProcessingService, IImageProcessingService
-from services.clean_recipient_task_service import CleanRecipientTaskService
-from services.clean_recipient_service import CleanRecipientService
+from services.recipient_task_service import RecipientTaskService
+from services.recipient_service import RecipientService
 
 
 def wire_application():
@@ -27,16 +27,16 @@ class ServiceLocator:
     
     @staticmethod
     @inject
-    def get_clean_recipient_task_service(
-        service: CleanRecipientTaskService = Provide[ApplicationContainer.clean_recipient_task_service]
-    ) -> CleanRecipientTaskService:
+    def get_recipient_task_service(
+        service: RecipientTaskService = Provide[ApplicationContainer.recipient_task_service]
+    ) -> RecipientTaskService:
         return service
     
     @staticmethod
     @inject
-    def get_clean_recipient_service(
-        service: CleanRecipientService = Provide[ApplicationContainer.clean_recipient_service]
-    ) -> CleanRecipientService:
+    def get_recipient_service(
+        service: RecipientService = Provide[ApplicationContainer.recipient_service]
+    ) -> RecipientService:
         return service
     
     @staticmethod

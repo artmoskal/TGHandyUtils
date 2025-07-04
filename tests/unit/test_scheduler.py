@@ -104,7 +104,7 @@ class TestTaskScheduler:
             with patch('scheduler.services') as mock_services:
                 mock_task_service = Mock()
                 mock_task_service.task_repo.delete.return_value = True
-                mock_services.get_clean_recipient_task_service.return_value = mock_task_service
+                mock_services.get_recipient_task_service.return_value = mock_task_service
                 
                 await _process_task_reminder(overdue_task, current_time)
                 
@@ -120,7 +120,7 @@ class TestTaskScheduler:
         with patch('scheduler._send_reminder') as mock_send:
             with patch('scheduler.services') as mock_services:
                 mock_task_service = Mock()
-                mock_services.get_clean_recipient_task_service.return_value = mock_task_service
+                mock_services.get_recipient_task_service.return_value = mock_task_service
                 
                 await _process_task_reminder(future_task, current_time)
                 
@@ -137,7 +137,7 @@ class TestTaskScheduler:
         with patch('scheduler.services') as mock_services:
             mock_task_service = Mock()
             mock_task_service.task_repo.delete.return_value = True
-            mock_services.get_clean_recipient_task_service.return_value = mock_task_service
+            mock_services.get_recipient_task_service.return_value = mock_task_service
             
             await _process_task_reminder(sample_task, current_time)
             

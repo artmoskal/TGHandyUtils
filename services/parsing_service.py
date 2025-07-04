@@ -502,9 +502,21 @@ class ParsingService(IParsingService):
             current_utc = datetime.now(timezone.utc)
             local_time = current_utc.astimezone(tz)
             
-            # Calculate offset in hours
-            offset_seconds = local_time.utcoffset().total_seconds()
-            offset_hours = int(offset_seconds / 3600)
+            # Calculate offset in hours with overflow protection
+            try:
+                offset_seconds = local_time.utcoffset().total_seconds()
+                offset_hours_float = offset_seconds / 3600
+                
+                # Bounds check to prevent C int overflow and unreasonable offsets
+                if abs(offset_hours_float) >= 24:
+                    logger.warning(f"Unusual timezone offset calculated: {offset_hours_float}h for {location}. Using UTC.")
+                    return 0
+                
+                offset_hours = int(offset_hours_float)
+                
+            except (OverflowError, ValueError) as overflow_e:
+                logger.warning(f"Overflow in timezone calculation for {location}: {overflow_e}. Using UTC.")
+                return 0
             
             logger.debug(f"Timezone for {location}: {tz_identifier} (offset: {offset_hours}h)")
             return offset_hours
@@ -527,9 +539,9 @@ class ParsingService(IParsingService):
             f"Africa/{location_lower.title()}",
             f"Australia/{location_lower.title()}",
             
-            # Try major city variations
-            f"America/New_York" if 'new york' in location_lower or 'nyc' in location_lower else None,
-            f"America/Los_Angeles" if 'los angeles' in location_lower or 'la' in location_lower else None,
+            # Try major city variations (using more specific patterns)
+            f"America/New_York" if 'new york' in location_lower or location_lower in ['nyc', 'ny'] else None,
+            f"America/Los_Angeles" if 'los angeles' in location_lower or location_lower in ['la', 'los_angeles'] else None,
             f"Europe/London" if 'london' in location_lower else None,
         ]
         

@@ -5,11 +5,7 @@ from pydantic import ValidationError
 from datetime import datetime
 
 from models.task import TaskCreate, TaskDB, PlatformTaskData
-from models.recipient import (
-    UserPlatform, UserPlatformCreate, UserPlatformUpdate,
-    SharedRecipient, SharedRecipientCreate, SharedRecipientUpdate,
-    Recipient, UserPreferencesV2, UserPreferencesV2Create, UserPreferencesV2Update
-)
+from models.unified_recipient import UnifiedRecipient, UnifiedRecipientCreate, UnifiedUserPreferences
 
 
 class TestTaskModels:
@@ -75,132 +71,59 @@ class TestTaskModels:
         assert data.description == "Platform description"
 
 
-class TestRecipientModels:
-    """Test recipient-related models."""
+class TestUnifiedRecipientModels:
+    """Test unified recipient models."""
     
-    def test_user_platform_model(self):
-        """Test UserPlatform model."""
-        platform = UserPlatform(
+    def test_unified_recipient_model(self):
+        """Test UnifiedRecipient model."""
+        recipient = UnifiedRecipient(
             id=1,
-            telegram_user_id=12345,
+            user_id=12345,
+            name="My Todoist",
             platform_type="todoist",
             credentials="token123",
             platform_config=None,
-            enabled=True
-        )
-        
-        assert platform.id == 1
-        assert platform.telegram_user_id == 12345
-        assert platform.platform_type == "todoist"
-        assert platform.enabled is True
-    
-    def test_user_platform_create(self):
-        """Test UserPlatformCreate model."""
-        create_data = UserPlatformCreate(
-            platform_type="todoist",
-            credentials="token123",
-            enabled=True
-        )
-        
-        assert create_data.platform_type == "todoist"
-        assert create_data.credentials == "token123"
-        assert create_data.enabled is True
-    
-    def test_user_platform_update(self):
-        """Test UserPlatformUpdate model."""
-        update_data = UserPlatformUpdate(
-            credentials="new_token",
-            enabled=False
-        )
-        
-        assert update_data.credentials == "new_token"
-        assert update_data.enabled is False
-    
-    def test_shared_recipient_model(self):
-        """Test SharedRecipient model."""
-        recipient = SharedRecipient(
-            id=1,
-            telegram_user_id=12345,
-            name="Team Trello",
-            platform_type="trello",
-            credentials="key:token",
-            platform_config={"board_id": "board123"},
+            is_personal=True,
+            is_default=True,
             enabled=True
         )
         
         assert recipient.id == 1
-        assert recipient.name == "Team Trello"
-        assert recipient.platform_type == "trello"
-        assert recipient.platform_config == {"board_id": "board123"}
-    
-    def test_shared_recipient_create(self):
-        """Test SharedRecipientCreate model."""
-        create_data = SharedRecipientCreate(
-            name="New Team",
-            platform_type="trello",
-            credentials="key:token",
-            enabled=True
-        )
-        
-        assert create_data.name == "New Team"
-        assert create_data.platform_type == "trello"
-    
-    def test_recipient_unified_model(self):
-        """Test unified Recipient model."""
-        recipient = Recipient(
-            id="platform_1",
-            name="My Todoist",
-            platform_type="todoist",
-            type="user_platform",
-            enabled=True
-        )
-        
-        assert recipient.id == "platform_1"
+        assert recipient.user_id == 12345
         assert recipient.name == "My Todoist"
-        assert recipient.type == "user_platform"
+        assert recipient.platform_type == "todoist"
+        assert recipient.is_personal is True
+        assert recipient.is_default is True
+        assert recipient.enabled is True
     
-    def test_user_preferences_model(self):
-        """Test UserPreferencesV2 model."""
-        prefs = UserPreferencesV2(
-            telegram_user_id=12345,
-            default_recipients=["platform_1", "shared_1"],
-            show_recipient_ui=True
-        )
-        
-        assert prefs.telegram_user_id == 12345
-        assert len(prefs.default_recipients) == 2
-        assert prefs.show_recipient_ui is True
-    
-    def test_user_preferences_create(self):
-        """Test UserPreferencesV2Create model."""
-        create_data = UserPreferencesV2Create(
-            default_recipients=["platform_1"],
-            show_recipient_ui=False
-        )
-        
-        assert len(create_data.default_recipients) == 1
-        assert create_data.show_recipient_ui is False
-    
-    def test_user_preferences_update(self):
-        """Test UserPreferencesV2Update model."""
-        update_data = UserPreferencesV2Update(
-            default_recipients=["shared_1", "platform_2"],
-            show_recipient_ui=True
-        )
-        
-        assert len(update_data.default_recipients) == 2
-        assert update_data.show_recipient_ui is True
-    
-    def test_recipient_model_creation(self):
-        """Test Recipient model can be created with valid data."""
-        recipient = Recipient(
-            id="platform_1",
-            name="Test Platform",
+    def test_unified_recipient_create(self):
+        """Test UnifiedRecipientCreate model."""
+        create_data = UnifiedRecipientCreate(
+            name="New Todoist",
             platform_type="todoist",
-            type="user_platform",
-            enabled=True
+            credentials="token123",
+            is_personal=True,
+            is_default=False
         )
         
-        assert recipient.id == "platform_1"
-        assert recipient.name == "Test Platform"
-        assert recipient.type == "user_platform"
+        assert create_data.name == "New Todoist"
+        assert create_data.platform_type == "todoist"
+        assert create_data.credentials == "token123"
+        assert create_data.is_personal is True
+        assert create_data.is_default is False
+    
+    def test_unified_user_preferences_model(self):
+        """Test UnifiedUserPreferences model."""
+        prefs = UnifiedUserPreferences(
+            user_id=12345,
+            show_recipient_ui=True,
+            telegram_notifications=True,
+            owner_name="John Doe",
+            location="Portugal"
+        )
+        
+        assert prefs.user_id == 12345
+        assert prefs.show_recipient_ui is True
+        assert prefs.telegram_notifications is True
+        assert prefs.owner_name == "John Doe"
+        assert prefs.location == "Portugal"

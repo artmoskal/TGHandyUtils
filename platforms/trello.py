@@ -258,6 +258,7 @@ class TrelloPlatform(AbstractTaskPlatform):
         Returns:
             True if successful, False otherwise
         """
+        logger.info(f"Trello attach_screenshot called: task_id={task_id}, file_name={file_name}, data_size={len(image_data) if image_data else 0}")
         return self.add_attachment_to_card(task_id, image_data, file_name)
     
     def get_task_url(self, task_id: str) -> str:

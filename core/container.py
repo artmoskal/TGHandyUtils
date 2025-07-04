@@ -10,8 +10,8 @@ from database.connection import DatabaseManager
 from database.repositories import TaskRepository
 from database.unified_recipient_repository import UnifiedRecipientRepository
 from services.parsing_service import ParsingService
-from services.clean_recipient_service import CleanRecipientService
-from services.clean_recipient_task_service import CleanRecipientTaskService
+from services.recipient_service import RecipientService
+from services.recipient_task_service import RecipientTaskService
 from services.openai_service import OpenAIService
 from services.voice_processing import VoiceProcessingService
 from services.image_processing import ImageProcessingService
@@ -47,15 +47,15 @@ class ApplicationContainer(containers.DeclarativeContainer):
         config=config
     )
     
-    clean_recipient_service = providers.Factory(
-        CleanRecipientService,
+    recipient_service = providers.Factory(
+        RecipientService,
         repository=unified_recipient_repository
     )
     
-    clean_recipient_task_service = providers.Factory(
-        CleanRecipientTaskService,
+    recipient_task_service = providers.Factory(
+        RecipientTaskService,
         task_repo=task_repository,
-        recipient_service=clean_recipient_service
+        recipient_service=recipient_service
     )
     
     
@@ -65,7 +65,8 @@ class ApplicationContainer(containers.DeclarativeContainer):
     )
     
     voice_processing_service = providers.Factory(
-        VoiceProcessingService
+        VoiceProcessingService,
+        openai_service=openai_service
     )
     
     image_processing_service = providers.Factory(

@@ -57,13 +57,19 @@ class ImageProcessingService(IImageProcessingService):
             
             logger.info(f"Successfully processed image: extracted {len(parsed_result.get('extracted_text', ''))} characters")
             
+            # Store in temporary cache for later access
+            from services.temporary_file_cache import get_screenshot_cache
+            cache = get_screenshot_cache()
+            cache.store_screenshot(file_id, image_bytes, file_name)
+            
             return {
                 'extracted_text': parsed_result.get('extracted_text', ''),
                 'summary': parsed_result.get('summary', ''),
                 'raw_analysis': analysis_result,
                 'source_type': 'screenshot',
                 'image_data': image_bytes,
-                'file_name': file_name
+                'file_name': file_name,
+                'file_id': file_id  # Include Telegram file_id for persistence
             }
             
         except Exception as e:

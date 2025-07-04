@@ -1,219 +1,175 @@
-"""Clean task service for recipient system - no legacy code."""
+"""Clean recipient task service - no ID prefixing, works with unified recipients."""
 
-from typing import List, Optional, Tuple, Dict, Any
-from datetime import datetime
-from models.task import TaskCreate, TaskDB, PlatformTaskData
-from models.recipient import Recipient
-from core.recipient_interfaces import IRecipientService
+from typing import List, Tuple, Optional, Dict
+from models.unified_recipient import UnifiedRecipient
+from services.recipient_service import RecipientService
 from core.interfaces import ITaskRepository
-from platforms import TaskPlatformFactory
-from core.exceptions import TaskCreationError, ValidationError
 from core.logging import get_logger
+from platforms.base import TaskPlatformFactory
+from models.task import PlatformTaskData
+from datetime import datetime, timedelta
 
 logger = get_logger(__name__)
 
 
 class RecipientTaskService:
-    """Clean task service using recipient system."""
+    """Clean service for creating tasks with unified recipients."""
     
-    def __init__(
-        self,
-        task_repo: ITaskRepository,
-        recipient_service: IRecipientService,
-        unified_recipient_service=None
-    ):
+    def __init__(self, task_repo: ITaskRepository, recipient_service: RecipientService):
         self.task_repo = task_repo
         self.recipient_service = recipient_service
-        self.unified_recipient_service = unified_recipient_service
     
-    async def create_task(
-        self,
-        user_id: int,
-        chat_id: int,
-        message_id: int,
-        task_data: TaskCreate,
-        recipient_ids: Optional[List[str]] = None,
-        initiator_link: Optional[str] = None,
-        screenshot_data: Optional[Dict[str, Any]] = None
-    ) -> Tuple[bool, Optional[str]]:
-        """Create task for specified recipients."""
+    def create_task_for_recipients(self, user_id: int, title: str, description: str = "", 
+                                  due_time: Optional[str] = None, specific_recipients: Optional[List[int]] = None,
+                                  screenshot_data: Optional[Dict] = None) -> Tuple[bool, Optional[str], Optional[Dict]]:
+        """Create task for specified recipients or defaults.
         
-        try:
-            # Validate task data
-            self._validate_task_data(task_data)
-            
-            # Get recipients to use
-            if recipient_ids:
-                recipients = self.recipient_service.get_recipients_by_ids(user_id, recipient_ids)
-                if not recipients:
-                    raise TaskCreationError("No valid recipients found")
-            else:
-                # Use unified service for better defaults (personal accounts only)
-                if self.unified_recipient_service:
-                    recipients = self.unified_recipient_service.get_default_task_recipients(user_id)
+        Returns:
+            Tuple of (success, feedback_message, action_buttons)
+        """
+        logger.info(f"Creating task '{title}' for user {user_id}")
+        
+        # Determine which recipients to use
+        if specific_recipients:
+            recipients = []
+            for recipient_id in specific_recipients:
+                recipient = self.recipient_service.get_recipient_by_id(user_id, recipient_id)
+                if recipient and recipient.enabled:
+                    recipients.append(recipient)
                 else:
-                    recipients = self.recipient_service.get_default_recipients(user_id)
-                    
-                if not recipients:
-                    raise TaskCreationError("No recipients configured")
-            
-            logger.info(f"Creating task for recipients: {[r.name for r in recipients]}")
-            
-            # Create task in local database
-            task_db_id = self.task_repo.create(
-                user_id=user_id,
-                chat_id=chat_id,
-                message_id=message_id,
-                task_data=task_data,
-                platform_type=recipients[0].platform_type  # Use first recipient's platform for DB
-            )
-            
-            if not task_db_id:
-                raise TaskCreationError("Failed to save task to database")
-            
-            logger.info(f"Task saved locally with ID {task_db_id}")
-            
-            # Create task on each recipient's platform
-            created_tasks = []
-            task_urls = []
-            
-            for recipient in recipients:
-                try:
-                    platform_task_id, error_message = await self._create_task_on_recipient(
-                        task_data, recipient, user_id, initiator_link, screenshot_data
-                    )
-                    
-                    if platform_task_id:
-                        # Update DB with platform task ID for first recipient
-                        if recipient == recipients[0]:
-                            self.task_repo.update_platform_id(task_db_id, platform_task_id, recipient.platform_type)
-                        
-                        logger.info(f"Task created on {recipient.name} with ID {platform_task_id}")
-                        
-                        # Generate task URL
-                        task_url = self._generate_task_url(platform_task_id, recipient)
-                        if task_url:
-                            task_urls.append(f"{recipient.name}: {task_url}")
-                        
-                        created_tasks.append(recipient.name)
-                    else:
-                        logger.warning(f"Failed to create task on {recipient.name}: {error_message}")
-                        
-                except Exception as e:
-                    logger.error(f"Error creating task on {recipient.name}: {e}")
-            
-            if created_tasks:
-                combined_urls = "\n".join(task_urls) if task_urls else None
-                logger.info(f"Successfully created task on: {', '.join(created_tasks)}")
-                
-                # Add warning for partial failures
-                if len(created_tasks) < len(recipients):
-                    failed_recipients = [r.name for r in recipients if r.name not in created_tasks]
-                    warning = f"\n\n⚠️ Failed to create on: {', '.join(failed_recipients)}"
-                    combined_urls = (combined_urls or "") + warning
-                
-                # Generate enhanced feedback with post-task actions
-                if self.unified_recipient_service:
-                    feedback, actions = self._generate_enhanced_feedback(user_id, recipients, task_urls, task_db_id, failed_recipients if len(created_tasks) < len(recipients) else None)
-                    return True, feedback, actions
-                else:
-                    return True, combined_urls, None
+                    logger.warning(f"Recipient {recipient_id} not found or disabled for user {user_id}")
+        else:
+            # Use default recipients (personal + any marked as default)
+            recipients = self.recipient_service.get_default_recipients(user_id)
+        
+        if not recipients:
+            logger.warning(f"No recipients available for user {user_id}")
+            return False, "❌ No recipients configured. Please add accounts first.", None
+        
+        # Create task in database using the existing task model
+        from models.task import TaskCreate
+        from datetime import datetime, timedelta
+        
+        # Use provided due_time or default to tomorrow at 9 AM UTC
+        if due_time:
+            due_time_str = due_time
+        else:
+            tomorrow_9am = (datetime.utcnow() + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
+            due_time_str = tomorrow_9am.strftime("%Y-%m-%dT%H:%M:%SZ")
+        
+        task_data = TaskCreate(
+            title=title,
+            description=description or "",
+            due_time=due_time_str
+        )
+        
+        # Extract screenshot metadata if available
+        screenshot_file_id = None
+        screenshot_filename = None
+        if screenshot_data:
+            screenshot_file_id = screenshot_data.get('file_id')
+            screenshot_filename = screenshot_data.get('file_name', 'screenshot.jpg')
+        
+        # Use dummy values for chat_id and message_id since this is a programmatic creation
+        task_id = self.task_repo.create(
+            user_id=user_id,
+            chat_id=0,  # Dummy chat ID
+            message_id=0,  # Dummy message ID
+            task_data=task_data,
+            screenshot_file_id=screenshot_file_id,
+            screenshot_filename=screenshot_filename
+        )
+        if not task_id:
+            logger.error(f"Failed to create task for user {user_id}")
+            return False, "❌ Failed to create task in database.", None
+        
+        # Create tasks on platforms
+        task_urls = []
+        failed_recipients = []
+        
+        for recipient in recipients:
+            success, url = self._create_platform_task(recipient, title, description, due_time_str, screenshot_data)
+            if success and url:
+                task_urls.append(url)
+                logger.info(f"Created task on {recipient.platform_type} for recipient {recipient.id}")
             else:
-                logger.error("Failed to create task on all recipients")
-                return False, None, None
-                
-        except Exception as e:
-            logger.error(f"Task creation failed: {e}")
-            raise TaskCreationError(f"Task creation failed: {e}")
-    
-    def _generate_enhanced_feedback(self, user_id: int, used_recipients: List[Recipient], task_urls: List[str], task_id: int, failed_recipients: Optional[List[str]] = None) -> Tuple[str, Optional[Dict[str, List[Dict[str, str]]]]]:
-        """Generate enhanced task creation feedback with post-task actions."""
-        logger.debug(f"Generating enhanced feedback for user {user_id}")
+                failed_recipients.append(recipient.name)
+                logger.error(f"Failed to create task on {recipient.platform_type} for recipient {recipient.id}")
         
-        # Basic success message with URLs  
-        feedback = "✅ **Task Created Successfully!**\n\n"
-        
+        # Generate feedback and action buttons
         if task_urls:
-            feedback += "🔗 **Created on (Personal Accounts):**\n"
-            for url in task_urls:
-                feedback += f"  • {url}\n"
-        
-        # Add warning for partial failures
-        if failed_recipients:
-            feedback += f"\n⚠️ **Failed to create on:** {', '.join(failed_recipients)}\n"
-        
-        # Generate post-task actions using unified service
-        actions = None
-        try:
-            actions = self.unified_recipient_service.generate_post_task_actions(user_id, used_recipients)
-            
-            # Add task_id to callback data
-            if actions["remove_actions"]:
-                for action in actions["remove_actions"]:
-                    action["callback_data"] = f"{action['callback_data']}_{task_id}"
-            if actions["add_actions"]:
-                for action in actions["add_actions"]:
-                    action["callback_data"] = f"{action['callback_data']}_{task_id}"
-            
-            if actions["remove_actions"] or actions["add_actions"]:
-                feedback += "\n📱 **Quick Actions:**\n"
-                
-                if actions["remove_actions"]:
-                    feedback += "**Remove from:**\n"
-                    for action in actions["remove_actions"]:
-                        feedback += f"  • {action['recipient_name']}\n"
-                
-                if actions["add_actions"]:
-                    feedback += "**Available to add:**\n"
-                    for action in actions["add_actions"]:
-                        feedback += f"  • {action['recipient_name']}\n"
-                
-                feedback += "\n💡 *Use the buttons below to quickly modify recipients*"
-            
-        except Exception as e:
-            logger.warning(f"Failed to generate post-task actions: {e}")
-            # Fall back to basic feedback without actions
-        
-        return feedback, actions
+            feedback = self._generate_success_feedback(recipients, task_urls, failed_recipients, title, description, due_time_str)
+            actions = self._generate_post_task_actions(user_id, recipients, task_id)
+            return True, feedback, actions
+        else:
+            feedback = f"❌ Failed to create task on all platforms: {', '.join(failed_recipients)}"
+            return False, feedback, None
     
-    async def _create_task_on_recipient(
-        self,
-        task_data: TaskCreate,
-        recipient: Recipient,
-        user_id: int,
-        initiator_link: Optional[str] = None,
-        screenshot_data: Optional[Dict[str, Any]] = None
-    ) -> Tuple[Optional[str], Optional[str]]:
-        """Create task on a specific recipient's platform."""
+    def add_task_to_recipient(self, user_id: int, task_id: int, recipient_id: int) -> Tuple[bool, str]:
+        """Add existing task to specific recipient."""
+        logger.info(f"Adding task {task_id} to recipient {recipient_id} for user {user_id}")
         
+        recipient = self.recipient_service.get_recipient_by_id(user_id, recipient_id)
+        if not recipient:
+            return False, f"❌ Recipient {recipient_id} not found"
+        
+        if not recipient.enabled:
+            return False, f"❌ {recipient.name} is disabled"
+        
+        # Get task details from database
+        task = self.task_repo.get_by_id(task_id)
+        if not task:
+            logger.error(f"Task {task_id} not found in database")
+            return False, f"❌ Task {task_id} not found"
+        
+        # Use the original task content
+        task_title = task.task_title
+        task_description = task.task_description
+        due_time_str = task.due_time
+        
+        # Prepare screenshot data if available
+        screenshot_data = None
+        if task.screenshot_file_id:
+            screenshot_data = {
+                'file_id': task.screenshot_file_id,
+                'file_name': task.screenshot_filename or 'screenshot.jpg'
+            }
+            logger.info(f"Retrieved screenshot data for task {task_id}: file_id={task.screenshot_file_id}")
+        
+        # Create task on platform
+        success, url = self._create_platform_task(recipient, task_title, task_description, due_time_str, screenshot_data)
+        if success and url:
+            logger.info(f"Added task {task_id} to {recipient.name}")
+            return True, f"✅ Added to {recipient.name}: `{url}`"
+        else:
+            logger.error(f"Failed to add task {task_id} to {recipient.name}")
+            return False, f"❌ Failed to add to {recipient.name}"
+    
+    def _create_platform_task(self, recipient: UnifiedRecipient, title: str, description: str, due_time: str, screenshot_data: Optional[Dict] = None) -> Tuple[bool, Optional[str]]:
+        """Create task on specific platform."""
         try:
-            # Get recipient's platform credentials
-            credentials = self.recipient_service.get_recipient_credentials(user_id, recipient.id)
-            if not credentials:
-                return None, f"No credentials found for {recipient.name}"
-            
             # Initialize platform
-            platform = TaskPlatformFactory.get_platform(recipient.platform_type, credentials)
+            platform = TaskPlatformFactory.get_platform(recipient.platform_type, recipient.credentials)
             if not platform:
-                return None, f"Failed to initialize {recipient.platform_type} platform"
+                logger.error(f"Failed to initialize {recipient.platform_type} platform")
+                return False, None
             
             # Prepare platform task data
             platform_task_data = PlatformTaskData(
-                title=task_data.title,
-                description=task_data.description,
-                due_time=task_data.due_time,
-                source_attachment=initiator_link
+                title=title,
+                description=description,
+                due_time=due_time
             )
             
             # Add platform-specific configuration
-            config = self.recipient_service.get_recipient_config(user_id, recipient.id)
-            if config:
+            if recipient.platform_config:
                 if recipient.platform_type == 'trello':
-                    platform_task_data.board_id = config.get('board_id')
-                    platform_task_data.list_id = config.get('list_id')
+                    platform_task_data.board_id = recipient.platform_config.get('board_id')
+                    platform_task_data.list_id = recipient.platform_config.get('list_id')
                     
                     if not platform_task_data.board_id or not platform_task_data.list_id:
-                        return None, f"Incomplete Trello configuration for {recipient.name}"
+                        logger.error(f"Incomplete Trello configuration for {recipient.name}")
+                        return False, None
             
             # Create task
             logger.debug(f"Creating task on {recipient.name} ({recipient.platform_type})")
@@ -221,79 +177,121 @@ class RecipientTaskService:
             
             if task_id:
                 logger.info(f"Successfully created task {task_id} on {recipient.name}")
-                return task_id, None
+                
+                # Add screenshot attachment if provided
+                if screenshot_data:
+                    logger.info(f"Attempting to attach screenshot to {recipient.platform_type} task {task_id} for recipient '{recipient.name}'")
+                    
+                    # Try to get image data from screenshot_data first
+                    image_data = screenshot_data.get('image_data')
+                    file_name = screenshot_data.get('file_name', 'screenshot.jpg')
+                    file_id = screenshot_data.get('file_id')
+                    
+                    # If no direct image_data, try to get it from cache using file_id
+                    if not image_data and file_id:
+                        logger.info(f"No direct image_data, attempting to retrieve from cache for file_id: {file_id}")
+                        from services.temporary_file_cache import get_screenshot_cache
+                        cache = get_screenshot_cache()
+                        cached_data = cache.get_screenshot(file_id)
+                        if cached_data:
+                            image_data = cached_data['image_data']
+                            file_name = cached_data['file_name']
+                            logger.info(f"Retrieved screenshot from cache: {len(image_data)} bytes")
+                        else:
+                            logger.warning(f"Screenshot not found in cache for file_id: {file_id}")
+                    
+                    # Attempt attachment if we have image data
+                    if image_data:
+                        try:
+                            success = platform.attach_screenshot(task_id, image_data, file_name)
+                            if success:
+                                logger.info(f"Successfully attached screenshot to {recipient.platform_type} task {task_id}")
+                            else:
+                                logger.warning(f"Failed to attach screenshot to {recipient.platform_type} task {task_id}")
+                        except Exception as e:
+                            logger.error(f"Error attaching screenshot to {recipient.platform_type} task: {e}")
+                    else:
+                        logger.warning(f"No image data available for screenshot attachment to {recipient.platform_type}")
+                
+                # Generate platform-specific URL
+                if recipient.platform_type == "todoist":
+                    url = f"https://todoist.com/showTask?id={task_id}"
+                elif recipient.platform_type == "trello":
+                    url = f"https://trello.com/c/{task_id}"
+                else:
+                    url = str(task_id)
+                return True, url
             else:
-                return None, f"Platform returned no task ID for {recipient.name}"
+                logger.error(f"Platform returned no task ID for {recipient.name}")
+                return False, None
                 
         except Exception as e:
-            logger.error(f"Failed to create task on {recipient.name}: {e}")
-            return None, str(e)
+            logger.error(f"Error creating task on {recipient.platform_type}: {e}")
+            return False, None
     
-    async def add_task_to_recipient(self, task_id: int, recipient_id: str, user_id: int) -> Tuple[bool, Optional[str]]:
-        """Add an existing task to an additional recipient."""
+    def _generate_success_feedback(self, recipients: List[UnifiedRecipient], task_urls: List[str], 
+                                 failed_recipients: List[str], title: str, description: str, due_time: str) -> str:
+        """Generate success feedback message with full task details."""
+        feedback_parts = ["✅ *Task Created Successfully!*\n"]
+        
+        # Add task details
+        feedback_parts.append(f"📝 *Title:* {title}")
+        if description and description.strip():
+            # Truncate long descriptions
+            desc_preview = description[:200] + "..." if len(description) > 200 else description
+            feedback_parts.append(f"📄 *Description:* {desc_preview}")
+        
+        # Format due time nicely
         try:
-            # Get the task from database
-            all_tasks = self.task_repo.get_by_user(user_id)
-            task_db = next((t for t in all_tasks if t.id == task_id), None)
-            if not task_db:
-                return False, "Task not found"
+            from datetime import datetime
+            due_dt = datetime.fromisoformat(due_time.replace('Z', '+00:00'))
+            due_formatted = due_dt.strftime("%Y-%m-%d at %H:%M UTC")
+            feedback_parts.append(f"⏰ *Due:* {due_formatted}")
+        except:
+            feedback_parts.append(f"⏰ *Due:* {due_time}")
             
-            # Get the recipient
-            recipients = self.recipient_service.get_recipients_by_ids(user_id, [recipient_id])
-            if not recipients:
-                return False, "Recipient not found"
-            
-            recipient = recipients[0]
-            
-            # Create task data from DB
-            task_data = TaskCreate(
-                title=task_db.title,
-                description=task_db.description,
-                due_time=task_db.due_time
-            )
-            
-            # Create task on recipient's platform
-            platform_task_id, error = await self._create_task_on_recipient(
-                task_data, recipient, user_id
-            )
-            
-            if platform_task_id:
-                task_url = self._generate_task_url(platform_task_id, recipient)
-                return True, f"✅ Added to {recipient.name}" + (f": {task_url}" if task_url else "")
-            else:
-                return False, f"Failed to add to {recipient.name}: {error}"
-                
-        except Exception as e:
-            logger.error(f"Error adding task to recipient: {e}")
-            return False, str(e)
+        feedback_parts.append("\n🔗 *Created on:*")
+        
+        for i, recipient in enumerate(recipients):
+            if i < len(task_urls):
+                feedback_parts.append(f"• {recipient.name}: `{task_urls[i]}`")
+        
+        if failed_recipients:
+            feedback_parts.append(f"\n❌ *Failed:* {', '.join(failed_recipients)}")
+        
+        return "\n".join(feedback_parts)
     
-    def _generate_task_url(self, task_id: str, recipient: Recipient) -> Optional[str]:
-        """Generate task URL for recipient."""
-        try:
-            if recipient.platform_type == 'todoist':
-                return f"https://todoist.com/showTask?id={task_id}"
-            elif recipient.platform_type == 'trello':
-                return f"https://trello.com/c/{task_id}"
-            
-            return None
-            
-        except Exception as e:
-            logger.error(f"Error generating task URL: {e}")
-            return None
-    
-    def _validate_task_data(self, task_data: TaskCreate) -> None:
-        """Validate task data."""
-        if not task_data.title or not task_data.title.strip():
-            raise ValidationError("Task title cannot be empty")
+    def _generate_post_task_actions(self, user_id: int, used_recipients: List[UnifiedRecipient], 
+                                  task_id: int) -> Dict[str, List[Dict[str, str]]]:
+        """Generate post-task action buttons."""
+        logger.debug(f"Generating post-task actions for user {user_id}, task {task_id}")
         
-        if not task_data.due_time:
-            raise ValidationError("Task due time is required")
+        used_recipient_ids = {r.id for r in used_recipients}
         
-        try:
-            # Validate due time format
-            if isinstance(task_data.due_time, str):
-                datetime.fromisoformat(task_data.due_time.replace('Z', '+00:00'))
-        except ValueError:
-            raise ValidationError("Invalid due time format")
+        # Actions to remove from recipients that were used
+        remove_actions = []
+        for recipient in used_recipients:
+            remove_actions.append({
+                "text": f"❌ Remove from {recipient.name}",
+                "callback_data": f"remove_task_from_{recipient.id}_{task_id}",
+                "recipient_id": str(recipient.id),
+                "recipient_name": recipient.name
+            })
         
-        logger.debug(f"Task data validation passed: {task_data.title}")
+        # Actions to add to recipients that weren't used
+        add_actions = []
+        all_recipients = self.recipient_service.get_enabled_recipients(user_id)
+        for recipient in all_recipients:
+            if recipient.id not in used_recipient_ids:
+                add_actions.append({
+                    "text": f"➕ Add to {recipient.name}",
+                    "callback_data": f"add_task_to_{recipient.id}_{task_id}",
+                    "recipient_id": str(recipient.id),
+                    "recipient_name": recipient.name
+                })
+        
+        logger.debug(f"Generated {len(remove_actions)} remove actions, {len(add_actions)} add actions")
+        return {
+            "remove_actions": remove_actions,
+            "add_actions": add_actions
+        }

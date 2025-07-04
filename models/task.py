@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Optional, Dict, Any
 from dataclasses import dataclass
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 
 @dataclass
 class TaskDB:
@@ -17,6 +17,8 @@ class TaskDB:
     due_time: str
     platform_task_id: Optional[str]
     platform_type: str
+    screenshot_file_id: Optional[str] = None  # Telegram file_id for screenshot
+    screenshot_filename: Optional[str] = None  # Original filename
 
 class TaskCreate(BaseModel):
     """Model for creating a new task."""
@@ -24,13 +26,15 @@ class TaskCreate(BaseModel):
     due_time: str = Field(description="The due time in UTC ISO 8601 format (YYYY-MM-DDTHH:MM:SSZ).")
     description: str = Field(description="The description or details of the task.")
     
-    @validator('title')
+    @field_validator('title')
+    @classmethod
     def title_must_not_be_empty(cls, v):
         if not v.strip():
             raise ValueError('Title cannot be empty')
         return v.strip()
     
-    @validator('description')
+    @field_validator('description')
+    @classmethod
     def description_must_not_be_empty(cls, v):
         if not v.strip():
             raise ValueError('Description cannot be empty')

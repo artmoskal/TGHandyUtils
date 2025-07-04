@@ -49,16 +49,16 @@ async def handle_task_creation_response(message: Message, success: bool, feedbac
     # If we have actions, show keyboard with action buttons
     if actions and (actions.get("remove_actions") or actions.get("add_actions")):
         keyboard = get_post_task_actions_keyboard(actions)
-        await message.reply(feedback or "✅ Task created!", reply_markup=keyboard, parse_mode='Markdown')
+        await message.reply(feedback or "✅ Task created!", reply_markup=keyboard, parse_mode='Markdown', disable_web_page_preview=True)
     else:
         # No actions available, just show the feedback
-        await message.reply(feedback or "✅ Task created!", parse_mode='Markdown')
+        await message.reply(feedback or "✅ Task created!", parse_mode='Markdown', disable_web_page_preview=True)
 
 
 async def process_user_input(text: str, user_id: int, message_obj: Message, state: FSMContext) -> bool:
     """Process user text input with threading support - groups messages within 1 second."""
     try:
-        recipient_service = container.clean_recipient_service()
+        recipient_service = container.recipient_service()
         recipients = recipient_service.get_enabled_recipients(user_id)
         
         if not recipients:
@@ -106,7 +106,7 @@ async def process_user_input(text: str, user_id: int, message_obj: Message, stat
 async def process_user_input_with_photo(text: str, user_id: int, message_obj: Message, state: FSMContext, bot: Bot) -> bool:
     """Process user input that includes a photo, with threading support."""
     try:
-        recipient_service = container.clean_recipient_service()
+        recipient_service = container.recipient_service()
         recipients = recipient_service.get_enabled_recipients(user_id)
         
         if not recipients:
@@ -140,8 +140,8 @@ async def process_user_input_with_photo(text: str, user_id: int, message_obj: Me
         
         if not extracted_text.strip() and not text.strip():
             await message_obj.reply(
-                "📸 **Screenshot Processed**\n\n"
-                f"🔍 **Analysis:** {summary}\n\n"
+                "📸 *Screenshot Processed*\n\n"
+                f"🔍 *Analysis:* {summary}\n\n"
                 "⚠️ No text was found in the image and no caption provided to create a task from."
             )
             return False
@@ -247,7 +247,7 @@ async def process_thread_with_photos(message: Message, thread_content: List[Tupl
             )
         
         # Create task using recipient task service WITH screenshot data
-        task_service = container.clean_recipient_task_service()
+        task_service = container.recipient_task_service()
         success, feedback, actions = task_service.create_task_for_recipients(
             user_id=owner_id,
             title=task_data.title,
@@ -302,7 +302,7 @@ async def process_thread(message: Message, thread_content: List[Tuple[str, str]]
             )
         
         # Create task using recipient task service
-        task_service = container.clean_recipient_task_service()
+        task_service = container.recipient_task_service()
         success, feedback, actions = task_service.create_task_for_recipients(
             user_id=owner_id,
             title=task_data.title,
@@ -338,7 +338,7 @@ async def show_recipient_management(message: Message, state: FSMContext):
     user_id = message.from_user.id
     
     try:
-        recipient_service = container.clean_recipient_service()
+        recipient_service = container.recipient_service()
         recipients = recipient_service.get_all_recipients(user_id)
         
         keyboard = get_recipient_management_keyboard(recipients)
@@ -363,6 +363,7 @@ async def show_recipient_management(message: Message, state: FSMContext):
     except Exception as e:
         logger.error(f"Failed to show recipient management for user {user_id}: {e}")
         await message.reply("Error loading recipient management. Please try again.")
+
 
 
 @router.callback_query(lambda c: c.data == "add_user_platform")
@@ -395,7 +396,13 @@ async def handle_platform_type_selection(callback_query: CallbackQuery, state: F
     
     help_text = get_platform_help_text(platform_type)
     
-    await callback_query.message.edit_text(help_text)
+    # Add back button
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_setup")]
+    ])
+    
+    await callback_query.message.edit_text(help_text, reply_markup=keyboard, disable_web_page_preview=True)
     
     await state.set_state(RecipientState.waiting_for_credentials)
     await callback_query.answer()
@@ -412,7 +419,7 @@ async def handle_credentials_input(message: Message, state: FSMContext):
         platform_type = state_data.get('platform_type')
         mode = state_data.get('mode', 'user_platform')
         
-        recipient_service = container.clean_recipient_service()
+        recipient_service = container.recipient_service()
         
         logger.error(f"🔍 CREDENTIALS HANDLER: user={user_id}, platform={platform_type}, mode={mode}, state_data={state_data}")
         
@@ -515,10 +522,11 @@ async def handle_trello_configuration(message: Message, state: FSMContext):
         keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
         
         await message.reply(
-            "🎯 **Trello Configuration**\n\n"
+            "🎯 *Trello Configuration*\n\n"
             "Select the board where you want to create tasks:",
             reply_markup=keyboard,
-            parse_mode='Markdown'
+            parse_mode='Markdown',
+            disable_web_page_preview=True
         )
         
         await state.set_state(RecipientState.waiting_for_trello_config)
@@ -528,7 +536,8 @@ async def handle_trello_configuration(message: Message, state: FSMContext):
         await message.reply(
             "❌ Failed to configure Trello. Please check your credentials.\n\n"
             "Format: `API_KEY:TOKEN`\n\n"
-            "Get your credentials at: https://trello.com/app-key"
+            "Get your credentials at: https://trello.com/app-key",
+            disable_web_page_preview=True
         )
         await state.clear()
 
@@ -573,10 +582,11 @@ async def handle_trello_board_selection(callback_query: CallbackQuery, state: FS
         keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
         
         await callback_query.message.edit_text(
-            "🎯 **Trello List Selection**\n\n"
+            "🎯 *Trello List Selection*\n\n"
             "Select the list where tasks will be created:",
             reply_markup=keyboard,
-            parse_mode='Markdown'
+            parse_mode='Markdown',
+            disable_web_page_preview=True
         )
         
         await callback_query.answer()
@@ -599,7 +609,7 @@ async def handle_trello_list_selection(callback_query: CallbackQuery, state: FSM
         mode = state_data.get('mode', 'user_platform')
         
         user_id = callback_query.from_user.id
-        recipient_service = container.clean_recipient_service()
+        recipient_service = container.recipient_service()
         
         # Create platform config with board and list IDs
         platform_config = {
@@ -666,7 +676,7 @@ async def handle_trello_list_selection(callback_query: CallbackQuery, state: FSM
             
             if success:
                 await callback_query.message.edit_text(
-                    "✅ **Trello Configuration Updated!**\n\n"
+                    "✅ *Trello Configuration Updated!*\n\n"
                     "Your Trello recipient is now configured with the selected board and list.\n\n"
                     "🎯 You can now create tasks that will appear in your Trello board!"
                 )
@@ -684,6 +694,13 @@ async def handle_trello_list_selection(callback_query: CallbackQuery, state: FSM
         await callback_query.answer("❌ Failed to complete setup")
         await state.clear()
 
+
+@router.callback_query(lambda c: c.data == "cancel_setup")
+async def cancel_setup(callback_query: CallbackQuery, state: FSMContext):
+    """Cancel current setup and return to recipient management."""
+    await state.clear()
+    await show_recipient_management_from_callback(callback_query)
+    await callback_query.answer("Setup cancelled")
 
 @router.callback_query(lambda c: c.data == "back_to_trello_boards")
 async def back_to_trello_boards(callback_query: CallbackQuery, state: FSMContext):
@@ -719,7 +736,7 @@ async def back_to_trello_boards(callback_query: CallbackQuery, state: FSMContext
         keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
         
         await callback_query.message.edit_text(
-            "🎯 **Trello Configuration**\n\n"
+            "🎯 *Trello Configuration*\n\n"
             "Select the board where you want to create tasks:",
             reply_markup=keyboard,
             parse_mode='Markdown'
@@ -742,7 +759,7 @@ async def add_shared_recipient(callback_query: CallbackQuery, state: FSMContext)
     ])
     
     await callback_query.message.edit_text(
-        "👥 **Add Shared Recipient**\n\n"
+        "👥 *Add Shared Recipient*\n\n"
         "Enter a name for this recipient (e.g., \"Wife's Trello\", \"Team Todoist\"):",
         reply_markup=cancel_keyboard,
         parse_mode='Markdown'
@@ -766,7 +783,7 @@ async def handle_recipient_name(message: Message, state: FSMContext):
     keyboard = get_platform_selection_keyboard()
     
     await message.reply(
-        f"👥 **Adding: {name}**\n\n"
+        f"👥 *Adding: {name}*\n\n"
         "Select the account type:",
         reply_markup=keyboard,
         parse_mode='Markdown'
@@ -778,13 +795,17 @@ async def handle_recipient_name(message: Message, state: FSMContext):
 @router.callback_query(lambda c: c.data.startswith("recipient_"))
 async def handle_recipient_action(callback_query: CallbackQuery, state: FSMContext):
     """Handle recipient-specific actions."""
+    logger.error(f"🔍 DEBUG handle_recipient_action: callback_data='{callback_query.data}'")
     action_data = callback_query.data.replace("recipient_", "")
+    logger.error(f"🔍 DEBUG handle_recipient_action: action_data='{action_data}'")
     
     if action_data.startswith("edit_"):
         recipient_id = action_data.replace("edit_", "")
+        logger.error(f"🔍 DEBUG handle_recipient_action: calling edit_recipient with id='{recipient_id}'")
         await edit_recipient(callback_query, state, recipient_id)
     elif action_data.startswith("remove_"):
         recipient_id = action_data.replace("remove_", "")
+        logger.error(f"🔍 DEBUG handle_recipient_action: calling remove_recipient with id='{recipient_id}'")
         await remove_recipient(callback_query, state, recipient_id)
 
 
@@ -795,7 +816,7 @@ async def handle_toggle_recipient(callback_query: CallbackQuery, state: FSMConte
     
     try:
         user_id = callback_query.from_user.id
-        recipient_service = container.clean_recipient_service()
+        recipient_service = container.recipient_service()
         
         # Toggle recipient enabled status
         success = recipient_service.toggle_recipient_enabled(user_id, recipient_id)
@@ -815,12 +836,14 @@ async def handle_toggle_recipient(callback_query: CallbackQuery, state: FSMConte
 async def edit_recipient(callback_query: CallbackQuery, state: FSMContext, recipient_id: str):
     """Edit recipient."""
     user_id = callback_query.from_user.id
+    logger.error(f"🔍 DEBUG edit_recipient: user_id={user_id}, recipient_id='{recipient_id}' (type: {type(recipient_id)})")
     
     try:
-        recipient_service = container.clean_recipient_service()
+        recipient_service = container.recipient_service()
         recipients = recipient_service.get_all_recipients(user_id)
+        logger.error(f"🔍 DEBUG edit_recipient: Found {len(recipients)} recipients: {[(r.id, r.name, type(r.id)) for r in recipients]}")
         
-        recipient = next((r for r in recipients if r.id == recipient_id), None)
+        recipient = next((r for r in recipients if str(r.id) == recipient_id), None)
         if not recipient:
             await callback_query.answer("Recipient not found.")
             return
@@ -832,12 +855,13 @@ async def edit_recipient(callback_query: CallbackQuery, state: FSMContext, recip
             # Check if Trello has configuration
             config = recipient_service.get_recipient_config(user_id, recipient_id)
             if not config or not config.get('list_id'):
-                config_status = "\n⚠️ **Configuration needed**: Board/List not set"
+                config_status = "\n⚠️ *Configuration needed*: Board/List not set"
         
+        recipient_type = "Personal" if recipient.is_personal else "Shared"
         await callback_query.message.edit_text(
-            f"✏️ **Edit: {recipient.name}**\n\n"
+            f"✏️ *Edit: {recipient.name}*\n\n"
             f"Platform: {recipient.platform_type.title()}\n"
-            f"Type: {recipient.type.replace('_', ' ').title()}\n"
+            f"Type: {recipient_type}\n"
             f"Status: {'Enabled' if recipient.enabled else 'Disabled'}{config_status}\n\n"
             "Choose an action:",
             reply_markup=keyboard,
@@ -856,11 +880,15 @@ async def configure_recipient(callback_query: CallbackQuery, state: FSMContext):
     user_id = callback_query.from_user.id
     
     try:
-        recipient_service = container.clean_recipient_service()
+        recipient_service = container.recipient_service()
         recipients = recipient_service.get_all_recipients(user_id)
         
-        recipient = next((r for r in recipients if r.id == recipient_id), None)
+        logger.error(f"🔍 DEBUG configure_recipient: Looking for recipient_id='{recipient_id}' (type: {type(recipient_id)})")
+        logger.error(f"🔍 DEBUG configure_recipient: Available recipients: {[(r.id, r.name, type(r.id)) for r in recipients]}")
+        
+        recipient = next((r for r in recipients if str(r.id) == recipient_id), None)
         if not recipient:
+            logger.error(f"🔍 DEBUG configure_recipient: Recipient not found after search")
             await callback_query.answer("Recipient not found.")
             return
         
@@ -927,7 +955,7 @@ async def configure_existing_trello(callback_query: CallbackQuery, state: FSMCon
         keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
         
         await callback_query.message.edit_text(
-            "🎯 **Configure Trello**\n\n"
+            "🎯 *Configure Trello*\n\n"
             "Select the board where you want to create tasks:",
             reply_markup=keyboard,
             parse_mode='Markdown'
@@ -950,7 +978,7 @@ async def remove_recipient(callback_query: CallbackQuery, state: FSMContext, rec
     user_id = callback_query.from_user.id
     
     try:
-        recipient_service = container.clean_recipient_service()
+        recipient_service = container.recipient_service()
         success = recipient_service.remove_recipient(user_id, recipient_id)
         
         if success:
@@ -960,7 +988,7 @@ async def remove_recipient(callback_query: CallbackQuery, state: FSMContext, rec
             recipients = recipient_service.get_all_recipients(user_id)
             keyboard = get_recipient_management_keyboard(recipients)
             
-            text = "🎯 **Recipient Management**\n\n"
+            text = "🎯 *Recipient Management*\n\n"
             if recipients:
                 text += "Your configured recipients:\n"
                 for recipient in recipients:
@@ -986,7 +1014,7 @@ async def recipient_settings(callback_query: CallbackQuery, state: FSMContext):
     user_id = callback_query.from_user.id
     
     try:
-        recipient_service = container.clean_recipient_service()
+        recipient_service = container.recipient_service()
         ui_enabled = recipient_service.is_recipient_ui_enabled(user_id)
         notifications_enabled = recipient_service.are_telegram_notifications_enabled(user_id)
         
@@ -1003,7 +1031,7 @@ async def recipient_settings(callback_query: CallbackQuery, state: FSMContext):
         ]
         
         await callback_query.message.edit_text(
-            f"⚙️ **Recipient Settings**\n\n"
+            f"⚙️ *Recipient Settings*\n\n"
             f"Recipient Selection UI: {ui_status}\n"
             f"Telegram Notifications: {notifications_status}\n\n"
             "• Recipient UI: When enabled, you'll be asked to choose recipients for each task.\n"
@@ -1023,7 +1051,7 @@ async def toggle_recipient_ui(callback_query: CallbackQuery, state: FSMContext):
     logger.info(f"Toggle recipient UI called for user {user_id}")
     
     try:
-        recipient_service = container.clean_recipient_service()
+        recipient_service = container.recipient_service()
         logger.debug(f"Got recipient service for user {user_id}")
         
         current_status = recipient_service.is_recipient_ui_enabled(user_id)
@@ -1058,7 +1086,7 @@ async def toggle_telegram_notifications(callback_query: CallbackQuery, state: FS
     logger.error(f"🔍 TELEGRAM NOTIFICATIONS TOGGLE called for user {user_id}")
     
     try:
-        recipient_service = container.clean_recipient_service()
+        recipient_service = container.recipient_service()
         current_status = recipient_service.are_telegram_notifications_enabled(user_id)
         new_status = not current_status
         
@@ -1115,7 +1143,7 @@ async def create_task_with_recipients(message: Message, state: FSMContext):
     user_id = message.from_user.id
     
     try:
-        recipient_service = container.clean_recipient_service()
+        recipient_service = container.recipient_service()
         recipients = recipient_service.get_enabled_recipients(user_id)
         
         if not recipients:
@@ -1132,7 +1160,7 @@ async def create_task_with_recipients(message: Message, state: FSMContext):
             keyboard = get_recipient_selection_keyboard(recipients, [])
             
             await message.reply(
-                "🎯 **Create Task**\n\n"
+                "🎯 *Create Task*\n\n"
                 "First, choose recipients for your task:",
                 reply_markup=keyboard,
                 parse_mode='Markdown'
@@ -1157,11 +1185,17 @@ async def show_main_menu(message: Message, state: FSMContext):
     """Show main menu."""
     keyboard = get_main_menu_keyboard()
     await message.reply(
-        "🎯 **Main Menu**\n\nChoose what you'd like to do:",
+        "🎯 *Main Menu*\n\nChoose what you'd like to do:",
         reply_markup=keyboard,
         parse_mode='Markdown'
     )
 
+
+@router.message(Command('cancel'))
+async def cancel_command(message: Message, state: FSMContext):
+    """Cancel any ongoing operation and clear state."""
+    await state.clear()
+    await message.reply("❌ Cancelled. You can now use any command normally.")
 
 @router.message(Command('settings'))
 async def show_settings(message: Message, state: FSMContext):
@@ -1169,8 +1203,11 @@ async def show_settings(message: Message, state: FSMContext):
     user_id = message.from_user.id
     logger.info(f"Settings command called for user {user_id}")
     
+    # Clear any existing state to prevent conflicts
+    await state.clear()
+    
     try:
-        recipient_service = container.clean_recipient_service()
+        recipient_service = container.recipient_service()
         prefs = recipient_service.get_user_preferences(user_id)
         logger.info(f"Retrieved prefs for user {user_id}: {prefs}")
         
@@ -1180,14 +1217,15 @@ async def show_settings(message: Message, state: FSMContext):
         notifications = "Enabled" if prefs and prefs.telegram_notifications else "Disabled"
         recipient_ui = "Enabled" if prefs and prefs.show_recipient_ui else "Disabled"
         
-        text = f"⚙️ **Your Settings**\n\n"
-        text += f"👤 **Name:** {owner_name}\n"
-        text += f"🌍 **Location:** {location}\n"
-        text += f"🔔 **Notifications:** {notifications}\n"
-        text += f"🎯 **Recipient UI:** {recipient_ui}\n\n"
+        text = f"⚙️ *Your Settings*\n\n"
+        text += f"👤 *Name:* {owner_name}\n"
+        text += f"🌍 *Location:* {location}\n"
+        text += f"🔔 *Notifications:* {notifications}\n"
+        text += f"🎯 *Recipient UI:* {recipient_ui}\n\n"
         text += "Select an option to update:"
         
         keyboard = get_settings_main_keyboard()
+        logger.error(f"🔍 DEBUG: Settings keyboard buttons: {[btn[0].text + ' -> ' + btn[0].callback_data for btn in keyboard.inline_keyboard]}")
         await message.reply(text, reply_markup=keyboard, parse_mode='Markdown')
         
     except Exception as e:
@@ -1200,13 +1238,13 @@ async def initiate_drop_user_data(message: Message, state: FSMContext):
     """Initiate user data deletion process."""
     keyboard = get_delete_confirmation_keyboard()
     await message.reply(
-        "⚠️ **DELETE ALL DATA**\n\n"
+        "⚠️ *DELETE ALL DATA*\n\n"
         "This will permanently delete:\n"
         "• All your connected accounts\n"
         "• All shared recipients\n"  
         "• All your preferences\n"
         "• All associated data\n\n"
-        "**This action cannot be undone!**\n\n"
+        "*This action cannot be undone!*\n\n"
         "Are you sure you want to continue?",
         reply_markup=keyboard,
         parse_mode='Markdown'
@@ -1232,14 +1270,14 @@ async def handle_recipient_selection(callback_query: CallbackQuery, state: FSMCo
         
         # Update keyboard to show selection
         user_id = callback_query.from_user.id
-        recipient_service = container.clean_recipient_service()
+        recipient_service = container.recipient_service()
         recipients = recipient_service.get_enabled_recipients(user_id)
         
         keyboard = get_recipient_selection_keyboard(recipients, selected_recipients)
         
         selected_count = len(selected_recipients)
         await callback_query.message.edit_text(
-            f"🎯 **Create Task**\n\n"
+            f"🎯 *Create Task*\n\n"
             f"Choose recipients for your task:\n"
             f"Selected: {selected_count} recipients",
             reply_markup=keyboard,
@@ -1265,7 +1303,7 @@ async def confirm_recipients(callback_query: CallbackQuery, state: FSMContext):
             return
         
         await callback_query.message.edit_text(
-            f"📝 **Create Task**\n\n"
+            f"📝 *Create Task*\n\n"
             f"Recipients selected: {len(selected_recipients)}\n\n"
             f"Now enter your task description:",
             parse_mode='Markdown'
@@ -1304,7 +1342,7 @@ async def confirm_transcription(callback_query: CallbackQuery, state: FSMContext
         await callback_query.message.edit_text("✅ Creating task from voice message...")
         
         # Check if user has platforms configured
-        recipient_service = container.clean_recipient_service()
+        recipient_service = container.recipient_service()
         recipients = recipient_service.get_enabled_recipients(user_id)
         
         if not recipients:
@@ -1352,7 +1390,7 @@ async def confirm_transcription(callback_query: CallbackQuery, state: FSMContext
             )
         
         # Create task using recipient task service
-        task_service = container.clean_recipient_task_service()
+        task_service = container.recipient_task_service()
         success, feedback, actions = task_service.create_task_for_recipients(
             user_id=user_id,
             title=task_data.title,
@@ -1364,9 +1402,9 @@ async def confirm_transcription(callback_query: CallbackQuery, state: FSMContext
             # For voice tasks, we'll edit the existing message
             if actions and (actions.get("remove_actions") or actions.get("add_actions")):
                 keyboard = get_post_task_actions_keyboard(actions)
-                await callback_query.message.edit_text(feedback or "✅ Task created!", reply_markup=keyboard, parse_mode='Markdown')
+                await callback_query.message.edit_text(feedback or "✅ Task created!", reply_markup=keyboard, parse_mode='Markdown', disable_web_page_preview=True)
             else:
-                await callback_query.message.edit_text(feedback or "✅ Task created!", parse_mode='Markdown')
+                await callback_query.message.edit_text(feedback or "✅ Task created!", parse_mode='Markdown', disable_web_page_preview=True)
         else:
             await callback_query.message.edit_text(
                 "❌ Failed to create task from voice message.\n\n"
@@ -1403,7 +1441,7 @@ async def handle_add_task_to_recipient(callback_query: CallbackQuery):
         user_id = callback_query.from_user.id
         
         # Get task service and add task to recipient
-        task_service = container.clean_recipient_task_service()
+        task_service = container.recipient_task_service()
         success, message = task_service.add_task_to_recipient(
             user_id=user_id,
             task_id=int(task_id),
@@ -1415,7 +1453,8 @@ async def handle_add_task_to_recipient(callback_query: CallbackQuery):
             await callback_query.message.edit_text(
                 callback_query.message.text + f"\n\n{message}",
                 parse_mode='Markdown',
-                reply_markup=None  # Remove keyboard
+                reply_markup=None,  # Remove keyboard
+                disable_web_page_preview=True
             )
             await callback_query.answer("✅ Task added successfully!")
         else:
@@ -1442,7 +1481,7 @@ async def handle_remove_task_from_recipient(callback_query: CallbackQuery):
         await callback_query.answer("⚠️ Task removal coming soon!")
         
         # Update message to show acknowledgment
-        recipient_service = container.clean_recipient_service()
+        recipient_service = container.recipient_service()
         recipient = recipient_service.get_recipient_by_id(callback_query.from_user.id, int(recipient_id))
         recipient_name = recipient.name if recipient else "recipient"
         
@@ -1485,7 +1524,7 @@ async def handle_task_creation(message: Message, state: FSMContext):
         
         try:
             # Get user info for proper parsing context
-            recipient_service = container.clean_recipient_service()
+            recipient_service = container.recipient_service()
             user_prefs = recipient_service.get_user_preferences(user_id)
             owner_name = user_prefs.owner_name if user_prefs else "User"
             location = user_prefs.location if user_prefs else None
@@ -1517,7 +1556,7 @@ async def handle_task_creation(message: Message, state: FSMContext):
             )
         
         # Create task using recipient task service
-        task_service = container.clean_recipient_task_service()
+        task_service = container.recipient_task_service()
         success, feedback, actions = task_service.create_task_for_recipients(
             user_id=user_id,
             title=task_data.title,
@@ -1596,7 +1635,7 @@ async def handle_owner_name_input(message: Message, state: FSMContext):
         return
     
     try:
-        recipient_service = container.clean_recipient_service()
+        recipient_service = container.recipient_service()
         logger.info(f"Attempting to update owner name for user {user_id} to '{owner_name}'")
         success = recipient_service.update_owner_name(user_id, owner_name)
         logger.info(f"Update owner name result: {success}")
@@ -1605,7 +1644,7 @@ async def handle_owner_name_input(message: Message, state: FSMContext):
             await state.clear()
             keyboard = get_back_to_settings_keyboard()
             await message.reply(
-                f"✅ **Name Updated**\n\n"
+                f"✅ *Name Updated*\n\n"
                 f"Your name has been set to: {owner_name}",
                 reply_markup=keyboard,
                 parse_mode='Markdown'
@@ -1632,14 +1671,14 @@ async def handle_location_input(message: Message, state: FSMContext):
         return
     
     try:
-        recipient_service = container.clean_recipient_service()
+        recipient_service = container.recipient_service()
         success = recipient_service.update_location(user_id, location)
         
         if success:
             await state.clear()
             keyboard = get_back_to_settings_keyboard()
             await message.reply(
-                f"✅ **Location Updated**\n\n"
+                f"✅ *Location Updated*\n\n"
                 f"Your location has been set to: {location}\n\n"
                 f"This will be used for timezone handling in task scheduling.",
                 reply_markup=keyboard,
@@ -1659,10 +1698,12 @@ async def handle_location_input(message: Message, state: FSMContext):
 async def show_recipient_management_from_callback(callback_query: CallbackQuery):
     """Show unified recipient management from callback."""
     user_id = callback_query.from_user.id
+    logger.error(f"🔍 DEBUG: show_recipient_management_from_callback called for user {user_id}")
     
     try:
-        recipient_service = container.clean_recipient_service()
+        recipient_service = container.recipient_service()
         all_recipients = recipient_service.get_all_recipients(user_id)
+        logger.error(f"🔍 DEBUG: Found {len(all_recipients)} recipients")
         
         # Generate display info
         personal_recipients = [r for r in all_recipients if r.is_personal]
@@ -1701,11 +1742,11 @@ async def show_recipient_management_from_callback(callback_query: CallbackQuery)
         keyboard = get_recipient_management_keyboard(all_recipients)
         
         if display_info["total_personal"] > 0 or display_info["total_available"] > 0:
-            text = "🎯 **RECIPIENTS**\n\n"
+            text = "🎯 *RECIPIENTS*\n\n"
             
             # Personal accounts section
             if display_info["total_personal"] > 0:
-                text += "👤 **Personal Accounts** *(Auto-selected for tasks)*\n"
+                text += "👤 *Personal Accounts* *(Auto-selected for tasks)*\n"
                 for personal in display_info["personal"]:
                     platform_emoji = "📝" if personal["platform_type"] == "todoist" else "📋"
                     text += f"  {platform_emoji} {personal['name']} - {personal['status']}\n"
@@ -1713,7 +1754,7 @@ async def show_recipient_management_from_callback(callback_query: CallbackQuery)
             
             # Shared accounts section  
             if display_info["total_available"] > 0:
-                text += "👥 **Shared Accounts** *(Available to add)*\n"
+                text += "👥 *Shared Accounts* *(Available to add)*\n"
                 for available in display_info["available"]:
                     platform_emoji = "📝" if available["platform_type"] == "todoist" else "📋"
                     text += f"  {platform_emoji} {available['name']} - {available['status']}\n"
@@ -1721,15 +1762,15 @@ async def show_recipient_management_from_callback(callback_query: CallbackQuery)
             
             # Summary
             total_enabled = display_info["total_enabled_personal"] + display_info["total_enabled_available"]
-            text += f"📊 **Summary:** {total_enabled} active recipients\n\n"
+            text += f"📊 *Summary:* {total_enabled} active recipients\n\n"
             text += "💡 Tap any recipient above to edit it."
         else:
-            text = "🎯 **RECIPIENT SETUP**\n\n"
+            text = "🎯 *RECIPIENT SETUP*\n\n"
             text += "👋 Welcome! You haven't connected any recipients yet.\n\n"
-            text += "🎯 **What are recipients?**\n"
+            text += "🎯 *What are recipients?*\n"
             text += "Recipients are accounts where your tasks will be created:\n"
-            text += "• **Personal**: Your own Todoist/Trello (auto-selected)\n"
-            text += "• **Shared**: Others' accounts you have access to\n\n"
+            text += "• *Personal*: Your own Todoist/Trello (auto-selected)\n"
+            text += "• *Shared*: Others' accounts you have access to\n\n"
             text += "🚀 Get started by adding your first recipient below!"
         
         await callback_query.message.edit_text(text, reply_markup=keyboard, parse_mode='Markdown')
@@ -1744,6 +1785,7 @@ async def show_recipient_management_from_callback(callback_query: CallbackQuery)
 @router.callback_query(lambda c: c.data == "show_recipients")
 async def show_recipients_callback(callback_query: CallbackQuery, state: FSMContext):
     """Show recipients from menu."""
+    logger.error(f"🔍 DEBUG: show_recipients_callback triggered!")
     await show_recipient_management_from_callback(callback_query)
 
 
@@ -1753,7 +1795,7 @@ async def create_task_callback(callback_query: CallbackQuery, state: FSMContext)
     user_id = callback_query.from_user.id
     
     try:
-        recipient_service = container.clean_recipient_service()
+        recipient_service = container.recipient_service()
         recipients = recipient_service.get_enabled_recipients(user_id)
         
         if not recipients:
@@ -1770,7 +1812,7 @@ async def create_task_callback(callback_query: CallbackQuery, state: FSMContext)
             keyboard = get_recipient_selection_keyboard(recipients, [])
             
             await callback_query.message.edit_text(
-                "🎯 **Create Task**\n\n"
+                "🎯 *Create Task*\n\n"
                 "First, choose recipients for your task:",
                 reply_markup=keyboard,
                 parse_mode='Markdown'
@@ -1798,7 +1840,7 @@ async def show_settings_callback(callback_query: CallbackQuery, state: FSMContex
     user_id = callback_query.from_user.id
     
     try:
-        recipient_service = container.clean_recipient_service()
+        recipient_service = container.recipient_service()
         prefs = recipient_service.get_user_preferences(user_id)
         
         # Build settings display
@@ -1807,11 +1849,11 @@ async def show_settings_callback(callback_query: CallbackQuery, state: FSMContex
         notifications = "Enabled" if prefs and prefs.telegram_notifications else "Disabled"
         recipient_ui = "Enabled" if prefs and prefs.show_recipient_ui else "Disabled"
         
-        text = f"⚙️ **Your Settings**\n\n"
-        text += f"👤 **Name:** {owner_name}\n"
-        text += f"🌍 **Location:** {location}\n"
-        text += f"🔔 **Notifications:** {notifications}\n"
-        text += f"🎯 **Recipient UI:** {recipient_ui}\n\n"
+        text = f"⚙️ *Your Settings*\n\n"
+        text += f"👤 *Name:* {owner_name}\n"
+        text += f"🌍 *Location:* {location}\n"
+        text += f"🔔 *Notifications:* {notifications}\n"
+        text += f"🎯 *Recipient UI:* {recipient_ui}\n\n"
         text += "Select an option to update:"
         
         keyboard = get_settings_main_keyboard()
@@ -1828,7 +1870,7 @@ async def back_to_menu(callback_query: CallbackQuery, state: FSMContext):
     """Go back to main menu."""
     keyboard = get_main_menu_keyboard()
     await callback_query.message.edit_text(
-        "🎯 **Main Menu**\n\nChoose what you'd like to do:",
+        "🎯 *Main Menu*\n\nChoose what you'd like to do:",
         reply_markup=keyboard,
         parse_mode='Markdown'
     )
@@ -1849,7 +1891,7 @@ async def profile_settings_callback(callback_query: CallbackQuery, state: FSMCon
     keyboard = get_profile_settings_keyboard()
     
     await callback_query.message.edit_text(
-        "👤 **Profile Settings**\n\n"
+        "👤 *Profile Settings*\n\n"
         "Manage your personal information:",
         reply_markup=keyboard,
         parse_mode='Markdown'
@@ -1861,9 +1903,16 @@ async def profile_settings_callback(callback_query: CallbackQuery, state: FSMCon
 async def update_owner_name_callback(callback_query: CallbackQuery, state: FSMContext):
     """Start owner name update process."""
     logger.info(f"Update owner name callback triggered for user {callback_query.from_user.id}")
+    
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    cancel_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Cancel", callback_data="back_to_settings")]
+    ])
+    
     await callback_query.message.edit_text(
-        "👤 **Update Your Name**\n\n"
+        "👤 *Update Your Name*\n\n"
         "Enter your name (this helps with personalized task creation):",
+        reply_markup=cancel_keyboard,
         parse_mode='Markdown'
     )
     await state.set_state(RecipientState.waiting_for_owner_name)
@@ -1874,10 +1923,16 @@ async def update_owner_name_callback(callback_query: CallbackQuery, state: FSMCo
 @router.callback_query(lambda c: c.data == "update_location")
 async def update_location_callback(callback_query: CallbackQuery, state: FSMContext):
     """Start location update process."""
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    cancel_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Cancel", callback_data="back_to_settings")]
+    ])
+    
     await callback_query.message.edit_text(
-        "🌍 **Update Your Location**\n\n"
+        "🌍 *Update Your Location*\n\n"
         "Enter your location (for timezone handling):\n"
         "Examples: Portugal, Cascais, New York, California, UK",
+        reply_markup=cancel_keyboard,
         parse_mode='Markdown'
     )
     await state.set_state(RecipientState.waiting_for_location)
@@ -1891,13 +1946,13 @@ async def notification_settings_callback(callback_query: CallbackQuery, state: F
     logger.error(f"🔍 NOTIFICATION SETTINGS called for user {user_id}")
     
     try:
-        recipient_service = container.clean_recipient_service()
+        recipient_service = container.recipient_service()
         prefs = recipient_service.get_user_preferences(user_id)
         
         notifications = "Enabled" if prefs and prefs.telegram_notifications else "Disabled"
         recipient_ui = "Enabled" if prefs and prefs.show_recipient_ui else "Disabled"
         
-        text = f"🔔 **Notification Settings**\n\n"
+        text = f"🔔 *Notification Settings*\n\n"
         text += f"Telegram Notifications: {notifications}\n"
         text += f"Recipient Selection UI: {recipient_ui}\n\n"
         text += "• Notifications: Get Telegram reminders for due tasks\n"
@@ -1917,13 +1972,13 @@ async def confirm_delete_data_callback(callback_query: CallbackQuery, state: FSM
     """Show data deletion confirmation."""
     keyboard = get_delete_confirmation_keyboard()
     await callback_query.message.edit_text(
-        "⚠️ **FINAL CONFIRMATION**\n\n"
-        "🚨 **THIS WILL PERMANENTLY DELETE:**\n"
+        "⚠️ *FINAL CONFIRMATION*\n\n"
+        "🚨 *THIS WILL PERMANENTLY DELETE:*\n"
         "• All connected accounts (Todoist, Trello)\n"
         "• All shared recipients\n"
         "• All preferences and settings\n"
         "• All task history associations\n\n"
-        "**THIS CANNOT BE UNDONE!**\n\n"
+        "*THIS CANNOT BE UNDONE!*\n\n"
         "Are you absolutely sure?",
         reply_markup=keyboard,
         parse_mode='Markdown'
@@ -1937,19 +1992,19 @@ async def delete_all_data_confirmed(callback_query: CallbackQuery, state: FSMCon
     user_id = callback_query.from_user.id
     
     try:
-        recipient_service = container.clean_recipient_service()
+        recipient_service = container.recipient_service()
         success = recipient_service.delete_all_user_data(user_id)
         
         if success:
             await callback_query.message.edit_text(
-                "✅ **All Data Deleted**\n\n"
+                "✅ *All Data Deleted*\n\n"
                 "Your data has been permanently removed.\n"
                 "You can start fresh by using /start",
                 parse_mode='Markdown'
             )
         else:
             await callback_query.message.edit_text(
-                "❌ **Deletion Failed**\n\n"
+                "❌ *Deletion Failed*\n\n"
                 "There was an error deleting your data.\n"
                 "Please try again or contact support.",
                 parse_mode='Markdown'
@@ -1962,6 +2017,13 @@ async def delete_all_data_confirmed(callback_query: CallbackQuery, state: FSMCon
         logger.error(f"Failed to delete data for user {user_id}: {e}")
         await callback_query.answer("Error deleting data")
 
+
+# DEBUG CALLBACK HANDLER - MUST BE BEFORE MESSAGE HANDLER
+@router.callback_query()
+async def debug_all_callbacks(callback_query: CallbackQuery):
+    """Debug all callbacks."""
+    logger.error(f"🔍 DEBUG CALLBACK: data='{callback_query.data}', user={callback_query.from_user.id}")
+    # Don't answer to let it pass through to other handlers
 
 # RESTORED THREADING MESSAGE HANDLER
 @router.message()

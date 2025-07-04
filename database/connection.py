@@ -92,6 +92,8 @@ class DatabaseManager:
                 due_time TEXT NOT NULL,
                 platform_task_id TEXT,
                 platform_type TEXT NOT NULL,
+                screenshot_file_id TEXT,
+                screenshot_filename TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -102,7 +104,23 @@ class DatabaseManager:
         conn.execute('CREATE INDEX IF NOT EXISTS idx_tasks_due_time ON tasks(due_time)')
     
     def _migrate_schema(self, conn: sqlite3.Connection) -> None:
-        """Clean recipient system - no legacy migrations needed."""
-        pass
+        """Handle schema migrations."""
+        # Add screenshot fields to existing tasks table if they don't exist
+        try:
+            # Check if screenshot columns exist
+            cursor = conn.execute("PRAGMA table_info(tasks)")
+            columns = [row[1] for row in cursor.fetchall()]
+            
+            if 'screenshot_file_id' not in columns:
+                conn.execute('ALTER TABLE tasks ADD COLUMN screenshot_file_id TEXT')
+                logger.info("Added screenshot_file_id column to tasks table")
+                
+            if 'screenshot_filename' not in columns:
+                conn.execute('ALTER TABLE tasks ADD COLUMN screenshot_filename TEXT')
+                logger.info("Added screenshot_filename column to tasks table")
+                
+        except sqlite3.Error as e:
+            logger.warning(f"Schema migration warning: {e}")
+            # Continue - this might be a new database
 
 # Remove global instance - use DI container instead

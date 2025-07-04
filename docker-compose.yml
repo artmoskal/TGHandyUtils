@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: infra/Dockerfile
+    volumes:
+      - .:/app
+      - ./data:/app/data
+    environment:
+      - PYTHONPATH=/app
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - TODOIST_API_TOKEN=${TODOIST_API_TOKEN:-}
+      - TRELLO_API_KEY=${TRELLO_API_KEY:-}
+      - TRELLO_TOKEN=${TRELLO_TOKEN:-}
+    working_dir: /app
+    command: bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate TGHandyUtils && python main.py"
+    restart: unless-stopped

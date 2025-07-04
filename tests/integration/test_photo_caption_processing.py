@@ -51,7 +51,7 @@ class TestPhotoCaptionProcessing:
         return message
     
     @pytest.mark.asyncio
-    @patch('handlers.container.clean_recipient_service')
+    @patch('handlers.container.recipient_service')
     @patch('core.initialization.services.get_image_processing_service')
     async def test_photo_with_caption_processing(self, mock_image_service_factory, 
                                                mock_recipient_service_factory, 
@@ -91,7 +91,7 @@ class TestPhotoCaptionProcessing:
             assert result is True
     
     @pytest.mark.asyncio
-    @patch('handlers.container.clean_recipient_service')
+    @patch('handlers.container.recipient_service')
     @patch('core.initialization.services.get_image_processing_service')
     async def test_document_with_caption_processing(self, mock_image_service_factory,
                                                   mock_recipient_service_factory,
@@ -127,7 +127,7 @@ class TestPhotoCaptionProcessing:
             assert result is True
     
     @pytest.mark.asyncio
-    @patch('handlers.container.clean_recipient_service')
+    @patch('handlers.container.recipient_service')
     async def test_photo_without_caption_still_works(self, mock_recipient_service_factory,
                                                     mock_message_with_photo_caption):
         """Test that photos without captions still work."""

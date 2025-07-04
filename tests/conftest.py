@@ -14,12 +14,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.interfaces import ITaskRepository, IParsingService, IConfig
-from core.recipient_interfaces import IRecipientService, IUserPlatformRepository, ISharedRecipientRepository, IUserPreferencesV2Repository
 from models.task import TaskCreate
-from models.recipient import (
-    UserPlatform, UserPlatformCreate, SharedRecipient, SharedRecipientCreate,
-    Recipient, UserPreferencesV2
-)
+from models.unified_recipient import UnifiedRecipient, UnifiedRecipientCreate
 
 
 @pytest.fixture(scope="session")

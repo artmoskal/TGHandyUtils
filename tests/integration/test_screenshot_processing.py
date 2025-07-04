@@ -61,7 +61,7 @@ class TestScreenshotProcessingSimple:
                 "✅ Task created successfully!", 
                 {"add_actions": [], "remove_actions": []}
             )
-            mock_container.clean_recipient_task_service.return_value = mock_task_svc
+            mock_container.recipient_task_service.return_value = mock_task_svc
             
             # Process the thread
             await process_thread_with_photos(
@@ -107,7 +107,7 @@ class TestScreenshotProcessingSimple:
             # Setup task service
             mock_task_svc = Mock()
             mock_task_svc.create_task_for_recipients.return_value = (True, "✅ Task created!", {})
-            mock_container.clean_recipient_task_service.return_value = mock_task_svc
+            mock_container.recipient_task_service.return_value = mock_task_svc
             
             # Process the thread
             await process_thread_with_photos(

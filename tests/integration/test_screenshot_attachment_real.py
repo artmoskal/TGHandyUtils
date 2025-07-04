@@ -2,7 +2,7 @@
 
 import pytest
 from unittest.mock import Mock, AsyncMock, patch
-from services.clean_recipient_task_service import CleanRecipientTaskService
+from services.recipient_task_service import RecipientTaskService
 from models.unified_recipient import UnifiedRecipient
 
 
@@ -36,7 +36,7 @@ class TestScreenshotAttachmentReal:
     @pytest.fixture
     def real_task_service(self, mock_recipient_service, mock_task_repo):
         """Create real task service with mocked dependencies."""
-        return CleanRecipientTaskService(
+        return RecipientTaskService(
             task_repo=mock_task_repo,
             recipient_service=mock_recipient_service
         )
@@ -51,7 +51,7 @@ class TestScreenshotAttachmentReal:
             'summary': 'Code screenshot with TODO comment'
         }
     
-    @patch('services.clean_recipient_task_service.TaskPlatformFactory.get_platform')
+    @patch('services.recipient_task_service.TaskPlatformFactory.get_platform')
     def test_screenshot_attachment_is_called(self, mock_platform_factory, real_task_service, sample_screenshot_data):
         """Test that attach_screenshot is actually called with real service implementation."""
         # Setup mock platform
@@ -83,7 +83,7 @@ class TestScreenshotAttachmentReal:
         # Verify task creation was also called
         mock_platform.create_task.assert_called_once()
     
-    @patch('services.clean_recipient_task_service.TaskPlatformFactory.get_platform')
+    @patch('services.recipient_task_service.TaskPlatformFactory.get_platform')
     def test_screenshot_attachment_failure_handling(self, mock_platform_factory, real_task_service, sample_screenshot_data):
         """Test handling when screenshot attachment fails."""
         # Setup mock platform where attachment fails
@@ -112,7 +112,7 @@ class TestScreenshotAttachmentReal:
             'test_screenshot.jpg'
         )
     
-    @patch('services.clean_recipient_task_service.TaskPlatformFactory.get_platform')
+    @patch('services.recipient_task_service.TaskPlatformFactory.get_platform')
     def test_no_screenshot_attachment_when_no_data(self, mock_platform_factory, real_task_service):
         """Test that attach_screenshot is NOT called when no screenshot data provided."""
         # Setup mock platform
