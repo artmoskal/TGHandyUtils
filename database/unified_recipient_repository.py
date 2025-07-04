@@ -29,7 +29,7 @@ class UnifiedRecipientRepository:
                 cursor = conn.execute('''
                     SELECT id, user_id, name, platform_type, credentials, platform_config,
                            is_personal, is_default, enabled, shared_by, created_at, updated_at
-                    FROM recipients 
+                    FROM unified_recipients 
                     WHERE user_id = ?
                     ORDER BY is_personal DESC, name
                 ''', (user_id,))
@@ -91,7 +91,7 @@ class UnifiedRecipientRepository:
                 cursor = conn.execute('''
                     SELECT id, user_id, name, platform_type, credentials, platform_config,
                            is_personal, is_default, enabled, shared_by, created_at, updated_at
-                    FROM recipients 
+                    FROM unified_recipients 
                     WHERE user_id = ? AND id = ?
                 ''', (user_id, recipient_id))
                 
@@ -134,7 +134,7 @@ class UnifiedRecipientRepository:
             
             with self.db_manager.get_connection() as conn:
                 cursor = conn.execute('''
-                    INSERT INTO recipients 
+                    INSERT INTO unified_recipients 
                     (user_id, name, platform_type, credentials, platform_config, 
                      is_personal, is_default, enabled, shared_by)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -189,7 +189,7 @@ class UnifiedRecipientRepository:
             
             with self.db_manager.get_connection() as conn:
                 cursor = conn.execute(f'''
-                    UPDATE recipients 
+                    UPDATE unified_recipients 
                     SET {', '.join(set_clauses)}
                     WHERE user_id = ? AND id = ?
                 ''', params)
@@ -209,7 +209,7 @@ class UnifiedRecipientRepository:
         try:
             with self.db_manager.get_connection() as conn:
                 cursor = conn.execute('''
-                    DELETE FROM recipients 
+                    DELETE FROM unified_recipients 
                     WHERE user_id = ? AND id = ?
                 ''', (user_id, recipient_id))
                 
