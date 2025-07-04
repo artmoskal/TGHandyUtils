@@ -198,6 +198,8 @@ class DatabaseMigrator:
                 platform_task_id TEXT,
                 platform_type TEXT,
                 recipient_id INTEGER,
+                chat_id INTEGER,
+                message_id INTEGER,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 status TEXT DEFAULT 'active'
