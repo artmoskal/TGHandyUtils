@@ -285,4 +285,4 @@ __pycache__/
 # Documentation build artifacts
 docs/_build/
 docs/_static/
-docs/_templates/
+docs/_templates/data/temp_cache/
