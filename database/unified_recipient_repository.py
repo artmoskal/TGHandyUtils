@@ -136,12 +136,11 @@ class UnifiedRecipientRepository:
                 cursor = conn.execute('''
                     INSERT INTO unified_recipients 
                     (user_id, name, platform_type, credentials, platform_config, 
-                     is_personal, is_default, enabled, shared_by)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     is_personal, enabled)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     user_id, recipient.name, recipient.platform_type, recipient.credentials,
-                    config_json, recipient.is_personal, recipient.is_default, 
-                    recipient.enabled, recipient.shared_by
+                    config_json, recipient.is_personal, recipient.enabled
                 ))
                 
                 recipient_id = cursor.lastrowid

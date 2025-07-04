@@ -30,9 +30,7 @@ class UnifiedRecipientCreate:
     credentials: str
     platform_config: Optional[Dict[str, Any]] = None
     is_personal: bool = False
-    is_default: bool = False
     enabled: bool = True
-    shared_by: Optional[str] = None
 
 
 @dataclass
