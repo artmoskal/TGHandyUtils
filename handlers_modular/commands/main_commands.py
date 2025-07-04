@@ -21,7 +21,8 @@ async def cmd_start(message: Message, state: FSMContext):
         "🚀 QUICK START:\n"
         "1️⃣ Add your accounts: /recipients\n"
         "2️⃣ Create tasks: /create_task\n\n"
-        "💡 First time? Start with /recipients to connect your Todoist or Trello account!"
+        "💡 First time? Start with /recipients to connect your Todoist or Trello account!",
+        disable_web_page_preview=True
     )
 
 
@@ -51,8 +52,8 @@ async def show_recipient_management(message: Message, state: FSMContext):
             text += "Recipients are your Todoist/Trello accounts where tasks will be created.\n\n"
             text += "🚀 Get started by adding your first account below!"
         
-        await message.reply(text, reply_markup=keyboard)
+        await message.reply(text, reply_markup=keyboard, disable_web_page_preview=True)
         
     except Exception as e:
         logger.error(f"Failed to show recipient management for user {user_id}: {e}")
-        await message.reply("Error loading recipient management. Please try again.")
+        await message.reply("Error loading recipient management. Please try again.", disable_web_page_preview=True)
