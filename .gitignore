@@ -286,3 +286,6 @@ __pycache__/
 docs/_build/
 docs/_static/
 docs/_templates/data/temp_cache/
+
+# Ignore entire data directory
+data/
