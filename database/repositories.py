@@ -24,20 +24,19 @@ class TaskRepository(BaseRepository, ITaskRepository):
     
     def create(self, user_id: int, chat_id: int, message_id: int, 
                task_data: TaskCreate, platform_task_id: Optional[str] = None, 
-               platform_type: str = 'todoist', screenshot_file_id: Optional[str] = None,
-               screenshot_filename: Optional[str] = None) -> Optional[int]:
+               platform_type: str = 'todoist') -> Optional[int]:
         """Create a new task in the database."""
         try:
             with self.db_manager.get_connection() as conn:
                 cursor = conn.execute('''
                     INSERT INTO tasks (
                         user_id, chat_id, message_id, title, description, 
-                        due_time, platform_task_id, platform_type, screenshot_file_id, screenshot_filename
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        due_time, platform_task_id, platform_type
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     user_id, chat_id, message_id, task_data.title, 
                     task_data.description, task_data.due_time, 
-                    platform_task_id, platform_type, screenshot_file_id, screenshot_filename
+                    platform_task_id, platform_type
                 ))
                 
                 task_id = cursor.lastrowid
@@ -54,8 +53,7 @@ class TaskRepository(BaseRepository, ITaskRepository):
             with self.db_manager.get_connection() as conn:
                 cursor = conn.execute('''
                     SELECT id, user_id, chat_id, message_id, title, 
-                           description, due_time, platform_task_id, platform_type,
-                           screenshot_file_id, screenshot_filename
+                           description, due_time, platform_task_id, platform_type
                     FROM tasks ORDER BY due_time ASC
                 ''')
                 
@@ -63,8 +61,7 @@ class TaskRepository(BaseRepository, ITaskRepository):
                     TaskDB(
                         id=row[0], user_id=row[1], chat_id=row[2], message_id=row[3],
                         title=row[4], description=row[5], due_time=row[6],
-                        platform_task_id=row[7], platform_type=row[8],
-                        screenshot_file_id=row[9], screenshot_filename=row[10]
+                        platform_task_id=row[7], platform_type=row[8]
                     )
                     for row in cursor.fetchall()
                 ]
@@ -80,7 +77,6 @@ class TaskRepository(BaseRepository, ITaskRepository):
                 cursor = conn.execute('''
                     SELECT id, user_id, chat_id, message_id, title, 
                            description, due_time, platform_task_id, platform_type,
-                           screenshot_file_id, screenshot_filename
                     FROM tasks WHERE user_id = ? ORDER BY due_time ASC
                 ''', (user_id,))
                 
@@ -88,8 +84,7 @@ class TaskRepository(BaseRepository, ITaskRepository):
                     TaskDB(
                         id=row[0], user_id=row[1], chat_id=row[2], message_id=row[3],
                         title=row[4], description=row[5], due_time=row[6],
-                        platform_task_id=row[7], platform_type=row[8],
-                        screenshot_file_id=row[9], screenshot_filename=row[10]
+                        platform_task_id=row[7], platform_type=row[8]
                     )
                     for row in cursor.fetchall()
                 ]
@@ -105,7 +100,6 @@ class TaskRepository(BaseRepository, ITaskRepository):
                 cursor = conn.execute('''
                     SELECT id, user_id, chat_id, message_id, title, 
                            description, due_time, platform_task_id, platform_type,
-                           screenshot_file_id, screenshot_filename
                     FROM tasks WHERE id = ?
                 ''', (task_id,))
                 
@@ -114,8 +108,7 @@ class TaskRepository(BaseRepository, ITaskRepository):
                     return TaskDB(
                         id=row[0], user_id=row[1], chat_id=row[2], message_id=row[3],
                         title=row[4], description=row[5], due_time=row[6],
-                        platform_task_id=row[7], platform_type=row[8],
-                        screenshot_file_id=row[9], screenshot_filename=row[10]
+                        platform_task_id=row[7], platform_type=row[8]
                     )
                 return None
                 

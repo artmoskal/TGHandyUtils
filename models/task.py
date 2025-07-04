@@ -17,8 +17,6 @@ class TaskDB:
     due_time: str
     platform_task_id: Optional[str]
     platform_type: str
-    screenshot_file_id: Optional[str] = None  # Telegram file_id for screenshot
-    screenshot_filename: Optional[str] = None  # Original filename
 
 class TaskCreate(BaseModel):
     """Model for creating a new task."""
