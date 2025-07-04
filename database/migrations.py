@@ -227,10 +227,9 @@ class DatabaseMigrator:
     
     # Migration Methods
     def _migration_001_initial(self, conn: sqlite3.Connection):
-        """Initial schema migration."""
-        # Tables are already created in _initialize_new_database
-        # This is a no-op for existing databases
-        pass
+        """Initial schema migration - create core tables."""
+        self._create_tasks_table(conn)
+        self._create_unified_recipients_table(conn)
     
     def _migration_002_indexes(self, conn: sqlite3.Connection):
         """Add performance indexes."""
