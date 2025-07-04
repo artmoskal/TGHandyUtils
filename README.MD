@@ -167,27 +167,27 @@ We believe in open-source software, and we're not really in this for the money a
 
 ---
 
-## ✅ **Latest Updates (June 2025)**
+## ✅ **Latest Updates (July 2025)**
 
-### **🚀 Major New Features**
-- **📸 Universal Image Support**: Now handles both inline photos AND document image attachments with OCR
-- **🔔 Notification Control**: Toggle Telegram notifications while keeping platform task creation
-- **🔧 Plugin Architecture**: Extensible platform system with registry pattern for easy new platform additions
-- **⚙️ Multi-Platform UI**: Enhanced settings interface for managing multiple platforms
+### **🚀 Major Architectural Improvements**
+- **🏗️ Dependency Injection**: Complete DI container system for better testability
+- **📸 Enhanced Image Processing**: Both inline photos and document attachments with OCR  
+- **🎤 Voice Processing**: OpenAI Whisper integration with proper error handling
+- **🔔 Smart Notifications**: Toggle Telegram notifications while keeping platform task creation
+- **🤝 Recipient System**: Share tasks with family/colleagues across different platforms
 
-### **🔧 Bug Fixes Applied**
-- **Timezone Conversion**: Fixed Portugal/Cascais time handling (UTC+1)
-- **Date Parsing**: Fixed "12/Jun" now correctly becomes "June 12, 2025" 
-- **Local Time Display**: All times now show in your local timezone, not UTC
-- **State Management**: Fixed API key/task flow contamination issues
-- **Error Handling**: Improved validation and prevented empty message processing
+### **🔧 Core Fixes Applied**
+- **URL Preview Prevention**: All bot messages now use `disable_web_page_preview=True`
+- **Voice Service Dependencies**: Fixed OpenAI service injection in voice processing
+- **Screenshot Tests**: Corrected mock paths for attachment flow testing
+- **UI State Management**: Added comprehensive cancel/back buttons to prevent state locks
+- **Thread Safety**: Improved message grouping within 1-second windows
 
-### **🎯 Enhanced Features**  
-- **Interactive UI**: Complete main menu system with inline keyboards
-- **Task Management**: View, edit, complete, delete tasks with pagination
-- **Voice Processing**: Improved transcription workflow with confirmation
-- **Multi-Platform**: Full Trello integration with board/list selection
-- **Smart Scheduling**: Better natural language understanding
+### **🎯 System Reliability**  
+- **Test Coverage**: 115 passing unit tests with comprehensive integration testing
+- **Error Handling**: Graceful degradation and proper exception management
+- **Thread-Safe Operations**: Multi-user support with isolated data processing
+- **Production Ready**: Docker deployment with proper logging and monitoring
 
 ### **🌍 Supported Timezones**
 Portugal, Spain, France, Germany, UK, New York, California, and more!
@@ -197,7 +197,7 @@ Portugal, Spain, France, Germany, UK, New York, California, and more!
 ### **⚠️ Disclaimer** 
 This bot handles real appointments and reminders. While extensively tested, always double-check important scheduling. Voice transcription accuracy depends on audio quality and OpenAI Whisper performance.
 
-**Architecture**: Built with modern Python, Docker, and ~~probably too much~~ proper engineering. Production-ready with thread-safe multi-user support and a test suite that actually passes! 🎯
+**Architecture**: Built with modern Python, Docker, and dependency injection. Production-ready with thread-safe multi-user support and comprehensive test coverage! 🎯
 
 ## 🧪 **Testing & Quality**
 
