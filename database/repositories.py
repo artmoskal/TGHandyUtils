@@ -99,7 +99,7 @@ class TaskRepository(BaseRepository, ITaskRepository):
             with self.db_manager.get_connection() as conn:
                 cursor = conn.execute('''
                     SELECT id, user_id, chat_id, message_id, title, 
-                           description, due_time, platform_task_id, platform_type,
+                           description, due_time, platform_task_id, platform_type
                     FROM tasks WHERE id = ?
                 ''', (task_id,))
                 
