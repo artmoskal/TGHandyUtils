@@ -120,7 +120,7 @@ async def handle_trello_configuration(message: Message, state: FSMContext):
         # Get boards using the credentials
         from platforms.trello import TrelloPlatform
         platform = TrelloPlatform(credentials)
-        boards = platform.get_user_boards()
+        boards = platform.get_boards()
         
         if not boards:
             await message.reply("❌ No boards found. Please check your credentials.", disable_web_page_preview=True)

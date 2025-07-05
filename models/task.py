@@ -17,12 +17,13 @@ class TaskDB:
     due_time: str
     platform_task_id: Optional[str]
     platform_type: str
+    screenshot_file_id: Optional[str] = None
 
 class TaskCreate(BaseModel):
     """Model for creating a new task."""
     title: str = Field(description="The title of the task.")
     due_time: str = Field(description="The due time in UTC ISO 8601 format (YYYY-MM-DDTHH:MM:SSZ).")
-    description: str = Field(description="The description or details of the task.")
+    description: Optional[str] = Field(description="The description or details of the task.")
     
     @field_validator('title')
     @classmethod
@@ -33,9 +34,10 @@ class TaskCreate(BaseModel):
     
     @field_validator('description')
     @classmethod
-    def description_must_not_be_empty(cls, v):
-        if not v.strip():
-            raise ValueError('Description cannot be empty')
+    def description_validator(cls, v):
+        # Allow empty descriptions (they can be None in database)
+        if v is None:
+            return ""
         return v.strip()
 
 class TaskUpdate(BaseModel):

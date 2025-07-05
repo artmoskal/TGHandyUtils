@@ -11,13 +11,13 @@ from .threading_handler import process_user_input
 logger = get_logger(__name__)
 
 
-@router.message()
-async def handle_message(message: Message, state: FSMContext, bot: Bot = None):
+from states.recipient_states import RecipientState
+
+from aiogram.filters import StateFilter
+
+@router.message(StateFilter(None))  # Only handle messages when user is NOT in any state
+async def handle_message(message: Message, state: FSMContext, bot: Bot):
     """Handle all regular messages (text, voice, photos) with threading support."""
-    # Skip if in a specific state
-    current_state = await state.get_state()
-    if current_state:
-        return
     
     # Handle voice messages
     if message.voice:
@@ -47,13 +47,10 @@ async def handle_voice_message(message: Message, state: FSMContext, bot: Bot):
     """Handle voice messages with transcription."""
     try:
         from core.initialization import services
-        transcription_service = services.get_transcription_service()
+        voice_service = services.get_voice_processing_service()
         
-        # Download voice file
-        voice_file = await bot.download(message.voice.file_id)
-        
-        # Transcribe voice
-        transcription = transcription_service.transcribe_audio(voice_file)
+        # Process voice message
+        transcription = await voice_service.process_voice_message(message.voice, bot)
         
         if transcription:
             # Process transcribed text through threading system
@@ -84,26 +81,51 @@ async def process_user_input_with_photo(text: str, user_id: int, message_obj: Me
         # Get user full name for threading
         user_full_name = message_obj.from_user.full_name or "User"
         
-        # Process photo/document
+        # Process photo/document with text extraction
         screenshot_data = None
-        if message_obj.photo:
-            largest_photo = max(message_obj.photo, key=lambda x: x.file_size)
-            photo_file = await bot.download(largest_photo.file_id)
-            screenshot_data = {
-                'file_id': largest_photo.file_id,
-                'image_data': photo_file.read(),
-                'file_name': f'screenshot_{largest_photo.file_id}.jpg'
-            }
-        elif message_obj.document:
-            if message_obj.document.mime_type and message_obj.document.mime_type.startswith('image/'):
-                doc_file = await bot.download(message_obj.document.file_id)
-                screenshot_data = {
-                    'file_id': message_obj.document.file_id,
-                    'image_data': doc_file.read(),
-                    'file_name': message_obj.document.file_name or f'document_{message_obj.document.file_id}'
-                }
+        extracted_text = ""
+        summary = ""
         
-        # Add to threading system with photo data
+        from core.initialization import services
+        image_service = services.get_image_processing_service()
+        
+        if message_obj.photo:
+            logger.info(f"Processing screenshot with ImageProcessingService")
+            analysis_result = await image_service.process_image_message(message_obj.photo, bot)
+            extracted_text = analysis_result.get('extracted_text', '')
+            summary = analysis_result.get('summary', '')
+            screenshot_data = {
+                'file_id': analysis_result.get('file_id'),
+                'image_data': analysis_result.get('image_data'),
+                'file_name': analysis_result.get('file_name')
+            }
+            logger.info(f"Extracted {len(extracted_text)} characters from screenshot")
+        elif message_obj.document and message_obj.document.mime_type and message_obj.document.mime_type.startswith('image/'):
+            logger.info(f"Processing document image with ImageProcessingService")
+            analysis_result = await image_service.process_image_message(message_obj.document, bot)
+            extracted_text = analysis_result.get('extracted_text', '')
+            summary = analysis_result.get('summary', '')
+            screenshot_data = {
+                'file_id': analysis_result.get('file_id'),
+                'image_data': analysis_result.get('image_data'),
+                'file_name': analysis_result.get('file_name')
+            }
+        
+        # Create enriched content combining caption, extracted text, and summary
+        enriched_content = ""
+        if text.strip():
+            enriched_content += f"[CAPTION] {text.strip()}\n\n"
+            logger.info(f"Added caption to enriched_content: '{text.strip()}'")
+        if extracted_text.strip():
+            enriched_content += f"[SCREENSHOT TEXT]\n{extracted_text}\n\n"
+            logger.info(f"Added extracted text: {len(extracted_text)} characters")
+        if summary.strip():
+            enriched_content += f"[SCREENSHOT DESCRIPTION] {summary}"
+            logger.info(f"Added screenshot summary: {len(summary)} characters")
+        
+        logger.info(f"Final enriched_content: '{enriched_content[:200]}...'")
+        
+        # Add to threading system with enriched content and photo data
         import time
         import threading
         from collections import defaultdict
@@ -113,8 +135,8 @@ async def process_user_input_with_photo(text: str, user_id: int, message_obj: Me
         
         current_time = time.time()
         with _message_threads_lock:
-            # Add message with photo data as 3-tuple
-            message_threads[user_id].append((user_full_name, text, screenshot_data))
+            # Add message with enriched content and screenshot data as 3-tuple
+            message_threads[user_id].append((user_full_name, enriched_content, screenshot_data))
             last_message_time[user_id] = current_time
         
         # Check if enough time has passed since the last message

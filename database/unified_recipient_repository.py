@@ -28,8 +28,8 @@ class UnifiedRecipientRepository:
             with self.db_manager.get_connection() as conn:
                 cursor = conn.execute('''
                     SELECT id, user_id, name, platform_type, credentials, platform_config,
-                           is_personal, is_default, enabled, shared_by, created_at, updated_at
-                    FROM unified_recipients 
+                           is_personal, enabled, created_at, updated_at
+                    FROM recipients 
                     WHERE user_id = ?
                     ORDER BY is_personal DESC, name
                 ''', (user_id,))
@@ -51,11 +51,9 @@ class UnifiedRecipientRepository:
                         credentials=row[4],
                         platform_config=config,
                         is_personal=bool(row[6]),
-                        is_default=bool(row[7]),
-                        enabled=bool(row[8]),
-                        shared_by=row[9],
-                        created_at=datetime.fromisoformat(row[10]) if row[10] else None,
-                        updated_at=datetime.fromisoformat(row[11]) if row[11] else None
+                        enabled=bool(row[7]),
+                        created_at=datetime.fromisoformat(row[8]) if row[8] else None,
+                        updated_at=datetime.fromisoformat(row[9]) if row[9] else None
                     ))
                 
                 return recipients
@@ -82,7 +80,7 @@ class UnifiedRecipientRepository:
     def get_default_recipients(self, user_id: int) -> List[UnifiedRecipient]:
         """Get default recipients for task creation."""
         recipients = self.get_all_recipients(user_id)
-        return [r for r in recipients if r.is_default and r.enabled]
+        return [r for r in recipients if r.is_personal and r.enabled]
     
     def get_recipient_by_id(self, user_id: int, recipient_id: int) -> Optional[UnifiedRecipient]:
         """Get specific recipient by ID."""
@@ -90,8 +88,8 @@ class UnifiedRecipientRepository:
             with self.db_manager.get_connection() as conn:
                 cursor = conn.execute('''
                     SELECT id, user_id, name, platform_type, credentials, platform_config,
-                           is_personal, is_default, enabled, shared_by, created_at, updated_at
-                    FROM unified_recipients 
+                           is_personal, enabled, created_at, updated_at
+                    FROM recipients 
                     WHERE user_id = ? AND id = ?
                 ''', (user_id, recipient_id))
                 
@@ -114,11 +112,9 @@ class UnifiedRecipientRepository:
                     credentials=row[4],
                     platform_config=config,
                     is_personal=bool(row[6]),
-                    is_default=bool(row[7]),
-                    enabled=bool(row[8]),
-                    shared_by=row[9],
-                    created_at=datetime.fromisoformat(row[10]) if row[10] else None,
-                    updated_at=datetime.fromisoformat(row[11]) if row[11] else None
+                    enabled=bool(row[7]),
+                    created_at=datetime.fromisoformat(row[8]) if row[8] else None,
+                    updated_at=datetime.fromisoformat(row[9]) if row[9] else None
                 )
                 
         except sqlite3.Error as e:
@@ -134,7 +130,7 @@ class UnifiedRecipientRepository:
             
             with self.db_manager.get_connection() as conn:
                 cursor = conn.execute('''
-                    INSERT INTO unified_recipients 
+                    INSERT INTO recipients 
                     (user_id, name, platform_type, credentials, platform_config, 
                      is_personal, enabled)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -169,17 +165,9 @@ class UnifiedRecipientRepository:
                 set_clauses.append("platform_config = ?")
                 params.append(json.dumps(updates.platform_config))
             
-            if updates.is_default is not None:
-                set_clauses.append("is_default = ?")
-                params.append(updates.is_default)
-            
             if updates.enabled is not None:
                 set_clauses.append("enabled = ?")
                 params.append(updates.enabled)
-            
-            if updates.shared_by is not None:
-                set_clauses.append("shared_by = ?")
-                params.append(updates.shared_by)
             
             if len(set_clauses) == 1:  # Only timestamp
                 return True
@@ -188,7 +176,7 @@ class UnifiedRecipientRepository:
             
             with self.db_manager.get_connection() as conn:
                 cursor = conn.execute(f'''
-                    UPDATE unified_recipients 
+                    UPDATE recipients 
                     SET {', '.join(set_clauses)}
                     WHERE user_id = ? AND id = ?
                 ''', params)
@@ -208,7 +196,7 @@ class UnifiedRecipientRepository:
         try:
             with self.db_manager.get_connection() as conn:
                 cursor = conn.execute('''
-                    DELETE FROM unified_recipients 
+                    DELETE FROM recipients 
                     WHERE user_id = ? AND id = ?
                 ''', (user_id, recipient_id))
                 

@@ -110,11 +110,19 @@ async def create_task_callback(callback_query: CallbackQuery, state: FSMContext)
         recipients = recipient_service.get_enabled_recipients(user_id)
         
         if not recipients:
+            # Add navigation for no recipients error
+            from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+            error_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🎯 Add Recipients", callback_data="show_recipients")],
+                [InlineKeyboardButton(text="🏠 Back to Menu", callback_data="back_to_menu")]
+            ])
+            
             await callback_query.message.edit_text(
                 "❌ *No Recipients Available*\n\n"
                 "You need to add and enable at least one recipient first.\n\n"
                 "Use the Recipients menu to add your accounts.",
                 parse_mode='Markdown',
+                reply_markup=error_keyboard,
                 disable_web_page_preview=True
             )
             await callback_query.answer()
@@ -136,11 +144,18 @@ async def create_task_callback(callback_query: CallbackQuery, state: FSMContext)
             await state.update_data(selected_recipients=[])
         else:
             # Skip recipient selection, use all enabled recipients
+            # Add cancel keyboard for task input
+            from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+            cancel_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ Cancel", callback_data="back_to_menu")]
+            ])
+            
             await callback_query.message.edit_text(
                 "📝 *Create Task*\n\n"
                 f"Task will be sent to all {len(recipients)} enabled recipients.\n\n"
                 "Enter your task description:",
                 parse_mode='Markdown',
+                reply_markup=cancel_keyboard,
                 disable_web_page_preview=True
             )
             # Set state to waiting for task input

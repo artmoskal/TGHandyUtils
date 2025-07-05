@@ -4,7 +4,7 @@ import pytest
 from unittest.mock import Mock, AsyncMock, patch
 from aiogram.types import Message, PhotoSize, Document, User, Chat
 
-from handlers import process_user_input_with_photo
+from handlers_modular.message.message_handler import process_user_input_with_photo
 
 
 class TestPhotoCaptionProcessing:
@@ -51,7 +51,7 @@ class TestPhotoCaptionProcessing:
         return message
     
     @pytest.mark.asyncio
-    @patch('handlers.container.recipient_service')
+    @patch('handlers_modular.message.message_handler.container.recipient_service')
     @patch('core.initialization.services.get_image_processing_service')
     async def test_photo_with_caption_processing(self, mock_image_service_factory, 
                                                mock_recipient_service_factory, 
@@ -70,9 +70,9 @@ class TestPhotoCaptionProcessing:
         mock_image_service_factory.return_value = mock_image_service
         
         # Setup threading system mocks
-        with patch('handlers.time.time', return_value=1000), \
-             patch('handlers.asyncio.sleep'), \
-             patch('handlers.process_thread_with_photos') as mock_process_thread:
+        with patch('handlers_modular.message.message_handler.time.time', return_value=1000), \
+             patch('handlers_modular.message.message_handler.asyncio.sleep'), \
+             patch('handlers_modular.message.text_handler.process_thread_with_photos') as mock_process_thread:
             
             # Call the function with caption text
             result = await process_user_input_with_photo(
@@ -91,7 +91,7 @@ class TestPhotoCaptionProcessing:
             assert result is True
     
     @pytest.mark.asyncio
-    @patch('handlers.container.recipient_service')
+    @patch('handlers_modular.message.message_handler.container.recipient_service')
     @patch('core.initialization.services.get_image_processing_service')
     async def test_document_with_caption_processing(self, mock_image_service_factory,
                                                   mock_recipient_service_factory,
@@ -109,9 +109,9 @@ class TestPhotoCaptionProcessing:
         })
         mock_image_service_factory.return_value = mock_image_service
         
-        with patch('handlers.time.time', return_value=1000), \
-             patch('handlers.asyncio.sleep'), \
-             patch('handlers.process_thread_with_photos'):
+        with patch('handlers_modular.message.message_handler.time.time', return_value=1000), \
+             patch('handlers_modular.message.message_handler.asyncio.sleep'), \
+             patch('handlers_modular.message.text_handler.process_thread_with_photos'):
             
             # Call with document message
             result = await process_user_input_with_photo(
@@ -127,7 +127,7 @@ class TestPhotoCaptionProcessing:
             assert result is True
     
     @pytest.mark.asyncio
-    @patch('handlers.container.recipient_service')
+    @patch('handlers_modular.message.message_handler.container.recipient_service')
     async def test_photo_without_caption_still_works(self, mock_recipient_service_factory,
                                                     mock_message_with_photo_caption):
         """Test that photos without captions still work."""
@@ -146,9 +146,9 @@ class TestPhotoCaptionProcessing:
             })
             mock_image_service_factory.return_value = mock_image_service
             
-            with patch('handlers.time.time', return_value=1000), \
-                 patch('handlers.asyncio.sleep'), \
-                 patch('handlers.process_thread_with_photos'):
+            with patch('handlers_modular.message.message_handler.time.time', return_value=1000), \
+                 patch('handlers_modular.message.message_handler.asyncio.sleep'), \
+                 patch('handlers_modular.message.text_handler.process_thread_with_photos'):
                 
                 # Call with empty caption
                 result = await process_user_input_with_photo(

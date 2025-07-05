@@ -11,7 +11,7 @@ def wire_application():
     """Wire the application modules with the DI container."""
     container.wire(modules=[
         "core.initialization",
-        "handlers"
+        "telegram_handlers"
     ])
     
     # Container is already wired

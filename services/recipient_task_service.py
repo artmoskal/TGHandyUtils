@@ -21,7 +21,7 @@ class RecipientTaskService:
     
     def create_task_for_recipients(self, user_id: int, title: str, description: str = "", 
                                   due_time: Optional[str] = None, specific_recipients: Optional[List[int]] = None,
-                                  screenshot_data: Optional[Dict] = None) -> Tuple[bool, Optional[str], Optional[Dict]]:
+                                  screenshot_data: Optional[Dict] = None, chat_id: int = 0, message_id: int = 0) -> Tuple[bool, Optional[str], Optional[Dict]]:
         """Create task for specified recipients or defaults.
         
         Returns:
@@ -63,21 +63,16 @@ class RecipientTaskService:
             due_time=due_time_str
         )
         
-        # Extract screenshot metadata if available
-        screenshot_file_id = None
-        screenshot_filename = None
-        if screenshot_data:
-            screenshot_file_id = screenshot_data.get('file_id')
-            screenshot_filename = screenshot_data.get('file_name', 'screenshot.jpg')
+        # Extract screenshot file_id if available
+        screenshot_file_id = screenshot_data.get('file_id') if screenshot_data else None
         
-        # Use dummy values for chat_id and message_id since this is a programmatic creation
+        # Create task with provided chat_id and message_id for proper notifications
         task_id = self.task_repo.create(
             user_id=user_id,
-            chat_id=0,  # Dummy chat ID
-            message_id=0,  # Dummy message ID
+            chat_id=chat_id,
+            message_id=message_id,
             task_data=task_data,
-            screenshot_file_id=screenshot_file_id,
-            screenshot_filename=screenshot_filename
+            screenshot_file_id=screenshot_file_id
         )
         if not task_id:
             logger.error(f"Failed to create task for user {user_id}")
@@ -123,18 +118,26 @@ class RecipientTaskService:
             return False, f"❌ Task {task_id} not found"
         
         # Use the original task content
-        task_title = task.task_title
-        task_description = task.task_description
+        task_title = task.title
+        task_description = task.description
         due_time_str = task.due_time
         
-        # Prepare screenshot data if available
+        # Retrieve screenshot data from cache if available
         screenshot_data = None
         if task.screenshot_file_id:
-            screenshot_data = {
-                'file_id': task.screenshot_file_id,
-                'file_name': task.screenshot_filename or 'screenshot.jpg'
-            }
-            logger.info(f"Retrieved screenshot data for task {task_id}: file_id={task.screenshot_file_id}")
+            logger.info(f"Retrieving screenshot from cache for file_id: {task.screenshot_file_id}")
+            from services.temporary_file_cache import get_screenshot_cache
+            cache = get_screenshot_cache()
+            cached_data = cache.get_screenshot(task.screenshot_file_id)
+            if cached_data:
+                screenshot_data = {
+                    'file_id': task.screenshot_file_id,
+                    'image_data': cached_data['image_data'],
+                    'file_name': cached_data['file_name']
+                }
+                logger.info(f"Retrieved screenshot from cache: {len(cached_data['image_data'])} bytes")
+            else:
+                logger.warning(f"Screenshot not found in cache for file_id: {task.screenshot_file_id}")
         
         # Create task on platform
         success, url = self._create_platform_task(recipient, task_title, task_description, due_time_str, screenshot_data)

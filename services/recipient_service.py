@@ -21,6 +21,10 @@ class RecipientService:
         """Get all recipients for user."""
         return self.repository.get_all_recipients(user_id)
     
+    def get_recipients_by_user(self, user_id: int) -> List[UnifiedRecipient]:
+        """Get all recipients for user (alias for get_all_recipients)."""
+        return self.repository.get_all_recipients(user_id)
+    
     def get_enabled_recipients(self, user_id: int) -> List[UnifiedRecipient]:
         """Get enabled recipients for user."""
         return self.repository.get_enabled_recipients(user_id)
@@ -35,13 +39,8 @@ class RecipientService:
     
     def get_default_recipients(self, user_id: int) -> List[UnifiedRecipient]:
         """Get recipients that should automatically receive tasks."""
-        # Use is_default flag instead of hardcoded logic
+        # Use personal recipients as default for task creation
         default_recipients = self.repository.get_default_recipients(user_id)
-        
-        # Fallback: if no defaults set, use enabled personal recipients
-        if not default_recipients:
-            personal = self.repository.get_personal_recipients(user_id)
-            default_recipients = [r for r in personal if r.enabled]
         
         logger.info(f"Default recipients for user {user_id}: {[r.name for r in default_recipients]}")
         return default_recipients
@@ -51,7 +50,7 @@ class RecipientService:
         return self.repository.get_recipient_by_id(user_id, recipient_id)
     
     def add_personal_recipient(self, user_id: int, name: str, platform_type: str, credentials: str, 
-                              platform_config: Optional[dict] = None, is_default: bool = True) -> int:
+                              platform_config: Optional[dict] = None) -> int:
         """Add personal recipient (user's own account)."""
         recipient = UnifiedRecipientCreate(
             name=name,
@@ -59,7 +58,6 @@ class RecipientService:
             credentials=credentials,
             platform_config=platform_config,
             is_personal=True,
-            is_default=is_default,
             enabled=True
         )
         
@@ -68,17 +66,22 @@ class RecipientService:
         return recipient_id
     
     def add_shared_recipient(self, user_id: int, name: str, platform_type: str, credentials: str,
-                            platform_config: Optional[dict] = None, shared_by: Optional[str] = None) -> int:
+                            platform_config: Optional[dict] = None, shared_by_info: Optional[str] = None) -> int:
         """Add shared recipient (account shared by others)."""
+        # Store sharing attribution in platform_config
+        if shared_by_info:
+            if platform_config:
+                platform_config['shared_by'] = shared_by_info
+            else:
+                platform_config = {'shared_by': shared_by_info}
+        
         recipient = UnifiedRecipientCreate(
             name=name,
             platform_type=platform_type,
             credentials=credentials,
             platform_config=platform_config,
             is_personal=False,
-            is_default=False,
-            enabled=True,
-            shared_by=shared_by
+            enabled=True
         )
         
         recipient_id = self.repository.add_recipient(user_id, recipient)
@@ -97,10 +100,8 @@ class RecipientService:
         """Toggle recipient enabled status."""
         return self.repository.toggle_recipient_enabled(user_id, recipient_id)
     
-    def set_recipient_as_default(self, user_id: int, recipient_id: int, is_default: bool = True) -> bool:
-        """Set recipient as default for task creation."""
-        updates = UnifiedRecipientUpdate(is_default=is_default)
-        return self.repository.update_recipient(user_id, recipient_id, updates)
+    # NOTE: Default recipient logic now uses is_personal=True
+    # No need for separate set_default method
     
     def get_recipient_credentials(self, user_id: int, recipient_id: int) -> Optional[str]:
         """Get credentials for specific recipient."""

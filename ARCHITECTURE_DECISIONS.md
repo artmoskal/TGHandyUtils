@@ -162,6 +162,21 @@ Recipient {
 - ✅ Proper error handling
 - ✅ Comprehensive testing
 
+## Test-First Development Principles
+
+### Bug Resolution Requirements
+- **NEVER fix bugs without failing tests first**
+- **Every bug discovered must be reproduced in a test**
+- **Tests must fail before fix and pass after fix**
+- **Missing functions, handlers, and UI elements require tests**
+- **Database schema issues require repository/integration tests**
+
+### Regression Prevention
+- **All bug fixes must include prevention tests**
+- **Test critical paths: imports, handlers, database operations**
+- **Verify UI navigation completeness with tests**
+- **Use tests to validate architectural decisions**
+
 ## Summary
 
 The new recipient system provides a **clean, maintainable, and extensible** architecture that:

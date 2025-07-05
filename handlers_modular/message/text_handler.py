@@ -63,14 +63,22 @@ async def process_thread_with_photos(message: Message, thread_content: List[Tupl
         
         # Create task using recipient task service WITH screenshot data
         task_service = container.recipient_task_service()
+        recipient_service = container.recipient_service()
+        
+        # First create tasks for personal recipients only
         success, feedback, actions = task_service.create_task_for_recipients(
             user_id=owner_id,
             title=task_data.title,
             description=task_data.description,
             due_time=task_data.due_time,
-            specific_recipients=None,  # Use default recipients
-            screenshot_data=screenshot_data
+            specific_recipients=None,  # Use default recipients (personal only)
+            screenshot_data=screenshot_data,
+            chat_id=message.chat.id,
+            message_id=message.message_id
         )
+        
+        # Note: Post-task actions (add to other recipients) are now handled 
+        # by recipient_task_service._generate_post_task_actions() to avoid duplication
         
         # Use unified response handler
         await handle_task_creation_response(message, success, feedback, actions)

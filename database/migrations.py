@@ -143,6 +143,7 @@ class DatabaseMigrator:
         all_migrations = [
             ("001_initial_schema", "Initial database schema", self._migration_001_initial),
             ("002_add_indexes", "Add performance indexes", self._migration_002_indexes),
+            ("003_add_screenshot_field", "Add screenshot_file_id to tasks table", self._migration_003_screenshot_field),
             # Add future migrations here
         ]
         
@@ -209,7 +210,7 @@ class DatabaseMigrator:
     def _create_unified_recipients_table(self, conn: sqlite3.Connection):
         """Create unified recipients table."""
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS unified_recipients (
+            CREATE TABLE IF NOT EXISTS recipients (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
                 name TEXT NOT NULL,
@@ -217,7 +218,9 @@ class DatabaseMigrator:
                 credentials TEXT NOT NULL,
                 platform_config TEXT,
                 is_personal BOOLEAN DEFAULT 1,
+                is_default BOOLEAN DEFAULT 0,
                 enabled BOOLEAN DEFAULT 1,
+                shared_by TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 owner_name TEXT,
@@ -240,6 +243,10 @@ class DatabaseMigrator:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_due_time ON tasks(due_time)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_recipients_user_id ON unified_recipients(user_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_recipients_enabled ON unified_recipients(enabled)")
+    
+    def _migration_003_screenshot_field(self, conn: sqlite3.Connection):
+        """Add screenshot_file_id column to tasks table."""
+        conn.execute("ALTER TABLE tasks ADD COLUMN screenshot_file_id TEXT")
 
 
 def ensure_database_ready(db_path: str) -> bool:

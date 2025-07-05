@@ -4,7 +4,7 @@ import pytest
 from unittest.mock import Mock, AsyncMock, patch
 from aiogram.types import Message, PhotoSize, User, Chat
 
-from handlers import process_thread_with_photos
+from handlers_modular.message.text_handler import process_thread_with_photos
 from models.task import TaskCreate
 
 
@@ -42,7 +42,7 @@ class TestScreenshotProcessingSimple:
         ]
         
         # Mock both services completely at the module level
-        with patch('handlers.container') as mock_container, \
+        with patch('handlers_modular.message.text_handler.container') as mock_container, \
              patch('core.initialization.services.get_parsing_service') as mock_parsing_service:
             
             # Setup parsing service
@@ -94,7 +94,7 @@ class TestScreenshotProcessingSimple:
             ("User", "urgent task", sample_screenshot_data)
         ]
         
-        with patch('handlers.container') as mock_container, \
+        with patch('handlers_modular.message.text_handler.container') as mock_container, \
              patch('core.initialization.services.get_parsing_service') as mock_parsing_service:
             
             # Setup parsing service to fail

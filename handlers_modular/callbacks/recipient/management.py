@@ -45,10 +45,17 @@ async def handle_platform_type_selection(callback_query: CallbackQuery, state: F
     # Get credential input instructions
     credentials_text = _get_credentials_instructions(platform_type)
     
+    # Add cancel keyboard for navigation
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    cancel_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_setup")]
+    ])
+    
     await callback_query.message.edit_text(
         f"🔑 **{platform_type.title()} Credentials**\n\n"
         f"{credentials_text}",
         parse_mode='Markdown',
+        reply_markup=cancel_keyboard,
         disable_web_page_preview=True
     )
     await callback_query.answer()
@@ -74,7 +81,7 @@ async def handle_trello_board_selection(callback_query: CallbackQuery, state: FS
         # Get lists for this board
         from platforms.trello import TrelloPlatform
         platform = TrelloPlatform(credentials)
-        lists = platform.get_board_lists(board_id)
+        lists = platform.get_lists(board_id)
         
         if not lists:
             await callback_query.answer("❌ No lists found in this board")
@@ -119,26 +126,56 @@ async def handle_trello_list_selection(callback_query: CallbackQuery, state: FSM
             'list_id': list_id
         }
         
-        success = recipient_service.add_personal_recipient(
-            user_id=user_id,
-            name=recipient_name or "My Trello",
-            platform_type="trello",
-            credentials=credentials,
-            platform_config=platform_config
-        )
+        # Check mode to determine if this should be personal or shared recipient
+        mode = data.get('mode', 'user_platform')  # Default to personal for backward compatibility
+        
+        if mode == "shared_recipient":
+            # Create shared recipient
+            success = recipient_service.add_shared_recipient(
+                user_id=user_id,
+                name=recipient_name or "Shared Trello",
+                platform_type="trello",
+                credentials=credentials,
+                platform_config=platform_config
+            )
+        else:
+            # Create personal recipient (default)
+            success = recipient_service.add_personal_recipient(
+                user_id=user_id,
+                name=recipient_name or "My Trello",
+                platform_type="trello",
+                credentials=credentials,
+                platform_config=platform_config
+            )
         
         if success:
+            # Add navigation after success
+            from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+            success_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🎯 Create Task", callback_data="create_task")],
+                [InlineKeyboardButton(text="🏠 Back to Menu", callback_data="back_to_menu")]
+            ])
+            
             await callback_query.message.edit_text(
                 "✅ **Trello Account Added Successfully!**\n\n"
                 "Your account is now connected and ready to use.\n\n"
                 "🎯 You can now create tasks that will appear in your selected Trello list.",
+                reply_markup=success_keyboard,
                 disable_web_page_preview=True
             )
             await state.clear()
         else:
+            # Add retry/cancel buttons for errors
+            from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+            error_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔄 Try Again", callback_data="add_user_platform")],
+                [InlineKeyboardButton(text="🏠 Back to Menu", callback_data="back_to_menu")]
+            ])
+            
             await callback_query.message.edit_text(
                 "❌ **Failed to Add Account**\n\n"
                 "There was an error saving your account. Please try again.",
+                reply_markup=error_keyboard,
                 disable_web_page_preview=True
             )
             
@@ -191,19 +228,26 @@ async def back_to_trello_boards(callback_query: CallbackQuery, state: FSMContext
 @router.callback_query(lambda c: c.data == "add_shared_recipient")
 async def add_shared_recipient(callback_query: CallbackQuery, state: FSMContext):
     """Start adding shared recipient."""
+    # Add cancel keyboard for shared recipient name input
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    cancel_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Cancel", callback_data="back_to_recipients")]
+    ])
+    
     await callback_query.message.edit_text(
         "👥 **Add Shared Recipient**\n\n"
         "Enter the name for this shared recipient:",
+        reply_markup=cancel_keyboard,
         disable_web_page_preview=True
     )
     await state.set_state(RecipientState.waiting_for_recipient_name)
     await callback_query.answer()
 
 
-@router.callback_query(lambda c: c.data.startswith("recipient_"))
+@router.callback_query(lambda c: c.data.startswith("recipient_edit_"))
 async def handle_recipient_action(callback_query: CallbackQuery, state: FSMContext):
     """Handle recipient-related actions."""
-    recipient_id = int(callback_query.data.replace("recipient_", ""))
+    recipient_id = int(callback_query.data.replace("recipient_edit_", ""))
     user_id = callback_query.from_user.id
     
     try:
@@ -304,16 +348,17 @@ def _get_credentials_instructions(platform_type: str) -> str:
     """Get credential input instructions for platform."""
     if platform_type == "todoist":
         return ("📝 TODOIST SETUP GUIDE\n\n"
-                "1. Go to https://todoist.com/prefs/integrations\n"
+                "1. Go to https://app.todoist.com/app/settings/integrations\n"
                 "2. Copy your API Token\n"
                 "3. Send it here\n\n"
                 "🔒 Your token will be stored securely.")
     elif platform_type == "trello":
         return ("📋 TRELLO SETUP GUIDE\n\n"
-                "1. Go to https://trello.com/power-ups/admin\n"
-                "2. Create a new Power-Up or use existing\n"
-                "3. Get your API Key and Token\n"
-                "4. Send them in this format:\n"
+                "1. Go to https://trello.com/app-key\n"
+                "2. Copy your API Key from the top\n"
+                "3. Click 'Token' link (or visit manually generated token)\n"
+                "4. Allow access and copy the Token\n"
+                "5. Send them in this format:\n"
                 "`api_key,token`\n\n"
                 "🔒 Your credentials will be stored securely.")
     else:
@@ -394,11 +439,18 @@ async def confirm_recipients(callback_query: CallbackQuery, state: FSMContext):
             await callback_query.answer("Please select at least one recipient")
             return
         
+        # Add cancel keyboard for task input
+        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+        cancel_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Cancel", callback_data="back_to_menu")]
+        ])
+        
         await callback_query.message.edit_text(
             f"📝 *Create Task*\n\n"
             f"Recipients selected: {len(selected_recipients)}\n\n"
             f"Now enter your task description:",
             parse_mode='Markdown',
+            reply_markup=cancel_keyboard,
             disable_web_page_preview=True
         )
         
@@ -468,13 +520,12 @@ def get_trello_board_selection_keyboard(boards):
 async def handle_recipient_removal(callback_query: CallbackQuery, state: FSMContext):
     """Handle recipient removal request."""
     try:
-        recipient_id = callback_query.data.replace("recipient_remove_", "")
-        recipient_service = get_recipient_service()
+        recipient_id = int(callback_query.data.replace("recipient_remove_", ""))
+        recipient_service = container.recipient_service()
         user_id = callback_query.from_user.id
         
         # Get recipient to show confirmation
-        recipients = recipient_service.get_all_recipients(user_id)
-        recipient = next((r for r in recipients if r.id == recipient_id), None)
+        recipient = recipient_service.get_recipient_by_id(user_id, recipient_id)
         
         if not recipient:
             await callback_query.answer("❌ Recipient not found")
@@ -499,15 +550,15 @@ async def handle_recipient_removal(callback_query: CallbackQuery, state: FSMCont
         
     except Exception as e:
         logger.error(f"Error handling recipient removal: {e}")
-        await handle_error(callback_query, e)
+        await callback_query.answer("❌ Error deleting account")
 
 
 @router.callback_query(lambda c: c.data.startswith("confirm_remove_"))
 async def handle_confirm_recipient_removal(callback_query: CallbackQuery, state: FSMContext):
     """Handle confirmed recipient removal."""
     try:
-        recipient_id = callback_query.data.replace("confirm_remove_", "")
-        recipient_service = get_recipient_service()
+        recipient_id = int(callback_query.data.replace("confirm_remove_", ""))
+        recipient_service = container.recipient_service()
         user_id = callback_query.from_user.id
         
         # Remove the recipient
@@ -517,7 +568,7 @@ async def handle_confirm_recipient_removal(callback_query: CallbackQuery, state:
             await callback_query.answer("✅ Account deleted successfully")
             
             # Return to main recipients page
-            recipients = recipient_service.get_all_recipients(user_id)
+            recipients = recipient_service.get_recipients_by_user(user_id)
             keyboard = get_recipient_management_keyboard(recipients)
             
             await callback_query.message.edit_text(
@@ -533,4 +584,4 @@ async def handle_confirm_recipient_removal(callback_query: CallbackQuery, state:
             
     except Exception as e:
         logger.error(f"Error confirming recipient removal: {e}")
-        await handle_error(callback_query, e)
+        await callback_query.answer("❌ Error confirming deletion")

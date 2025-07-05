@@ -83,10 +83,26 @@
 5. **Run Tests**: ALWAYS use Docker for testing - see Test Commands section
 
 ### Before Committing:
-1. **Run Tests**: `./test.sh` (unit and integration tests)
-2. **Code Review**: Self-review against checklist above
-3. **Container Rebuild**: `docker-compose build bot && docker-compose up -d`
-4. **Container Testing**: Verify changes work in Docker environment
+1. **Test-First Bug Fixes**: If fixing bugs, ensure failing test exists BEFORE fix
+2. **Run Tests**: `./test.sh` (unit and integration tests)
+3. **Code Review**: Self-review against checklist above
+4. **Container Rebuild**: `docker-compose build bot && docker-compose up -d`
+5. **Container Testing**: Verify changes work in Docker environment
+
+### Test-First Bug Fix Protocol:
+**MANDATORY**: For ALL bug fixes, this sequence is required:
+1. **Reproduce Bug**: Write test that demonstrates the bug and fails
+2. **Verify Failure**: Run test to confirm it catches the issue
+3. **Fix Bug**: Make minimal code changes to resolve the issue
+4. **Verify Success**: Run test to confirm fix works
+5. **Regression Check**: Run full test suite to ensure no other issues
+
+### Test Infrastructure vs Functional Issues:
+**CRITICAL**: Always distinguish between real bugs and test infrastructure problems
+- **Test Failures ≠ Broken Functionality**: Verify actual application behavior first
+- **Integration Tests First**: More reliable than complex unit test mocks
+- **Mock Patch Debugging**: Function imports inside methods need special patching
+- **Manual Verification**: Always test real functionality when tests fail
 5. **Log Level Check**: Appropriate logging levels used
 6. **Security Review**: No sensitive data exposed
 7. **Performance Check**: No obvious performance regressions

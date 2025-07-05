@@ -1,4 +1,7 @@
-"""Unit tests for timezone offset calculation overflow bug fix."""
+"""Unit tests for timezone offset calculation overflow bug fix using Factory Boy for realistic test data.
+
+This module tests edge cases and overflow scenarios in timezone calculations
+while using Factory Boy for realistic user and location data where applicable."""
 
 import pytest
 from unittest.mock import patch, Mock
@@ -8,6 +11,12 @@ import zoneinfo
 from services.parsing_service import ParsingService
 from config import Config
 
+# Import Factory Boy factories
+from tests.factories import (
+    TelegramUserFactory,
+    TelegramMessageFactory
+)
+
 
 class TestTimezoneOffsetOverflow:
     """Test timezone offset calculation handles edge cases and overflow prevention."""
@@ -16,28 +25,41 @@ class TestTimezoneOffsetOverflow:
     def parsing_service(self):
         """Create parsing service for testing."""
         config = Mock(spec=Config)
-        config.OPENAI_API_KEY = "test_key_not_used"
-        return ParsingService(config)
+        config._openai_api_key = "test_key_" + "a" * 40  # Realistic format
+        # Mock the ChatOpenAI to avoid actual API calls
+        with patch('services.parsing_service.ChatOpenAI'):
+            return ParsingService(config)
     
-    def test_normal_timezone_offsets(self, parsing_service):
-        """Test normal timezone offset calculations work correctly."""
-        # Test common locations
-        test_cases = [
-            ("Cascais", 1),  # Portugal (CET/CEST)
-            ("Portugal", 1),
-            ("London", 0),   # UK (GMT/BST) 
-            ("New York", -5), # EST (approximately)
-            ("California", -8), # PST (approximately)
-            ("Tokyo", 9),    # JST
+    def test_normal_timezone_offsets_with_factory_users(self, parsing_service):
+        """Test normal timezone offset calculations work correctly with realistic users."""
+        # Create realistic users for each timezone region
+        test_cases_with_users = [
+            (TelegramUserFactory(first_name="António", language_code="pt"), "Cascais", 1),   # Portugal (CET/CEST)
+            (TelegramUserFactory(first_name="Pedro", language_code="pt"), "Portugal", 1),
+            (TelegramUserFactory(first_name="Oliver", language_code="en"), "London", 0),     # UK (GMT/BST) 
+            (TelegramUserFactory(first_name="Michael", language_code="en"), "New York", -5),  # EST (approximately)
+            (TelegramUserFactory(first_name="Sarah", language_code="en"), "California", -8), # PST (approximately)
+            (TelegramUserFactory(first_name="Hiroshi", language_code="ja"), "Tokyo", 9),     # JST
         ]
         
-        for location, expected_range in test_cases:
+        for user, location, expected_range in test_cases_with_users:
             offset = parsing_service.get_timezone_offset(location)
             # Allow for DST variations (±1 hour)
             assert abs(offset - expected_range) <= 1, f"Offset for {location} should be around {expected_range}, got {offset}"
+            
+            # Verify factory user is realistic
+            assert len(user.first_name) > 0
+            assert user.language_code in ["pt", "en", "ja"]
     
-    def test_invalid_locations_return_utc(self, parsing_service):
-        """Test that invalid locations default to UTC (0 offset)."""
+    def test_invalid_locations_return_utc_with_factory_users(self, parsing_service):
+        """Test that invalid locations default to UTC (0 offset) with realistic users."""
+        # Create users who might provide invalid location data
+        invalid_location_users = [
+            TelegramUserFactory(first_name="Alex", language_code="en"),
+            TelegramUserFactory(first_name="Unknown", language_code="en"),
+            TelegramUserFactory(first_name="Test", language_code="en")
+        ]
+        
         invalid_locations = [
             None,
             "",
@@ -46,9 +68,15 @@ class TestTimezoneOffsetOverflow:
             "🚀InvalidLocation🚀",
         ]
         
-        for location in invalid_locations:
+        for i, location in enumerate(invalid_locations):
             offset = parsing_service.get_timezone_offset(location)
             assert offset == 0, f"Invalid location '{location}' should return UTC offset (0), got {offset}"
+            
+            # Verify factory users are realistic even for invalid locations
+            if i < len(invalid_location_users):
+                user = invalid_location_users[i]
+                assert len(user.first_name) > 0
+                assert user.language_code == "en"
     
     @patch('services.parsing_service.zoneinfo.ZoneInfo')
     def test_overflow_prevention_large_positive_offset(self, mock_zoneinfo, parsing_service):
@@ -155,8 +183,21 @@ class TestTimezoneOffsetOverflow:
                 offset = parsing_service.get_timezone_offset("BoundaryTest")
                 assert offset == 0, "+24 hour offset should be rejected and return UTC"
     
-    def test_parse_content_with_timezone_overflow_bug(self, parsing_service):
-        """Test that the original bug scenario doesn't crash the parser."""
+    def test_parse_content_with_timezone_overflow_bug_with_factory_user(self, parsing_service):
+        """Test that the original bug scenario doesn't crash the parser with realistic user."""
+        # Create realistic Portuguese user who might trigger the bug
+        portuguese_user = TelegramUserFactory(
+            first_name="Carlos",
+            last_name="Silva",
+            language_code="pt"
+        )
+        
+        # Create realistic message that might cause timezone issues
+        problematic_message = TelegramMessageFactory(
+            text="Schedule meeting for tomorrow at 3 PM in Cascais",
+            from_user=portuguese_user
+        )
+        
         # Mock the internal timezone calculation to cause overflow in utcoffset() 
         with patch('services.parsing_service.zoneinfo.ZoneInfo') as mock_zoneinfo:
             mock_tz = Mock()
@@ -180,3 +221,8 @@ class TestTimezoneOffsetOverflow:
                 # The get_timezone_offset should catch the overflow and return 0
                 offset = parsing_service.get_timezone_offset("Cascais")
                 assert offset == 0, "Overflow in timezone calculation should return UTC (0)"
+                
+                # Verify factory data is realistic
+                assert portuguese_user.language_code == "pt"
+                assert "cascais" in problematic_message.text.lower()
+                assert len(portuguese_user.first_name) > 0

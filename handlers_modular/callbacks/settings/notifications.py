@@ -168,19 +168,34 @@ async def delete_all_data_confirmed(callback_query: CallbackQuery, state: FSMCon
         success = recipient_service.delete_all_user_data(user_id)
         
         if success:
+            # Add navigation after successful deletion
+            from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+            start_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🚀 Start Fresh", callback_data="back_to_menu")]
+            ])
+            
             await callback_query.message.edit_text(
                 "✅ *All Data Deleted*\n\n"
                 "Your data has been permanently removed.\n"
                 "You can start fresh by using /start",
                 parse_mode='Markdown',
+                reply_markup=start_keyboard,
                 disable_web_page_preview=True
             )
         else:
+            # Add retry/back buttons for deletion error
+            from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+            error_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔄 Try Again", callback_data="confirm_delete_data")],
+                [InlineKeyboardButton(text="🏠 Back to Menu", callback_data="back_to_menu")]
+            ])
+            
             await callback_query.message.edit_text(
                 "❌ *Deletion Failed*\n\n"
                 "There was an error deleting your data.\n"
                 "Please try again or contact support.",
                 parse_mode='Markdown',
+                reply_markup=error_keyboard,
                 disable_web_page_preview=True
             )
         

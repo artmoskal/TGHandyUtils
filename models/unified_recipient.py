@@ -15,9 +15,7 @@ class UnifiedRecipient:
     credentials: str
     platform_config: Optional[Dict[str, Any]] = None
     is_personal: bool = False
-    is_default: bool = False
     enabled: bool = True
-    shared_by: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -39,9 +37,7 @@ class UnifiedRecipientUpdate:
     name: Optional[str] = None
     credentials: Optional[str] = None
     platform_config: Optional[Dict[str, Any]] = None
-    is_default: Optional[bool] = None
     enabled: Optional[bool] = None
-    shared_by: Optional[str] = None
 
 
 @dataclass

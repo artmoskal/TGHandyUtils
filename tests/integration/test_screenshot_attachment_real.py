@@ -1,9 +1,20 @@
-"""Real integration test for screenshot attachment functionality - designed to catch missing attach_screenshot() calls."""
+"""Real integration test for screenshot attachment functionality using Factory Boy for realistic data.
+
+This test uses realistic Factory Boy data to catch attachment bugs and ensure
+screenshot functionality works with proper test data instead of hardcoded values."""
 
 import pytest
 from unittest.mock import Mock, AsyncMock, patch
 from services.recipient_task_service import RecipientTaskService
 from models.unified_recipient import UnifiedRecipient
+
+# Import Factory Boy factories
+from tests.factories import (
+    TodoistRecipientFactory,
+    ScreenshotTaskFactory,
+    TelegramUserFactory,
+    TelegramMessageFactory
+)
 
 
 class TestScreenshotAttachmentReal:
@@ -11,19 +22,35 @@ class TestScreenshotAttachmentReal:
     
     @pytest.fixture
     def mock_recipient_service(self):
-        """Mock recipient service."""
+        """Mock recipient service with realistic Factory Boy recipient."""
         service = Mock()
-        test_recipient = UnifiedRecipient(
+        
+        # Create realistic recipient using factory
+        test_recipient_factory = TodoistRecipientFactory(
             id=1,
-            name="Test Todoist",
+            user_id=12345,
+            name="Personal Todoist - Screenshots",
             platform_type="todoist",
-            credentials="test_token",
-            platform_config={},
+            credentials="a" * 40,  # Realistic token length
+            platform_config={'project_id': '2147483647'},
             enabled=True,
-            user_id=123
+            is_personal=True
         )
+        
+        # Convert to UnifiedRecipient model
+        test_recipient = UnifiedRecipient(
+            id=test_recipient_factory.id,
+            name=test_recipient_factory.name,
+            platform_type=test_recipient_factory.platform_type,
+            credentials=test_recipient_factory.credentials,
+            platform_config=test_recipient_factory.platform_config,
+            enabled=test_recipient_factory.enabled,
+            user_id=test_recipient_factory.user_id,
+            is_personal=test_recipient_factory.is_personal
+        )
+        
         service.get_default_recipients.return_value = [test_recipient]
-        service.get_enabled_recipients.return_value = [test_recipient]  # Add missing mock
+        service.get_enabled_recipients.return_value = [test_recipient]
         return service
     
     @pytest.fixture
@@ -43,11 +70,17 @@ class TestScreenshotAttachmentReal:
     
     @pytest.fixture
     def sample_screenshot_data(self):
-        """Sample screenshot data."""
+        """Sample screenshot data using Factory Boy for realistic test data."""
+        # Create realistic screenshot task for reference
+        screenshot_task = ScreenshotTaskFactory(
+            title="UI Bug Report - Screenshot Analysis",
+            description="Screenshot showing layout issue in mobile view"
+        )
+        
         return {
-            'image_data': b'fake_image_bytes_123',
-            'file_name': 'test_screenshot.jpg',
-            'extracted_text': 'TODO: Fix bug',
+            'image_data': b'realistic_image_bytes_from_screenshot_capture_' + screenshot_task.title.encode()[:20],
+            'file_name': f'screenshot_{screenshot_task.id}.jpg',
+            'extracted_text': f'Bug found: {screenshot_task.description}',
             'summary': 'Code screenshot with TODO comment'
         }
     

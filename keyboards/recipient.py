@@ -44,7 +44,8 @@ def get_platform_selection_keyboard() -> InlineKeyboardMarkup:
     """Get account type selection keyboard."""
     keyboard = [
         [InlineKeyboardButton(text="📝 Todoist", callback_data="platform_type_todoist")],
-        [InlineKeyboardButton(text="📋 Trello", callback_data="platform_type_trello")]
+        [InlineKeyboardButton(text="📋 Trello", callback_data="platform_type_trello")],
+        [InlineKeyboardButton(text="« Back", callback_data="back_to_recipients")]
     ]
     
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
@@ -112,6 +113,15 @@ def get_recipient_settings_keyboard() -> InlineKeyboardMarkup:
     keyboard = [
         [InlineKeyboardButton(text="🔄 Toggle UI", callback_data="toggle_recipient_ui")],
         [InlineKeyboardButton(text="« Back", callback_data="back_to_recipients")]
+    ]
+    
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def get_trello_configuration_keyboard() -> InlineKeyboardMarkup:
+    """Get Trello configuration keyboard with back navigation."""
+    keyboard = [
+        [InlineKeyboardButton(text="« Back to Settings", callback_data="back_to_recipients")]
     ]
     
     return InlineKeyboardMarkup(inline_keyboard=keyboard)

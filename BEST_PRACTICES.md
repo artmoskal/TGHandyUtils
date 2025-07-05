@@ -1,5 +1,72 @@
 # Best Practices & Development Guidelines
 
+## 🚨 **MANDATORY ANALYSIS BEFORE ANY TASK**
+
+### **🔍 PRE-IMPLEMENTATION ANALYSIS PROTOCOL**
+
+**BEFORE starting ANY coding task, you MUST:**
+
+1. **📖 READ EXISTING TEST FILES**
+   - Understand current testing patterns (`conftest.py`, existing unit tests)
+   - Check for Factory Boy usage: `grep -r "import factory" tests/`
+   - Identify established fixture patterns
+   - Never revert from Factory Boy to mocks
+
+2. **📋 READ EXISTING MD FILES**  
+   - Check for existing planning documents in project root
+   - Follow established approaches (e.g., `PLANNING_TEMPLATE.md`)
+   - Look for architectural decisions and patterns
+   - Avoid duplicating or contradicting existing plans
+
+3. **🏗️ VERIFY ARCHITECTURE DECISIONS**
+   - Check dependency injection patterns (`core/container.py`)
+   - Verify service layer patterns (`services/`)
+   - Understand repository patterns (`database/`)
+   - Follow established error handling patterns
+
+4. **📝 DOCUMENT ANALYSIS FINDINGS**
+   - Record what tools/patterns are already in use
+   - Note any architectural improvements already implemented
+   - Identify gaps that need addressing
+   - Document reasons for chosen approach
+
+### **⛔ NEVER REVERT ARCHITECTURAL IMPROVEMENTS**
+- ❌ Don't replace Factory Boy with mocks
+- ❌ Don't bypass dependency injection
+- ❌ Don't ignore established service patterns  
+- ❌ Don't duplicate existing planning documents
+
+---
+
+## 🚨 **CRITICAL DEPLOYMENT REQUIREMENTS**
+
+### **Container Conflicts - NEVER RUN DUPLICATE BOT INSTANCES**
+
+⚠️ **MANDATORY CHECK BEFORE DEPLOYMENT**: Always verify no duplicate bot containers are running with the same token.
+
+**Problem**: Running multiple containers with the same Telegram bot token causes:
+- `TelegramConflictError: terminated by other getUpdates request`
+- Bot cannot receive messages
+- Silent failures in message processing
+
+**Solution**:
+1. **ALWAYS** run `docker ps` before starting bot
+2. **ALWAYS** stop any conflicting containers: `docker stop infra-bot-1` 
+3. **NEVER** run multiple containers with same bot token simultaneously
+4. Use unique tokens for development vs production environments
+
+**Example of proper cleanup**:
+```bash
+# Check for conflicts
+docker ps | grep bot
+
+# Stop conflicting containers  
+docker stop infra-bot-1 tghandyutils-bot-1
+
+# Start only one instance
+docker-compose up -d
+```
+
 ## 🏛️ **Architectural Principles**
 
 ### 1. **Single Responsibility Principle**
@@ -443,11 +510,71 @@ from models.recipient import Recipient
 5. Write comprehensive tests
 6. Update documentation
 
-### 2. **Bug Fixes**
-1. Write failing test that reproduces the bug
-2. Fix the bug
-3. Verify test passes
-4. Check for related issues
+### 2. **Bug Fixes - TEST-FIRST MANDATORY**
+**CRITICAL**: NEVER fix a bug without first writing a failing test that demonstrates it.
+
+**⚠️ ABSOLUTELY FORBIDDEN SEQUENCE ⚠️**:
+❌ Find bug in logs → Fix code → Deploy fix
+
+**✅ MANDATORY SEQUENCE FOR ALL BUGS ✅**:
+1. **User Reports Bug** → "manage accounts click fails"
+2. **Write Failing Test** → Create test that reproduces the exact failure
+3. **Run Test & Verify It Fails** → Confirm test catches the bug
+4. **Fix the Bug** → Make minimal changes to pass the test
+5. **Run Test & Verify It Passes** → Confirm fix works
+6. **Run Full Test Suite** → Ensure no regressions
+7. **Deploy Fix** → Ship the tested solution
+
+**🔥 IDIOT-PROOF CHECKLIST 🔥**:
+- [ ] I have a failing test that reproduces the bug
+- [ ] I ran the test and it failed (red)
+- [ ] I fixed the code 
+- [ ] I ran the test and it passed (green)
+- [ ] I ran the full test suite
+- [ ] ONLY NOW can I deploy/commit
+
+**Test Selection by Bug Type**:
+- **Missing Functions**: Unit test that imports and calls the function
+- **Callback Patterns**: Integration test that simulates button press
+- **Database Schema**: Repository test that exercises all expected fields
+- **Navigation Issues**: UI test that verifies all screens have exit paths
+- **Logic Errors**: Unit test with specific input/output assertions
+
+**Real Example - "manage accounts click fails"**:
+```python
+# ✅ CORRECT: Write test FIRST
+def test_manage_accounts_callback_works():
+    """Test that manage accounts callback doesn't crash."""
+    service = RecipientService(mock_repository)
+    # This should fail initially due to missing method
+    recipients = service.get_recipients_by_user(12345)
+    assert isinstance(recipients, list)
+
+# ❌ WRONG: Fix code first without test
+# Just adding get_recipients_by_user() method directly
+```
+
+**Why This Protocol is NON-NEGOTIABLE**:
+1. **Regression Prevention**: Test ensures bug never returns
+2. **Confidence**: Proves fix actually works 
+3. **Documentation**: Test explains what was broken
+4. **Quality**: Forces thinking about edge cases
+5. **Safety**: Prevents breaking other functionality
+
+### **Test Infrastructure Maintenance**
+**CRITICAL**: Distinguish between functionality bugs vs test infrastructure issues
+
+**When Tests Fail**:
+1. **First Check**: Is functionality actually broken or just test mocking?
+2. **Verify Manually**: Test actual functionality in running application
+3. **Check Integration Tests**: Often more reliable than unit tests with complex mocks
+4. **Fix vs Skip**: Fix test infrastructure separately from functional bugs
+
+**Mock Debugging Principles**:
+- **Import Location Matters**: Patch where function is used, not where defined
+- **Function-Level Imports**: For imports inside functions, patch the using module
+- **Test Isolation**: Failing mocks ≠ Missing functionality
+- **Integration Over Unit**: Use integration tests for complex interaction verification
 
 ### 3. **Refactoring**
 1. Ensure comprehensive test coverage

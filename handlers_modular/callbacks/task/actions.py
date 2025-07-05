@@ -15,8 +15,85 @@ logger = get_logger(__name__)
 async def cancel_task(callback_query: CallbackQuery, state: FSMContext):
     """Cancel task creation."""
     await state.clear()
-    await callback_query.message.edit_text("❌ Task creation cancelled.", disable_web_page_preview=True)
+    # Add back to menu button after cancellation
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    back_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🏠 Back to Menu", callback_data="back_to_menu")]
+    ])
+    
+    await callback_query.message.edit_text(
+        "❌ Task creation cancelled.", 
+        reply_markup=back_keyboard,
+        disable_web_page_preview=True
+    )
     await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("add_shared_task_"))
+async def add_shared_task(callback_query: CallbackQuery, state: FSMContext):
+    """Handle adding task to shared recipient."""
+    try:
+        # Extract recipient ID from callback data
+        recipient_id = int(callback_query.data.replace("add_shared_task_", ""))
+        user_id = callback_query.from_user.id
+        
+        # Get the last created task ID from the database
+        task_repo = container.task_repository()
+        # Get most recent task for this user (ordered by due_time)
+        # This is a simplification - ideally we'd store task_id in state or message
+        user_tasks = task_repo.get_by_user(user_id)
+        
+        if not user_tasks:
+            await callback_query.answer("❌ No tasks found to add to shared recipient")
+            return
+        
+        # Get the most recently created task (last in the list by ID)
+        task_id = max(user_tasks, key=lambda t: t.id).id
+        
+        # Add task to shared recipient
+        task_service = container.recipient_task_service()
+        success, feedback = task_service.add_task_to_recipient(user_id, task_id, recipient_id)
+        
+        if success:
+            await callback_query.answer(f"✅ {feedback}")
+            # Update the message to show the task was added
+            current_text = callback_query.message.text or ""
+            updated_text = current_text + f"\n\n✅ {feedback}"
+            
+            # Remove the button that was just clicked from the message
+            from keyboards.recipient import get_post_task_actions_keyboard
+            if callback_query.message.reply_markup:
+                # Get current actions and remove the clicked one
+                current_keyboard = callback_query.message.reply_markup
+                actions = {'add_actions': []}
+                
+                for row in current_keyboard.inline_keyboard:
+                    for button in row:
+                        if button.callback_data != callback_query.data and button.callback_data.startswith("add_shared_task_"):
+                            actions['add_actions'].append({
+                                'text': button.text,
+                                'callback_data': button.callback_data
+                            })
+                
+                # Update message with reduced keyboard
+                if actions['add_actions']:
+                    new_keyboard = get_post_task_actions_keyboard(actions)
+                else:
+                    # No more shared recipients to add, remove keyboard
+                    new_keyboard = None
+                    
+                await callback_query.message.edit_text(
+                    updated_text,
+                    reply_markup=new_keyboard,
+                    disable_web_page_preview=True,
+                    parse_mode='Markdown'
+                )
+        else:
+            await callback_query.answer(f"❌ {feedback}")
+            
+    except Exception as e:
+        logger.error(f"Error adding shared task: {e}")
+        await callback_query.answer("❌ Error adding task to shared recipient")
 
 
 @router.callback_query(lambda c: c.data == "transcribe_confirm")
@@ -40,10 +117,18 @@ async def confirm_transcription(callback_query: CallbackQuery, state: FSMContext
         recipients = recipient_service.get_enabled_recipients(user_id)
         
         if not recipients:
+            # Add navigation for no recipients error
+            from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+            error_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🎯 Add Recipients", callback_data="show_recipients")],
+                [InlineKeyboardButton(text="🏠 Back to Menu", callback_data="back_to_menu")]
+            ])
+            
             await callback_query.message.edit_text(
                 "❌ NO RECIPIENTS CONFIGURED\n\n"
                 "You need to connect a recipient first!\n\n"
                 "🚀 Use /recipients to add your Todoist or Trello account.",
+                reply_markup=error_keyboard,
                 disable_web_page_preview=True
             )
             await state.clear()
@@ -86,7 +171,17 @@ async def confirm_transcription(callback_query: CallbackQuery, state: FSMContext
 async def cancel_transcription(callback_query: CallbackQuery, state: FSMContext):
     """Handle transcription cancellation."""
     await state.clear()
-    await callback_query.message.edit_text("❌ Voice message transcription cancelled.", disable_web_page_preview=True)
+    # Add back to menu button after cancellation
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    back_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🏠 Back to Menu", callback_data="back_to_menu")]
+    ])
+    
+    await callback_query.message.edit_text(
+        "❌ Voice message transcription cancelled.", 
+        reply_markup=back_keyboard,
+        disable_web_page_preview=True
+    )
     await callback_query.answer()
 
 
