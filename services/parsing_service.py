@@ -37,7 +37,7 @@ class ParsingService(IParsingService):
     def _create_prompt_template(self) -> PromptTemplate:
         """Create the prompt template for task parsing."""
         template = """
-        You are a task creation assistant. Create a task with 'title', 'due_time' (UTC ISO 8601), and 'description'.
+        You are a multilingual task creation assistant. Create a task with 'title', 'due_time' (UTC ISO 8601), and 'description'.
 
         CURRENT CONTEXT:
         - Current UTC: {current_utc_iso}
@@ -48,12 +48,27 @@ class ParsingService(IParsingService):
         TIME EXAMPLES (current time {current_local_simple}):
         {time_examples}
 
+        MULTILINGUAL TIME PARSING:
+        Handle ALL time formats in ANY language including:
+        - English: "today 1900", "at 7", "tonight", "7.30pm", "19h", "8ish", "after lunch", "end of day"
+        - Portuguese: "hoje às 19h", "amanhã de manhã", "hoje à noite", "por volta das 8", "depois do almoço"
+        - Spanish: "hoy a las 19h", "mañana por la mañana", "esta noche", "sobre las 8", "después de comer"
+        - French: "aujourd'hui à 19h", "demain matin", "ce soir", "vers 8h", "après le déjeuner"
+        - German: "heute um 19h", "morgen früh", "heute abend", "gegen 8", "nach dem Mittagessen"
+        - Italian: "oggi alle 19", "domani mattina", "stasera", "verso le 8", "dopo pranzo"
+        - Russian: "сегодня в 19:00", "завтра утром", "сегодня вечером", "около 8", "после обеда"
+
         PARSING RULES:
         1. PRIORITY: Explicit dates/times in message override all defaults
-        2. User times are in {timezone_name} - convert to UTC (adjust {timezone_offset_str}h)
-        3. "12/Jun" = June 12th | "asap/now" = +1 hour | No time = tomorrow 9AM local
-        4. Output format MUST be: YYYY-MM-DDTHH:MM:SSZ
-        5. Default year: {current_year}
+        2. ALL TIMES: Calculate in UTC directly - current UTC time is {current_utc_iso}
+        3. Handle approximate times: "ish", "around", "about", "por volta", "sobre", "vers", "gegen", "verso", "около"
+        4. Handle relative times: "tonight", "this evening", "end of day", "after lunch", "before work"
+        5. Handle military time: "1900", "0800", "1430" (assume 24-hour format)
+        6. Handle alternative formats: "7.30pm", "19h30", "7,30", "19:30h"
+        7. Handle written numbers: "seven", "eight", "nine", "sete", "ocho", "sept", "sieben", "sette", "семь"
+        8. If time has passed today, assume tomorrow (unless explicitly "today")
+        9. No specific time = tomorrow 9AM local
+        10. Output format MUST be: YYYY-MM-DDTHH:MM:SSZ
 
         TITLE: Create informative, specific titles (<50 chars).
         AVOID: "Decide on X", "Check with Y", "Handle appointment"
@@ -75,7 +90,7 @@ class ParsingService(IParsingService):
         
         return PromptTemplate(
             template=template,
-            input_variables=["content_message", "owner_name", "current_year",
+            input_variables=["content_message", "owner_name",
                            "current_utc_iso", "current_local_iso", "location",
                            "timezone_name", "timezone_offset_str",
                            "today_date", "tomorrow_date",
@@ -192,7 +207,37 @@ class ParsingService(IParsingService):
             target_utc = current_utc + timedelta(hours=1)
             return target_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
         
-        # Pattern 5: Month/day patterns (Nov 25, Dec 1, etc.)
+        # Pattern 5: "at HH:MM" or "at H PM/AM" patterns
+        at_time_pattern = r'\bat\s+(?:(\d{1,2})(?::(\d{2}))?\s*(am|pm)?)\b'
+        match = re.search(at_time_pattern, time_phrase.lower())
+        if match:
+            hour_str = match.group(1)
+            minute_str = match.group(2) or "00"
+            am_pm = match.group(3)
+            
+            if hour_str:
+                hour = int(hour_str)
+                minute = int(minute_str)
+                
+                # Handle AM/PM conversion
+                if am_pm:
+                    if am_pm.lower() == 'pm' and hour != 12:
+                        hour += 12
+                    elif am_pm.lower() == 'am' and hour == 12:
+                        hour = 0
+                
+                # Create target time for today
+                target_local = current_local.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                
+                # If time has already passed today, assume tomorrow
+                if target_local <= current_local:
+                    target_local += timedelta(days=1)
+                
+                # Convert to UTC
+                target_utc = target_local - timedelta(hours=offset_hours)
+                return target_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+        
+        # Pattern 6: Month/day patterns (Nov 25, Dec 1, etc.)
         month_pattern = r'\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+(\d{1,2})\b'
         match = re.search(month_pattern, time_phrase.lower())
         if match:
@@ -223,24 +268,18 @@ class ParsingService(IParsingService):
         return None
     
     def _generate_time_examples(self, current_local: datetime, current_utc: datetime, offset_hours: int) -> str:
-        """Generate dynamic time interpretation examples based on current time."""
+        """Generate clear, non-confusing time interpretation examples."""
         examples = []
-        current_hour = current_local.hour
         
-        # Show what happens with various "today X" requests
-        for test_hour in [5, 9, 14, 18, 23]:
-            time_str = f"today {test_hour}am" if test_hour < 12 else f"today {test_hour-12}pm"
-            if test_hour == 12:
-                time_str = "today noon"
-            
-            # Calculate the actual result
-            result = self._calculate_precise_time(time_str, current_local, current_utc, offset_hours)
-            examples.append(f'- "{time_str}" → {result}')
+        # Simple, clear examples that don't cause confusion
+        tomorrow = current_local + timedelta(days=1)
         
-        # Add relative time examples
-        for phrase in ["in 1 hour", "in 30 minutes", "tomorrow 9am", "asap"]:
-            result = self._calculate_precise_time(phrase, current_local, current_utc, offset_hours)
-            examples.append(f'- "{phrase}" → {result}')
+        examples.extend([
+            f'- "in 1 hour" → {(current_utc + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")}',
+            f'- "in 30 minutes" → {(current_utc + timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")}',
+            f'- "tomorrow 9am" → {(tomorrow.replace(hour=9, minute=0, second=0) - timedelta(hours=offset_hours)).strftime("%Y-%m-%dT%H:%M:%SZ")}',
+            f'- "asap" → {(current_utc + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")}'
+        ])
         
         return '\n'.join(examples)
     
@@ -314,17 +353,10 @@ class ParsingService(IParsingService):
             # Format timezone offset string (e.g., "+1" or "-5")
             timezone_offset_str = f"+{offset_hours}" if offset_hours >= 0 else str(offset_hours)
             
-            # HYBRID APPROACH: Try precise calculation first for known patterns
-            precise_time = self._calculate_precise_time(content_message, user_local_time, current_utc, offset_hours)
-            
-            if precise_time:
-                logger.info(f"Using precise calculation for time pattern in: {content_message}")
-                # For precise calculations, still use LLM for title/description but provide the calculated time
-                prompt_addon = f"\n\nIMPORTANT: The due_time has been pre-calculated as: {precise_time}"
-                content_with_time = content_message + prompt_addon
-            else:
-                logger.info(f"No precise pattern found, using full LLM parsing for: {content_message}")
-                content_with_time = content_message
+            # LLM-FIRST APPROACH: Use LLM for ALL time parsing to handle multilingual and edge cases
+            # Static patterns are kept as fallback only in case LLM fails
+            logger.info(f"Using LLM-first parsing for: {content_message}")
+            content_with_time = content_message
             
             # Generate dynamic time examples
             time_examples = self._generate_time_examples(user_local_time, current_utc, offset_hours)
@@ -333,7 +365,6 @@ class ParsingService(IParsingService):
             input_data = {
                 "content_message": content_with_time,
                 "owner_name": owner_name or "User",
-                "current_year": current_utc.year,
                 "current_utc_iso": current_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "current_local_iso": user_local_time.strftime("%Y-%m-%dT%H:%M:%S"),
                 "location": location,
@@ -359,17 +390,32 @@ class ParsingService(IParsingService):
             
             result = parsed_task.model_dump()
             
-            # If we had a precise calculation, ensure it's used (in case LLM ignores it)
-            if precise_time:
-                result['due_time'] = precise_time
-                logger.info(f"Ensured precise time {precise_time} is used for task")
-            
-            logger.info(f"Successfully parsed task: {result['title']}")
+            # LLM handles all time parsing - no static overrides
+            logger.info(f"Successfully parsed task: {result['title']} with LLM-parsed time: {result['due_time']}")
             return result
             
         except Exception as e:
-            logger.error(f"Failed to parse content to task: {e}")
-            raise ParsingError(f"Content parsing failed: {e}")
+            logger.error(f"LLM parsing failed, trying static fallback: {e}")
+            
+            # FALLBACK: Try static patterns only if LLM completely fails
+            try:
+                precise_time = self._calculate_precise_time(content_message, user_local_time, current_utc, offset_hours)
+                if precise_time:
+                    logger.info(f"Using static fallback for time pattern in: {content_message}")
+                    # Create a minimal task with static time
+                    fallback_result = {
+                        "title": content_message[:50],  # Truncate for title
+                        "due_time": precise_time,
+                        "description": content_message
+                    }
+                    logger.info(f"Static fallback successful: {fallback_result['title']}")
+                    return fallback_result
+                else:
+                    logger.error(f"Static fallback also failed - no patterns matched")
+                    raise ParsingError(f"Both LLM and static parsing failed: {e}")
+            except Exception as fallback_e:
+                logger.error(f"Static fallback failed: {fallback_e}")
+                raise ParsingError(f"Content parsing failed: {e}")
     
     def _get_timezone_info(self, location: Optional[str]) -> str:
         """Get timezone information for a location."""

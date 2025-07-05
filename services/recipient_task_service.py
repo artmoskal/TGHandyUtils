@@ -93,7 +93,7 @@ class RecipientTaskService:
         
         # Generate feedback and action buttons
         if task_urls:
-            feedback = self._generate_success_feedback(recipients, task_urls, failed_recipients, title, description, due_time_str)
+            feedback = self._generate_success_feedback(recipients, task_urls, failed_recipients, title, description, due_time_str, user_id)
             actions = self._generate_post_task_actions(user_id, recipients, task_id)
             return True, feedback, actions
         else:
@@ -233,31 +233,81 @@ class RecipientTaskService:
             return False, None
     
     def _generate_success_feedback(self, recipients: List[UnifiedRecipient], task_urls: List[str], 
-                                 failed_recipients: List[str], title: str, description: str, due_time: str) -> str:
+                                 failed_recipients: List[str], title: str, description: str, due_time: str, user_id: int) -> str:
         """Generate success feedback message with full task details."""
         feedback_parts = ["✅ *Task Created Successfully!*\n"]
         
-        # Add task details
-        feedback_parts.append(f"📝 *Title:* {title}")
+        # Add task details (escape special Markdown characters)
+        escaped_title = title.replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace(']', '\\]').replace('`', '\\`')
+        feedback_parts.append(f"📝 *Title:* {escaped_title}")
         if description and description.strip():
             # Truncate long descriptions
             desc_preview = description[:200] + "..." if len(description) > 200 else description
-            feedback_parts.append(f"📄 *Description:* {desc_preview}")
+            escaped_desc = desc_preview.replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace(']', '\\]').replace('`', '\\`')
+            feedback_parts.append(f"📄 *Description:* {escaped_desc}")
         
-        # Format due time nicely
+        # Format due time in user's local timezone
         try:
             from datetime import datetime
-            due_dt = datetime.fromisoformat(due_time.replace('Z', '+00:00'))
-            due_formatted = due_dt.strftime("%Y-%m-%d at %H:%M UTC")
-            feedback_parts.append(f"⏰ *Due:* {due_formatted}")
-        except:
+            
+            # Get user's location from preferences
+            user_prefs = self.recipient_service.get_user_preferences(user_id)
+            location = user_prefs.location if user_prefs else None
+            
+            # Convert UTC time to user's local time
+            if location:
+                try:
+                    # Simple timezone conversion using the same logic as parsing service
+                    import zoneinfo
+                    from dateutil import parser as date_parser
+                    from datetime import datetime, timezone, timedelta
+                    
+                    # Parse UTC time
+                    utc_time = date_parser.isoparse(due_time)
+                    if utc_time.tzinfo is None:
+                        utc_time = utc_time.replace(tzinfo=timezone.utc)
+                    
+                    # Get timezone offset using the same logic as parsing service
+                    location_lower = location.lower().strip()
+                    
+                    # Use the existing parsing service timezone resolution
+                    from services.parsing_service import ParsingService
+                    temp_service = ParsingService.__new__(ParsingService)
+                    
+                    # Get timezone offset using the existing intelligent lookup
+                    offset_hours = temp_service.get_timezone_offset(location)
+                    timezone_name = temp_service._get_timezone_name(location)
+                    
+                    # Convert to local time
+                    local_time = utc_time + timedelta(hours=offset_hours)
+                    
+                    local_time_display = f"{local_time.strftime('%B %d, %Y at %H:%M')} ({timezone_name})"
+                    logger.info(f"Timezone conversion successful: UTC {due_time} -> Local {local_time_display}")
+                    feedback_parts.append(f"⏰ *Due:* {local_time_display}")
+                except Exception as e:
+                    logger.warning(f"Failed to convert time to local timezone: {e}")
+                    # Fallback to UTC display
+                    due_dt = datetime.fromisoformat(due_time.replace('Z', '+00:00'))
+                    due_formatted = due_dt.strftime("%Y-%m-%d at %H:%M UTC")
+                    feedback_parts.append(f"⏰ *Due:* {due_formatted}")
+            else:
+                # No location set, display UTC
+                due_dt = datetime.fromisoformat(due_time.replace('Z', '+00:00'))
+                due_formatted = due_dt.strftime("%Y-%m-%d at %H:%M UTC")
+                feedback_parts.append(f"⏰ *Due:* {due_formatted}")
+        except Exception as e:
+            logger.warning(f"Failed to format due time: {e}")
             feedback_parts.append(f"⏰ *Due:* {due_time}")
             
         feedback_parts.append("\n🔗 *Created on:*")
         
         for i, recipient in enumerate(recipients):
             if i < len(task_urls):
-                feedback_parts.append(f"• {recipient.name}: `{task_urls[i]}`")
+                # Escape special characters in URLs for Markdown
+                url = task_urls[i]
+                # Replace underscores and other special chars to prevent Markdown parsing issues
+                escaped_url = url.replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace(']', '\\]').replace('`', '\\`')
+                feedback_parts.append(f"• {recipient.name}: `{escaped_url}`")
         
         if failed_recipients:
             feedback_parts.append(f"\n❌ *Failed:* {', '.join(failed_recipients)}")
