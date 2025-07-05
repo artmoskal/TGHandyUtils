@@ -47,7 +47,14 @@ async def process_thread_with_photos(message: Message, thread_content: List[Tupl
         
         if parsed_task_dict:
             logger.error(f"🔍 DEBUG: LLM parsed successfully: {parsed_task_dict}")
-            task_data = TaskCreate(**parsed_task_dict)
+            
+            # Always use the original concatenated content as description to avoid duplication
+            # LLM can create the title, but description should be the raw conversation
+            task_data = TaskCreate(
+                title=parsed_task_dict['title'],
+                description=concatenated_content,  # Use original content
+                due_time=parsed_task_dict['due_time']
+            )
         else:
             logger.error(f"🔍 DEBUG: LLM parsing failed, using fallback")
             # Fallback: all tasks without time go to tomorrow 9AM UTC

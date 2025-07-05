@@ -6,7 +6,7 @@ from aiogram import Bot
 
 from bot import router
 from core.logging import get_logger
-from .threading_handler import process_user_input
+from .threading_handler import process_user_input, voice_processing, _message_threads_lock
 
 logger = get_logger(__name__)
 
@@ -45,11 +45,19 @@ async def handle_message(message: Message, state: FSMContext, bot: Bot):
 
 async def handle_voice_message(message: Message, state: FSMContext, bot: Bot):
     """Handle voice messages with transcription."""
+    user_id = message.from_user.id
+    
     try:
+        # Mark voice processing as started to extend timeouts for this user
+        with _message_threads_lock:
+            voice_processing[user_id] = True
+        
+        logger.info(f"Voice processing started for user {user_id}")
+        
         from core.initialization import services
         voice_service = services.get_voice_processing_service()
         
-        # Process voice message
+        # Process voice message (this can take 30+ seconds)
         transcription = await voice_service.process_voice_message(message.voice, bot)
         
         if transcription:
@@ -61,6 +69,11 @@ async def handle_voice_message(message: Message, state: FSMContext, bot: Bot):
     except Exception as e:
         logger.error(f"Error processing voice message: {e}")
         await message.reply("❌ Error processing voice message. Please try again.", disable_web_page_preview=True)
+    finally:
+        # Mark voice processing as completed
+        with _message_threads_lock:
+            voice_processing[user_id] = False
+        logger.info(f"Voice processing completed for user {user_id}")
 
 
 async def process_user_input_with_photo(text: str, user_id: int, message_obj: Message, state: FSMContext, bot: Bot) -> bool:
@@ -78,8 +91,13 @@ async def process_user_input_with_photo(text: str, user_id: int, message_obj: Me
             )
             return False
 
-        # Get user full name for threading
-        user_full_name = message_obj.from_user.full_name or "User"
+        # Get user full name for threading (handle forwarded messages)
+        if message_obj.forward_from:
+            user_full_name = message_obj.forward_from.full_name
+        elif message_obj.forward_sender_name:
+            user_full_name = message_obj.forward_sender_name
+        else:
+            user_full_name = message_obj.from_user.full_name or "User"
         
         # Process photo/document with text extraction
         screenshot_data = None
@@ -127,8 +145,7 @@ async def process_user_input_with_photo(text: str, user_id: int, message_obj: Me
         
         # Add to threading system with enriched content and photo data
         import time
-        import threading
-        from collections import defaultdict
+        import asyncio
         
         # Use same threading variables as threading_handler
         from .threading_handler import message_threads, last_message_time, _message_threads_lock, THREAD_TIMEOUT
@@ -139,15 +156,15 @@ async def process_user_input_with_photo(text: str, user_id: int, message_obj: Me
             message_threads[user_id].append((user_full_name, enriched_content, screenshot_data))
             last_message_time[user_id] = current_time
         
-        # Check if enough time has passed since the last message
-        if len(message_threads[user_id]) > 0:
-            import asyncio
-            await asyncio.sleep(THREAD_TIMEOUT)
-            if current_time == last_message_time[user_id]:  # No new messages received
+        # Wait for thread timeout and check if this was the last message
+        await asyncio.sleep(THREAD_TIMEOUT)
+        
+        # Only process if this message was the last one received
+        with _message_threads_lock:
+            if current_time == last_message_time[user_id] and len(message_threads[user_id]) > 0:
                 # Process the complete thread
-                with _message_threads_lock:
-                    thread_content = message_threads[user_id].copy()
-                    message_threads[user_id].clear()  # Clear the thread
+                thread_content = message_threads[user_id].copy()
+                message_threads[user_id].clear()  # Clear the thread
                 
                 # Get user preferences
                 user_prefs = recipient_service.get_user_preferences(user_id)
@@ -156,7 +173,6 @@ async def process_user_input_with_photo(text: str, user_id: int, message_obj: Me
                 
                 from .text_handler import process_thread_with_photos
                 await process_thread_with_photos(message_obj, thread_content, owner_name, location, user_id)
-                return True
         
         return True
         

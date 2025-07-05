@@ -39,43 +39,36 @@ class ParsingService(IParsingService):
         template = """
         You are a task creation assistant. Create a task with 'title', 'due_time' (UTC ISO 8601), and 'description'.
 
-        CURRENT CONTEXT (ISO 8601 format):
+        CURRENT CONTEXT:
         - Current UTC: {current_utc_iso}
         - Current Local: {current_local_iso} ({location})
         - Timezone: {timezone_name} (UTC{timezone_offset_str})
-        - Today's Date: {today_date}
-        - Tomorrow's Date: {tomorrow_date}
+        - Today: {today_date} | Tomorrow: {tomorrow_date}
 
-        TIME INTERPRETATION EXAMPLES:
-        Given current time is {current_local_simple}:
-        
+        TIME EXAMPLES (current time {current_local_simple}):
         {time_examples}
 
-        CONVERSION RULES:
-        1. User times are in {timezone_name} timezone
-        2. Convert to UTC by adjusting {timezone_offset_str} hours
-        3. Always output in ISO 8601 format: YYYY-MM-DDTHH:MM:SSZ
+        PARSING RULES:
+        1. PRIORITY: Explicit dates/times in message override all defaults
+        2. User times are in {timezone_name} - convert to UTC (adjust {timezone_offset_str}h)
+        3. "12/Jun" = June 12th | "asap/now" = +1 hour | No time = tomorrow 9AM local
+        4. Output format MUST be: YYYY-MM-DDTHH:MM:SSZ
+        5. Default year: {current_year}
 
-        SPECIAL CASES:
-        - "asap" or "now": Schedule 1 hour from {current_utc_iso}
-        - No time specified: Tomorrow at 09:00 local time
-        - "noon": 12:00 in user's timezone
-        - "midnight": 00:00 in user's timezone
+        TITLE: Create informative, specific titles (<50 chars).
+        AVOID: "Decide on X", "Check with Y", "Handle appointment"
 
-        DATE FORMATS:
-        - "12/Jun" = June 12th, {current_year}
-        - "tomorrow" = {tomorrow_date}
-        - "next Monday" = the Monday after {today_date}
+        DESCRIPTION:
+        1. Brief action summary
+        2. Full original conversation (with sender names)
 
-        CONTENT HANDLING:
-        - [CAPTION]: Primary instruction - use for title and timing
-        - [SCREENSHOT TEXT]: Include in description
-        - [SCREENSHOT DESCRIPTION]: Add for context
+        CONTENT PRIORITY:
+        [CAPTION] → Primary instruction (title/timing)
+        [SCREENSHOT TEXT] → Task details
+        [SCREENSHOT DESCRIPTION] → Context only
 
         Message: {content_message}
         Owner: {owner_name}
-
-        Create an informative title and include the original message in the description.
 
         {format_instructions}
         """
