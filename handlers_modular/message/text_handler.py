@@ -72,7 +72,7 @@ async def process_thread_with_photos(message: Message, thread_content: List[Tupl
         recipient_service = container.recipient_service()
         
         # First create tasks for personal recipients only
-        success, feedback, actions = task_service.create_task_for_recipients(
+        result = task_service.create_task_for_recipients(
             user_id=owner_id,
             title=task_data.title,
             description=task_data.description,
@@ -82,6 +82,11 @@ async def process_thread_with_photos(message: Message, thread_content: List[Tupl
             chat_id=message.chat.id,
             message_id=message.message_id
         )
+        
+        # Extract ServiceResult components
+        success = result.success
+        feedback = result.message
+        actions = result.data
         
         # Handle special cases when task creation fails
         if not success:

@@ -84,7 +84,7 @@ async def handle_task_creation(message: Message, state: FSMContext):
         # Create the task
         task_service = container.recipient_task_service()
         recipient_ids = [r.id for r in recipients]
-        success, feedback, actions = task_service.create_task_for_recipients(
+        result = task_service.create_task_for_recipients(
             user_id=user_id,
             title=task_data.title,
             description=task_data.description,
@@ -93,6 +93,11 @@ async def handle_task_creation(message: Message, state: FSMContext):
             chat_id=message.chat.id,
             message_id=message.message_id
         )
+        
+        # Extract ServiceResult components
+        success = result.success
+        feedback = result.message
+        actions = result.data
         
         # Clear state
         await state.clear()

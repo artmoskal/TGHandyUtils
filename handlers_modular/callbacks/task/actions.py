@@ -152,13 +152,18 @@ async def confirm_transcription(callback_query: CallbackQuery, state: FSMContext
         if parsed_task_dict:
             # Use parsed data but keep original text as description
             task_service = container.recipient_task_service()
-            success, feedback, actions = task_service.create_task_for_recipients(
+            result = task_service.create_task_for_recipients(
                 user_id=user_id,
                 title=parsed_task_dict['title'],
                 description=transcribed_text,  # Keep full transcribed text
                 due_time=parsed_task_dict['due_time'],
                 specific_recipients=None  # Use default recipients
             )
+            
+            # Extract ServiceResult components
+            success = result.success
+            feedback = result.message
+            actions = result.data
         else:
             # Fallback if parsing fails
             from datetime import datetime, timezone, timedelta
@@ -166,13 +171,18 @@ async def confirm_transcription(callback_query: CallbackQuery, state: FSMContext
             due_time = tomorrow.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
             
             task_service = container.recipient_task_service()
-            success, feedback, actions = task_service.create_task_for_recipients(
+            result = task_service.create_task_for_recipients(
                 user_id=user_id,
                 title=transcribed_text[:100],  # Truncate for title
                 description=transcribed_text,
                 due_time=due_time,
                 specific_recipients=None
             )
+            
+            # Extract ServiceResult components
+            success = result.success
+            feedback = result.message
+            actions = result.data
         
         # Clear state and reset voice processing flag
         await state.clear()
@@ -236,11 +246,15 @@ async def handle_add_task_to_recipient(callback_query: CallbackQuery):
         
         # Get task service and add task to recipient
         task_service = container.recipient_task_service()
-        success, message = task_service.add_task_to_recipient(
+        result = task_service.add_task_to_recipient(
             user_id=user_id,
             task_id=int(task_id),
             recipient_id=int(recipient_id)
         )
+        
+        # Extract ServiceResult components
+        success = result.success
+        message = result.message
         
         if success:
             # Get the current task from database to know which recipients were already used
@@ -297,11 +311,15 @@ async def handle_remove_task_from_recipient(callback_query: CallbackQuery):
         
         # Get task service and remove task from recipient
         task_service = container.recipient_task_service()
-        success, message = task_service.remove_task_from_recipient(
+        result = task_service.remove_task_from_recipient(
             user_id=user_id,
             task_id=int(task_id),
             recipient_id=int(recipient_id)
         )
+        
+        # Extract ServiceResult components
+        success = result.success
+        message = result.message
         
         if success:
             # Regenerate buttons with the removed recipient available for adding again
