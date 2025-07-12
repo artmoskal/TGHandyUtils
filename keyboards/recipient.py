@@ -18,13 +18,20 @@ def get_recipient_management_keyboard(recipients: List[UnifiedRecipient]) -> Inl
         
         for recipient in recipients:
             status = "✅" if recipient.enabled else "⚠️"
-            platform_emoji = "📝" if recipient.platform_type == "todoist" else "📋"
+            if recipient.platform_type == "todoist":
+                platform_emoji = "📝"
+            elif recipient.platform_type == "trello":
+                platform_emoji = "📋"
+            elif recipient.platform_type == "google_calendar":
+                platform_emoji = "📅"
+            else:
+                platform_emoji = "📱"
             account_type = "👤" if recipient.is_personal else "👥"
+            default_indicator = " (Default)" if recipient.is_default else ""
             callback_data = f"recipient_edit_{recipient.id}"
-            logger.error(f"🔍 DEBUG: Creating button for {recipient.name} with callback_data='{callback_data}'")
             keyboard.append([
                 InlineKeyboardButton(
-                    text=f"{status} {account_type} {platform_emoji} {recipient.name}", 
+                    text=f"{status} {account_type} {platform_emoji} {recipient.name}{default_indicator}", 
                     callback_data=callback_data
                 )
             ])
@@ -45,6 +52,7 @@ def get_platform_selection_keyboard() -> InlineKeyboardMarkup:
     keyboard = [
         [InlineKeyboardButton(text="📝 Todoist", callback_data="platform_type_todoist")],
         [InlineKeyboardButton(text="📋 Trello", callback_data="platform_type_trello")],
+        [InlineKeyboardButton(text="📅 Google Calendar", callback_data="platform_type_google_calendar")],
         [InlineKeyboardButton(text="« Back", callback_data="back_to_recipients")]
     ]
     
@@ -90,18 +98,21 @@ def get_recipient_selection_keyboard(recipients: List[UnifiedRecipient], selecte
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
-def get_recipient_edit_keyboard(recipient_id: str, platform_type: str = None) -> InlineKeyboardMarkup:
+def get_recipient_edit_keyboard(recipient_id: int, platform_type: str = None, is_default: bool = False) -> InlineKeyboardMarkup:
     """Get account edit keyboard."""
+    # Default toggle button
+    default_text = "⚪ Remove from Default" if is_default else "⭐ Set as Default"
     keyboard = [
-        [InlineKeyboardButton(text="🔄 Enable/Disable Account", callback_data=f"toggle_recipient_{recipient_id}")],
+        [InlineKeyboardButton(text=default_text, callback_data=f"toggle_default_{str(recipient_id)}")],
+        [InlineKeyboardButton(text="🔄 Enable/Disable Account", callback_data=f"toggle_recipient_{str(recipient_id)}")],
     ]
     
     # Add configure button for platforms that need configuration (like Trello)
     if platform_type == "trello":
-        keyboard.append([InlineKeyboardButton(text="⚙️ Configure Trello Board", callback_data=f"configure_recipient_{recipient_id}")])
+        keyboard.append([InlineKeyboardButton(text="⚙️ Configure Trello Board", callback_data=f"configure_recipient_{str(recipient_id)}")])
     
     keyboard.extend([
-        [InlineKeyboardButton(text="🗑️ Delete Account", callback_data=f"recipient_remove_{recipient_id}")],
+        [InlineKeyboardButton(text="🗑️ Delete Account", callback_data=f"recipient_remove_{str(recipient_id)}")],
         [InlineKeyboardButton(text="« Back to Accounts", callback_data="back_to_recipients")]
     ])
     
@@ -217,9 +228,9 @@ def get_post_task_actions_keyboard(actions: Dict[str, List[Dict[str, str]]]) -> 
     if actions.get("remove_actions") and actions.get("add_actions"):
         keyboard.append([InlineKeyboardButton(text="➖➖➖➖➖➖➖➖", callback_data="noop")])
     
-    # Add add buttons (up to 3)
+    # Add add buttons (up to 6 to accommodate more recipients)
     if actions.get("add_actions"):
-        for action in actions["add_actions"][:3]:
+        for action in actions["add_actions"][:6]:
             keyboard.append([
                 InlineKeyboardButton(
                     text=action["text"],

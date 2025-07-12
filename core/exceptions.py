@@ -31,3 +31,11 @@ class TranscriptionError(TGHandyUtilsException):
 class ParsingError(TGHandyUtilsException):
     """Raised when content parsing fails."""
     pass
+
+class OAuthError(TGHandyUtilsException):
+    """Raised when OAuth operations fail."""
+    pass
+
+class SharingError(TGHandyUtilsException):
+    """Raised when sharing operations fail."""
+    pass

@@ -52,17 +52,22 @@ class RecipientService:
     def add_personal_recipient(self, user_id: int, name: str, platform_type: str, credentials: str, 
                               platform_config: Optional[dict] = None) -> int:
         """Add personal recipient (user's own account)."""
+        # Check if user has any recipients - if not, make this one default
+        existing_recipients = self.repository.get_all_recipients(user_id)
+        is_first_recipient = len(existing_recipients) == 0
+        
         recipient = UnifiedRecipientCreate(
             name=name,
             platform_type=platform_type,
             credentials=credentials,
             platform_config=platform_config,
             is_personal=True,
+            is_default=is_first_recipient,  # First recipient becomes default
             enabled=True
         )
         
         recipient_id = self.repository.add_recipient(user_id, recipient)
-        logger.info(f"Added personal recipient {name} for user {user_id}")
+        logger.info(f"Added personal recipient {name} for user {user_id} (default: {is_first_recipient})")
         return recipient_id
     
     def add_shared_recipient(self, user_id: int, name: str, platform_type: str, credentials: str,
@@ -81,12 +86,28 @@ class RecipientService:
             credentials=credentials,
             platform_config=platform_config,
             is_personal=False,
+            is_default=False,  # Shared recipients are never default
             enabled=True
         )
         
         recipient_id = self.repository.add_recipient(user_id, recipient)
         logger.info(f"Added shared recipient {name} for user {user_id}")
         return recipient_id
+    
+    def toggle_default_status(self, user_id: int, recipient_id: int) -> bool:
+        """Toggle default status for a recipient. Returns new default status."""
+        recipient = self.repository.get_recipient_by_id(user_id, recipient_id)
+        if not recipient:
+            raise ValueError(f"Recipient {recipient_id} not found for user {user_id}")
+        
+        new_default_status = not recipient.is_default
+        
+        # Update recipient in database
+        update_data = UnifiedRecipientUpdate(is_default=new_default_status)
+        self.repository.update_recipient(user_id, recipient_id, update_data)
+        
+        logger.info(f"Toggled default status for recipient {recipient.name} (user {user_id}): {new_default_status}")
+        return new_default_status
     
     def update_recipient(self, user_id: int, recipient_id: int, updates: UnifiedRecipientUpdate) -> bool:
         """Update recipient."""

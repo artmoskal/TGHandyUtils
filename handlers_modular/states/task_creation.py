@@ -83,10 +83,15 @@ async def handle_task_creation(message: Message, state: FSMContext):
         
         # Create the task
         task_service = container.recipient_task_service()
+        recipient_ids = [r.id for r in recipients]
         success, feedback, actions = task_service.create_task_for_recipients(
             user_id=user_id,
-            task_data=task_data,
-            recipients=recipients
+            title=task_data.title,
+            description=task_data.description,
+            due_time=task_data.due_time,
+            specific_recipients=recipient_ids,
+            chat_id=message.chat.id,
+            message_id=message.message_id
         )
         
         # Clear state

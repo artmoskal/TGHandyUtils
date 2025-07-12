@@ -36,3 +36,6 @@ dependencies:
       - aioresponses  # For mocking HTTP requests in async tests
       - factory-boy  # For test data generation
       - dependency-injector  # Professional DI framework
+      - google-api-python-client==2.88.0  # Google Calendar API
+      - google-auth-httplib2==0.1.0  # Google Auth HTTP library
+      - google-auth-oauthlib==1.0.0  # Google OAuth library

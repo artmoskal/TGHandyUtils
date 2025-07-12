@@ -82,6 +82,81 @@ async def handle_credentials_input(message: Message, state: FSMContext):
         await state.clear()
 
 
+@router.message(RecipientState.waiting_for_google_oauth_code)
+async def handle_google_oauth_code(message: Message, state: FSMContext):
+    """Handle Google OAuth authorization code input."""
+    user_id = message.from_user.id
+    oauth_code = message.text.strip()
+    
+    try:
+        state_data = await state.get_data()
+        mode = state_data.get('mode', 'user_platform')
+        
+        # Get Google OAuth service
+        google_oauth_service = container.google_oauth_service()
+        if not google_oauth_service:
+            await message.reply("❌ Google Calendar integration not available.", disable_web_page_preview=True)
+            await state.clear()
+            return
+        
+        # Exchange code for credentials
+        credentials = google_oauth_service.exchange_code_for_token(oauth_code)
+        
+        recipient_service = container.recipient_service()
+        
+        if mode == "user_platform":
+            # Add personal Google Calendar recipient
+            name = "My Google Calendar"
+            logger.info(f"Creating personal Google Calendar recipient: {name}")
+            recipient_id = recipient_service.add_personal_recipient(
+                user_id=user_id,
+                name=name,
+                platform_type="google_calendar",
+                credentials=credentials
+            )
+            
+            await message.reply(
+                f"✅ Successfully connected your Google Calendar!\n\n"
+                f"🎯 What's next?\n"
+                f"• Use /create_task to create your first task\n"
+                f"• Use /recipients to manage your accounts\n\n"
+                f"💡 Try it now: Just send me any message and I'll create a task!",
+                disable_web_page_preview=True
+            )
+            
+        elif mode == "shared_recipient":
+            # Add shared Google Calendar recipient
+            name = state_data.get('recipient_name', "Shared Google Calendar")
+            logger.info(f"Creating shared Google Calendar recipient: {name}")
+            
+            recipient_id = recipient_service.add_shared_recipient(
+                user_id=user_id,
+                name=name,
+                platform_type="google_calendar",
+                credentials=credentials
+            )
+            
+            await message.reply(
+                f"✅ Successfully added shared Google Calendar '{name}'!\n\n"
+                f"🎯 What's next?\n"
+                f"• Use /create_task to create tasks\n"
+                f"• Use /recipients to manage recipients\n\n"
+                f"💡 Tasks will now be sent to both your accounts and shared recipients!",
+                disable_web_page_preview=True
+            )
+        
+        await state.clear()
+        
+    except Exception as e:
+        logger.error(f"Failed to handle Google OAuth code for user {user_id}: {e}")
+        await message.reply(
+            "❌ Failed to authorize Google Calendar. Please check your authorization code and try again.\n\n"
+            "Make sure you copied the full authorization code from Google.",
+            disable_web_page_preview=True
+        )
+        await state.clear()
+
+
 @router.message(RecipientState.waiting_for_recipient_name)
 async def handle_recipient_name(message: Message, state: FSMContext):
     """Handle recipient name input."""

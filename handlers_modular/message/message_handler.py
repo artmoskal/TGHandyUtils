@@ -6,7 +6,7 @@ from aiogram import Bot
 
 from bot import router
 from core.logging import get_logger
-from .threading_handler import process_user_input, voice_processing, _message_threads_lock
+from .threading_handler import process_user_input, voice_processing, _message_threads_lock, message_threads
 
 logger = get_logger(__name__)
 
@@ -44,36 +44,77 @@ async def handle_message(message: Message, state: FSMContext, bot: Bot):
 
 
 async def handle_voice_message(message: Message, state: FSMContext, bot: Bot):
-    """Handle voice messages with transcription."""
+    """Handle voice messages with transcription and confirmation."""
     user_id = message.from_user.id
+    logger.info(f"Voice handler called for user {user_id}")
+    
+    # Mark voice processing as started immediately to prevent text messages from processing
+    with _message_threads_lock:
+        voice_processing[user_id] = True
     
     try:
-        # Mark voice processing as started to extend timeouts for this user
+        # Check if there are any pending messages in the thread
         with _message_threads_lock:
-            voice_processing[user_id] = True
-        
-        logger.info(f"Voice processing started for user {user_id}")
+            pending_messages = message_threads[user_id].copy() if user_id in message_threads else []
         
         from core.initialization import services
         voice_service = services.get_voice_processing_service()
+        
+        # Show processing message
+        processing_msg = await message.reply("🎤 Processing voice message...", disable_web_page_preview=True)
         
         # Process voice message (this can take 30+ seconds)
         transcription = await voice_service.process_voice_message(message.voice, bot)
         
         if transcription:
-            # Process transcribed text through threading system
-            await process_user_input(transcription, message.from_user.id, message, state)
+            # Combine with any pending text messages
+            combined_text = ""
+            
+            # Add pending messages first
+            if pending_messages:
+                combined_text = "\n".join([f"{sender}: {text}" for sender, text in pending_messages])
+                combined_text += f"\n{message.from_user.full_name}: [Voice] {transcription}"
+                # Clear the thread since we're handling it here
+                with _message_threads_lock:
+                    message_threads[user_id].clear()
+            else:
+                combined_text = f"[Voice] {transcription}"
+            
+            # Save transcription and user info to state for confirmation
+            await state.update_data(
+                transcribed_text=combined_text,
+                user_full_name=message.from_user.full_name
+            )
+            
+            # Show transcription with confirmation buttons
+            from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+            confirm_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="✅ Create Task", callback_data="transcribe_confirm"),
+                    InlineKeyboardButton(text="❌ Cancel", callback_data="transcribe_cancel")
+                ]
+            ])
+            
+            # Escape special characters for HTML
+            escaped_text = combined_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;').replace("'", '&#39;')
+            
+            await processing_msg.edit_text(
+                f"🎤 <b>Voice Message Transcribed:</b>\n\n<i>{escaped_text}</i>\n\n"
+                "Create a task from this message?",
+                reply_markup=confirm_keyboard,
+                parse_mode='HTML',
+                disable_web_page_preview=True
+            )
         else:
-            await message.reply("❌ Could not transcribe voice message. Please try again.", disable_web_page_preview=True)
+            await processing_msg.edit_text("❌ Could not transcribe voice message. Please try again.", disable_web_page_preview=True)
             
     except Exception as e:
         logger.error(f"Error processing voice message: {e}")
         await message.reply("❌ Error processing voice message. Please try again.", disable_web_page_preview=True)
     finally:
-        # Mark voice processing as completed
+        # Always reset voice processing flag
         with _message_threads_lock:
             voice_processing[user_id] = False
-        logger.info(f"Voice processing completed for user {user_id}")
 
 
 async def process_user_input_with_photo(text: str, user_id: int, message_obj: Message, state: FSMContext, bot: Bot) -> bool:

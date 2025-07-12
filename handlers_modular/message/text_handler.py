@@ -31,9 +31,9 @@ async def process_thread_with_photos(message: Message, thread_content: List[Tupl
         # Concatenate thread content
         concatenated_content = "\n".join([f"{sender}: {text}" for sender, text in text_content])
         
-        logger.error(f"🔍 DEBUG: Processing thread with photos - {len(thread_content)} messages")
-        logger.error(f"🔍 DEBUG: Content: {concatenated_content}")
-        logger.error(f"🔍 DEBUG: Has screenshot: {screenshot_data is not None}")
+        logger.debug(f"Processing thread with photos - {len(thread_content)} messages")
+        logger.debug(f"Content: {concatenated_content}")
+        logger.debug(f"Has screenshot: {screenshot_data is not None}")
         
         # Parse using recipient parsing service
         from core.initialization import services
@@ -46,7 +46,7 @@ async def process_thread_with_photos(message: Message, thread_content: List[Tupl
         )
         
         if parsed_task_dict:
-            logger.error(f"🔍 DEBUG: LLM parsed successfully: {parsed_task_dict}")
+            logger.debug(f"LLM parsed successfully: {parsed_task_dict}")
             
             # Always use the original concatenated content as description to avoid duplication
             # LLM can create the title, but description should be the raw conversation
@@ -56,7 +56,7 @@ async def process_thread_with_photos(message: Message, thread_content: List[Tupl
                 due_time=parsed_task_dict['due_time']
             )
         else:
-            logger.error(f"🔍 DEBUG: LLM parsing failed, using fallback")
+            logger.debug(f"LLM parsing failed, using fallback")
             # Fallback: all tasks without time go to tomorrow 9AM UTC
             from datetime import datetime, timezone, timedelta
             tomorrow = datetime.now(timezone.utc) + timedelta(days=1)
@@ -83,6 +83,54 @@ async def process_thread_with_photos(message: Message, thread_content: List[Tupl
             chat_id=message.chat.id,
             message_id=message.message_id
         )
+        
+        # Handle special case when no default recipients are set
+        if not success and feedback == "NO_DEFAULT_RECIPIENTS":
+            # Create a temporary task in database first, then show recipient buttons for it
+            task_repo = container.task_repository()
+            
+            # Create task without any recipients  
+            task_id = task_repo.create(
+                user_id=owner_id,
+                chat_id=message.chat.id,
+                message_id=message.message_id,
+                task_data=task_data,
+                screenshot_file_id=screenshot_data.get('file_id') if screenshot_data else None
+            )
+            
+            if task_id:
+                # Generate action buttons for all available recipients
+                recipients = recipient_service.get_enabled_recipients(owner_id)
+                from keyboards.recipient import get_post_task_actions_keyboard
+                
+                # Create actions for adding to any recipient
+                actions = {
+                    "add_actions": [
+                        {
+                            "text": f"➕ Add to {recipient.name}",
+                            "callback_data": f"add_task_to_{recipient.id}_{task_id}",
+                            "recipient_id": str(recipient.id),
+                            "recipient_name": recipient.name
+                        }
+                        for recipient in recipients
+                    ],
+                    "remove_actions": []
+                }
+                
+                keyboard = get_post_task_actions_keyboard(actions)
+                
+                await message.reply(
+                    f"✅ **Task Created**\n\n"
+                    f"**{task_data.title}**\n\n"
+                    f"📅 **Due:** {task_data.due_time}\n\n"
+                    f"No default recipients set. Choose where to add this task:",
+                    reply_markup=keyboard,
+                    parse_mode='Markdown',
+                    disable_web_page_preview=True
+                )
+            else:
+                await message.reply("❌ Error creating task. Please try again.", disable_web_page_preview=True)
+            return
         
         # Note: Post-task actions (add to other recipients) are now handled 
         # by recipient_task_service._generate_post_task_actions() to avoid duplication

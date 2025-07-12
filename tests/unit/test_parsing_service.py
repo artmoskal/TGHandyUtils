@@ -294,13 +294,13 @@ class TestParsingService:
         assert parsing_service.prompt_template is not None
         
         # Check template has the required input variables
-        expected_vars = {"content_message", "owner_name", "current_year", "current_utc_iso", "current_local_iso", "location", "timezone_name", "timezone_offset_str", "today_date", "tomorrow_date", "current_local_simple", "time_examples"}
+        expected_vars = {"content_message", "owner_name", "current_utc_iso", "current_local_iso", "location", "timezone_name", "timezone_offset_str", "today_date", "tomorrow_date", "current_local_simple", "time_examples"}
         actual_vars = set(parsing_service.prompt_template.input_variables)
         assert expected_vars.issubset(actual_vars), f"Missing variables: {expected_vars - actual_vars}"
     
     def test_prompt_template_variables(self, parsing_service):
         """Test prompt template has correct input variables."""
-        expected_vars = ["content_message", "owner_name", "current_year", "current_utc_iso", "current_local_iso", "location", "timezone_name", "timezone_offset_str", "today_date", "tomorrow_date", "current_local_simple", "time_examples"]
+        expected_vars = ["content_message", "owner_name", "current_utc_iso", "current_local_iso", "location", "timezone_name", "timezone_offset_str", "today_date", "tomorrow_date", "current_local_simple", "time_examples"]
         
         for var in expected_vars:
             assert var in parsing_service.prompt_template.input_variables

@@ -10,6 +10,7 @@ class RecipientState(StatesGroup):
     selecting_platform_type = State()
     waiting_for_credentials = State()
     waiting_for_trello_config = State()
+    waiting_for_google_oauth_code = State()
     
     # Shared recipient configuration
     waiting_for_recipient_name = State()

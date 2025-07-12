@@ -57,8 +57,13 @@ async def process_user_input(text: str, user_id: int, message_obj: Message, stat
         # Wait for thread timeout and check if this was the last message
         await asyncio.sleep(timeout_to_use)
         
-        # Only process if this message was the last one received
+        # Only process if this message was the last one received AND no voice is being processed
         with _message_threads_lock:
+            # If voice is being processed, let the voice handler deal with all messages
+            if voice_processing[user_id]:
+                logger.info(f"Skipping text processing for user {user_id} - voice message is being processed")
+                return True
+                
             if current_time == last_message_time[user_id] and len(message_threads[user_id]) > 0:
                 # Process the complete thread
                 thread_content = message_threads[user_id].copy()

@@ -144,6 +144,10 @@ class DatabaseMigrator:
             ("001_initial_schema", "Initial database schema", self._migration_001_initial),
             ("002_add_indexes", "Add performance indexes", self._migration_002_indexes),
             ("003_add_screenshot_field", "Add screenshot_file_id to tasks table", self._migration_003_screenshot_field),
+            ("004_google_calendar_oauth", "Add Google Calendar OAuth and sharing tables", self._migration_004_google_oauth),
+            ("005_fix_oauth_foreign_keys", "Fix foreign key constraints in OAuth tables", self._migration_005_fix_oauth_fks),
+            ("006_fix_default_recipients", "Fix default recipient logic and data", self._migration_006_fix_defaults),
+            ("007_add_task_recipients", "Add multi-platform task tracking table", self._migration_007_task_recipients),
             # Add future migrations here
         ]
         
@@ -151,7 +155,7 @@ class DatabaseMigrator:
     
     def _verify_schema(self, conn: sqlite3.Connection) -> bool:
         """Verify that all required tables exist with correct structure."""
-        required_tables = ["tasks", "unified_recipients", "migration_history"]
+        required_tables = ["tasks", "recipients", "migration_history", "task_recipients"]
         
         for table in required_tables:
             if not self._table_exists(conn, table):
@@ -162,7 +166,8 @@ class DatabaseMigrator:
         try:
             # Test basic queries to ensure schema is correct
             conn.execute("SELECT id, title, description, due_time FROM tasks LIMIT 1")
-            conn.execute("SELECT id, name, platform_type, credentials FROM unified_recipients LIMIT 1")
+            conn.execute("SELECT id, name, platform_type, credentials FROM recipients LIMIT 1")
+            conn.execute("SELECT id, task_id, recipient_id, platform_task_id FROM task_recipients LIMIT 1")
             return True
         except sqlite3.OperationalError as e:
             logger.error(f"Schema verification failed: {e}")
@@ -241,12 +246,163 @@ class DatabaseMigrator:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_user_id ON tasks(user_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_due_time ON tasks(due_time)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_recipients_user_id ON unified_recipients(user_id)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_recipients_enabled ON unified_recipients(enabled)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_recipients_user_id ON recipients(user_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_recipients_enabled ON recipients(enabled)")
     
     def _migration_003_screenshot_field(self, conn: sqlite3.Connection):
         """Add screenshot_file_id column to tasks table."""
         conn.execute("ALTER TABLE tasks ADD COLUMN screenshot_file_id TEXT")
+
+    def _migration_004_google_oauth(self, conn: sqlite3.Connection):
+        """Add Google Calendar OAuth and sharing tables."""
+        # OAuth states table (no foreign key constraint - user_id is just an integer)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS oauth_states (
+                user_id INTEGER NOT NULL,
+                state TEXT NOT NULL,
+                expires_at TIMESTAMP NOT NULL,
+                oauth_code TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, state)
+            )
+        """)
+        
+        # Auth requests table (no foreign key constraints - user_ids are just integers)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS auth_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                requester_user_id INTEGER NOT NULL,
+                target_user_id INTEGER NOT NULL,
+                platform_type TEXT NOT NULL,
+                recipient_name TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                expires_at TIMESTAMP NOT NULL,
+                completed_recipient_id INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        # Shared authorizations table (only foreign key to recipients table)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS shared_authorizations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                owner_user_id INTEGER NOT NULL,
+                grantee_user_id INTEGER NOT NULL,
+                owner_recipient_id INTEGER NOT NULL,
+                permission_level TEXT NOT NULL DEFAULT 'use',
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (owner_recipient_id) REFERENCES recipients(id) ON DELETE CASCADE
+            )
+        """)
+
+    def _migration_005_fix_oauth_fks(self, conn: sqlite3.Connection):
+        """Fix foreign key constraints in OAuth tables by recreating them."""
+        # Drop existing tables with foreign key constraints
+        conn.execute("DROP TABLE IF EXISTS oauth_states")
+        conn.execute("DROP TABLE IF EXISTS auth_requests") 
+        conn.execute("DROP TABLE IF EXISTS shared_authorizations")
+        
+        # Recreate tables without invalid foreign key constraints
+        # OAuth states table (no foreign key constraint - user_id is just an integer)
+        conn.execute("""
+            CREATE TABLE oauth_states (
+                user_id INTEGER NOT NULL,
+                state TEXT NOT NULL,
+                expires_at TIMESTAMP NOT NULL,
+                oauth_code TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, state)
+            )
+        """)
+        
+        # Auth requests table (no foreign key constraints - user_ids are just integers)
+        conn.execute("""
+            CREATE TABLE auth_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                requester_user_id INTEGER NOT NULL,
+                target_user_id INTEGER NOT NULL,
+                platform_type TEXT NOT NULL,
+                recipient_name TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                expires_at TIMESTAMP NOT NULL,
+                completed_recipient_id INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        # Shared authorizations table (only foreign key to recipients table)
+        conn.execute("""
+            CREATE TABLE shared_authorizations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                owner_user_id INTEGER NOT NULL,
+                grantee_user_id INTEGER NOT NULL,
+                owner_recipient_id INTEGER NOT NULL,
+                permission_level TEXT NOT NULL DEFAULT 'use',
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (owner_recipient_id) REFERENCES recipients(id) ON DELETE CASCADE
+            )
+        """)
+
+    def _migration_006_fix_defaults(self, conn: sqlite3.Connection):
+        """Fix default recipient logic and migrate existing data."""
+        # First, set all existing personal recipients to is_default = 0
+        conn.execute("UPDATE recipients SET is_default = 0 WHERE is_personal = 1")
+        
+        # For each user, set their first personal recipient as default
+        conn.execute("""
+            UPDATE recipients 
+            SET is_default = 1 
+            WHERE id IN (
+                SELECT MIN(id) 
+                FROM recipients 
+                WHERE is_personal = 1 AND enabled = 1 
+                GROUP BY user_id
+            )
+        """)
+        
+        # Ensure all shared recipients are not default
+        conn.execute("UPDATE recipients SET is_default = 0 WHERE is_personal = 0")
+
+    def _migration_007_task_recipients(self, conn: sqlite3.Connection):
+        """Add multi-platform task tracking table."""
+        # Create task_recipients table for many-to-many tracking
+        conn.execute("""
+            CREATE TABLE task_recipients (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER NOT NULL,
+                recipient_id INTEGER NOT NULL,
+                platform_task_id TEXT NOT NULL,
+                platform_type TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                status TEXT DEFAULT 'active',
+                FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+                FOREIGN KEY (recipient_id) REFERENCES recipients(id) ON DELETE CASCADE,
+                UNIQUE(task_id, recipient_id)
+            )
+        """)
+        
+        # Add indexes for performance
+        conn.execute("CREATE INDEX idx_task_recipients_task_id ON task_recipients(task_id)")
+        conn.execute("CREATE INDEX idx_task_recipients_recipient_id ON task_recipients(recipient_id)")
+        conn.execute("CREATE INDEX idx_task_recipients_status ON task_recipients(status)")
+        
+        # Migrate existing data from tasks table to task_recipients
+        # Only migrate tasks that have both recipient_id and platform_task_id
+        conn.execute("""
+            INSERT INTO task_recipients (task_id, recipient_id, platform_task_id, platform_type, created_at)
+            SELECT 
+                id,
+                recipient_id,
+                platform_task_id,
+                COALESCE(platform_type, 'todoist'),
+                COALESCE(created_at, datetime('now'))
+            FROM tasks 
+            WHERE recipient_id IS NOT NULL AND platform_task_id IS NOT NULL
+        """)
+        
+        logger.info("Created task_recipients table and migrated existing data")
 
 
 def ensure_database_ready(db_path: str) -> bool:

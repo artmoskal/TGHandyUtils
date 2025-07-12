@@ -6,7 +6,7 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime
 
 from database.connection import DatabaseManager
-from models.task import TaskDB, TaskCreate, TaskUpdate
+from models.task import TaskDB, TaskCreate, TaskUpdate, TaskRecipient
 from core.exceptions import DatabaseError
 from core.logging import get_logger
 from core.interfaces import ITaskRepository
@@ -23,20 +23,19 @@ class TaskRepository(BaseRepository, ITaskRepository):
     """Repository for task-related database operations."""
     
     def create(self, user_id: int, chat_id: int, message_id: int, 
-               task_data: TaskCreate, platform_task_id: Optional[str] = None, 
-               platform_type: str = 'todoist', screenshot_file_id: Optional[str] = None) -> Optional[int]:
-        """Create a new task in the database."""
+               task_data: TaskCreate, screenshot_file_id: Optional[str] = None) -> Optional[int]:
+        """Create a new task in the database (platform tracking moved to task_recipients table)."""
         try:
             with self.db_manager.get_connection() as conn:
                 cursor = conn.execute('''
                     INSERT INTO tasks (
                         user_id, chat_id, message_id, title, description, 
-                        due_time, platform_task_id, platform_type, screenshot_file_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        due_time, screenshot_file_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     user_id, chat_id, message_id, task_data.title, 
                     task_data.description, task_data.due_time, 
-                    platform_task_id, platform_type, screenshot_file_id
+                    screenshot_file_id
                 ))
                 
                 task_id = cursor.lastrowid
@@ -53,7 +52,7 @@ class TaskRepository(BaseRepository, ITaskRepository):
             with self.db_manager.get_connection() as conn:
                 cursor = conn.execute('''
                     SELECT id, user_id, chat_id, message_id, title, 
-                           description, due_time, platform_task_id, platform_type, screenshot_file_id
+                           description, due_time, screenshot_file_id
                     FROM tasks ORDER BY due_time ASC
                 ''')
                 
@@ -61,7 +60,7 @@ class TaskRepository(BaseRepository, ITaskRepository):
                     TaskDB(
                         id=row[0], user_id=row[1], chat_id=row[2], message_id=row[3],
                         title=row[4], description=row[5], due_time=row[6],
-                        platform_task_id=row[7], platform_type=row[8], screenshot_file_id=row[9]
+                        screenshot_file_id=row[7]
                     )
                     for row in cursor.fetchall()
                 ]
@@ -76,7 +75,7 @@ class TaskRepository(BaseRepository, ITaskRepository):
             with self.db_manager.get_connection() as conn:
                 cursor = conn.execute('''
                     SELECT id, user_id, chat_id, message_id, title, 
-                           description, due_time, platform_task_id, platform_type, screenshot_file_id
+                           description, due_time, screenshot_file_id
                     FROM tasks WHERE user_id = ? ORDER BY due_time ASC
                 ''', (user_id,))
                 
@@ -84,7 +83,7 @@ class TaskRepository(BaseRepository, ITaskRepository):
                     TaskDB(
                         id=row[0], user_id=row[1], chat_id=row[2], message_id=row[3],
                         title=row[4], description=row[5], due_time=row[6],
-                        platform_task_id=row[7], platform_type=row[8], screenshot_file_id=row[9]
+                        screenshot_file_id=row[7]
                     )
                     for row in cursor.fetchall()
                 ]
@@ -99,7 +98,7 @@ class TaskRepository(BaseRepository, ITaskRepository):
             with self.db_manager.get_connection() as conn:
                 cursor = conn.execute('''
                     SELECT id, user_id, chat_id, message_id, title, 
-                           description, due_time, platform_task_id, platform_type, screenshot_file_id
+                           description, due_time, screenshot_file_id
                     FROM tasks WHERE id = ?
                 ''', (task_id,))
                 
@@ -108,7 +107,7 @@ class TaskRepository(BaseRepository, ITaskRepository):
                     return TaskDB(
                         id=row[0], user_id=row[1], chat_id=row[2], message_id=row[3],
                         title=row[4], description=row[5], due_time=row[6],
-                        platform_task_id=row[7], platform_type=row[8], screenshot_file_id=row[9]
+                        screenshot_file_id=row[7]
                     )
                 return None
                 
@@ -156,4 +155,126 @@ class TaskRepository(BaseRepository, ITaskRepository):
         except sqlite3.Error as e:
             logger.error(f"Failed to update task platform ID: {e}")
             raise DatabaseError(f"Failed to update task platform ID: {e}")
+    
+    def add_recipient(self, task_id: int, recipient_id: int, 
+                     platform_task_id: str, platform_type: str) -> bool:
+        """Add a recipient to a task with platform-specific ID."""
+        try:
+            with self.db_manager.get_connection() as conn:
+                cursor = conn.execute('''
+                    INSERT INTO task_recipients (task_id, recipient_id, platform_task_id, platform_type)
+                    VALUES (?, ?, ?, ?)
+                ''', (task_id, recipient_id, platform_task_id, platform_type))
+                
+                success = cursor.rowcount > 0
+                
+                if success:
+                    logger.info(f"Added recipient {recipient_id} to task {task_id} with platform ID {platform_task_id}")
+                else:
+                    logger.warning(f"Failed to add recipient {recipient_id} to task {task_id}")
+                
+                return success
+                
+        except sqlite3.IntegrityError as e:
+            if "UNIQUE constraint failed" in str(e):
+                logger.warning(f"Recipient {recipient_id} already exists for task {task_id}")
+                return False
+            logger.error(f"Integrity error adding recipient to task: {e}")
+            raise DatabaseError(f"Failed to add recipient to task: {e}")
+        except sqlite3.Error as e:
+            logger.error(f"Failed to add recipient to task: {e}")
+            raise DatabaseError(f"Failed to add recipient to task: {e}")
+    
+    def remove_recipient(self, task_id: int, recipient_id: int) -> bool:
+        """Remove a recipient from a task."""
+        try:
+            with self.db_manager.get_connection() as conn:
+                cursor = conn.execute('''
+                    DELETE FROM task_recipients 
+                    WHERE task_id = ? AND recipient_id = ?
+                ''', (task_id, recipient_id))
+                
+                deleted = cursor.rowcount > 0
+                
+                if deleted:
+                    logger.info(f"Removed recipient {recipient_id} from task {task_id}")
+                else:
+                    logger.warning(f"Recipient {recipient_id} not found for task {task_id}")
+                
+                return deleted
+                
+        except sqlite3.Error as e:
+            logger.error(f"Failed to remove recipient from task: {e}")
+            raise DatabaseError(f"Failed to remove recipient from task: {e}")
+    
+    def get_task_recipients(self, task_id: int) -> List[TaskRecipient]:
+        """Get all recipients for a specific task."""
+        try:
+            with self.db_manager.get_connection() as conn:
+                cursor = conn.execute('''
+                    SELECT id, task_id, recipient_id, platform_task_id, platform_type, created_at, status
+                    FROM task_recipients 
+                    WHERE task_id = ? AND status = 'active'
+                    ORDER BY created_at ASC
+                ''', (task_id,))
+                
+                return [
+                    TaskRecipient(
+                        id=row[0], task_id=row[1], recipient_id=row[2],
+                        platform_task_id=row[3], platform_type=row[4], 
+                        created_at=row[5], status=row[6]
+                    )
+                    for row in cursor.fetchall()
+                ]
+                
+        except sqlite3.Error as e:
+            logger.error(f"Failed to get recipients for task {task_id}: {e}")
+            raise DatabaseError(f"Failed to get task recipients: {e}")
+    
+    def get_recipient_tasks(self, recipient_id: int) -> List[TaskRecipient]:
+        """Get all tasks for a specific recipient."""
+        try:
+            with self.db_manager.get_connection() as conn:
+                cursor = conn.execute('''
+                    SELECT id, task_id, recipient_id, platform_task_id, platform_type, created_at, status
+                    FROM task_recipients 
+                    WHERE recipient_id = ? AND status = 'active'
+                    ORDER BY created_at DESC
+                ''', (recipient_id,))
+                
+                return [
+                    TaskRecipient(
+                        id=row[0], task_id=row[1], recipient_id=row[2],
+                        platform_task_id=row[3], platform_type=row[4], 
+                        created_at=row[5], status=row[6]
+                    )
+                    for row in cursor.fetchall()
+                ]
+                
+        except sqlite3.Error as e:
+            logger.error(f"Failed to get tasks for recipient {recipient_id}: {e}")
+            raise DatabaseError(f"Failed to get recipient tasks: {e}")
+    
+    def get_task_recipient(self, task_id: int, recipient_id: int) -> Optional[TaskRecipient]:
+        """Get a specific task-recipient relationship."""
+        try:
+            with self.db_manager.get_connection() as conn:
+                cursor = conn.execute('''
+                    SELECT id, task_id, recipient_id, platform_task_id, platform_type, created_at, status
+                    FROM task_recipients 
+                    WHERE task_id = ? AND recipient_id = ? AND status = 'active'
+                ''', (task_id, recipient_id))
+                
+                row = cursor.fetchone()
+                if row:
+                    return TaskRecipient(
+                        id=row[0], task_id=row[1], recipient_id=row[2],
+                        platform_task_id=row[3], platform_type=row[4], 
+                        created_at=row[5], status=row[6]
+                    )
+                return None
+                
+        except sqlite3.Error as e:
+            logger.error(f"Failed to get task-recipient relationship: {e}")
+            raise DatabaseError(f"Failed to get task-recipient relationship: {e}")
 

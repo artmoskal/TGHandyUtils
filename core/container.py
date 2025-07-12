@@ -15,6 +15,9 @@ from services.recipient_task_service import RecipientTaskService
 from services.openai_service import OpenAIService
 from services.voice_processing import VoiceProcessingService
 from services.image_processing import ImageProcessingService
+from services.oauth_state_manager import OAuthStateManager
+from services.google_oauth_service import GoogleOAuthService
+from services.sharing_service import SharingService
 
 
 class ApplicationContainer(containers.DeclarativeContainer):
@@ -72,6 +75,25 @@ class ApplicationContainer(containers.DeclarativeContainer):
     image_processing_service = providers.Factory(
         ImageProcessingService,
         openai_service=openai_service
+    )
+    
+    # OAuth and Google Calendar services
+    oauth_state_manager = providers.Factory(
+        OAuthStateManager,
+        db_manager=database_manager
+    )
+    
+    google_oauth_service = providers.Factory(
+        GoogleOAuthService,
+        client_id=config.provided.GOOGLE_CLIENT_ID,
+        client_secret=config.provided.GOOGLE_CLIENT_SECRET
+    )
+    
+    # Sharing service
+    sharing_service = providers.Factory(
+        SharingService,
+        repository=unified_recipient_repository,
+        user_service=providers.Factory(lambda: None)  # Placeholder for user service
     )
 
 

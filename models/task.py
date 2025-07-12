@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field, field_validator
 
 @dataclass
 class TaskDB:
-    """Database representation of a task."""
+    """Database representation of a task (platform tracking moved to TaskRecipient)."""
     id: Optional[int]
     user_id: int
     chat_id: int
@@ -15,8 +15,6 @@ class TaskDB:
     title: str
     description: str
     due_time: str
-    platform_task_id: Optional[str]
-    platform_type: str
     screenshot_file_id: Optional[str] = None
 
 class TaskCreate(BaseModel):
@@ -45,6 +43,17 @@ class TaskUpdate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     due_time: Optional[str] = None
+
+@dataclass
+class TaskRecipient:
+    """Database representation of a task-recipient relationship."""
+    id: Optional[int]
+    task_id: int
+    recipient_id: int
+    platform_task_id: str
+    platform_type: str
+    created_at: str
+    status: str = 'active'
 
 class PlatformTaskData(BaseModel):
     """Model for platform-specific task data."""

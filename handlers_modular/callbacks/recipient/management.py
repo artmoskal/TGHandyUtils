@@ -40,6 +40,12 @@ async def handle_platform_type_selection(callback_query: CallbackQuery, state: F
     platform_type = callback_query.data.replace("platform_type_", "")
     
     await state.update_data(platform_type=platform_type)
+    
+    # Special handling for Google Calendar OAuth
+    if platform_type == "google_calendar":
+        await _handle_google_calendar_oauth(callback_query, state)
+        return
+    
     await state.set_state(RecipientState.waiting_for_credentials)
     
     # Get credential input instructions
@@ -258,19 +264,56 @@ async def handle_recipient_action(callback_query: CallbackQuery, state: FSMConte
             await callback_query.answer("❌ Recipient not found")
             return
             
-        keyboard = get_recipient_edit_keyboard(recipient.id, recipient.platform_type)
+        keyboard = get_recipient_edit_keyboard(recipient.id, recipient.platform_type, recipient.is_default)
         
         status = "✅ Active" if recipient.enabled else "❌ Disabled"
-        text = f"🎯 **{recipient.name}**\n\n"
+        default_status = "⭐ Default" if recipient.is_default else "⚪ Optional"
+        
+        text = f"🎯 <b>{recipient.name}</b>\n\n"
         text += f"📱 Platform: {recipient.platform_type.title()}\n"
-        text += f"📊 Status: {status}\n\n"
+        text += f"📊 Status: {status}\n"
+        text += f"⚙️ Default: {default_status}\n\n"
         text += "What would you like to do?"
         
-        await callback_query.message.edit_text(text, reply_markup=keyboard, parse_mode='Markdown', disable_web_page_preview=True)
+        await callback_query.message.edit_text(text, reply_markup=keyboard, parse_mode='HTML', disable_web_page_preview=True)
         
     except Exception as e:
         logger.error(f"Error handling recipient action: {e}")
         await callback_query.answer("❌ Error loading recipient")
+
+
+@router.callback_query(lambda c: c.data.startswith("toggle_default_"))
+async def handle_toggle_default(callback_query: CallbackQuery, state: FSMContext):
+    """Toggle recipient default status."""
+    recipient_id = int(callback_query.data.replace("toggle_default_", ""))
+    user_id = callback_query.from_user.id
+    
+    try:
+        recipient_service = container.recipient_service()
+        new_default_status = recipient_service.toggle_default_status(user_id, recipient_id)
+        
+        # Refresh the recipient edit view manually
+        recipient = recipient_service.get_recipient_by_id(user_id, recipient_id)
+        if recipient:
+            keyboard = get_recipient_edit_keyboard(recipient.id, recipient.platform_type, recipient.is_default)
+            
+            status = "✅ Active" if recipient.enabled else "❌ Disabled"
+            default_status = "⭐ Default" if recipient.is_default else "⚪ Optional"
+            
+            text = f"🎯 <b>{recipient.name}</b>\n\n"
+            text += f"📱 Platform: {recipient.platform_type.title()}\n"
+            text += f"📊 Status: {status}\n"
+            text += f"⚙️ Default: {default_status}\n\n"
+            text += "What would you like to do?"
+            
+            await callback_query.message.edit_text(text, reply_markup=keyboard, parse_mode='HTML', disable_web_page_preview=True)
+        
+        status_text = "default" if new_default_status else "optional"
+        await callback_query.answer(f"✅ Account set as {status_text}")
+        
+    except Exception as e:
+        logger.error(f"Error toggling default status: {e}")
+        await callback_query.answer("❌ Error updating default status")
 
 
 @router.callback_query(lambda c: c.data.startswith("toggle_recipient_") and c.data != "toggle_recipient_ui")
@@ -344,6 +387,68 @@ async def handle_configure_recipient(callback_query: CallbackQuery, state: FSMCo
         await callback_query.answer("❌ Error loading configuration")
 
 
+async def _handle_google_calendar_oauth(callback_query: CallbackQuery, state: FSMContext):
+    """Handle Google Calendar OAuth flow."""
+    try:
+        from core.container import container
+        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+        
+        # Get Google OAuth service
+        google_oauth_service = container.google_oauth_service()
+        if not google_oauth_service or not getattr(google_oauth_service, 'configured', False):
+            await callback_query.message.edit_text(
+                "❌ **Google Calendar Not Configured**\n\n"
+                "Google Calendar integration requires OAuth credentials to be set up.\n\n"
+                "**Required Setup:**\n"
+                "1. Create a Google Cloud Project\n"
+                "2. Enable Google Calendar API\n"
+                "3. Create OAuth 2.0 credentials\n"
+                "4. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables\n\n"
+                "Contact your administrator to complete the setup.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="« Back", callback_data="back_to_recipients")]
+                ]),
+                parse_mode='Markdown'
+            )
+            return
+        
+        # Generate authorization URL
+        user_id = callback_query.from_user.id
+        auth_url = google_oauth_service.get_authorization_url(user_id)
+        
+        # Set state for OAuth flow
+        await state.set_state(RecipientState.waiting_for_google_oauth_code)
+        
+        # Create URL button
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔗 Authorize Google Calendar", url=auth_url)],
+            [InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_setup")]
+        ])
+        
+        await callback_query.message.edit_text(
+            "📅 **Google Calendar Authorization**\n\n"
+            "1. Click the button below to authorize access\n"
+            "2. Sign in to your Google account\n"
+            "3. Grant calendar permissions\n"
+            "4. Copy the authorization code\n"
+            "5. Send the code back here\n\n"
+            "🔒 Your credentials will be stored securely.",
+            reply_markup=keyboard,
+            parse_mode='Markdown',
+            disable_web_page_preview=True
+        )
+        
+    except Exception as e:
+        logger.error(f"Error starting Google Calendar OAuth: {e}")
+        await callback_query.message.edit_text(
+            "❌ Error starting Google Calendar setup.\n\n"
+            "Please try again or contact support.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="« Back", callback_data="back_to_recipients")]
+            ])
+        )
+
+
 def _get_credentials_instructions(platform_type: str) -> str:
     """Get credential input instructions for platform."""
     if platform_type == "todoist":
@@ -360,6 +465,13 @@ def _get_credentials_instructions(platform_type: str) -> str:
                 "4. Allow access and copy the Token\n"
                 "5. Send them in this format:\n"
                 "`api_key,token`\n\n"
+                "🔒 Your credentials will be stored securely.")
+    elif platform_type == "google_calendar":
+        return ("📅 GOOGLE CALENDAR SETUP GUIDE\n\n"
+                "1. I'll generate an authorization URL for you\n"
+                "2. Click the link and authorize access\n"
+                "3. Copy the authorization code\n"
+                "4. Send the code back here\n\n"
                 "🔒 Your credentials will be stored securely.")
     else:
         return "Enter your account credentials:"

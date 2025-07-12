@@ -21,7 +21,11 @@ class Config(IConfig):
     
     # Platform Configuration
     DEFAULT_TASK_PLATFORM: str = os.getenv('DEFAULT_TASK_PLATFORM', 'todoist')
-    SUPPORTED_PLATFORMS: List[str] = ['todoist', 'trello']
+    SUPPORTED_PLATFORMS: List[str] = ['todoist', 'trello', 'google_calendar']
+    
+    # Google Calendar OAuth Configuration
+    GOOGLE_CLIENT_ID: str = os.getenv('GOOGLE_CLIENT_ID', '')
+    GOOGLE_CLIENT_SECRET: str = os.getenv('GOOGLE_CLIENT_SECRET', '')
     
     # Scheduler Configuration
     SCHEDULER_INTERVAL: int = int(os.getenv('SCHEDULER_INTERVAL', '20'))
@@ -45,6 +49,17 @@ class Config(IConfig):
         
         if cls.DEFAULT_TASK_PLATFORM not in cls.SUPPORTED_PLATFORMS:
             raise ValueError(f"DEFAULT_TASK_PLATFORM must be one of {cls.SUPPORTED_PLATFORMS}")
+        
+        # Google Calendar validation
+        if cls.GOOGLE_CLIENT_ID and not cls.GOOGLE_CLIENT_SECRET:
+            raise ValueError("GOOGLE_CLIENT_SECRET required when GOOGLE_CLIENT_ID is set")
+        
+        if cls.GOOGLE_CLIENT_SECRET and not cls.GOOGLE_CLIENT_ID:
+            raise ValueError("GOOGLE_CLIENT_ID required when GOOGLE_CLIENT_SECRET is set")
+        
+        # Platform support validation
+        if 'google_calendar' in cls.SUPPORTED_PLATFORMS and not cls.GOOGLE_CLIENT_ID:
+            logging.warning("Google Calendar enabled in SUPPORTED_PLATFORMS but credentials not configured")
     
     @classmethod
     def get_log_level(cls) -> int:
