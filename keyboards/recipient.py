@@ -3,6 +3,7 @@
 from typing import List, Dict, Any
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from models.unified_recipient import UnifiedRecipient
+from helpers.ui_helpers import get_platform_emoji, get_status_emoji, get_account_type_emoji, get_default_indicator
 
 
 def get_recipient_management_keyboard(recipients: List[UnifiedRecipient]) -> InlineKeyboardMarkup:
@@ -17,17 +18,10 @@ def get_recipient_management_keyboard(recipients: List[UnifiedRecipient]) -> Inl
         keyboard.append([InlineKeyboardButton(text="📱 Your Connected Accounts:", callback_data="noop")])
         
         for recipient in recipients:
-            status = "✅" if recipient.enabled else "⚠️"
-            if recipient.platform_type == "todoist":
-                platform_emoji = "📝"
-            elif recipient.platform_type == "trello":
-                platform_emoji = "📋"
-            elif recipient.platform_type == "google_calendar":
-                platform_emoji = "📅"
-            else:
-                platform_emoji = "📱"
-            account_type = "👤" if recipient.is_personal else "👥"
-            default_indicator = " (Default)" if recipient.is_default else ""
+            status = get_status_emoji(recipient.enabled)
+            platform_emoji = get_platform_emoji(recipient.platform_type)
+            account_type = get_account_type_emoji(recipient.is_personal)
+            default_indicator = get_default_indicator(recipient.is_default)
             callback_data = f"recipient_edit_{recipient.id}"
             keyboard.append([
                 InlineKeyboardButton(
@@ -50,9 +44,9 @@ def get_recipient_management_keyboard(recipients: List[UnifiedRecipient]) -> Inl
 def get_platform_selection_keyboard() -> InlineKeyboardMarkup:
     """Get account type selection keyboard."""
     keyboard = [
-        [InlineKeyboardButton(text="📝 Todoist", callback_data="platform_type_todoist")],
-        [InlineKeyboardButton(text="📋 Trello", callback_data="platform_type_trello")],
-        [InlineKeyboardButton(text="📅 Google Calendar", callback_data="platform_type_google_calendar")],
+        [InlineKeyboardButton(text=f"{get_platform_emoji('todoist')} Todoist", callback_data="platform_type_todoist")],
+        [InlineKeyboardButton(text=f"{get_platform_emoji('trello')} Trello", callback_data="platform_type_trello")],
+        [InlineKeyboardButton(text=f"{get_platform_emoji('google_calendar')} Google Calendar", callback_data="platform_type_google_calendar")],
         [InlineKeyboardButton(text="« Back", callback_data="back_to_recipients")]
     ]
     
@@ -104,7 +98,7 @@ def get_recipient_edit_keyboard(recipient_id: int, platform_type: str = None, is
     default_text = "⚪ Remove from Default" if is_default else "⭐ Set as Default"
     keyboard = [
         [InlineKeyboardButton(text=default_text, callback_data=f"toggle_default_{str(recipient_id)}")],
-        [InlineKeyboardButton(text="🔄 Enable/Disable Account", callback_data=f"toggle_recipient_{str(recipient_id)}")],
+        [InlineKeyboardButton(text="✅❌ Enable/Disable Account", callback_data=f"toggle_recipient_{str(recipient_id)}")],
     ]
     
     # Add configure button for platforms that need configuration (like Trello)

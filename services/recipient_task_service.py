@@ -7,6 +7,7 @@ from core.interfaces import ITaskRepository
 from core.logging import get_logger
 from platforms.base import TaskPlatformFactory
 from models.task import PlatformTaskData
+from helpers.ui_helpers import format_platform_button, get_platform_emoji, escape_markdown
 from datetime import datetime, timedelta
 
 logger = get_logger(__name__)
@@ -29,6 +30,10 @@ class RecipientTaskService:
         """
         logger.info(f"Creating task '{title}' for user {user_id}")
         
+        # Check recipient UI toggle setting
+        ui_enabled = self.recipient_service.is_recipient_ui_enabled(user_id)
+        logger.info(f"Recipient UI enabled for user {user_id}: {ui_enabled}")
+        
         # Determine which recipients to use
         if specific_recipients:
             recipients = []
@@ -50,9 +55,15 @@ class RecipientTaskService:
                 logger.warning(f"No recipients available for user {user_id}")
                 return False, "❌ No recipients configured. Please add accounts first.", None
             elif specific_recipients is None:
-                # No default recipients set but recipients exist - show recipient selection
-                logger.info(f"No default recipients for user {user_id}, will prompt for recipient selection")
-                return False, "NO_DEFAULT_RECIPIENTS", None
+                # Handle based on UI toggle setting
+                if not ui_enabled:
+                    # UI disabled and no defaults - return specific error
+                    logger.warning(f"UI disabled and no default recipients for user {user_id}")
+                    return False, "⚙️ **Automatic Mode Active**\n\nRecipient selection is disabled. Please set at least one platform as default in Settings → Manage Accounts.", None
+                else:
+                    # UI enabled - show recipient selection
+                    logger.info(f"No default recipients for user {user_id}, will prompt for recipient selection")
+                    return False, "NO_DEFAULT_RECIPIENTS", None
             else:
                 # Specific recipients were requested but not found
                 logger.warning(f"Requested recipients not found for user {user_id}")
@@ -193,13 +204,16 @@ class RecipientTaskService:
                 
                 if track_success:
                     logger.info(f"Added and tracked task {task_id} to {recipient.name}")
-                    return True, f"✅ Added to {recipient.name}: `{url}`"
+                    platform_emoji = get_platform_emoji(recipient.platform_type)
+                    return True, f"{platform_emoji} **Added to {recipient.name}**\n\nTask successfully created on your {recipient.platform_type.title()} account."
                 else:
                     logger.warning(f"Added task to platform but failed to track for {recipient.name}")
-                    return True, f"✅ Added to {recipient.name} (tracking failed): `{url}`"
+                    platform_emoji = get_platform_emoji(recipient.platform_type)
+                    return True, f"{platform_emoji} **Added to {recipient.name}**\n\nTask created successfully (tracking failed)."
             else:
                 logger.warning(f"Added task to platform but could not extract ID for {recipient.name}")
-                return True, f"✅ Added to {recipient.name} (no tracking): `{url}`"
+                platform_emoji = get_platform_emoji(recipient.platform_type)
+                return True, f"{platform_emoji} **Added to {recipient.name}**\n\nTask created successfully (no tracking)."
         else:
             logger.error(f"Failed to add task {task_id} to {recipient.name}")
             return False, f"❌ Failed to add to {recipient.name}"
@@ -323,16 +337,19 @@ class RecipientTaskService:
     def _generate_success_feedback(self, recipients: List[UnifiedRecipient], task_urls: List[str], 
                                  failed_recipients: List[str], title: str, description: str, due_time: str, user_id: int) -> str:
         """Generate success feedback message with full task details."""
-        feedback_parts = ["✅ *Task Created Successfully!*\n"]
+        feedback_parts = ["✅ **Task Created Successfully!**\n"]
         
-        # Add task details (escape special Markdown characters)
-        escaped_title = title.replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace(']', '\\]').replace('`', '\\`')
-        feedback_parts.append(f"📝 *Title:* {escaped_title}")
+        # Add task details with enhanced formatting
+        escaped_title = escape_markdown(title)
+        feedback_parts.append(f"📋 **\"{escaped_title}\"**")
+        
         if description and description.strip():
             # Truncate long descriptions
-            desc_preview = description[:200] + "..." if len(description) > 200 else description
-            escaped_desc = desc_preview.replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace(']', '\\]').replace('`', '\\`')
-            feedback_parts.append(f"📄 *Description:* {escaped_desc}")
+            desc_preview = description[:150] + "..." if len(description) > 150 else description
+            escaped_desc = escape_markdown(desc_preview)
+            feedback_parts.append(f"📄 **Description:** {escaped_desc}")
+        
+        feedback_parts.append("")  # Add blank line for spacing
         
         # Format due time in user's local timezone
         try:
@@ -371,34 +388,45 @@ class RecipientTaskService:
                     
                     local_time_display = f"{local_time.strftime('%B %d, %Y at %H:%M')} ({timezone_name})"
                     logger.info(f"Timezone conversion successful: UTC {due_time} -> Local {local_time_display}")
-                    feedback_parts.append(f"⏰ *Due:* {local_time_display}")
+                    feedback_parts.append(f"📅 **Due:** {local_time_display}")
                 except Exception as e:
                     logger.warning(f"Failed to convert time to local timezone: {e}")
                     # Fallback to UTC display
                     due_dt = datetime.fromisoformat(due_time.replace('Z', '+00:00'))
-                    due_formatted = due_dt.strftime("%Y-%m-%d at %H:%M UTC")
-                    feedback_parts.append(f"⏰ *Due:* {due_formatted}")
+                    due_formatted = due_dt.strftime("%B %d, %Y at %H:%M UTC")
+                    feedback_parts.append(f"📅 **Due:** {due_formatted}")
             else:
                 # No location set, display UTC
                 due_dt = datetime.fromisoformat(due_time.replace('Z', '+00:00'))
-                due_formatted = due_dt.strftime("%Y-%m-%d at %H:%M UTC")
-                feedback_parts.append(f"⏰ *Due:* {due_formatted}")
+                due_formatted = due_dt.strftime("%B %d, %Y at %H:%M UTC")
+                feedback_parts.append(f"📅 **Due:** {due_formatted}")
         except Exception as e:
             logger.warning(f"Failed to format due time: {e}")
-            feedback_parts.append(f"⏰ *Due:* {due_time}")
+            feedback_parts.append(f"📅 **Due:** {due_time}")
             
-        feedback_parts.append("\n🔗 *Created on:*")
+        feedback_parts.append("")  # Add blank line for spacing
+        feedback_parts.append("🎯 **Added to:**")
         
         for i, recipient in enumerate(recipients):
             if i < len(task_urls):
+                platform_emoji = get_platform_emoji(recipient.platform_type)
                 # Escape special characters in URLs for Markdown
                 url = task_urls[i]
-                # Replace underscores and other special chars to prevent Markdown parsing issues
-                escaped_url = url.replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace(']', '\\]').replace('`', '\\`')
-                feedback_parts.append(f"• {recipient.name}: `{escaped_url}`")
+                escaped_url = escape_markdown(url)
+                feedback_parts.append(f"• {platform_emoji} {recipient.name}")
+        
+        # Show additional platforms available if UI is enabled
+        ui_enabled = self.recipient_service.is_recipient_ui_enabled(user_id)
+        if ui_enabled:
+            all_recipients = self.recipient_service.get_enabled_recipients(user_id)
+            used_recipient_ids = {r.id for r in recipients}
+            available_recipients = [r for r in all_recipients if r.id not in used_recipient_ids]
+            
+            if available_recipients:
+                feedback_parts.append("➕ **Available:** Add to other platforms below")
         
         if failed_recipients:
-            feedback_parts.append(f"\n❌ *Failed:* {', '.join(failed_recipients)}")
+            feedback_parts.append(f"\n❌ **Failed:** {', '.join(failed_recipients)}")
         
         return "\n".join(feedback_parts)
     
@@ -406,6 +434,17 @@ class RecipientTaskService:
                                   task_id: int, exclude_recipient_ids: List[int] = None) -> Dict[str, List[Dict[str, str]]]:
         """Generate post-task action buttons based on actual task_recipients data."""
         logger.debug(f"Generating post-task actions for user {user_id}, task {task_id}")
+        
+        # Check recipient UI toggle setting
+        ui_enabled = self.recipient_service.is_recipient_ui_enabled(user_id)
+        
+        # If UI is disabled, don't show any action buttons
+        if not ui_enabled:
+            logger.debug(f"UI disabled for user {user_id}, no action buttons will be shown")
+            return {
+                "remove_actions": [],
+                "add_actions": []
+            }
         
         exclude_recipient_ids = exclude_recipient_ids or []
         
@@ -424,7 +463,7 @@ class RecipientTaskService:
             recipient = used_recipients_map.get(task_recipient.recipient_id)
             if recipient:
                 remove_actions.append({
-                    "text": f"❌ Remove from {recipient.name}",
+                    "text": format_platform_button(recipient.platform_type, recipient.name, "Remove from"),
                     "callback_data": f"remove_task_from_{recipient.id}_{task_id}",
                     "recipient_id": str(recipient.id),
                     "recipient_name": recipient.name
@@ -434,7 +473,7 @@ class RecipientTaskService:
                 recipient_obj = self.recipient_service.get_recipient_by_id(user_id, task_recipient.recipient_id)
                 if recipient_obj:
                     remove_actions.append({
-                        "text": f"❌ Remove from {recipient_obj.name}",
+                        "text": format_platform_button(recipient_obj.platform_type, recipient_obj.name, "Remove from"),
                         "callback_data": f"remove_task_from_{recipient_obj.id}_{task_id}",
                         "recipient_id": str(recipient_obj.id),
                         "recipient_name": recipient_obj.name
@@ -454,7 +493,7 @@ class RecipientTaskService:
         for recipient in all_recipients:
             if recipient.id not in used_recipient_ids and recipient.id not in exclude_recipient_ids:
                 add_actions.append({
-                    "text": f"➕ Add to {recipient.name}",
+                    "text": format_platform_button(recipient.platform_type, recipient.name, "Add to"),
                     "callback_data": f"add_task_to_{recipient.id}_{task_id}",
                     "recipient_id": str(recipient.id),
                     "recipient_name": recipient.name
@@ -501,10 +540,12 @@ class RecipientTaskService:
                 
                 if local_success:
                     logger.info(f"Successfully removed task {task_id} from {recipient.name}")
-                    return True, f"✅ Removed from {recipient.name}"
+                    platform_emoji = get_platform_emoji(recipient.platform_type)
+                    return True, f"{platform_emoji} **Removed from {recipient.name}**\n\nTask successfully deleted from your {recipient.platform_type.title()} account."
                 else:
                     logger.warning(f"Deleted from platform but failed to remove from local database for {recipient.name}")
-                    return True, f"✅ Removed from {recipient.name} (database cleanup failed)"
+                    platform_emoji = get_platform_emoji(recipient.platform_type)
+                    return True, f"{platform_emoji} **Removed from {recipient.name}**\n\nTask deleted successfully (database cleanup failed)."
             else:
                 logger.error(f"Failed to delete task from {recipient.platform_type} platform")
                 return False, f"❌ Failed to remove from {recipient.name}"

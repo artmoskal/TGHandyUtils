@@ -7,6 +7,7 @@ from core.container import container
 from core.logging import get_logger
 from models.task import TaskCreate
 from handlers_modular.base import handle_task_creation_response
+from helpers.ui_helpers import format_platform_button
 
 logger = get_logger(__name__)
 
@@ -86,6 +87,17 @@ async def process_thread_with_photos(message: Message, thread_content: List[Tupl
         
         # Handle special case when no default recipients are set
         if not success and feedback == "NO_DEFAULT_RECIPIENTS":
+            # Check if UI is enabled - this should only happen when UI is enabled
+            ui_enabled = recipient_service.is_recipient_ui_enabled(owner_id)
+            if not ui_enabled:
+                # This shouldn't happen with the new logic, but safety check
+                await message.reply(
+                    "⚙️ **Automatic Mode Active**\n\n"
+                    "Recipient selection is disabled. Please set at least one platform as default in Settings → Manage Accounts.",
+                    disable_web_page_preview=True
+                )
+                return
+            
             # Create a temporary task in database first, then show recipient buttons for it
             task_repo = container.task_repository()
             
@@ -104,16 +116,17 @@ async def process_thread_with_photos(message: Message, thread_content: List[Tupl
                 from keyboards.recipient import get_post_task_actions_keyboard
                 
                 # Create actions for adding to any recipient
+                add_actions = []
+                for recipient in recipients:
+                    add_actions.append({
+                        "text": format_platform_button(recipient.platform_type, recipient.name, "Add to"),
+                        "callback_data": f"add_task_to_{recipient.id}_{task_id}",
+                        "recipient_id": str(recipient.id),
+                        "recipient_name": recipient.name
+                    })
+                
                 actions = {
-                    "add_actions": [
-                        {
-                            "text": f"➕ Add to {recipient.name}",
-                            "callback_data": f"add_task_to_{recipient.id}_{task_id}",
-                            "recipient_id": str(recipient.id),
-                            "recipient_name": recipient.name
-                        }
-                        for recipient in recipients
-                    ],
+                    "add_actions": add_actions,
                     "remove_actions": []
                 }
                 
