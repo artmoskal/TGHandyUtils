@@ -162,11 +162,11 @@ async def handle_trello_list_selection(callback_query: CallbackQuery, state: FSM
                 [InlineKeyboardButton(text="🏠 Back to Menu", callback_data="back_to_menu")]
             ])
             
+            from helpers.message_templates import format_setup_complete_message
             await callback_query.message.edit_text(
-                "✅ **Trello Account Added Successfully!**\n\n"
-                "Your account is now connected and ready to use.\n\n"
-                "🎯 You can now create tasks that will appear in your selected Trello list.",
+                format_setup_complete_message("trello"),
                 reply_markup=success_keyboard,
+                parse_mode='Markdown',
                 disable_web_page_preview=True
             )
             await state.clear()
@@ -338,12 +338,12 @@ async def handle_toggle_recipient(callback_query: CallbackQuery, state: FSMConte
             # Update the message to show new status
             keyboard = get_recipient_edit_keyboard(recipient.id, recipient.platform_type)
             status_text = "✅ Active" if recipient.enabled else "❌ Disabled"
-            text = f"🎯 **{recipient.name}**\n\n"
+            text = f"🎯 <b>{recipient.name}</b>\n\n"
             text += f"📱 Platform: {recipient.platform_type.title()}\n"
             text += f"📊 Status: {status_text}\n\n"
             text += "What would you like to do?"
             
-            await callback_query.message.edit_text(text, reply_markup=keyboard, parse_mode='Markdown', disable_web_page_preview=True)
+            await callback_query.message.edit_text(text, reply_markup=keyboard, parse_mode='HTML', disable_web_page_preview=True)
         else:
             await callback_query.answer("❌ Failed to update recipient")
             
@@ -370,10 +370,10 @@ async def handle_configure_recipient(callback_query: CallbackQuery, state: FSMCo
             # For Trello, show board/list configuration
             keyboard = get_trello_configuration_keyboard()
             await callback_query.message.edit_text(
-                f"🔧 **Configure {recipient.name}**\n\n"
+                f"🔧 <b>Configure {recipient.name}</b>\n\n"
                 "Trello Configuration Options:",
                 reply_markup=keyboard,
-                parse_mode='Markdown',
+                parse_mode='HTML',
                 disable_web_page_preview=True
             )
             
@@ -651,12 +651,12 @@ async def handle_recipient_removal(callback_query: CallbackQuery, state: FSMCont
         ])
         
         await callback_query.message.edit_text(
-            f"🗑️ **Delete Account**\n\n"
+            f"🗑️ <b>Delete Account</b>\n\n"
             f"Are you sure you want to delete:\n"
-            f"**{recipient.name}** ({recipient.platform_type.title()})\n\n"
+            f"<b>{recipient.name}</b> ({recipient.platform_type.title()})\n\n"
             f"⚠️ This action cannot be undone.",
             reply_markup=keyboard,
-            parse_mode='Markdown',
+            parse_mode='HTML',
             disable_web_page_preview=True
         )
         

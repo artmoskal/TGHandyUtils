@@ -2,7 +2,26 @@
 
 from abc import ABC, abstractmethod
 from typing import Optional, Dict, Any, List, Tuple, BinaryIO, Union
+from dataclasses import dataclass
 from models.task import TaskCreate, TaskDB
+
+
+@dataclass
+class ServiceResult:
+    """Standard service operation result following existing patterns."""
+    success: bool
+    message: str
+    data: Optional[Any] = None
+    
+    @classmethod
+    def success_with_data(cls, message: str, data: Any = None) -> 'ServiceResult':
+        """Create successful result with optional data."""
+        return cls(True, message, data)
+    
+    @classmethod
+    def failure(cls, message: str) -> 'ServiceResult':
+        """Create failure result."""
+        return cls(False, message, None)
 
 
 class ITaskRepository(ABC):
@@ -122,6 +141,46 @@ class IImageProcessingService(ABC):
     @abstractmethod
     async def process_image_message(self, media: Union[List, Any], bot) -> Dict[str, Any]:
         """Process an image message (photo list or document) and return analyzed content."""
+        pass
+
+
+class IUserPreferencesRepository(ABC):
+    """Abstract interface for user preferences operations."""
+    
+    @abstractmethod
+    def get_preferences(self, user_id: int):
+        """Get user preferences by user ID."""
+        pass
+    
+    @abstractmethod
+    def create_preferences(self, user_id: int, prefs) -> bool:
+        """Create new user preferences."""
+        pass
+    
+    @abstractmethod
+    def update_preferences(self, user_id: int, updates) -> bool:
+        """Update user preferences."""
+        pass
+
+
+class IAuthRequestRepository(ABC):
+    """Abstract interface for auth request operations."""
+    
+    @abstractmethod
+    def create_auth_request(self, requester_user_id: int, target_user_id: int, 
+                           recipient_id: int, permissions: List[str]) -> Optional[int]:
+        """Create new auth request."""
+        pass
+    
+    @abstractmethod
+    def get_pending_auth_requests_for_user(self, user_id: int):
+        """Get pending auth requests for user."""
+        pass
+    
+    @abstractmethod
+    def update_auth_request_status(self, auth_request_id: int, status: str, 
+                                 reviewer_user_id: Optional[int] = None) -> bool:
+        """Update auth request status."""
         pass
 
 

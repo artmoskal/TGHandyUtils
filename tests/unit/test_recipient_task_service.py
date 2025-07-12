@@ -11,6 +11,7 @@ from unittest.mock import patch, Mock
 # Import database and service components
 from database.connection import DatabaseManager
 from database.unified_recipient_repository import UnifiedRecipientRepository
+from database.user_preferences_repository import UserPreferencesRepository
 from database.repositories import TaskRepository
 from services.recipient_service import RecipientService
 from services.recipient_task_service import RecipientTaskService
@@ -42,8 +43,9 @@ class TestRecipientTaskService:
         """Setup real database components for each test."""
         self.db_manager = DatabaseManager("data/db/tasks.db")
         self.recipient_repo = UnifiedRecipientRepository(self.db_manager)
+        self.preferences_repo = UserPreferencesRepository(self.db_manager)
         self.task_repo = TaskRepository(self.db_manager)
-        self.recipient_service = RecipientService(self.recipient_repo)
+        self.recipient_service = RecipientService(self.recipient_repo, self.preferences_repo)
         self.task_service = RecipientTaskService(self.task_repo, self.recipient_service)
         
         # Test user ID for isolation
@@ -66,12 +68,14 @@ class TestRecipientTaskService:
         personal_todoist = TodoistRecipientFactory(
             user_id=self.test_user_id,
             is_personal=True,
+            is_default=True,  # Mark as default for automatic mode
             enabled=True,
             name="My Personal Todoist"
         )
         personal_trello = TrelloRecipientFactory(
             user_id=self.test_user_id,
             is_personal=True,
+            is_default=True,  # Mark as default for automatic mode
             enabled=True,
             name="My Personal Trello"
         )
@@ -90,7 +94,7 @@ class TestRecipientTaskService:
         with patch('platforms.todoist.TodoistPlatform.create_task', return_value='todoist-task-123'), \
              patch('platforms.trello.TrelloPlatform.create_task', return_value='trello-task-456'):
             # Test task creation service
-            success, feedback, actions = self.task_service.create_task_for_recipients(
+            result = self.task_service.create_task_for_recipients(
                 user_id=self.test_user_id,
                 title=task.title,
                 description=task.description
@@ -98,9 +102,9 @@ class TestRecipientTaskService:
         
         # Verify successful creation for personal recipients
         # Note: This tests the service logic without actual platform API calls
-        assert isinstance(success, bool)
-        assert isinstance(feedback, str)
-        assert isinstance(actions, dict)
+        assert result.success
+        assert isinstance(result.message, str)
+        assert result.data is not None  # Should contain action buttons
         
         # Verify the service processes personal recipients correctly
         default_recipients = self.recipient_service.get_default_recipients(self.test_user_id)
@@ -155,6 +159,10 @@ class TestRecipientTaskService:
         # Create mixed recipient scenario using factories
         scenarios = MultiPlatformRecipientFactory.create_mixed_scenarios(self.test_user_id)
         
+        # Mark personal recipients as default for automatic mode
+        for recipient in scenarios.get('personal_enabled', []):
+            recipient.is_default = True
+        
         # Persist all recipients to database
         for category, recipients in scenarios.items():
             for recipient in recipients:
@@ -195,6 +203,7 @@ class TestRecipientTaskService:
         personal_enabled = PersonalRecipientFactory(
             user_id=self.test_user_id,
             is_personal=True,
+            is_default=True,  # Mark as default for automatic mode
             enabled=True,
             name="Personal Enabled"
         )
@@ -249,6 +258,7 @@ class TestRecipientTaskService:
         recipient = TodoistRecipientFactory(
             user_id=self.test_user_id,
             is_personal=True,
+            is_default=True,  # Mark as default for automatic mode
             enabled=True,
             name="Screenshot Test Recipient"
         )
@@ -272,7 +282,7 @@ class TestRecipientTaskService:
         # without requiring actual platform API calls
         with patch('platforms.todoist.TodoistPlatform.create_task', return_value='todoist-task-screenshot-123'):
             try:
-                success, feedback, actions = self.task_service.create_task_for_recipients(
+                result = self.task_service.create_task_for_recipients(
                     user_id=self.test_user_id,
                     title=screenshot_task.title,
                     description=screenshot_task.description,
@@ -280,9 +290,9 @@ class TestRecipientTaskService:
                 )
                 
                 # Verify service handles screenshot data without errors
-                assert isinstance(success, bool)
-                assert isinstance(feedback, str)
-                assert isinstance(actions, dict)
+                assert result.success
+                assert isinstance(result.message, str)
+                assert result.data is not None
                 
             except Exception as e:
                 pytest.fail(f"Screenshot task creation failed: {e}")
@@ -293,6 +303,7 @@ class TestRecipientTaskService:
         recipient = TrelloRecipientFactory(
             user_id=self.test_user_id,
             is_personal=True,
+            is_default=True,  # Mark as default for automatic mode
             enabled=True,
             name="Urgent Task Recipient"
         )
@@ -304,15 +315,16 @@ class TestRecipientTaskService:
             priority="urgent"
         )
         
-        # Test urgent task creation
-        success, feedback, actions = self.task_service.create_task_for_recipients(
-            user_id=self.test_user_id,
-            title=urgent_task.title,
-            description=urgent_task.description
-        )
+        # Test urgent task creation with mocked platform
+        with patch('platforms.trello.TrelloPlatform.create_task', return_value='trello-urgent-123'):
+            result = self.task_service.create_task_for_recipients(
+                user_id=self.test_user_id,
+                title=urgent_task.title,
+                description=urgent_task.description
+            )
         
         # Verify urgent task handling
-        assert isinstance(success, bool)
+        assert result.success
         assert urgent_task.priority == "urgent"
         assert "URGENT" in urgent_task.title
     
@@ -323,6 +335,10 @@ class TestRecipientTaskService:
             self.test_user_id,
             is_personal=True  # All personal for automatic creation
         )
+        
+        # Mark all as default for automatic mode
+        for recipient in recipients:
+            recipient.is_default = True
         
         # Persist recipients
         for recipient in recipients:
@@ -336,14 +352,14 @@ class TestRecipientTaskService:
              patch('platforms.trello.TrelloPlatform.create_task', return_value='trello-batch-456'):
             for task in task_batch:
                 try:
-                    success, feedback, actions = self.task_service.create_task_for_recipients(
+                    result = self.task_service.create_task_for_recipients(
                         user_id=self.test_user_id,
                         title=task.title,
                         description=task.description
                     )
                     
                     # Verify each task is processed
-                    assert isinstance(success, bool)
+                    assert result.success
                     assert len(task.title) > 0
                     # Only check priority if the task has it
                     if hasattr(task, 'priority'):
@@ -358,6 +374,7 @@ class TestRecipientTaskService:
         recipient = TodoistRecipientFactory(
             user_id=self.test_user_id,
             is_personal=True,
+            is_default=True,  # Mark as default for automatic mode
             enabled=True,
             name="Database Integration Test"
         )

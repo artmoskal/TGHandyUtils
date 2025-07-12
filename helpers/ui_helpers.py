@@ -36,7 +36,11 @@ def create_back_button(callback_data: str, text: str = "« Back") -> InlineKeybo
 
 def escape_markdown(text: str) -> str:
     """Escape special Markdown characters."""
-    special_chars = ['_', '*', '[', ']', '`', '\\']
+    if not text:
+        return text
+    
+    # Order matters - escape backslash first
+    special_chars = ['\\', '_', '*', '[', ']', '`', '(', ')', '~', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
     for char in special_chars:
         text = text.replace(char, f'\\{char}')
     return text

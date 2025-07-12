@@ -59,9 +59,8 @@ class TaskDBFactory(BaseFactory, TestDataMixin):
         lambda: (datetime.now() + timedelta(days=randint(1, 30))).isoformat()
     )
     
-    # Platform integration fields
-    platform_task_id = factory.LazyAttribute(lambda obj: f"task_{obj.id}")
-    platform_type = factory.Iterator(['todoist', 'trello'])
+    # Screenshot support
+    screenshot_file_id = None
 
 
 class SimpleTaskDBFactory(TaskDBFactory):

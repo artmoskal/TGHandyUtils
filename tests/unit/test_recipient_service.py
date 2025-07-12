@@ -9,6 +9,7 @@ import pytest
 # Import database and service components
 from database.connection import DatabaseManager
 from database.unified_recipient_repository import UnifiedRecipientRepository
+from database.user_preferences_repository import UserPreferencesRepository
 from services.recipient_service import RecipientService
 
 # Import Factory Boy factories
@@ -35,7 +36,8 @@ class TestRecipientService:
         """Setup real database components for each test."""
         self.db_manager = DatabaseManager("data/db/tasks.db")
         self.recipient_repo = UnifiedRecipientRepository(self.db_manager)
-        self.recipient_service = RecipientService(self.recipient_repo)
+        self.preferences_repo = UserPreferencesRepository(self.db_manager)
+        self.recipient_service = RecipientService(self.recipient_repo, self.preferences_repo)
         
         # Test user ID for isolation
         self.test_user_id = 888888888  # Unique ID to avoid conflicts
@@ -162,29 +164,71 @@ class TestRecipientService:
         assert shared_recipients[0].name == "Shared Account"
     
     def test_get_default_recipients_only_returns_personal_enabled(self):
-        """Test default recipients only returns personal and enabled recipients.
+        """Test default recipients only returns recipients marked as default.
         
         CRITICAL: This tests the core logic determining which recipients
         get automatic task creation vs manual confirmation.
         """
-        # Create comprehensive test scenario
-        scenarios = MultiPlatformRecipientFactory.create_mixed_scenarios(self.test_user_id)
+        # Create recipients with explicit is_default settings
+        default_recipient1 = PersonalRecipientFactory(
+            user_id=self.test_user_id,
+            is_personal=True,
+            is_default=True,
+            enabled=True,
+            name="Default Recipient 1"
+        )
+        default_recipient2 = PersonalRecipientFactory(
+            user_id=self.test_user_id,
+            is_personal=True,
+            is_default=True,
+            enabled=True,
+            name="Default Recipient 2"
+        )
+        non_default_personal = PersonalRecipientFactory(
+            user_id=self.test_user_id,
+            is_personal=True,
+            is_default=False,
+            enabled=True,
+            name="Non-default Personal"
+        )
+        shared_recipient = SharedRecipientFactory(
+            user_id=self.test_user_id,
+            is_personal=False,
+            is_default=True,  # Even if marked default, shared shouldn't be in defaults
+            enabled=True,
+            name="Shared Recipient"
+        )
+        disabled_default = PersonalRecipientFactory(
+            user_id=self.test_user_id,
+            is_personal=True,
+            is_default=True,
+            enabled=False,  # Disabled, so shouldn't be in defaults
+            name="Disabled Default"
+        )
         
         # Persist all recipients
-        for category, recipients in scenarios.items():
-            for recipient in recipients:
-                self.recipient_repo.add_recipient(self.test_user_id, recipient)
+        recipients = [default_recipient1, default_recipient2, non_default_personal, 
+                     shared_recipient, disabled_default]
+        for recipient in recipients:
+            self.recipient_repo.add_recipient(self.test_user_id, recipient)
         
         # Test default recipient logic
         default_recipients = self.recipient_service.get_default_recipients(self.test_user_id)
         all_recipients = self.recipient_service.get_all_recipients(self.test_user_id)
         
-        # Verify only personal AND enabled recipients in defaults
-        assert len(all_recipients) == 5  # 2 personal + 2 shared + 1 disabled
-        assert len(default_recipients) == 2  # Only personal enabled
+        # Verify only is_default=True AND enabled recipients in defaults
+        assert len(all_recipients) == 5
+        assert len(default_recipients) == 3  # Both personal defaults + shared default
+        
+        default_names = [r.name for r in default_recipients]
+        assert "Default Recipient 1" in default_names
+        assert "Default Recipient 2" in default_names
+        assert "Shared Recipient" in default_names  # Shared can be default too
+        assert "Non-default Personal" not in default_names
+        assert "Disabled Default" not in default_names
         
         for recipient in default_recipients:
-            assert recipient.is_personal is True
+            assert recipient.is_default is True
             assert recipient.enabled is True
     
     def test_get_default_recipients_empty_when_no_personal(self):
@@ -351,12 +395,12 @@ class TestRecipientService:
     
     def test_realistic_factory_data_integration(self):
         """Test that Factory Boy creates realistic data that integrates properly."""
-        # Create batch of varied recipients
+        # Create batch of varied recipients with explicit is_default settings
         recipients = [
-            TodoistRecipientFactory(user_id=self.test_user_id),
-            TrelloRecipientFactory(user_id=self.test_user_id),
-            SharedRecipientFactory(user_id=self.test_user_id),
-            DisabledRecipientFactory(user_id=self.test_user_id)
+            TodoistRecipientFactory(user_id=self.test_user_id, is_default=True),
+            TrelloRecipientFactory(user_id=self.test_user_id, is_default=False),
+            SharedRecipientFactory(user_id=self.test_user_id, is_default=True),
+            DisabledRecipientFactory(user_id=self.test_user_id, is_default=False)
         ]
         
         # Persist and verify integration
@@ -374,9 +418,12 @@ class TestRecipientService:
             assert isinstance(retrieved.enabled, bool)
             
             # Test service filtering works with factory data
-            if retrieved.is_personal and retrieved.enabled:
-                defaults = self.recipient_service.get_default_recipients(self.test_user_id)
+            # Only recipients with is_default=True AND enabled=True should be in defaults
+            defaults = self.recipient_service.get_default_recipients(self.test_user_id)
+            if retrieved.is_default and retrieved.enabled:
                 assert any(r.id == recipient_id for r in defaults)
+            else:
+                assert not any(r.id == recipient_id for r in defaults)
             
             if not retrieved.is_personal:
                 shared = self.recipient_service.get_shared_recipients(self.test_user_id)

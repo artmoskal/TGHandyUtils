@@ -32,9 +32,7 @@ async def process_thread_with_photos(message: Message, thread_content: List[Tupl
         # Concatenate thread content
         concatenated_content = "\n".join([f"{sender}: {text}" for sender, text in text_content])
         
-        logger.debug(f"Processing thread with photos - {len(thread_content)} messages")
-        logger.debug(f"Content: {concatenated_content}")
-        logger.debug(f"Has screenshot: {screenshot_data is not None}")
+        logger.info(f"Processing thread with {len(thread_content)} messages and screenshot: {screenshot_data is not None}")
         
         # Parse using recipient parsing service
         from core.initialization import services
@@ -47,7 +45,7 @@ async def process_thread_with_photos(message: Message, thread_content: List[Tupl
         )
         
         if parsed_task_dict:
-            logger.debug(f"LLM parsed successfully: {parsed_task_dict}")
+            logger.info(f"LLM parsed task title: {parsed_task_dict['title']}")
             
             # Always use the original concatenated content as description to avoid duplication
             # LLM can create the title, but description should be the raw conversation
@@ -57,7 +55,7 @@ async def process_thread_with_photos(message: Message, thread_content: List[Tupl
                 due_time=parsed_task_dict['due_time']
             )
         else:
-            logger.debug(f"LLM parsing failed, using fallback")
+            logger.info(f"LLM parsing failed, using fallback title")
             # Fallback: all tasks without time go to tomorrow 9AM UTC
             from datetime import datetime, timezone, timedelta
             tomorrow = datetime.now(timezone.utc) + timedelta(days=1)
@@ -85,17 +83,22 @@ async def process_thread_with_photos(message: Message, thread_content: List[Tupl
             message_id=message.message_id
         )
         
-        # Handle special case when no default recipients are set
-        if not success and feedback == "NO_DEFAULT_RECIPIENTS":
-            # Check if UI is enabled - this should only happen when UI is enabled
-            ui_enabled = recipient_service.is_recipient_ui_enabled(owner_id)
-            if not ui_enabled:
-                # This shouldn't happen with the new logic, but safety check
-                await message.reply(
-                    "⚙️ **Automatic Mode Active**\n\n"
-                    "Recipient selection is disabled. Please set at least one platform as default in Settings → Manage Accounts.",
-                    disable_web_page_preview=True
-                )
+        # Handle special cases when task creation fails
+        if not success:
+            if feedback == "NO_DEFAULT_RECIPIENTS":
+                # Check if UI is enabled - this should only happen when UI is enabled
+                ui_enabled = recipient_service.is_recipient_ui_enabled(owner_id)
+                if not ui_enabled:
+                    # This shouldn't happen with the new logic, but safety check
+                    from helpers.message_templates import format_ui_disabled_message
+                    await message.reply(
+                        format_ui_disabled_message(),
+                        disable_web_page_preview=True
+                    )
+                    return
+            elif feedback and feedback.startswith("🚫 **Cannot Create Task**"):
+                # UI disabled error - show the formatted message
+                await message.reply(feedback, disable_web_page_preview=True)
                 return
             
             # Create a temporary task in database first, then show recipient buttons for it

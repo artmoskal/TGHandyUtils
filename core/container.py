@@ -4,11 +4,14 @@ from dependency_injector import containers, providers
 from dependency_injector.wiring import Provide, inject
 
 from core.interfaces import (IConfig, ITaskRepository, IParsingService, 
-                            IOpenAIService, IVoiceProcessingService, IImageProcessingService)
+                            IOpenAIService, IVoiceProcessingService, IImageProcessingService,
+                            IUserPreferencesRepository, IAuthRequestRepository)
 from config import Config
 from database.connection import DatabaseManager
 from database.repositories import TaskRepository
 from database.unified_recipient_repository import UnifiedRecipientRepository
+from database.user_preferences_repository import UserPreferencesRepository
+from database.auth_request_repository import AuthRequestRepository
 from services.parsing_service import ParsingService
 from services.recipient_service import RecipientService
 from services.recipient_task_service import RecipientTaskService
@@ -44,6 +47,16 @@ class ApplicationContainer(containers.DeclarativeContainer):
         db_manager=database_manager
     )
     
+    user_preferences_repository = providers.Factory(
+        UserPreferencesRepository,
+        db_manager=database_manager
+    )
+    
+    auth_request_repository = providers.Factory(
+        AuthRequestRepository,
+        db_manager=database_manager
+    )
+    
     # Services
     parsing_service = providers.Factory(
         ParsingService,
@@ -52,7 +65,8 @@ class ApplicationContainer(containers.DeclarativeContainer):
     
     recipient_service = providers.Factory(
         RecipientService,
-        repository=unified_recipient_repository
+        repository=unified_recipient_repository,
+        preferences_repo=user_preferences_repository
     )
     
     recipient_task_service = providers.Factory(

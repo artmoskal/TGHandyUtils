@@ -247,11 +247,10 @@ async def handle_add_task_to_recipient(callback_query: CallbackQuery):
             task_repo = container.task_repository()
             task = task_repo.get_by_id(int(task_id))
             
-            # For now, we'll regenerate the actions assuming the current recipient was just added
-            # In a more sophisticated implementation, we'd track which recipients were used for this task
+            # Regenerate actions excluding the newly added recipient
             updated_actions = task_service._generate_post_task_actions(
                 user_id=user_id, 
-                used_recipients=[],  # We don't track used recipients in the current design
+                used_recipients=[],  # Determined from database in the method
                 task_id=int(task_id), 
                 exclude_recipient_ids=[int(recipient_id)]
             )
@@ -346,3 +345,33 @@ async def handle_task_actions_done(callback_query: CallbackQuery):
     # Remove the keyboard
     await callback_query.message.edit_reply_markup(reply_markup=None)
     await callback_query.answer("✅ Done!")
+
+
+@router.callback_query(lambda c: c.data.startswith("retry_add_task_to_"))
+async def handle_retry_add_task(callback_query: CallbackQuery):
+    """Handle retry for failed task addition."""
+    try:
+        # Parse the original callback data
+        original_callback = callback_query.data.replace("retry_", "")
+        
+        # Re-execute the original add task callback
+        await handle_add_task_to_recipient(callback_query)
+        
+    except Exception as e:
+        logger.error(f"Error retrying task addition: {e}")
+        await callback_query.answer("❌ Retry failed")
+
+
+@router.callback_query(lambda c: c.data.startswith("retry_remove_task_from_"))
+async def handle_retry_remove_task(callback_query: CallbackQuery):
+    """Handle retry for failed task removal."""
+    try:
+        # Parse the original callback data
+        original_callback = callback_query.data.replace("retry_", "")
+        
+        # Re-execute the original remove task callback
+        await handle_remove_task_from_recipient(callback_query)
+        
+    except Exception as e:
+        logger.error(f"Error retrying task removal: {e}")
+        await callback_query.answer("❌ Retry failed")

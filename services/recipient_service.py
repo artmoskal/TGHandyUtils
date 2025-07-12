@@ -6,6 +6,7 @@ from models.unified_recipient import (
     UnifiedUserPreferences, UnifiedUserPreferencesCreate, UnifiedUserPreferencesUpdate
 )
 from database.unified_recipient_repository import UnifiedRecipientRepository
+from core.interfaces import IUserPreferencesRepository
 from core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -14,8 +15,9 @@ logger = get_logger(__name__)
 class RecipientService:
     """Clean service for unified recipient management."""
     
-    def __init__(self, repository: UnifiedRecipientRepository):
+    def __init__(self, repository: UnifiedRecipientRepository, preferences_repo: IUserPreferencesRepository):
         self.repository = repository
+        self.preferences_repo = preferences_repo
     
     def get_all_recipients(self, user_id: int) -> List[UnifiedRecipient]:
         """Get all recipients for user."""
@@ -137,61 +139,61 @@ class RecipientService:
     # User preferences methods
     def get_user_preferences(self, user_id: int) -> Optional[UnifiedUserPreferences]:
         """Get user preferences."""
-        return self.repository.get_user_preferences(user_id)
+        return self.preferences_repo.get_preferences(user_id)
     
     def is_recipient_ui_enabled(self, user_id: int) -> bool:
         """Check if recipient selection UI should be shown."""
-        prefs = self.repository.get_user_preferences(user_id)
+        prefs = self.preferences_repo.get_preferences(user_id)
         return prefs.show_recipient_ui if prefs else False
     
     def enable_recipient_ui(self, user_id: int, enabled: bool) -> bool:
         """Enable/disable recipient selection UI."""
-        prefs = self.repository.get_user_preferences(user_id)
+        prefs = self.preferences_repo.get_preferences(user_id)
         
         if prefs:
             updates = UnifiedUserPreferencesUpdate(show_recipient_ui=enabled)
-            return self.repository.update_user_preferences(user_id, updates)
+            return self.preferences_repo.update_preferences(user_id, updates)
         else:
             new_prefs = UnifiedUserPreferencesCreate(show_recipient_ui=enabled)
-            return self.repository.create_user_preferences(user_id, new_prefs)
+            return self.preferences_repo.create_preferences(user_id, new_prefs)
     
     def are_telegram_notifications_enabled(self, user_id: int) -> bool:
         """Check if telegram notifications are enabled."""
-        prefs = self.repository.get_user_preferences(user_id)
+        prefs = self.preferences_repo.get_preferences(user_id)
         return prefs.telegram_notifications if prefs else True
     
     def set_telegram_notifications(self, user_id: int, enabled: bool) -> bool:
         """Enable/disable telegram notifications."""
-        prefs = self.repository.get_user_preferences(user_id)
+        prefs = self.preferences_repo.get_preferences(user_id)
         
         if prefs:
             updates = UnifiedUserPreferencesUpdate(telegram_notifications=enabled)
-            return self.repository.update_user_preferences(user_id, updates)
+            return self.preferences_repo.update_preferences(user_id, updates)
         else:
             new_prefs = UnifiedUserPreferencesCreate(telegram_notifications=enabled)
-            return self.repository.create_user_preferences(user_id, new_prefs)
+            return self.preferences_repo.create_preferences(user_id, new_prefs)
     
     def update_owner_name(self, user_id: int, owner_name: str) -> bool:
         """Update user's owner name."""
-        prefs = self.repository.get_user_preferences(user_id)
+        prefs = self.preferences_repo.get_preferences(user_id)
         
         if prefs:
             updates = UnifiedUserPreferencesUpdate(owner_name=owner_name)
-            return self.repository.update_user_preferences(user_id, updates)
+            return self.preferences_repo.update_preferences(user_id, updates)
         else:
             new_prefs = UnifiedUserPreferencesCreate(owner_name=owner_name)
-            return self.repository.create_user_preferences(user_id, new_prefs)
+            return self.preferences_repo.create_preferences(user_id, new_prefs)
     
     def update_location(self, user_id: int, location: str) -> bool:
         """Update user's location."""
-        prefs = self.repository.get_user_preferences(user_id)
+        prefs = self.preferences_repo.get_preferences(user_id)
         
         if prefs:
             updates = UnifiedUserPreferencesUpdate(location=location)
-            return self.repository.update_user_preferences(user_id, updates)
+            return self.preferences_repo.update_preferences(user_id, updates)
         else:
             new_prefs = UnifiedUserPreferencesCreate(location=location)
-            return self.repository.create_user_preferences(user_id, new_prefs)
+            return self.preferences_repo.create_preferences(user_id, new_prefs)
     
     def delete_all_user_data(self, user_id: int) -> bool:
         """Delete all user data for GDPR compliance."""

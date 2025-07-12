@@ -8,9 +8,6 @@ from helpers.ui_helpers import get_platform_emoji, get_status_emoji, get_account
 
 def get_recipient_management_keyboard(recipients: List[UnifiedRecipient]) -> InlineKeyboardMarkup:
     """Get account management keyboard."""
-    import logging
-    logger = logging.getLogger(__name__)
-    
     keyboard = []
     
     # Show existing accounts first
@@ -98,7 +95,7 @@ def get_recipient_edit_keyboard(recipient_id: int, platform_type: str = None, is
     default_text = "⚪ Remove from Default" if is_default else "⭐ Set as Default"
     keyboard = [
         [InlineKeyboardButton(text=default_text, callback_data=f"toggle_default_{str(recipient_id)}")],
-        [InlineKeyboardButton(text="✅❌ Enable/Disable Account", callback_data=f"toggle_recipient_{str(recipient_id)}")],
+        [InlineKeyboardButton(text="🔄 Enable/Disable Account", callback_data=f"toggle_recipient_{str(recipient_id)}")],
     ]
     
     # Add configure button for platforms that need configuration (like Trello)

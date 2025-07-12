@@ -4,6 +4,8 @@ from platforms.base import AbstractTaskPlatform, register_platform
 import urllib.parse
 from datetime import datetime
 from typing import Optional, Dict, Any
+from helpers.error_helpers import with_timeout_and_retry, PlatformError, PlatformAuthError, PlatformConfigError
+from helpers.constants import HttpConstants
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +83,7 @@ class TrelloPlatform(AbstractTaskPlatform):
             logger.error(f"Trello API error: {e}")
             return []
     
+    @with_timeout_and_retry(max_retries=HttpConstants.MAX_RETRIES)
     def create_task(self, task_data):
         """
         Create a task (card) in Trello.
@@ -98,7 +101,7 @@ class TrelloPlatform(AbstractTaskPlatform):
             str: Task ID if successful, None otherwise
             
         Raises:
-            ValueError: If required settings are missing
+            PlatformConfigError: If required settings are missing
         """
         url = f'{self.base_url}/cards'
         
@@ -107,9 +110,7 @@ class TrelloPlatform(AbstractTaskPlatform):
         list_id = task_data.get('list_id', self.default_list_id)
         
         if not list_id:
-            error_msg = "No list ID provided for Trello task creation. Please use /set_platform to configure your Trello account properly."
-            logger.error(error_msg)
-            raise ValueError(error_msg)
+            raise PlatformConfigError("trello", "No list ID configured. Please check your board permissions in Settings.")
         
         description = task_data.get('description', '')
         if 'source_attachment' in task_data and task_data['source_attachment']:
@@ -126,18 +127,15 @@ class TrelloPlatform(AbstractTaskPlatform):
         if 'due_time' in task_data and task_data['due_time']:
             params['due'] = task_data['due_time']
         
-        try:
-            response = requests.post(url, params=params)
-            if response.status_code in [200, 201]:
-                card = response.json()
-                logger.debug(f"Created Trello card with ID: {card['id']}")
-                return card['id']
-            else:
-                logger.error(f"Trello API error: {response.text}")
-                return None
-        except Exception as e:
-            logger.error(f"Trello API error: {e}")
-            return None
+        response = requests.post(url, params=params, timeout=HttpConstants.HTTP_TIMEOUT)
+        response.raise_for_status()
+        
+        if response.status_code in [200, 201]:
+            card = response.json()
+            logger.debug(f"Created Trello card with ID: {card['id']}")
+            return card['id']
+        else:
+            raise PlatformError("trello", f"Unexpected response: {response.text}")
     
     def update_task(self, task_id, task_data):
         """
@@ -167,6 +165,7 @@ class TrelloPlatform(AbstractTaskPlatform):
             logger.error(f"Trello API error: {e}")
             return False
     
+    @with_timeout_and_retry(max_retries=HttpConstants.MAX_RETRIES)
     def delete_task(self, task_id):
         """
         Delete a task (card) in Trello.
@@ -180,12 +179,9 @@ class TrelloPlatform(AbstractTaskPlatform):
         url = f'{self.base_url}/cards/{task_id}'
         params = self._get_auth_params()
         
-        try:
-            response = requests.delete(url, params=params)
-            return response.status_code == 200
-        except Exception as e:
-            logger.error(f"Trello API error: {e}")
-            return False
+        response = requests.delete(url, params=params, timeout=HttpConstants.HTTP_TIMEOUT)
+        response.raise_for_status()
+        return response.status_code in [200, 404]  # 404 is acceptable (already deleted)
     
     def get_task(self, task_id):
         """

@@ -6,6 +6,8 @@ from typing import Dict, Any, Optional
 from datetime import datetime, timezone, timedelta
 from dateutil import parser as date_parser
 from platforms.base import AbstractTaskPlatform, register_platform
+from helpers.error_helpers import with_timeout_and_retry, PlatformError, PlatformAuthError
+from helpers.constants import HttpConstants
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +29,7 @@ class TodoistPlatform(AbstractTaskPlatform):
             'Authorization': f'Bearer {api_token}'
         }
     
+    @with_timeout_and_retry(max_retries=HttpConstants.MAX_RETRIES)
     def create_task(self, task_data):
         """
         Create a task in Todoist.
@@ -53,19 +56,16 @@ class TodoistPlatform(AbstractTaskPlatform):
             'due_datetime': task_data['due_time']
         }
         
-        try:
-            response = requests.post(url, headers=self.headers, json=data)
-            if response.status_code in [200, 201, 204]:
-                task = response.json()
-                task_id = task['id']
-                logger.debug(f"Created Todoist task with ID: {task_id}")
-                return task_id
-            else:
-                logger.error(f"Todoist API error: {response.text}")
-                return None
-        except Exception as e:
-            logger.error(f"Todoist API error: {e}")
-            return None
+        response = requests.post(url, headers=self.headers, json=data, timeout=HttpConstants.HTTP_TIMEOUT)
+        response.raise_for_status()
+        
+        if response.status_code in [200, 201, 204]:
+            task = response.json()
+            task_id = task['id']
+            logger.debug(f"Created Todoist task with ID: {task_id}")
+            return task_id
+        else:
+            raise PlatformError("todoist", f"Unexpected response: {response.text}")
     
     def update_task(self, task_id, task_data):
         """
@@ -95,6 +95,7 @@ class TodoistPlatform(AbstractTaskPlatform):
             logger.error(f"Todoist API error: {e}")
             return False
     
+    @with_timeout_and_retry(max_retries=HttpConstants.MAX_RETRIES)
     def delete_task(self, task_id):
         """
         Delete a task in Todoist.
@@ -107,12 +108,9 @@ class TodoistPlatform(AbstractTaskPlatform):
         """
         url = f'{self.base_url}/tasks/{task_id}'
         
-        try:
-            response = requests.delete(url, headers=self.headers)
-            return response.status_code in [200, 201, 204]
-        except Exception as e:
-            logger.error(f"Todoist API error: {e}")
-            return False
+        response = requests.delete(url, headers=self.headers, timeout=HttpConstants.HTTP_TIMEOUT)
+        response.raise_for_status()
+        return response.status_code in [200, 201, 204, 404]  # 404 is acceptable (already deleted)
     
     def get_task(self, task_id):
         """
