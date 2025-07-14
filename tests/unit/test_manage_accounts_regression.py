@@ -62,7 +62,7 @@ class TestManageAccountsRegression:
         mock_repository = Mock(spec=UnifiedRecipientRepository)
         mock_repository.get_all_recipients.return_value = realistic_recipients
         
-        service = RecipientService(mock_repository)
+        service = RecipientService(mock_repository, Mock())
         
         # This line should work - if it fails, the bug exists
         # The error was: AttributeError: 'RecipientService' object has no attribute 'get_recipients_by_user'
@@ -96,7 +96,7 @@ class TestManageAccountsRegression:
         mock_repository = Mock(spec=UnifiedRecipientRepository)
         mock_repository.get_all_recipients.return_value = all_recipients
         
-        service = RecipientService(mock_repository)
+        service = RecipientService(mock_repository, Mock())
         
         # This is what the callback handler calls internally
         # Error was: show_recipients_callback:97 - Error showing recipients for user 447812312: 
@@ -138,7 +138,7 @@ class TestManageAccountsRegression:
         mock_repository = Mock(spec=UnifiedRecipientRepository)
         mock_repository.get_all_recipients.return_value = []
         
-        service = RecipientService(mock_repository)
+        service = RecipientService(mock_repository, Mock())
         
         # Should handle empty case gracefully
         recipients = service.get_recipients_by_user(empty_user.id)
@@ -176,7 +176,7 @@ class TestManageAccountsRegression:
         mock_repository = Mock(spec=UnifiedRecipientRepository)
         mock_repository.get_all_recipients.return_value = mixed_recipients
         
-        service = RecipientService(mock_repository)
+        service = RecipientService(mock_repository, Mock())
         
         # Test that method works with mixed enabled/disabled recipients
         recipients = service.get_recipients_by_user(self.test_user.id)
@@ -218,7 +218,7 @@ class TestManageAccountsRegression:
         mock_repository = Mock(spec=UnifiedRecipientRepository)
         mock_repository.get_all_recipients.return_value = original_user_recipients
         
-        service = RecipientService(mock_repository)
+        service = RecipientService(mock_repository, Mock())
         
         # This exact call was failing in production
         recipients = service.get_recipients_by_user(original_failing_user_id)
@@ -251,7 +251,7 @@ class TestManageAccountsRegression:
         mock_repository = Mock(spec=UnifiedRecipientRepository)
         mock_repository.get_all_recipients.return_value = comprehensive_recipients
         
-        service = RecipientService(mock_repository)
+        service = RecipientService(mock_repository, Mock())
         
         # Test that get_recipients_by_user returns same data as get_all_recipients
         recipients_by_user = service.get_recipients_by_user(self.test_user.id)
@@ -274,7 +274,7 @@ class TestManageAccountsRegression:
         # Simulate repository error
         mock_repository.get_all_recipients.side_effect = Exception("Database connection failed")
         
-        service = RecipientService(mock_repository)
+        service = RecipientService(mock_repository, Mock())
         
         # Test that service method handles repository errors appropriately
         with pytest.raises(Exception, match="Database connection failed"):

@@ -9,6 +9,7 @@ from states.recipient_states import RecipientState
 from keyboards.recipient import get_recipient_selection_keyboard
 from core.container import container
 from core.logging import get_logger
+from helpers.error_messages import ErrorMessages
 
 logger = get_logger(__name__)
 
@@ -24,9 +25,7 @@ async def create_task_with_recipients(message: Message, state: FSMContext):
         
         if not recipients:
             await message.reply(
-                "❌ NO RECIPIENTS CONFIGURED\n\n"
-                "You need to connect a recipient first!\n\n"
-                "🚀 Use /recipients to add your Todoist or Trello account.",
+                ErrorMessages.NO_RECIPIENTS_SETUP_HELP,
                 disable_web_page_preview=True
             )
             return

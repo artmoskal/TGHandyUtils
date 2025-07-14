@@ -51,6 +51,7 @@ class TestScreenshotAttachmentReal:
         
         service.get_default_recipients.return_value = [test_recipient]
         service.get_enabled_recipients.return_value = [test_recipient]
+        service.is_recipient_ui_enabled.return_value = True
         return service
     
     @pytest.fixture
@@ -58,6 +59,10 @@ class TestScreenshotAttachmentReal:
         """Mock task repository."""
         repo = Mock()
         repo.create.return_value = 999  # Mock task DB ID
+        # Mock task recipients retrieval
+        mock_task_recipient = Mock()
+        mock_task_recipient.recipient_id = 1
+        repo.get_task_recipients.return_value = [mock_task_recipient]
         return repo
     
     @pytest.fixture
@@ -79,7 +84,7 @@ class TestScreenshotAttachmentReal:
         
         return {
             'image_data': b'realistic_image_bytes_from_screenshot_capture_' + screenshot_task.title.encode()[:20],
-            'file_name': f'screenshot_{screenshot_task.id}.jpg',
+            'file_name': 'screenshot_test.jpg',  # Fixed filename without id
             'extracted_text': f'Bug found: {screenshot_task.description}',
             'summary': 'Code screenshot with TODO comment'
         }
@@ -94,7 +99,7 @@ class TestScreenshotAttachmentReal:
         mock_platform_factory.return_value = mock_platform
         
         # Call real service method
-        success, feedback, actions = real_task_service.create_task_for_recipients(
+        result = real_task_service.create_task_for_recipients(
             user_id=123,
             title="Test Task",
             description="Test description",
@@ -104,13 +109,13 @@ class TestScreenshotAttachmentReal:
         )
         
         # Verify task creation succeeded
-        assert success is True
+        assert result.success is True
         
         # CRITICAL: Verify attach_screenshot was actually called
         mock_platform.attach_screenshot.assert_called_once_with(
             "task_123",
-            b'fake_image_bytes_123',
-            'test_screenshot.jpg'
+            sample_screenshot_data['image_data'],
+            sample_screenshot_data['file_name']
         )
         
         # Verify task creation was also called
@@ -126,7 +131,7 @@ class TestScreenshotAttachmentReal:
         mock_platform_factory.return_value = mock_platform
         
         # Call real service method
-        success, feedback, actions = real_task_service.create_task_for_recipients(
+        result = real_task_service.create_task_for_recipients(
             user_id=123,
             title="Test Task",
             description="Test description", 
@@ -136,13 +141,13 @@ class TestScreenshotAttachmentReal:
         )
         
         # Task creation should still succeed even if attachment fails
-        assert success is True
+        assert result.success is True
         
         # Verify attach_screenshot was attempted
         mock_platform.attach_screenshot.assert_called_once_with(
             "task_456",
-            b'fake_image_bytes_123',
-            'test_screenshot.jpg'
+            sample_screenshot_data['image_data'],
+            sample_screenshot_data['file_name']
         )
     
     @patch('services.recipient_task_service.TaskPlatformFactory.get_platform')
@@ -154,7 +159,7 @@ class TestScreenshotAttachmentReal:
         mock_platform_factory.return_value = mock_platform
         
         # Call real service method WITHOUT screenshot data
-        success, feedback, actions = real_task_service.create_task_for_recipients(
+        result = real_task_service.create_task_for_recipients(
             user_id=123,
             title="Text Only Task",
             description="No screenshot here",
@@ -164,7 +169,7 @@ class TestScreenshotAttachmentReal:
         )
         
         # Task creation should succeed
-        assert success is True
+        assert result.success is True
         
         # CRITICAL: Verify attach_screenshot was NOT called
         mock_platform.attach_screenshot.assert_not_called()

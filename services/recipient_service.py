@@ -5,6 +5,7 @@ from models.unified_recipient import (
     UnifiedRecipient, UnifiedRecipientCreate, UnifiedRecipientUpdate,
     UnifiedUserPreferences, UnifiedUserPreferencesCreate, UnifiedUserPreferencesUpdate
 )
+from models.parameter_objects import RecipientCreationData, SharedRecipientCreationData
 from database.unified_recipient_repository import UnifiedRecipientRepository
 from core.interfaces import IUserPreferencesRepository
 from core.logging import get_logger
@@ -51,41 +52,37 @@ class RecipientService:
         """Get specific recipient by ID."""
         return self.repository.get_recipient_by_id(user_id, recipient_id)
     
-    def add_personal_recipient(self, user_id: int, name: str, platform_type: str, credentials: str, 
-                              platform_config: Optional[dict] = None) -> int:
-        """Add personal recipient (user's own account)."""
+    def add_personal_recipient(self, user_id: int, recipient_data: RecipientCreationData) -> int:
+        """Add personal recipient (user's own account) using parameter object."""
         # Check if user has any recipients - if not, make this one default
         existing_recipients = self.repository.get_all_recipients(user_id)
         is_first_recipient = len(existing_recipients) == 0
         
         recipient = UnifiedRecipientCreate(
-            name=name,
-            platform_type=platform_type,
-            credentials=credentials,
-            platform_config=platform_config,
+            name=recipient_data.name,
+            platform_type=recipient_data.platform_type,
+            credentials=recipient_data.credentials,
+            platform_config=recipient_data.platform_config,
             is_personal=True,
             is_default=is_first_recipient,  # First recipient becomes default
             enabled=True
         )
         
         recipient_id = self.repository.add_recipient(user_id, recipient)
-        logger.info(f"Added personal recipient {name} for user {user_id} (default: {is_first_recipient})")
+        logger.info(f"Added personal recipient {recipient_data.name} for user {user_id} (default: {is_first_recipient})")
         return recipient_id
     
-    def add_shared_recipient(self, user_id: int, name: str, platform_type: str, credentials: str,
-                            platform_config: Optional[dict] = None, shared_by_info: Optional[str] = None) -> int:
-        """Add shared recipient (account shared by others)."""
+    def add_shared_recipient(self, user_id: int, recipient_data: SharedRecipientCreationData) -> int:
+        """Add shared recipient (account shared by others) using parameter object."""
         # Store sharing attribution in platform_config
-        if shared_by_info:
-            if platform_config:
-                platform_config['shared_by'] = shared_by_info
-            else:
-                platform_config = {'shared_by': shared_by_info}
+        platform_config = recipient_data.platform_config.copy() if recipient_data.platform_config else {}
+        if recipient_data.shared_by_info:
+            platform_config['shared_by'] = recipient_data.shared_by_info
         
         recipient = UnifiedRecipientCreate(
-            name=name,
-            platform_type=platform_type,
-            credentials=credentials,
+            name=recipient_data.name,
+            platform_type=recipient_data.platform_type,
+            credentials=recipient_data.credentials,
             platform_config=platform_config,
             is_personal=False,
             is_default=False,  # Shared recipients are never default
@@ -93,7 +90,7 @@ class RecipientService:
         )
         
         recipient_id = self.repository.add_recipient(user_id, recipient)
-        logger.info(f"Added shared recipient {name} for user {user_id}")
+        logger.info(f"Added shared recipient {recipient_data.name} for user {user_id}")
         return recipient_id
     
     def toggle_default_status(self, user_id: int, recipient_id: int) -> bool:

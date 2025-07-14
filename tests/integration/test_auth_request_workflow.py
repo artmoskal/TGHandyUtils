@@ -14,17 +14,31 @@ def mock_sharing_service():
 def test_create_auth_request_success(mock_sharing_service):
     """Test successful auth request creation."""
     # Setup mocks
-    mock_sharing_service.user_service.get_user_id_from_username.return_value = 200
-    mock_sharing_service.repository.create_auth_request.return_value = 1
+    mock_sharing_service.user_service.find_user_by_username.return_value = 200
     
-    auth_request_id = mock_sharing_service.create_auth_request(
+    # Create mock auth request that will be returned
+    mock_auth_request = AuthRequest(
+        id=1,
+        requester_user_id=100,
+        target_user_id=200,
+        platform_type="google_calendar",
+        recipient_name="Test Calendar",
+        status='pending',
+        expires_at=datetime.now() + timedelta(hours=24)
+    )
+    mock_sharing_service.repository.create_auth_request.return_value = mock_auth_request
+    
+    result = mock_sharing_service.create_auth_request(
         requester_user_id=100,
         target_username="test_user",
         platform_type="google_calendar", 
         recipient_name="Test Calendar"
     )
     
-    assert auth_request_id == 1
+    assert result['status'] == 'created'
+    assert result['auth_request'] == mock_auth_request
+    assert result['target_user_id'] == 200
+    assert result['target_username'] == 'test_user'
     
     # Verify repository call
     mock_sharing_service.repository.create_auth_request.assert_called_once()
@@ -35,22 +49,22 @@ def test_create_auth_request_success(mock_sharing_service):
     assert call_args['recipient_name'] == "Test Calendar"
 
 def test_create_auth_request_user_not_found(mock_sharing_service):
-    """Test auth request creation with invalid username."""
-    mock_sharing_service.user_service.get_user_id_from_username.return_value = None
+    """Test auth request creation with user not found - returns bot link info."""
+    mock_sharing_service.user_service.find_user_by_username.return_value = None
     
-    with pytest.raises(ValueError) as exc_info:
-        mock_sharing_service.create_auth_request(
-            requester_user_id=100,
-            target_username="unknown_user",
-            platform_type="google_calendar",
-            recipient_name="Test Calendar"
-        )
+    result = mock_sharing_service.create_auth_request(
+        requester_user_id=100,
+        target_username="unknown_user",
+        platform_type="google_calendar",
+        recipient_name="Test Calendar"
+    )
     
-    assert "not found in bot users" in str(exc_info.value)
+    assert result['status'] == 'user_not_found'
+    assert result['target_username'] == 'unknown_user'
 
 def test_create_auth_request_self_request(mock_sharing_service):
     """Test auth request creation with same user."""
-    mock_sharing_service.user_service.get_user_id_from_username.return_value = 100
+    mock_sharing_service.user_service.find_user_by_username.return_value = 100
     
     with pytest.raises(ValueError) as exc_info:
         mock_sharing_service.create_auth_request(
@@ -60,7 +74,7 @@ def test_create_auth_request_self_request(mock_sharing_service):
             recipient_name="Test Calendar"
         )
     
-    assert "Cannot request authentication from yourself" in str(exc_info.value)
+    assert "can't request authentication from yourself" in str(exc_info.value)
 
 def test_complete_auth_request_success(mock_sharing_service):
     """Test successful auth request completion."""
@@ -76,7 +90,7 @@ def test_complete_auth_request_success(mock_sharing_service):
     )
     
     mock_sharing_service.repository.get_auth_request_by_id.return_value = auth_request
-    mock_sharing_service.repository.add_personal_recipient.return_value = 5
+    mock_sharing_service.repository.add_recipient.return_value = 5
     mock_sharing_service.repository.update_auth_request_status.return_value = True
     
     recipient_id = mock_sharing_service.complete_auth_request(
@@ -89,13 +103,19 @@ def test_complete_auth_request_success(mock_sharing_service):
     assert recipient_id == 5
     
     # Verify recipient created for requester (not target)
-    mock_sharing_service.repository.add_personal_recipient.assert_called_with(
-        user_id=100,  # Requester gets the account
-        name="Test Calendar",
-        platform_type="google_calendar",
-        credentials='{"token": "test_token"}',
-        platform_config='{"calendar_id": "primary"}'
-    )
+    # Check that add_recipient was called with correct user_id and UnifiedRecipientCreate object
+    assert mock_sharing_service.repository.add_recipient.called
+    call_args = mock_sharing_service.repository.add_recipient.call_args
+    assert call_args[0][0] == 100  # Requester gets the account
+    
+    # Check the UnifiedRecipientCreate object properties
+    recipient_create = call_args[0][1]
+    assert recipient_create.name == "Test Calendar"
+    assert recipient_create.platform_type == "google_calendar"
+    assert recipient_create.credentials == '{"token": "test_token"}'
+    assert recipient_create.platform_config == '{"calendar_id": "primary"}'
+    assert recipient_create.is_personal == True
+    assert recipient_create.enabled == True
     
     # Verify status update
     mock_sharing_service.repository.update_auth_request_status.assert_called_with(

@@ -12,6 +12,7 @@ from unittest.mock import patch
 # Import database and service components
 from database.connection import DatabaseManager
 from database.unified_recipient_repository import UnifiedRecipientRepository
+from database.user_preferences_repository import UserPreferencesRepository
 from database.repositories import TaskRepository
 from services.recipient_service import RecipientService
 from services.recipient_task_service import RecipientTaskService
@@ -43,8 +44,9 @@ class TestScreenshotAttachmentFlow:
         """Setup real database components for each test."""
         self.db_manager = DatabaseManager("data/db/tasks.db")
         self.recipient_repo = UnifiedRecipientRepository(self.db_manager)
+        self.preferences_repo = UserPreferencesRepository(self.db_manager)
         self.task_repo = TaskRepository(self.db_manager)
-        self.recipient_service = RecipientService(self.recipient_repo)
+        self.recipient_service = RecipientService(self.recipient_repo, self.preferences_repo)
         self.task_service = RecipientTaskService(self.task_repo, self.recipient_service)
         
         # Test user ID for isolation
@@ -67,12 +69,14 @@ class TestScreenshotAttachmentFlow:
         todoist_recipient = TodoistRecipientFactory(
             user_id=self.test_user_id,
             is_personal=True,
+            is_default=True,
             enabled=True,
             name="Screenshot Test Todoist"
         )
         trello_recipient = TrelloRecipientFactory(
             user_id=self.test_user_id,
             is_personal=True,
+            is_default=True,
             enabled=True,
             name="Screenshot Test Trello"
         )
@@ -120,6 +124,7 @@ class TestScreenshotAttachmentFlow:
         todoist_recipient = TodoistRecipientFactory(
             user_id=self.test_user_id,
             is_personal=True,
+            is_default=True,
             enabled=True,
             name="Todoist Screenshot Test",
             platform_config={
@@ -170,6 +175,7 @@ class TestScreenshotAttachmentFlow:
         trello_recipient = TrelloRecipientFactory(
             user_id=self.test_user_id,
             is_personal=True,
+            is_default=True,
             enabled=True,
             name="Trello Screenshot Test",
             platform_config={
@@ -219,12 +225,14 @@ class TestScreenshotAttachmentFlow:
         todoist_recipient = TodoistRecipientFactory(
             user_id=self.test_user_id,
             is_personal=True,
+            is_default=True,
             enabled=True,
             name="Multi-Platform Todoist"
         )
         trello_recipient = TrelloRecipientFactory(
             user_id=self.test_user_id,
             is_personal=True,
+            is_default=True,
             enabled=True,
             name="Multi-Platform Trello"
         )
@@ -272,6 +280,7 @@ class TestScreenshotAttachmentFlow:
         recipient = TodoistRecipientFactory(
             user_id=self.test_user_id,
             is_personal=True,
+            is_default=True,
             enabled=True,
             name="Cache Test Recipient"
         )
@@ -315,6 +324,7 @@ class TestScreenshotAttachmentFlow:
         personal_recipient = PersonalRecipientFactory(
             user_id=self.test_user_id,
             is_personal=True,
+            is_default=True,
             enabled=True,
             name="Personal Screenshot Workflow"
         )
@@ -360,7 +370,7 @@ class TestScreenshotAttachmentFlow:
             # Note: This tests service layer without actual platform API calls
             with patch('platforms.todoist.TodoistPlatform.create_task', return_value='todoist-task-123'), \
                  patch('platforms.trello.TrelloPlatform.create_task', return_value='trello-task-456'):
-                success, feedback, actions = self.task_service.create_task_for_recipients(
+                result = self.task_service.create_task_for_recipients(
                     user_id=self.test_user_id,
                     title=screenshot_task.title,
                     description=screenshot_task.description,
@@ -368,9 +378,9 @@ class TestScreenshotAttachmentFlow:
                 )
             
             # Verify service layer handles the workflow correctly
-            assert isinstance(success, bool)
-            assert isinstance(feedback, str)
-            assert isinstance(actions, dict)
+            assert isinstance(result.success, bool)
+            assert isinstance(result.message, str)
+            assert isinstance(result.data, dict)
             
             # Step 3: Verify screenshot data integrity throughout workflow
             assert screenshot_data['image_data'] == b'workflow_integration_screenshot_bytes'
@@ -391,6 +401,7 @@ class TestScreenshotAttachmentFlow:
         recipient = TrelloRecipientFactory(
             user_id=self.test_user_id,
             is_personal=True,
+            is_default=True,
             enabled=True,
             name="Error Handling Test"
         )
@@ -454,12 +465,14 @@ class TestScreenshotAttachmentFlow:
             TodoistRecipientFactory(
                 user_id=self.test_user_id,
                 is_personal=True,
+                is_default=True,
                 enabled=True,
                 name="DB Integration Todoist"
             ),
             TrelloRecipientFactory(
                 user_id=self.test_user_id,
-                is_personal=True, 
+                is_personal=True,
+                is_default=True,
                 enabled=True,
                 name="DB Integration Trello"
             )
@@ -551,6 +564,7 @@ class TestScreenshotAttachmentFlow:
         recipient = TodoistRecipientFactory(
             user_id=self.test_user_id,
             is_personal=True,
+            is_default=True,
             enabled=True,
             name="Factory Realism Test"
         )

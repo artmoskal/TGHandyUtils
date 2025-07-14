@@ -38,6 +38,9 @@ class Config(IConfig):
     LOG_FORMAT: str = os.getenv('LOG_FORMAT', '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     LOG_FILE: str = os.getenv('LOG_FILE', 'data/logs/bot.log')
     
+    # Testing Configuration
+    ALLOW_SELF_AUTH_REQUESTS: bool = os.getenv('ALLOW_SELF_AUTH_REQUESTS', 'false').lower() == 'true'
+    
     @classmethod
     def validate(cls) -> None:
         """Validate configuration and raise errors for missing required values."""

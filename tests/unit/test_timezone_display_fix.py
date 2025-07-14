@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from services.recipient_task_service import RecipientTaskService
 from services.recipient_service import RecipientService
+from models.parameter_objects import TaskFeedbackData
 
 
 class TestTimezoneDisplayFix:
@@ -46,7 +47,7 @@ class TestTimezoneDisplayFix:
         
         # Test data
         recipients = []
-        task_urls = ["https://todoist.com/showTask?id=123"]
+        task_urls = {"Test Recipient": "https://todoist.com/showTask?id=123"}
         failed_recipients = []
         title = "Test Task"
         description = "Test description"
@@ -55,15 +56,22 @@ class TestTimezoneDisplayFix:
 
         # Generate feedback - this will try to convert timezone but may fail due to missing OpenAI key
         # The important thing is that it tries to use the user's location
-        feedback = service._generate_success_feedback(
-            recipients, task_urls, failed_recipients, title, description, due_time, user_id
+        feedback_data = TaskFeedbackData(
+            recipients=recipients,
+            task_urls=task_urls,
+            failed_recipients=failed_recipients,
+            title=title,
+            description=description,
+            due_time=due_time,
+            user_id=user_id
         )
+        feedback = service._generate_success_feedback(feedback_data)
         
         # Should contain task details
-        assert "✅ *Task Created Successfully!*" in feedback
-        assert "📝 *Title:* Test Task" in feedback
-        assert "📄 *Description:* Test description" in feedback
-        assert "⏰ *Due:*" in feedback
+        assert "✅ **Task Created Successfully!**" in feedback
+        assert "📋 **\"Test Task\"**" in feedback
+        assert "📄 **Description:** Test description" in feedback
+        assert "📅 **Due:**" in feedback
         
         # Verify that the service attempted to get user preferences
         mock_recipient_service_with_location.get_user_preferences.assert_called_once_with(user_id)
@@ -74,7 +82,7 @@ class TestTimezoneDisplayFix:
         
         # Test data
         recipients = []
-        task_urls = ["https://todoist.com/showTask?id=123"]
+        task_urls = {"Test Recipient": "https://todoist.com/showTask?id=123"}
         failed_recipients = []
         title = "Test Task"
         description = "Test description"
@@ -82,9 +90,16 @@ class TestTimezoneDisplayFix:
         user_id = 12345
 
         # Generate feedback
-        feedback = service._generate_success_feedback(
-            recipients, task_urls, failed_recipients, title, description, due_time, user_id
+        feedback_data = TaskFeedbackData(
+            recipients=recipients,
+            task_urls=task_urls,
+            failed_recipients=failed_recipients,
+            title=title,
+            description=description,
+            due_time=due_time,
+            user_id=user_id
         )
+        feedback = service._generate_success_feedback(feedback_data)
         
         # Should fall back to UTC display
         assert "UTC" in feedback
@@ -100,8 +115,8 @@ class TestTimezoneDisplayFix:
         # Mock recipients and URLs
         mock_recipient = Mock()
         mock_recipient.name = "Todoist Personal"
-        recipients = [mock_recipient]
-        task_urls = ["https://todoist.com/showTask?id=123"]
+        recipients = ["Todoist Personal"]
+        task_urls = {"Todoist Personal": "https://todoist.com/showTask?id=123"}
         failed_recipients = []
         title = "Important Meeting"
         description = "Weekly team meeting with John"
@@ -109,18 +124,24 @@ class TestTimezoneDisplayFix:
         user_id = 12345
 
         # Generate feedback
-        feedback = service._generate_success_feedback(
-            recipients, task_urls, failed_recipients, title, description, due_time, user_id
+        feedback_data = TaskFeedbackData(
+            recipients=recipients,
+            task_urls=task_urls,
+            failed_recipients=failed_recipients,
+            title=title,
+            description=description,
+            due_time=due_time,
+            user_id=user_id
         )
+        feedback = service._generate_success_feedback(feedback_data)
         
         # Verify all expected elements are present
-        assert "✅ *Task Created Successfully!*" in feedback
-        assert "📝 *Title:* Important Meeting" in feedback
-        assert "📄 *Description:* Weekly team meeting with John" in feedback
-        assert "⏰ *Due:*" in feedback
-        assert "🔗 *Created on:*" in feedback
+        assert "✅ **Task Created Successfully!**" in feedback
+        assert "📋 **\"Important Meeting\"**" in feedback
+        assert "📄 **Description:** Weekly team meeting with John" in feedback
+        assert "📅 **Due:**" in feedback
+        assert "🎯 **Added to:**" in feedback
         assert "Todoist Personal" in feedback
-        assert "https://todoist.com/showTask?id=123" in feedback
 
     def test_success_feedback_method_signature_includes_user_id(self, mock_task_repo, mock_recipient_service_no_location):
         """Test that the method signature has been updated to include user_id parameter."""
@@ -129,15 +150,16 @@ class TestTimezoneDisplayFix:
         # This test verifies that we can call the method with user_id
         # If the signature was not updated, this would fail
         try:
-            feedback = service._generate_success_feedback(
+            feedback_data = TaskFeedbackData(
                 recipients=[], 
-                task_urls=[], 
+                task_urls={}, 
                 failed_recipients=[], 
                 title="Test", 
                 description="Test", 
                 due_time="2025-07-05T19:00:00Z", 
                 user_id=12345
             )
+            feedback = service._generate_success_feedback(feedback_data)
             # If we get here, the signature is correct
             assert True
         except TypeError as e:

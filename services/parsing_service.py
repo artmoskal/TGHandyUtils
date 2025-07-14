@@ -102,8 +102,9 @@ class ParsingService(IParsingService):
         """Calculate precise time for common patterns - handles edge cases LLM struggles with."""
         import re
         
-        # Pattern 1: "today X" times - flexible matching
-        today_pattern = r'\btoday\s+(?:at\s+)?(?:(\d{1,2})(?::(\d{2}))?\s*(am|pm)?|noon|midnight)\b'
+        # Pattern 1: "today X" times - strict matching for proper time formats
+        # Either: HH:MM (with exactly 2 digits for minutes), or HH am/pm, or special words
+        today_pattern = r'\btoday\s+(?:at\s+)?(?:(\d{1,2}):(\d{2})\s*(am|pm)?|(\d{1,2})\s*(am|pm)|noon|midnight)\b'
         match = re.search(today_pattern, time_phrase.lower())
         if match:
             if "noon" in time_phrase.lower():
@@ -111,9 +112,15 @@ class ParsingService(IParsingService):
             elif "midnight" in time_phrase.lower():
                 hour, minute = 0, 0
             else:
-                hour_str = match.group(1)
-                minute_str = match.group(2) or "00"
-                am_pm = match.group(3)
+                # Check which pattern matched
+                if match.group(1):  # HH:MM format
+                    hour_str = match.group(1)
+                    minute_str = match.group(2)
+                    am_pm = match.group(3)
+                else:  # HH am/pm format
+                    hour_str = match.group(4)
+                    minute_str = "00"
+                    am_pm = match.group(5)
                 
                 if not hour_str:
                     return None
@@ -150,9 +157,15 @@ class ParsingService(IParsingService):
             elif "midnight" in time_phrase.lower():
                 hour, minute = 0, 0
             else:
-                hour_str = match.group(1)
-                minute_str = match.group(2) or "00"
-                am_pm = match.group(3)
+                # Check which pattern matched
+                if match.group(1):  # HH:MM format
+                    hour_str = match.group(1)
+                    minute_str = match.group(2)
+                    am_pm = match.group(3)
+                else:  # HH am/pm format
+                    hour_str = match.group(4)
+                    minute_str = "00"
+                    am_pm = match.group(5)
                 
                 if not hour_str:
                     return None
@@ -177,7 +190,8 @@ class ParsingService(IParsingService):
             return target_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
         
         # Pattern 3: Relative times "in X minutes/hours/days/weeks" and "Xm/Xh from now"
-        relative_pattern = r'(?:\bin\s+(\d+)\s+(minute|minutes|hour|hours|day|days|week|weeks)\b|\bin\s+a\s+(day|week)\b|(\d+)\s*(m|min|h|hour|hours|d|day|days|w|week|weeks)\s*(?:from\s+now)?)'
+        # Note: Single-letter units (h, m, d, w) require "from now" to avoid matching time formats like "19h"
+        relative_pattern = r'(?:\bin\s+(\d+)\s+(minute|minutes|hour|hours|day|days|week|weeks)\b|\bin\s+a\s+(day|week)\b|(\d+)\s*(min|hour|hours|day|days|week|weeks)\s+from\s+now|(\d+)\s*([hmdw])\s+from\s+now)'
         match = re.search(relative_pattern, time_phrase.lower())
         if match:
             if match.group(1):  # "in X minutes/hours/days/weeks" format
@@ -186,9 +200,12 @@ class ParsingService(IParsingService):
             elif match.group(3):  # "in a day/week" format
                 amount = 1
                 unit = match.group(3)
-            else:  # "Xm/Xh/Xd/Xw from now" format
+            elif match.group(4):  # "X min/hour/hours/day/days/week/weeks from now" format
                 amount = int(match.group(4))
                 unit = match.group(5)
+            else:  # "Xh/Xm/Xd/Xw from now" format (single letter units)
+                amount = int(match.group(6))
+                unit = match.group(7)
             
             if 'h' in unit or 'hour' in unit:
                 delta = timedelta(hours=amount)
@@ -207,13 +224,19 @@ class ParsingService(IParsingService):
             target_utc = current_utc + timedelta(hours=1)
             return target_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
         
-        # Pattern 5: "at HH:MM" or "at H PM/AM" patterns
-        at_time_pattern = r'\bat\s+(?:(\d{1,2})(?::(\d{2}))?\s*(am|pm)?)\b'
+        # Pattern 5: "at HH:MM" or "at H am/pm" patterns - require either full time or am/pm
+        at_time_pattern = r'\bat\s+(?:(\d{1,2}):(\d{2})(?:\s*(am|pm))?|(\d{1,2})\s+(am|pm))\b'
         match = re.search(at_time_pattern, time_phrase.lower())
         if match:
-            hour_str = match.group(1)
-            minute_str = match.group(2) or "00"
-            am_pm = match.group(3)
+            # Check which pattern matched
+            if match.group(1):  # HH:MM format
+                hour_str = match.group(1)
+                minute_str = match.group(2)
+                am_pm = match.group(3)
+            else:  # H am/pm format
+                hour_str = match.group(4)
+                minute_str = "00"
+                am_pm = match.group(5)
             
             if hour_str:
                 hour = int(hour_str)
@@ -389,6 +412,14 @@ class ParsingService(IParsingService):
             logger.debug(f"Parsed task: {parsed_task}")
             
             result = parsed_task.model_dump()
+            
+            # Ensure the task is at least 1 minute in the future
+            parsed_due_time = datetime.fromisoformat(result['due_time'].replace('Z', '+00:00'))
+            min_future_time = current_utc + timedelta(minutes=1)
+            if parsed_due_time <= min_future_time:
+                # If the time is in the past or too close to now, push it to tomorrow at the same time
+                result['due_time'] = (parsed_due_time + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                logger.info(f"Pushed task to tomorrow as it was too close to current time")
             
             # LLM handles all time parsing - no static overrides
             logger.info(f"Successfully parsed task: {result['title']} with LLM-parsed time: {result['due_time']}")

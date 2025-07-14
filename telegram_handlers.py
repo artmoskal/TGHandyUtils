@@ -19,6 +19,7 @@ try:
     from handlers_modular.commands.task_commands import create_task_with_recipients
     from handlers_modular.commands.settings_commands import show_settings, initiate_drop_user_data
     from handlers_modular.commands.menu_commands import show_main_menu, cancel_command
+    from handlers_modular.commands.sharing_commands import router as sharing_router  # Sharing commands
     
     # Message handlers
     from handlers_modular.message.threading_handler import process_user_input

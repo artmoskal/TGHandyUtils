@@ -7,6 +7,7 @@ from aiogram import Bot
 from bot import router
 from core.logging import get_logger
 from .threading_handler import process_user_input, voice_processing, _message_threads_lock, message_threads
+from helpers.error_messages import ErrorMessages
 
 logger = get_logger(__name__)
 
@@ -125,11 +126,7 @@ async def process_user_input_with_photo(text: str, user_id: int, message_obj: Me
         recipients = recipient_service.get_enabled_recipients(user_id)
         
         if not recipients:
-            await message_obj.reply(
-                "❌ NO RECIPIENTS CONFIGURED\n\n"
-                "You need to connect a recipient first!\n\n"
-                "🚀 Use /recipients to add your Todoist or Trello account."
-            )
+            await message_obj.reply(ErrorMessages.NO_RECIPIENTS_SETUP_HELP)
             return False
 
         # Get user full name for threading (handle forwarded messages)

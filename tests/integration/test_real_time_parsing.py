@@ -104,6 +104,11 @@ class TestRealTimeParsingIntegration:
         
         print(f"Tomorrow 9am result: {result['due_time']}")
         
-        # Should be June 30 at 9am
-        assert result['due_time'].startswith('2025-06-30')
+        # Should be tomorrow at 9am
+        from datetime import datetime, timezone, timedelta
+        now = datetime.now(timezone.utc)
+        tomorrow = now + timedelta(days=1)
+        expected_date = tomorrow.strftime('%Y-%m-%d')
+        
+        assert result['due_time'].startswith(expected_date)
         assert '09:00' in result['due_time']

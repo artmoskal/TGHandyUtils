@@ -90,7 +90,7 @@ class RecipientTaskService:
             if not all_recipients:
                 # No recipients at all - show error
                 logger.warning(f"No recipients available for user {user_id}")
-                return ServiceResult.failure("❌ No recipients configured. Please add accounts first.")
+                return ServiceResult.failure(ErrorMessages.NO_RECIPIENTS_CONFIGURED)
             elif specific_recipients is None:
                 # Handle based on UI toggle setting
                 if not ui_enabled:
@@ -155,10 +155,10 @@ class RecipientTaskService:
                 due_time=due_time_str,
                 screenshot_data=screenshot_data
             )
-            success, url_or_error = self._create_platform_task(recipient, platform_task_data)
-            if success and url_or_error:
+            result = self._create_platform_task(recipient, platform_task_data)
+            if result.success and result.data:
                 # Extract platform task ID from URL for storage
-                platform_task_id = self._extract_platform_task_id(url_or_error, recipient.platform_type)
+                platform_task_id = self._extract_platform_task_id(result.data, recipient.platform_type)
                 
                 # Store the task-recipient relationship
                 if platform_task_id:
@@ -170,24 +170,21 @@ class RecipientTaskService:
                     )
                     
                     if track_success:
-                        task_urls.append(url_or_error)
+                        task_urls.append(result.data)
                         successful_recipients.append(recipient)
                         logger.info(f"Created and tracked task on {recipient.platform_type} for recipient {recipient.id}")
                     else:
                         logger.warning(f"Created platform task but failed to track for recipient {recipient.id}")
                         # Still count as success for user feedback
-                        task_urls.append(url_or_error)
+                        task_urls.append(result.data)
                         successful_recipients.append(recipient)
                 else:
-                    logger.warning(f"Could not extract platform task ID from URL: {url_or_error}")
-                    task_urls.append(url_or_error)
+                    logger.warning(f"Could not extract platform task ID from URL: {result.data}")
+                    task_urls.append(result.data)
                     successful_recipients.append(recipient)
             else:
                 # Handle platform errors with better user feedback
-                if isinstance(url_or_error, str) and url_or_error:
-                    error_msg = url_or_error
-                else:
-                    error_msg = f"Unknown error on {recipient.platform_type}"
+                error_msg = result.message
                 
                 failed_recipients.append(recipient.name)
                 failed_platform_details.append((recipient.platform_type, error_msg))
@@ -224,12 +221,12 @@ class RecipientTaskService:
                 platform_errors = []
                 for platform_type, error_msg in failed_platform_details:
                     platform_emoji = get_platform_emoji(platform_type)
-                    platform_errors.append(f"• {platform_emoji} {platform_type.title()}: {error_msg}")
+                    platform_errors.append(f"• {platform_emoji} {escape_markdown(platform_type.title())}: {error_msg}")
                 
-                feedback = "❌ **Task Creation Failed**\n\n" + "\n".join(platform_errors)
+                feedback = ErrorMessages.TASK_CREATION_FAILED_HEADER + "\n\n" + "\n".join(platform_errors)
                 feedback += "\n\n💾 **Task saved locally** - You can retry from Settings → Manage Accounts."
             else:
-                feedback = f"❌ Failed to create task on all platforms: {', '.join(failed_recipients)}"
+                feedback = ErrorMessages.format_task_creation_all_failed(', '.join(failed_recipients))
             
             return ServiceResult.failure(feedback)
     
@@ -242,7 +239,7 @@ class RecipientTaskService:
             return ServiceResult.failure(ErrorMessages.RECIPIENT_NOT_FOUND)
         
         if not recipient.enabled:
-            return ServiceResult.failure(f"❌ {recipient.name} is disabled")
+            return ServiceResult.failure(ErrorMessages.format_recipient_disabled(recipient.name))
         
         # Get task details from database
         task = self.task_repo.get_by_id(task_id)
@@ -280,10 +277,10 @@ class RecipientTaskService:
             due_time=due_time_str,
             screenshot_data=screenshot_data
         )
-        success, url = self._create_platform_task(recipient, platform_task_data)
-        if success and url:
+        result = self._create_platform_task(recipient, platform_task_data)
+        if result.success and result.data:
             # Extract platform task ID and track the relationship
-            platform_task_id = self._extract_platform_task_id(url, recipient.platform_type)
+            platform_task_id = self._extract_platform_task_id(result.data, recipient.platform_type)
             
             if platform_task_id:
                 track_success = self.task_repo.add_recipient(
@@ -338,14 +335,14 @@ class RecipientTaskService:
             logger.error(f"Error extracting platform task ID from URL {url}: {e}")
             return None
     
-    def _create_platform_task(self, recipient: UnifiedRecipient, task_data: PlatformTaskParams) -> Tuple[bool, Optional[str]]:
+    def _create_platform_task(self, recipient: UnifiedRecipient, task_data: PlatformTaskParams) -> ServiceResult:
         """Create task on specific platform."""
         try:
             # Initialize platform
             platform = TaskPlatformFactory.get_platform(recipient.platform_type, recipient.credentials)
             if not platform:
                 logger.error(f"Failed to initialize {recipient.platform_type} platform")
-                return False, None
+                return ServiceResult.failure(f"Failed to initialize {recipient.platform_type} platform")
             
             # Use the provided task data directly
             platform_task_dict = task_data.to_dict()
@@ -358,7 +355,7 @@ class RecipientTaskService:
                     
                     if not platform_task_dict.get('board_id') or not platform_task_dict.get('list_id'):
                         logger.error(f"Incomplete Trello configuration for {recipient.name}")
-                        return False, None
+                        return ServiceResult.failure(f"Incomplete Trello configuration for {recipient.name}")
             
             # Create task with improved error handling
             logger.info(f"Creating task on {recipient.name} ({recipient.platform_type})")
@@ -410,19 +407,22 @@ class RecipientTaskService:
                         url = f"https://trello.com/c/{task_id}"
                     else:
                         url = str(task_id)
-                    return True, url
+                    return ServiceResult.success_with_data(
+                        f"Task created successfully on {recipient.name}",
+                        url
+                    )
                 else:
                     logger.error(f"Platform returned no task ID for {recipient.name}")
-                    return False, None
+                    return ServiceResult.failure(f"Platform returned no task ID for {recipient.name}")
                     
             except PlatformError as e:
                 # Handle platform-specific errors with user-friendly messages
                 logger.error(f"Platform error creating task on {recipient.platform_type}: {e}")
-                return False, str(e)
+                return ServiceResult.failure(str(e))
                 
         except Exception as e:
             logger.error(f"Unexpected error creating task on {recipient.platform_type}: {e}")
-            return False, None
+            return ServiceResult.failure(f"Unexpected error creating task on {recipient.platform_type}")
     
     def _generate_success_feedback(self, feedback_data: TaskFeedbackData) -> str:
         """Generate success feedback message with full task details."""
@@ -596,7 +596,7 @@ class RecipientTaskService:
         # Get the task-recipient relationship
         task_recipient = self.task_repo.get_task_recipient(task_id, recipient_id)
         if not task_recipient:
-            return ServiceResult.failure(f"❌ Task not found on this platform")
+            return ServiceResult.failure(ErrorMessages.TASK_NOT_FOUND_ON_PLATFORM)
         
         # Get recipient details for platform deletion
         recipient = self.recipient_service.get_recipient_by_id(user_id, recipient_id)
@@ -604,7 +604,7 @@ class RecipientTaskService:
             return ServiceResult.failure(ErrorMessages.RECIPIENT_NOT_FOUND)
         
         if not recipient.enabled:
-            return ServiceResult.failure(f"❌ {recipient.name} is disabled")
+            return ServiceResult.failure(ErrorMessages.format_recipient_disabled(recipient.name))
         
         try:
             # Initialize platform for deletion
@@ -612,7 +612,7 @@ class RecipientTaskService:
             platform = TaskPlatformFactory.get_platform(recipient.platform_type, recipient.credentials)
             if not platform:
                 logger.error(f"Failed to initialize {recipient.platform_type} platform for deletion")
-                return ServiceResult.failure(f"❌ Could not connect to {recipient.name}")
+                return ServiceResult.failure(ErrorMessages.format_platform_connection_failed(recipient.name))
             
             # Delete from platform
             logger.info(f"Deleting platform task {task_recipient.platform_task_id} from {recipient.platform_type}")
@@ -634,4 +634,4 @@ class RecipientTaskService:
                 
         except Exception as e:
             logger.error(f"Error removing task from {recipient.name}: {e}")
-            return ServiceResult.failure(f"❌ Error removing from {recipient.name}: {str(e)}")
+            return ServiceResult.failure(ErrorMessages.format_task_remove_error(recipient.name, str(e)))

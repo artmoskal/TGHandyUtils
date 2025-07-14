@@ -126,7 +126,7 @@ class TestManualTimeScheduling:
         test_time = datetime(2025, 7, 15, 0, 0, 0, tzinfo=timezone.utc)
         
         test_cases = [
-            ("today 1am", 0, True),   # 1am Portugal = 0am UTC = RIGHT NOW
+            ("today 1am", 0, False),  # 1am Portugal = 0am UTC = RIGHT NOW, so schedules for tomorrow
             ("today 6am", 5, True),   # Should be today
             ("today 11pm", 22, True), # Should be today (far future)
         ]

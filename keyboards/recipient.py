@@ -182,6 +182,16 @@ def get_notification_settings_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
+def get_shared_account_auth_keyboard() -> InlineKeyboardMarkup:
+    """Get shared account authentication method selection keyboard."""
+    keyboard = [
+        [InlineKeyboardButton(text="🔑 Enter Credentials Now", callback_data="shared_auth_enter_now")],
+        [InlineKeyboardButton(text="🔐 Request from Another User", callback_data="shared_auth_request")],
+        [InlineKeyboardButton(text="« Back to Accounts", callback_data="back_to_recipients")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
 def get_delete_confirmation_keyboard() -> InlineKeyboardMarkup:
     """Get data deletion confirmation keyboard."""
     keyboard = [

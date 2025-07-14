@@ -8,12 +8,19 @@ class ErrorMessages:
     RECIPIENT_NOT_FOUND = "❌ Recipient not found"
     RECIPIENT_DISABLED = "❌ {name} is disabled"
     NO_RECIPIENTS_CONFIGURED = "❌ No recipients configured. Please add accounts first."
+    NO_RECIPIENTS_SETUP_HELP = ("❌ NO RECIPIENTS CONFIGURED\n\n"
+                                "You need to connect a recipient first!\n\n"
+                                "🚀 Use /recipients to add your Todoist or Trello account.")
     
     # Task creation errors
     TASK_CREATION_FAILED = "❌ Failed to create task in database."
+    TASK_CREATION_FAILED_HEADER = "❌ **Task Creation Failed**"
+    TASK_CREATION_ALL_FAILED = "❌ Failed to create task on all platforms: {platforms}"
     TASK_NOT_FOUND = "❌ Task {task_id} not found"
+    TASK_NOT_FOUND_ON_PLATFORM = "❌ Task not found on this platform"
     TASK_ADD_FAILED = "❌ Failed to add to {recipient}"
     TASK_REMOVE_FAILED = "❌ Failed to remove from {recipient}"
+    TASK_REMOVE_ERROR = "❌ Error removing from {recipient}: {error}"
     
     # Platform errors
     PLATFORM_CONNECTION_FAILED = "❌ Could not connect to {platform}"
@@ -48,6 +55,16 @@ class ErrorMessages:
     def format_task_add_failed(cls, recipient: str) -> str:
         """Format task add failed message."""
         return cls.TASK_ADD_FAILED.format(recipient=recipient)
+    
+    @classmethod
+    def format_task_creation_all_failed(cls, platforms: str) -> str:
+        """Format all platforms failed message."""
+        return cls.TASK_CREATION_ALL_FAILED.format(platforms=platforms)
+    
+    @classmethod
+    def format_task_remove_error(cls, recipient: str, error: str) -> str:
+        """Format task remove error message."""
+        return cls.TASK_REMOVE_ERROR.format(recipient=recipient, error=error)
     
     @classmethod
     def format_task_remove_failed(cls, recipient: str) -> str:

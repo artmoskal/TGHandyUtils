@@ -223,27 +223,36 @@ class TestTodoistPlatform:
     @patch('requests.post')
     def test_create_task_api_error_with_factory_data(self, mock_post, todoist_platform, factory_task_data):
         """Test task creation with API error using realistic data."""
-        # Mock error response
+        # Mock error response that will trigger raise_for_status()
         mock_response = Mock()
         mock_response.status_code = 400
         mock_response.text = "Bad Request: Invalid project_id"
+        
+        # Create HTTPError with proper response attribute
+        http_error = requests.HTTPError("400 Client Error")
+        http_error.response = mock_response
+        mock_response.raise_for_status.side_effect = http_error
         mock_post.return_value = mock_response
         
         task_dict = factory_task_data.model_dump()
-        task_id = todoist_platform.create_task(task_dict)
         
-        assert task_id is None
+        # Should raise PlatformConfigError due to 400 client error (no retries)  
+        from helpers.error_helpers import PlatformConfigError
+        with pytest.raises(PlatformConfigError):
+            todoist_platform.create_task(task_dict)
     
     @patch('requests.post')
     def test_create_task_network_error_with_factory_data(self, mock_post, todoist_platform, factory_task_data):
         """Test task creation with network error using realistic data."""
-        # Mock network exception
-        mock_post.side_effect = requests.RequestException("Network timeout")
+        # Mock network connection error
+        mock_post.side_effect = requests.ConnectionError("Network timeout")
         
         task_dict = factory_task_data.model_dump()
-        task_id = todoist_platform.create_task(task_dict)
         
-        assert task_id is None
+        # Should raise PlatformConnectionError after retries
+        from helpers.error_helpers import PlatformConnectionError
+        with pytest.raises(PlatformConnectionError):
+            todoist_platform.create_task(task_dict)
     
     def test_validate_credentials_format_with_factory(self, todoist_platform, todoist_recipient):
         """Test credential validation with Factory Boy credentials."""
@@ -419,12 +428,19 @@ class TestTrelloPlatform:
         mock_response = Mock()
         mock_response.status_code = 401
         mock_response.text = "Unauthorized: Invalid API key or token"
+        
+        # Create HTTPError with proper response attribute  
+        http_error = requests.HTTPError("401 Unauthorized")
+        http_error.response = mock_response
+        mock_response.raise_for_status.side_effect = http_error
         mock_post.return_value = mock_response
         
         task_dict = trello_task_data.model_dump()
-        card_id = trello_platform.create_task(task_dict)
         
-        assert card_id is None
+        # Should raise PlatformAuthError for 401 auth error
+        from helpers.error_helpers import PlatformAuthError
+        with pytest.raises(PlatformAuthError):
+            trello_platform.create_task(task_dict)
     
     def test_trello_configuration_with_factory_platform_config(self):
         """Test Trello configuration with Factory Boy platform config."""

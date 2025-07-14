@@ -148,6 +148,7 @@ class DatabaseMigrator:
             ("005_fix_oauth_foreign_keys", "Fix foreign key constraints in OAuth tables", self._migration_005_fix_oauth_fks),
             ("006_fix_default_recipients", "Fix default recipient logic and data", self._migration_006_fix_defaults),
             ("007_add_task_recipients", "Add multi-platform task tracking table", self._migration_007_task_recipients),
+            ("008_add_users_table", "Add users table for username tracking", self._migration_008_users_table),
             # Add future migrations here
         ]
         
@@ -403,6 +404,25 @@ class DatabaseMigrator:
         """)
         
         logger.info("Created task_recipients table and migrated existing data")
+    
+    def _migration_008_users_table(self, conn: sqlite3.Connection):
+        """Add users table for tracking Telegram user information."""
+        # Create users table
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT UNIQUE,
+                first_name TEXT,
+                last_name TEXT,
+                last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        # Add index for username lookups
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)")
+        
+        logger.info("Created users table for username tracking")
 
 
 def ensure_database_ready(db_path: str) -> bool:

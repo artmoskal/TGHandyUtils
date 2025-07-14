@@ -1,6 +1,8 @@
 """Tests for response utilities."""
 
 import pytest
+
+pytestmark = pytest.mark.unit
 from unittest.mock import AsyncMock, Mock
 from aiogram.types import Message, CallbackQuery
 
@@ -28,7 +30,8 @@ class TestMessageResponses:
         mock_message.reply.assert_called_once_with(
             "✅ Operation completed",
             reply_markup=None,
-            parse_mode='Markdown'
+            parse_mode='Markdown',
+            disable_web_page_preview=True
         )
     
     @pytest.mark.asyncio
@@ -39,7 +42,8 @@ class TestMessageResponses:
         mock_message.reply.assert_called_once_with(
             "❌ Something went wrong",
             reply_markup=None,
-            parse_mode='Markdown'
+            parse_mode='Markdown',
+            disable_web_page_preview=True
         )
     
     @pytest.mark.asyncio
@@ -48,7 +52,8 @@ class TestMessageResponses:
         await MessageResponses.validation_error(mock_message, "Name")
         
         mock_message.reply.assert_called_once_with(
-            "❌ Name cannot be empty. Please enter name:"
+            "❌ Name cannot be empty. Please enter name:",
+            disable_web_page_preview=True
         )
 
 
@@ -58,8 +63,13 @@ class TestCallbackResponses:
     @pytest.fixture
     def mock_callback_query(self):
         """Mock callback query."""
+        # Create mock message first
+        mock_message = Mock()
+        mock_message.edit_text = AsyncMock()
+        
+        # Create callback with the message
         callback = Mock(spec=CallbackQuery)
-        callback.message.edit_text = AsyncMock()
+        callback.message = mock_message
         callback.answer = AsyncMock()
         return callback
     

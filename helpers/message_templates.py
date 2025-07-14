@@ -109,10 +109,10 @@ def format_no_recipients_message() -> str:
 def format_platform_addition_success(platform_type: str, recipient_name: str) -> str:
     """Format success message for adding task to platform."""
     platform_emoji = get_platform_emoji(platform_type)
-    platform_display = platform_type.title().replace('_', ' ')
+    platform_display = escape_markdown(platform_type.title().replace('_', ' '))
     
     return (
-        f"{platform_emoji} **Added to {recipient_name}**\n\n"
+        f"{platform_emoji} **Added to {escape_markdown(recipient_name)}**\n\n"
         f"Task successfully created on your {platform_display} account."
     )
 
@@ -120,10 +120,10 @@ def format_platform_addition_success(platform_type: str, recipient_name: str) ->
 def format_platform_removal_success(platform_type: str, recipient_name: str) -> str:
     """Format success message for removing task from platform."""
     platform_emoji = get_platform_emoji(platform_type)
-    platform_display = platform_type.title().replace('_', ' ')
+    platform_display = escape_markdown(platform_type.title().replace('_', ' '))
     
     return (
-        f"{platform_emoji} **Removed from {recipient_name}**\n\n"
+        f"{platform_emoji} **Removed from {escape_markdown(recipient_name)}**\n\n"
         f"Task successfully deleted from your {platform_display} account."
     )
 
@@ -131,7 +131,7 @@ def format_platform_removal_success(platform_type: str, recipient_name: str) -> 
 def format_setup_complete_message(platform_type: str) -> str:
     """Format message for successful platform setup."""
     platform_emoji = get_platform_emoji(platform_type)
-    platform_display = platform_type.title().replace('_', ' ')
+    platform_display = escape_markdown(platform_type.title().replace('_', ' '))
     
     return (
         f"✅ **{platform_display} Account Added Successfully!**\n\n"

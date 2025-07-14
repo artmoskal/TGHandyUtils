@@ -1,17 +1,23 @@
 """Tests for modular callback handlers."""
 
 import pytest
+
+pytestmark = pytest.mark.unit
 from unittest.mock import AsyncMock, Mock, patch
 from aiogram.types import CallbackQuery, Message
 from aiogram.fsm.context import FSMContext
 
+# Create mock router
+mock_router = Mock()
+mock_router.callback_query = Mock(side_effect=lambda f: lambda func: func)
+
 # Mock the imports before importing handlers
 with patch.dict('sys.modules', {
-    'bot': Mock(),
+    'bot': Mock(router=mock_router),
     'core.container': Mock(),
     'keyboards.recipient': Mock(),
     'states.recipient_states': Mock(),
-    'core.logging': Mock()
+    'core.logging': Mock(get_logger=Mock(return_value=Mock()))
 }):
     # Import after mocking
     from handlers_modular.callbacks.recipient import management
@@ -27,8 +33,10 @@ class TestRecipientCallbacks:
     def mock_callback_query(self):
         """Mock callback query."""
         callback = Mock(spec=CallbackQuery)
+        callback.from_user = Mock()
         callback.from_user.id = 12345
         callback.data = "add_user_platform"
+        callback.message = Mock()
         callback.message.edit_text = AsyncMock()
         callback.answer = AsyncMock()
         return callback
@@ -83,9 +91,12 @@ class TestTaskCallbacks:
     def mock_callback_query(self):
         """Mock callback query."""
         callback = Mock(spec=CallbackQuery)
+        callback.from_user = Mock()
         callback.from_user.id = 12345
         callback.data = "cancel_task"
+        callback.message = Mock()
         callback.message.edit_text = AsyncMock()
+        callback.message.edit_reply_markup = AsyncMock()
         callback.answer = AsyncMock()
         return callback
     
@@ -123,8 +134,10 @@ class TestSettingsCallbacks:
     def mock_callback_query(self):
         """Mock callback query."""
         callback = Mock(spec=CallbackQuery)
+        callback.from_user = Mock()
         callback.from_user.id = 12345
         callback.data = "profile_settings"
+        callback.message = Mock()
         callback.message.edit_text = AsyncMock()
         callback.answer = AsyncMock()
         return callback
@@ -156,8 +169,10 @@ class TestNavigationCallbacks:
     def mock_callback_query(self):
         """Mock callback query."""
         callback = Mock(spec=CallbackQuery)
+        callback.from_user = Mock()
         callback.from_user.id = 12345
         callback.data = "back_to_menu"
+        callback.message = Mock()
         callback.message.edit_text = AsyncMock()
         callback.answer = AsyncMock()
         return callback

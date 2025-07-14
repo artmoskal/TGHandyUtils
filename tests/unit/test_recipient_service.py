@@ -27,6 +27,7 @@ from tests.factories import (
 
 # Import models
 from models.unified_recipient import UnifiedRecipient
+from models.parameter_objects import RecipientCreationData, SharedRecipientCreationData
 
 
 class TestRecipientService:
@@ -286,12 +287,12 @@ class TestRecipientService:
     def test_add_personal_recipient_creates_with_is_personal_true(self):
         """Test adding personal recipient creates with is_personal=True."""
         # Add personal recipient through service
-        recipient_id = self.recipient_service.add_personal_recipient(
-            user_id=self.test_user_id,
+        recipient_data = RecipientCreationData(
             name="Service Created Personal",
             platform_type="todoist",
             credentials="test_personal_token"
         )
+        recipient_id = self.recipient_service.add_personal_recipient(self.test_user_id, recipient_data)
         
         # Verify creation via database query
         created_recipient = self.recipient_repo.get_recipient_by_id(self.test_user_id, recipient_id)
@@ -315,13 +316,13 @@ class TestRecipientService:
         The service must properly create shared recipients with is_personal=False.
         """
         # Add shared recipient through service
-        recipient_id = self.recipient_service.add_shared_recipient(
-            user_id=self.test_user_id,
+        recipient_data = SharedRecipientCreationData(
             name="Service Created Shared",
             platform_type="trello",
             credentials="test_shared_token",
             shared_by_info="friend@example.com"
         )
+        recipient_id = self.recipient_service.add_shared_recipient(self.test_user_id, recipient_data)
         
         # Verify creation via database query
         created_recipient = self.recipient_repo.get_recipient_by_id(self.test_user_id, recipient_id)
@@ -349,14 +350,14 @@ class TestRecipientService:
     def test_add_shared_recipient_with_platform_config_merges_shared_by(self):
         """Test shared recipient creation merges shared_by into existing platform_config."""
         # Add shared recipient with existing platform config
-        recipient_id = self.recipient_service.add_shared_recipient(
-            user_id=self.test_user_id,
+        recipient_data = SharedRecipientCreationData(
             name="Shared With Config",
             platform_type="trello",
             credentials="test_token",
             platform_config={"board_id": "existing_board"},
             shared_by_info="collaborator@example.com"
         )
+        recipient_id = self.recipient_service.add_shared_recipient(self.test_user_id, recipient_data)
         
         # Verify platform config merge
         created_recipient = self.recipient_repo.get_recipient_by_id(self.test_user_id, recipient_id)

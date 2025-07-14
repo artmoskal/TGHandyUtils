@@ -8,9 +8,10 @@ from core.exceptions import SharingError
 logger = get_logger(__name__)
 
 class SharingService:
-    def __init__(self, repository, user_service):
+    def __init__(self, repository, user_service, config=None):
         self.repository = repository
         self.user_service = user_service
+        self.config = config
 
     def create_shared_authorization(self, owner_user_id: int, grantee_user_id: int, 
                                   owner_recipient_id: int, permission_level: str = 'use') -> int:
@@ -110,42 +111,60 @@ class SharingService:
 
     # Authentication request workflow methods
     def create_auth_request(self, requester_user_id: int, target_username: str, 
-                          platform_type: str, recipient_name: str) -> int:
-        """Create authentication request for new shared account."""
+                          platform_type: str, recipient_name: str) -> Dict[str, Any]:
+        """Create auth request or return bot link data."""
         try:
-            # Get target user_id
-            target_user_id = self.user_service.get_user_id_from_username(target_username)
-            if not target_user_id:
-                raise ValueError(f"User @{target_username} not found in bot users")
-            
-            if target_user_id == requester_user_id:
-                raise ValueError("Cannot request authentication from yourself")
+            # Clean username
+            clean_username = target_username.strip().lstrip('@')
             
             # Validate platform type
             if platform_type not in ['todoist', 'trello', 'google_calendar']:
                 raise ValueError(f"Invalid platform type: {platform_type}")
             
-            # Create auth request with 24 hour expiration
-            expires_at = datetime.utcnow() + timedelta(hours=24)
+            # Check if user exists using the user service
+            target_user_id = self.user_service.find_user_by_username(clean_username)
             
-            auth_request_id = self.repository.create_auth_request(
-                requester_user_id=requester_user_id,
-                target_user_id=target_user_id,
-                platform_type=platform_type,
-                recipient_name=recipient_name,
-                expires_at=expires_at
-            )
-            
-            logger.info(f"Created auth request {auth_request_id}: {requester_user_id} -> {target_username}")
-            return auth_request_id
+            if target_user_id:
+                # EXISTING USER - Create auth request
+                if target_user_id == requester_user_id:
+                    # Check if self-auth requests are allowed (for testing)
+                    if not (self.config and getattr(self.config, 'ALLOW_SELF_AUTH_REQUESTS', False)):
+                        raise ValueError("❌ You can't request authentication from yourself!")
+                
+                # Create the auth request
+                expires_at = datetime.now() + timedelta(hours=24)
+                auth_request = self.repository.create_auth_request(
+                    requester_user_id=requester_user_id,
+                    target_user_id=target_user_id,
+                    platform_type=platform_type,
+                    recipient_name=recipient_name,
+                    expires_at=expires_at
+                )
+                
+                logger.info(f"Created auth request {auth_request.id} for user @{clean_username} (ID: {target_user_id})")
+                
+                return {
+                    'status': 'created',
+                    'auth_request': auth_request,
+                    'target_user_id': target_user_id,
+                    'target_username': clean_username
+                }
+            else:
+                # NEW USER - Return info for bot link
+                logger.info(f"User @{clean_username} not found, will generate bot link")
+                
+                return {
+                    'status': 'user_not_found',
+                    'target_username': clean_username
+                }
             
         except Exception as e:
-            logger.error(f"Error creating auth request: {e}")
+            logger.error(f"Error in create_auth_request: {e}")
             raise
 
     def get_pending_auth_requests(self, user_id: int) -> List[AuthRequest]:
         """Get pending authentication requests for a user."""
-        return self.repository.get_pending_auth_requests_for_user(user_id)
+        return self.repository.get_pending_auth_requests(user_id)
 
     def complete_auth_request(self, auth_request_id: int, target_user_id: int, 
                             credentials: str, platform_config: str = None) -> int:
@@ -163,12 +182,21 @@ class SharingService:
                 raise ValueError("Authentication request expired or not active")
             
             # Create recipient for requester
-            recipient_id = self.repository.add_personal_recipient(
-                user_id=auth_request.requester_user_id,
+            from models.unified_recipient import UnifiedRecipientCreate
+            
+            recipient = UnifiedRecipientCreate(
                 name=auth_request.recipient_name,
                 platform_type=auth_request.platform_type,
                 credentials=credentials,
-                platform_config=platform_config
+                platform_config=platform_config,
+                is_personal=True,
+                is_default=False,  # Let the repository decide
+                enabled=True
+            )
+            
+            recipient_id = self.repository.add_recipient(
+                auth_request.requester_user_id,
+                recipient
             )
             
             # Update auth request status

@@ -74,32 +74,29 @@ class TestSchedulerDatabaseIntegration:
             platform_type="todoist",
             credentials="test_creds"
         )
-        recipient_id = recipient_repo.create(
+        recipient_id = recipient_repo.add_recipient(
             user_id=12345,
-            recipient_data=recipient_data,
-            is_personal=True
+            recipient=recipient_data
         )
         
         # Create task with all required fields
-        task_data = {
-            'user_id': 12345,
-            'title': 'Test Task',
-            'description': 'Test Description',
-            'due_time': '2025-12-25T10:00:00Z',
-            'platform_task_id': 'test_123',
-            'platform_type': 'todoist',
-            'recipient_id': recipient_id,
-            'chat_id': 12345,  # Required by scheduler
-            'message_id': 67890,  # Required by scheduler
-            'status': 'active'
-        }
+        task_create = TaskCreate(
+            title='Test Task',
+            description='Test Description',
+            due_time='2025-12-25T10:00:00Z'
+        )
         
         # Insert task
-        task_id = task_repo.create(**task_data)
+        task_id = task_repo.create(
+            user_id=12345,
+            chat_id=12345,  # Required by scheduler
+            message_id=67890,  # Required by scheduler
+            task_data=task_create
+        )
         assert task_id is not None
         
         # Retrieve task and verify all scheduler-expected fields exist
-        task = task_repo.get(task_id)
+        task = task_repo.get_by_id(task_id)
         assert task is not None
         
         # Test all fields that scheduler uses
@@ -128,28 +125,27 @@ class TestSchedulerDatabaseIntegration:
             platform_type="todoist", 
             credentials="test_creds"
         )
-        recipient_id = recipient_repo.create(
+        recipient_id = recipient_repo.add_recipient(
             user_id=12345,
-            recipient_data=recipient_data,
-            is_personal=True
+            recipient=recipient_data
         )
         
         # Create a task that's due now
         now = datetime.now(timezone.utc)
         due_time = (now - timedelta(minutes=1)).isoformat()  # 1 minute ago (overdue)
         
-        task_data = {
-            'user_id': 12345,
-            'title': 'Overdue Task',
-            'description': 'This task is overdue',
-            'due_time': due_time,
-            'recipient_id': recipient_id,
-            'chat_id': 12345,
-            'message_id': 67890,
-            'status': 'active'
-        }
+        task_create = TaskCreate(
+            title='Overdue Task',
+            description='This task is overdue',
+            due_time=due_time
+        )
         
-        task_id = task_repo.create(**task_data)
+        task_id = task_repo.create(
+            user_id=12345,
+            chat_id=12345,
+            message_id=67890,
+            task_data=task_create
+        )
         
         # Mock the container to use our test repositories
         with patch('core.initialization.services') as mock_services:
@@ -181,41 +177,42 @@ class TestSchedulerDatabaseIntegration:
             platform_type="todoist",
             credentials="test_creds"
         )
-        recipient_id = recipient_repo.create(
+        recipient_id = recipient_repo.add_recipient(
             user_id=12345,
-            recipient_data=recipient_data,
-            is_personal=True
+            recipient=recipient_data
         )
         
         # Create overdue task
         now = datetime.now(timezone.utc)
         due_time = (now - timedelta(hours=1)).isoformat()
         
-        task_data = {
-            'user_id': 12345,
-            'title': 'Test Reminder Task',
-            'description': 'Task for reminder testing',
-            'due_time': due_time,
-            'recipient_id': recipient_id,
-            'chat_id': 12345,
-            'message_id': 67890,
-            'status': 'active'
-        }
+        task_create = TaskCreate(
+            title='Test Reminder Task',
+            description='Task for reminder testing',
+            due_time=due_time
+        )
         
-        task_id = task_repo.create(**task_data)
-        task = task_repo.get(task_id)
+        task_id = task_repo.create(
+            user_id=12345,
+            chat_id=12345,
+            message_id=67890,
+            task_data=task_create
+        )
+        task = task_repo.get_by_id(task_id)
         
         # Mock the notification service and bot
-        with patch('core.container.container') as mock_container, \
-             patch('scheduler.bot') as mock_bot:
+        with patch('core.container.container') as mock_container:
             
             # Mock recipient service to return notifications enabled
             mock_recipient_service = AsyncMock()
             mock_recipient_service.are_telegram_notifications_enabled.return_value = True
             mock_container.recipient_service.return_value = mock_recipient_service
             
-            # Mock bot send_message
+            # Mock bot globally in scheduler module
+            import scheduler
+            mock_bot = AsyncMock()
             mock_bot.send_message = AsyncMock()
+            scheduler.bot = mock_bot
             
             # Mock the task service for deletion
             with patch('core.initialization.services') as mock_services:
@@ -244,36 +241,38 @@ class TestSchedulerDatabaseIntegration:
             platform_type="todoist",
             credentials="test_creds"
         )
-        recipient_id = recipient_repo.create(
+        recipient_id = recipient_repo.add_recipient(
             user_id=12345,
-            recipient_data=recipient_data,
-            is_personal=True
+            recipient=recipient_data
         )
         
         # Create task with special characters to test escaping
-        task_data = {
-            'user_id': 12345,
-            'title': 'Task with <HTML> & "quotes"',
-            'description': 'Description with <script>alert("xss")</script>',
-            'due_time': '2025-12-25T10:00:00Z',
-            'recipient_id': recipient_id,
-            'chat_id': 12345,
-            'message_id': 67890,
-            'status': 'active'
-        }
+        task_create = TaskCreate(
+            title='Task with <HTML> & "quotes"',
+            description='Description with <script>alert("xss")</script>',
+            due_time='2025-12-25T10:00:00Z'
+        )
         
-        task_id = task_repo.create(**task_data)
-        task = task_repo.get(task_id)
+        task_id = task_repo.create(
+            user_id=12345,
+            chat_id=12345,
+            message_id=67890,
+            task_data=task_create
+        )
+        task = task_repo.get_by_id(task_id)
         
         # Mock dependencies
-        with patch('core.container.container') as mock_container, \
-             patch('scheduler.bot') as mock_bot:
+        with patch('core.container.container') as mock_container:
             
             mock_recipient_service = AsyncMock()
             mock_recipient_service.are_telegram_notifications_enabled.return_value = True
             mock_container.recipient_service.return_value = mock_recipient_service
             
+            # Mock bot globally in scheduler module
+            import scheduler
+            mock_bot = AsyncMock()
             mock_bot.send_message = AsyncMock()
+            scheduler.bot = mock_bot
             
             # This should access task.title, task.description, task.user_id, task.chat_id, task.message_id
             await _send_reminder(task)
@@ -299,40 +298,36 @@ class TestSchedulerDatabaseIntegration:
             platform_type="todoist",
             credentials="test_creds"
         )
-        recipient_id = recipient_repo.create(
+        recipient_id = recipient_repo.add_recipient(
             user_id=12345,
-            recipient_data=recipient_data,
-            is_personal=True
+            recipient=recipient_data
         )
         
         # Test data with all scheduler-required fields
-        original_data = {
-            'user_id': 12345,
-            'title': 'Consistency Test',
-            'description': 'Testing field consistency',
-            'due_time': '2025-12-25T10:00:00Z',
-            'platform_task_id': 'test_123',
-            'platform_type': 'todoist',
-            'recipient_id': recipient_id,
-            'chat_id': 98765,
-            'message_id': 54321,
-            'status': 'active'
-        }
+        task_create = TaskCreate(
+            title='Consistency Test',
+            description='Testing field consistency',
+            due_time='2025-12-25T10:00:00Z'
+        )
         
         # Create task
-        task_id = task_repo.create(**original_data)
+        task_id = task_repo.create(
+            user_id=12345,
+            chat_id=98765,
+            message_id=54321,
+            task_data=task_create
+        )
         
         # Retrieve task
-        retrieved_task = task_repo.get(task_id)
+        retrieved_task = task_repo.get_by_id(task_id)
         
         # Verify all fields match what we put in
-        assert retrieved_task.user_id == original_data['user_id']
-        assert retrieved_task.title == original_data['title']
-        assert retrieved_task.description == original_data['description']
-        assert retrieved_task.due_time == original_data['due_time']
-        assert retrieved_task.chat_id == original_data['chat_id']
-        assert retrieved_task.message_id == original_data['message_id']
-        assert retrieved_task.status == original_data['status']
+        assert retrieved_task.user_id == 12345
+        assert retrieved_task.title == 'Consistency Test'
+        assert retrieved_task.description == 'Testing field consistency'
+        assert retrieved_task.due_time == '2025-12-25T10:00:00Z'
+        assert retrieved_task.chat_id == 98765
+        assert retrieved_task.message_id == 54321
     
     def test_database_migration_creates_all_required_columns(self, temp_db_path):
         """Test that database migration creates all columns scheduler expects."""

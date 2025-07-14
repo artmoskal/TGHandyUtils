@@ -6,6 +6,7 @@ from typing import Callable, Tuple, Optional, Any
 from functools import wraps
 import requests
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from helpers.ui_helpers import escape_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +120,7 @@ def handle_platform_error(platform: str, error: Exception) -> Tuple[bool, str]:
         "google_calendar": "📅"
     }
     
-    platform_display = platform.title().replace('_', ' ')
+    platform_display = escape_markdown(platform.title().replace('_', ' '))
     emoji = platform_emoji_map.get(platform, "📱")
     
     if isinstance(error, PlatformTimeoutError):
@@ -159,7 +160,7 @@ def create_retry_keyboard(original_callback: str, platform: str) -> InlineKeyboa
     emoji = platform_emoji_map.get(platform, "📱")
     
     keyboard = [
-        [InlineKeyboardButton(text=f"🔄 Retry {emoji} {platform.title()}", callback_data=f"retry_{original_callback}")],
+        [InlineKeyboardButton(text=f"🔄 Retry {emoji} {escape_markdown(platform.title())}", callback_data=f"retry_{original_callback}")],
         [InlineKeyboardButton(text="🏠 Continue Anyway", callback_data="task_actions_done")]
     ]
     

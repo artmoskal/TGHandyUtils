@@ -15,6 +15,11 @@ wire_application()
 # Import handlers module to register all handlers (after DI is wired)
 import telegram_handlers  # Phase 2 transition: hybrid modular + monolithic
 
+# Register middleware for user tracking
+from handlers_modular.middleware.user_tracking import UserTrackingMiddleware
+dp.message.middleware(UserTrackingMiddleware())
+dp.callback_query.middleware(UserTrackingMiddleware())
+
 # Initialize bot with proper configuration
 bot = initialize_bot()
 
@@ -43,9 +48,35 @@ config = services.get_config()
 logger.info(f"Using default task platform: {config.DEFAULT_TASK_PLATFORM}")
 logger.info(f"Scheduler interval: {config.SCHEDULER_INTERVAL} seconds")
 
+# Final handler check
+logger.info("=== Final Handler Count ===")
+total = 0
+for r in [dp] + list(dp.sub_routers):
+    count = len(r.message.handlers)
+    total += count
+    if count > 0:
+        logger.info(f"Router {id(r)}: {count} handlers")
+logger.info(f"Total handlers before main(): {total}")
+
 async def main():
     """Main application function."""
     try:
+        # Debug: Check handlers before starting
+        logger.info(f"=== Handler Check Before Start ===")
+        logger.info(f"Main dispatcher has {len(dp.sub_routers)} sub-routers")
+        total_handlers = 0
+        for r in [dp] + list(dp.sub_routers):
+            handler_count = len(r.message.handlers)
+            total_handlers += handler_count
+            if handler_count > 0:
+                logger.info(f"Router {id(r)}: {handler_count} message handlers")
+                # Show command handlers
+                for h in r.message.handlers:
+                    for f in h.filters:
+                        if hasattr(f.callback, 'commands'):
+                            logger.info(f"  Command: /{','.join(f.callback.commands)}")
+        logger.info(f"Total message handlers: {total_handlers}")
+        
         # Start the task scheduler in the background
         scheduler_task = asyncio.create_task(task_scheduler(bot))
         logger.info("Task scheduler started")

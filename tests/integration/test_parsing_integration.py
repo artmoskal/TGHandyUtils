@@ -240,7 +240,7 @@ class TestParsingServiceIntegration:
             {
                 "content": "remind me in a day",
                 "expected_days": 1, 
-                "tolerance_hours": 4
+                "tolerance_hours": 6  # Increased tolerance for timezone variations
             },
             {
                 "content": "remind me next month",

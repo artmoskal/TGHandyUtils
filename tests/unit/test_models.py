@@ -145,20 +145,18 @@ class TestTaskModels:
             message_id=factory_task.message_id,
             title=factory_task.title,
             description=factory_task.description,
-            due_time=factory_task.due_time,
-            platform_task_id=factory_task.platform_task_id,
-            platform_type=factory_task.platform_type
+            due_time=factory_task.due_time
         )
         
         assert task.id == 1
         assert task.user_id == 12345
         assert task.title == "Database Integration Test Task"
-        assert task.platform_type == "todoist"
+        assert task.due_time == "2024-01-01T12:00:00Z"
         
         # Verify factory data consistency
         assert task.title == factory_task.title
         assert task.description == factory_task.description
-        assert task.platform_task_id == factory_task.platform_task_id
+        assert task.due_time == factory_task.due_time
     
     def test_platform_task_data_with_factory_variations(self):
         """Test PlatformTaskData model with various Factory Boy scenarios."""

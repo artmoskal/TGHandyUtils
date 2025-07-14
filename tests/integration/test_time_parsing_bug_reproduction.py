@@ -35,6 +35,8 @@ class TestTimeParsingBugReproduction:
         with patch('services.parsing_service.datetime') as mock_datetime:
             mock_datetime.now.return_value = test_time
             mock_datetime.timezone = timezone
+            mock_datetime.fromisoformat = datetime.fromisoformat
+            mock_datetime.side_effect = lambda *args, **kw: datetime(*args, **kw)
             
             # Test 1: "today 3am" - should work correctly
             result_3am = parsing_service.parse_content_to_task(
@@ -81,6 +83,8 @@ class TestTimeParsingBugReproduction:
         with patch('services.parsing_service.datetime') as mock_datetime:
             mock_datetime.now.return_value = test_time
             mock_datetime.timezone = timezone
+            mock_datetime.fromisoformat = datetime.fromisoformat
+            mock_datetime.side_effect = lambda *args, **kw: datetime(*args, **kw)
             
             result = parsing_service.parse_content_to_task(
                 content_message="remind me about something tomorrow 9am",

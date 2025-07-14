@@ -1,30 +1,25 @@
 import json
-from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 
+from bot import router  # Use the global router like other command modules
 from core.container import container
 from core.logging import get_logger
 from states.recipient_states import RecipientState
 from states.sharing_states import SharingState, AuthRequestState
+from helpers.ui_helpers import escape_markdown
 
 logger = get_logger(__name__)
-router = Router()
 
 @router.message(Command("share"))
 async def handle_share_command(message: Message, state: FSMContext):
     """Start sharing workflow with two options."""
     user_id = message.from_user.id
     
-    # Cache user info
+    # Track user info
     user_service = container.user_service()
-    user_service.cache_user_info(
-        user_id=user_id,
-        username=message.from_user.username,
-        first_name=message.from_user.first_name,
-        last_name=message.from_user.last_name
-    )
+    user_service.track_user(message.from_user)
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📋 Share Existing Account", callback_data="share_existing")],
@@ -68,9 +63,14 @@ async def handle_auth_platform_selection(callback_query: CallbackQuery, state: F
     platform_type = callback_query.data.replace("auth_platform_", "")
     await state.update_data(platform_type=platform_type)
     
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_auth_request")]
+    ])
+    
     await callback_query.message.edit_text(
-        f"📝 **Name Your {platform_type.title()} Account**\n\n"
-        f"Enter a name for this account (e.g., 'Work {platform_type.title()}', 'Personal Tasks'):",
+        f"📝 **Name Your {escape_markdown(platform_type.title())} Account**\n\n"
+        f"Enter a name for this account (e.g., 'Work {escape_markdown(platform_type.title())}', 'Personal Tasks'):",
+        reply_markup=keyboard,
         parse_mode='Markdown'
     )
     await state.set_state(AuthRequestState.waiting_for_account_name)
@@ -86,10 +86,15 @@ async def handle_account_name_input(message: Message, state: FSMContext):
     
     await state.update_data(account_name=account_name)
     
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_auth_request")]
+    ])
+    
     await message.reply(
         "👤 **Enter Username**\n\n"
         "Enter the Telegram username (with or without @) of the person who will authenticate this account:\n\n"
         "⚠️ They must have used this bot before.",
+        reply_markup=keyboard,
         parse_mode='Markdown',
         disable_web_page_preview=True
     )
@@ -111,27 +116,85 @@ async def handle_auth_target_username(message: Message, state: FSMContext):
         
         # Create auth request
         sharing_service = container.sharing_service()
-        auth_request_id = sharing_service.create_auth_request(
+        result = sharing_service.create_auth_request(
             requester_user_id=message.from_user.id,
             target_username=username,
             platform_type=platform_type,
             recipient_name=account_name
         )
         
-        # Send notification to target user
-        await send_auth_request_notification(auth_request_id, message.from_user.first_name)
+        if result['status'] == 'created':
+            # EXISTING USER - Send notification
+            auth_request = result['auth_request']
+            target_user_id = result['target_user_id']
+            
+            # Get user service to get display name
+            user_service = container.user_service()
+            requester_name = user_service.get_user_display_name(message.from_user.id)
+            
+            # Send notification to target user
+            from bot import bot
+            try:
+                await bot.send_message(
+                    target_user_id,
+                    f"🔔 **New Authentication Request!**\n\n"
+                    f"👤 **From:** {escape_markdown(requester_name)}\n"
+                    f"📋 **Account Name:** {escape_markdown(account_name)}\n"
+                    f"🔧 **Platform:** {escape_markdown(platform_type.title())}\n"
+                    f"⏰ **Expires:** 24 hours\n\n"
+                    f"They're asking you to authenticate a {escape_markdown(platform_type.title())} account for them.\n\n"
+                    f"Use /requests to view and respond to this request.",
+                    parse_mode='Markdown',
+                    disable_web_page_preview=True
+                )
+                
+                await message.reply(
+                    f"✅ **Authentication Request Sent!**\n\n"
+                    f"📤 **Sent to:** @{escape_markdown(username)}\n"
+                    f"📋 **Account:** {escape_markdown(account_name)} ({escape_markdown(platform_type.title())})\n"
+                    f"⏰ **Expires in:** 24 hours\n\n"
+                    f"They will receive instructions to authenticate the account.\n"
+                    f"You'll be notified when complete.\n\n"
+                    f"Use /requests to view pending requests.",
+                    parse_mode='Markdown',
+                    disable_web_page_preview=True
+                )
+            except Exception as e:
+                logger.error(f"Failed to send notification to user {target_user_id}: {e}")
+                await message.reply(
+                    f"✅ **Authentication Request Created!**\n\n"
+                    f"📤 **For:** @{escape_markdown(username)}\n"
+                    f"📋 **Account:** {escape_markdown(account_name)} ({platform_type.title()})\n\n"
+                    f"⚠️ Note: We couldn't send them a notification. They'll see the request when they use /requests.",
+                    parse_mode='Markdown',
+                    disable_web_page_preview=True
+                )
+        else:
+            # NEW USER - Generate bot link
+            from utils.auth_link_utils import encode_auth_request_data
+            
+            encoded = encode_auth_request_data(
+                requester_user_id=message.from_user.id,
+                platform_type=platform_type,
+                recipient_name=account_name,
+                requester_name=message.from_user.first_name or "User"
+            )
+            
+            bot_info = await message.bot.get_me()
+            bot_link = f"https://t.me/{bot_info.username}?start=auth_{encoded}"
+            
+            await message.reply(
+                f"📱 **Share This Link**\n\n"
+                f"@{escape_markdown(username)} hasn't used this bot yet.\n\n"
+                f"Send them this link:\n"
+                f"`{bot_link}`\n\n"
+                f"When they open it, they'll be asked to authenticate "
+                f"their {escape_markdown(platform_type.title())} account for you.\n\n"
+                f"⏰ **Valid for:** 24 hours",
+                parse_mode='Markdown',
+                disable_web_page_preview=True
+            )
         
-        await message.reply(
-            f"✅ **Authentication Request Sent!**\n\n"
-            f"📤 **Sent to:** @{username}\n"
-            f"📋 **Account:** {account_name} ({platform_type.title()})\n"
-            f"⏰ **Expires in:** 24 hours\n\n"
-            f"They will receive instructions to authenticate the account.\n"
-            f"You'll be notified when complete.\n\n"
-            f"Use /requests to view pending requests.",
-            parse_mode='Markdown',
-            disable_web_page_preview=True
-        )
         await state.clear()
         
     except Exception as e:
@@ -159,11 +222,11 @@ async def send_auth_request_notification(auth_request_id: int, requester_name: s
         await bot.send_message(
             chat_id=auth_request.target_user_id,
             text=f"🔐 **Authentication Request**\n\n"
-                 f"**From:** {requester_name}\n"
-                 f"**Platform:** {auth_request.platform_type.title()}\n"
-                 f"**Account Name:** {auth_request.recipient_name}\n"
+                 f"**From:** {escape_markdown(requester_name)}\n"
+                 f"**Platform:** {escape_markdown(auth_request.platform_type.title())}\n"
+                 f"**Account Name:** {escape_markdown(auth_request.recipient_name)}\n"
                  f"**Expires:** In 24 hours\n\n"
-                 f"{requester_name} is asking you to authenticate a {auth_request.platform_type.title()} account for them.\n\n"
+                 f"{escape_markdown(requester_name)} is asking you to authenticate a {escape_markdown(auth_request.platform_type.title())} account for them.\n\n"
                  f"If you accept, you'll go through the normal account setup process, but the account will be added to their recipients list instead of yours.",
             reply_markup=keyboard,
             parse_mode='Markdown',
@@ -209,12 +272,12 @@ async def handle_auth_request_acceptance(callback_query: CallbackQuery, state: F
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🔗 Open Google Authorization", url=oauth_url)],
                 [InlineKeyboardButton(text="📝 I Have the Code", callback_data="enter_auth_code_for_request")],
-                [InlineKeyboardButton(text="❌ Cancel", callback_data=f"cancel_auth_{auth_request_id}")]
+                [InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_auth_request")]
             ])
             
             await callback_query.message.edit_text(
-                f"🔐 **Authenticate {auth_request.recipient_name}**\n\n"
-                f"You're authenticating this account for {auth_request.requester_user_id}\n\n"
+                f"🔐 **Authenticate {escape_markdown(auth_request.recipient_name)}**\n\n"
+                f"You're authenticating this account for user ID {auth_request.requester_user_id}\n\n"
                 "1. Click 'Open Google Authorization'\n"
                 "2. Sign in and grant permissions\n"
                 "3. Copy the authorization code\n"
@@ -227,11 +290,16 @@ async def handle_auth_request_acceptance(callback_query: CallbackQuery, state: F
             
         else:
             # For other platforms, ask for credentials directly
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_auth_request")]
+            ])
+            
             await callback_query.message.edit_text(
-                f"🔑 **Authenticate {auth_request.recipient_name}**\n\n"
-                f"Enter your {platform_type.title()} credentials:\n\n"
+                f"🔑 **Authenticate {escape_markdown(auth_request.recipient_name)}**\n\n"
+                f"Enter your {escape_markdown(platform_type.title())} credentials:\n\n"
                 f"{get_platform_credential_instructions(platform_type)}\n\n"
                 "⚠️ The account will be added to their recipients, not yours.",
+                reply_markup=keyboard,
                 parse_mode='Markdown'
             )
             await state.set_state(AuthRequestState.waiting_for_credentials)
@@ -243,9 +311,14 @@ async def handle_auth_request_acceptance(callback_query: CallbackQuery, state: F
 @router.callback_query(lambda c: c.data == "enter_auth_code_for_request")
 async def handle_enter_auth_code_for_request(callback_query: CallbackQuery, state: FSMContext):
     """Handle entering OAuth code for auth request."""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_auth_request")]
+    ])
+    
     await callback_query.message.edit_text(
         "📝 **Enter Authorization Code**\n\n"
         "Paste the authorization code you copied from Google:",
+        reply_markup=keyboard,
         parse_mode='Markdown'
     )
     await state.set_state(AuthRequestState.waiting_for_auth_code)
@@ -294,6 +367,8 @@ async def handle_auth_code_for_request(message: Message, state: FSMContext):
     except Exception as e:
         logger.error(f"Error completing OAuth auth request: {e}")
         await message.reply(f"❌ **Error:** {str(e)}")
+        # Clear state to prevent user from being stuck
+        await state.clear()
 
 @router.message(AuthRequestState.waiting_for_credentials)
 async def handle_auth_credentials_input(message: Message, state: FSMContext):
@@ -326,7 +401,7 @@ async def handle_auth_credentials_input(message: Message, state: FSMContext):
         
         await message.reply(
             "✅ **Authentication Completed!**\n\n"
-            f"The {auth_request.platform_type.title()} account has been authenticated and added to the requester's recipients.\n\n"
+            f"The {escape_markdown(auth_request.platform_type.title())} account has been authenticated and added to the requester's recipients.\n\n"
             "Thank you for helping!",
             parse_mode='Markdown',
             disable_web_page_preview=True
@@ -339,6 +414,8 @@ async def handle_auth_credentials_input(message: Message, state: FSMContext):
     except Exception as e:
         logger.error(f"Error completing auth request: {e}")
         await message.reply(f"❌ **Error:** {str(e)}")
+        # Clear state to prevent user from being stuck
+        await state.clear()
 
 async def notify_auth_request_completed(auth_request, authenticator_name: str):
     """Notify requester that authentication is complete."""
@@ -349,8 +426,8 @@ async def notify_auth_request_completed(auth_request, authenticator_name: str):
         await bot.send_message(
             chat_id=auth_request.requester_user_id,
             text=f"✅ **Authentication Completed!**\n\n"
-                 f"**Account:** {auth_request.recipient_name} ({auth_request.platform_type.title()})\n"
-                 f"**Authenticated by:** {authenticator_name}\n\n"
+                 f"**Account:** {escape_markdown(auth_request.recipient_name)} ({escape_markdown(auth_request.platform_type.title())})\n"
+                 f"**Authenticated by:** {escape_markdown(authenticator_name)}\n\n"
                  f"The account has been added to your recipients.\n"
                  f"You can now use it to create tasks!\n\n"
                  f"Check /recipients to see your new account.",
@@ -362,9 +439,13 @@ async def notify_auth_request_completed(auth_request, authenticator_name: str):
         logger.error(f"Error notifying auth completion: {e}")
 
 @router.message(Command("requests"))
-async def handle_requests_command(message: Message):
+async def handle_requests_command(message: Message, state: FSMContext):
     """Show pending authentication requests."""
+    logger.info(f"handle_requests_command called for user {message.from_user.id}")
     user_id = message.from_user.id
+    
+    # Clear any existing state to prevent getting stuck
+    await state.clear()
     
     try:
         sharing_service = container.sharing_service()
@@ -372,7 +453,7 @@ async def handle_requests_command(message: Message):
         # Get requests where user is requester or target
         repository = container.unified_recipient_repository()
         sent_requests = repository.get_auth_requests_by_requester(user_id)
-        received_requests = repository.get_pending_auth_requests_for_user(user_id)
+        received_requests = repository.get_pending_auth_requests(user_id)
         
         if not sent_requests and not received_requests:
             await message.reply(
@@ -388,12 +469,12 @@ async def handle_requests_command(message: Message):
         
         if received_requests:
             text += "**📥 Received Requests:**\n"
+            user_service = container.user_service()
             for req in received_requests:
-                requester_info = container.user_service().get_user_info(req.requester_user_id)
-                requester_name = requester_info.get('first_name', f'User{req.requester_user_id}') if requester_info else f'User{req.requester_user_id}'
+                requester_name = user_service.get_user_display_name(req.requester_user_id)
                 
-                text += f"• {req.platform_type.title()} - {req.recipient_name}\n"
-                text += f"  From: {requester_name}\n"
+                text += f"• {escape_markdown(req.platform_type.title())} - {escape_markdown(req.recipient_name)}\n"
+                text += f"  From: {escape_markdown(requester_name)}\n"
                 text += f"  Expires: {req.expires_at.strftime('%Y-%m-%d %H:%M')}\n\n"
                 
                 keyboard.append([
@@ -407,11 +488,10 @@ async def handle_requests_command(message: Message):
             text += "\n**📤 Sent Requests:**\n"
             for req in sent_requests:
                 if req.status == 'pending':
-                    target_info = container.user_service().get_user_info(req.target_user_id)
-                    target_name = target_info.get('first_name', f'User{req.target_user_id}') if target_info else f'User{req.target_user_id}'
+                    target_name = user_service.get_user_display_name(req.target_user_id)
                     
-                    text += f"• {req.platform_type.title()} - {req.recipient_name}\n"
-                    text += f"  To: {target_name}\n"
+                    text += f"• {escape_markdown(req.platform_type.title())} - {escape_markdown(req.recipient_name)}\n"
+                    text += f"  To: {escape_markdown(target_name)}\n"
                     text += f"  Status: {req.status.title()}\n"
                     text += f"  Expires: {req.expires_at.strftime('%Y-%m-%d %H:%M')}\n\n"
                     
@@ -430,7 +510,7 @@ async def handle_requests_command(message: Message):
         )
         
     except Exception as e:
-        logger.error(f"Error showing requests: {e}")
+        logger.error(f"Error showing requests: {e}", exc_info=True)
         await message.reply("❌ Error loading requests.")
 
 def get_platform_credential_instructions(platform_type: str) -> str:
@@ -446,3 +526,10 @@ async def handle_cancel_sharing(callback_query: CallbackQuery, state: FSMContext
     """Cancel sharing workflow."""
     await callback_query.message.edit_text("❌ **Sharing Cancelled**")
     await state.clear()
+
+@router.callback_query(lambda c: c.data == "cancel_auth_request")
+async def handle_cancel_auth_request(callback_query: CallbackQuery, state: FSMContext):
+    """Cancel auth request workflow."""
+    await callback_query.message.edit_text("❌ **Authentication Request Cancelled**")
+    await state.clear()
+    await callback_query.answer()

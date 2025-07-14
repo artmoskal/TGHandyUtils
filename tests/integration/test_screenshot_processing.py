@@ -21,6 +21,7 @@ class TestScreenshotProcessingSimple:
         message.from_user = user
         message.chat = chat
         message.reply = AsyncMock()
+        message.message_id = 12345  # Add message_id attribute
         
         return message
     
@@ -149,5 +150,6 @@ class TestScreenshotProcessingSimple:
             
             # Should reply with error message
             mock_message.reply.assert_called_once_with(
-                "❌ Error creating task from messages. Please try again."
+                "❌ Error creating task from messages. Please try again.",
+                disable_web_page_preview=True
             )

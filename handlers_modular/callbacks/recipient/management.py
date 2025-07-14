@@ -14,6 +14,7 @@ from keyboards.recipient import (
 )
 from core.container import container
 from core.logging import get_logger
+from helpers.ui_helpers import escape_markdown
 
 logger = get_logger(__name__)
 
@@ -58,7 +59,7 @@ async def handle_platform_type_selection(callback_query: CallbackQuery, state: F
     ])
     
     await callback_query.message.edit_text(
-        f"🔑 **{platform_type.title()} Credentials**\n\n"
+        f"🔑 **{escape_markdown(platform_type.title())} Credentials**\n\n"
         f"{credentials_text}",
         parse_mode='Markdown',
         reply_markup=cancel_keyboard,
@@ -233,7 +234,23 @@ async def back_to_trello_boards(callback_query: CallbackQuery, state: FSMContext
 
 @router.callback_query(lambda c: c.data == "add_shared_recipient")
 async def add_shared_recipient(callback_query: CallbackQuery, state: FSMContext):
-    """Start adding shared recipient."""
+    """Start adding shared recipient - show authentication method selection."""
+    from keyboards.recipient import get_shared_account_auth_keyboard
+    
+    keyboard = get_shared_account_auth_keyboard()
+    await callback_query.message.edit_text(
+        "👥 **Add Shared Account**\n\n"
+        "How will you authenticate this account?",
+        reply_markup=keyboard,
+        parse_mode='Markdown',
+        disable_web_page_preview=True
+    )
+    await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data == "shared_auth_enter_now")
+async def shared_auth_enter_now(callback_query: CallbackQuery, state: FSMContext):
+    """Handle entering credentials now for shared account."""
     # Add cancel keyboard for shared recipient name input
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
     cancel_keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -241,12 +258,23 @@ async def add_shared_recipient(callback_query: CallbackQuery, state: FSMContext)
     ])
     
     await callback_query.message.edit_text(
-        "👥 **Add Shared Recipient**\n\n"
-        "Enter the name for this shared recipient:",
+        "👥 **Add Shared Account**\n\n"
+        "Enter the name for this shared account:",
         reply_markup=cancel_keyboard,
+        parse_mode='Markdown',
         disable_web_page_preview=True
     )
     await state.set_state(RecipientState.waiting_for_recipient_name)
+    await state.update_data(mode="shared_recipient")  # Mark as shared recipient mode
+    await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data == "shared_auth_request")
+async def shared_auth_request(callback_query: CallbackQuery, state: FSMContext):
+    """Handle request authentication from another user."""
+    # Redirect to the sharing command's request_auth flow
+    from handlers_modular.commands.sharing_commands import handle_request_auth
+    await handle_request_auth(callback_query, state)
     await callback_query.answer()
 
 
@@ -270,7 +298,7 @@ async def handle_recipient_action(callback_query: CallbackQuery, state: FSMConte
         default_status = "⭐ Default" if recipient.is_default else "⚪ Optional"
         
         text = f"🎯 <b>{recipient.name}</b>\n\n"
-        text += f"📱 Platform: {recipient.platform_type.title()}\n"
+        text += f"📱 Platform: {escape_markdown(recipient.platform_type.title())}\n"
         text += f"📊 Status: {status}\n"
         text += f"⚙️ Default: {default_status}\n\n"
         text += "What would you like to do?"
@@ -301,7 +329,7 @@ async def handle_toggle_default(callback_query: CallbackQuery, state: FSMContext
             default_status = "⭐ Default" if recipient.is_default else "⚪ Optional"
             
             text = f"🎯 <b>{recipient.name}</b>\n\n"
-            text += f"📱 Platform: {recipient.platform_type.title()}\n"
+            text += f"📱 Platform: {escape_markdown(recipient.platform_type.title())}\n"
             text += f"📊 Status: {status}\n"
             text += f"⚙️ Default: {default_status}\n\n"
             text += "What would you like to do?"
@@ -339,7 +367,7 @@ async def handle_toggle_recipient(callback_query: CallbackQuery, state: FSMConte
             keyboard = get_recipient_edit_keyboard(recipient.id, recipient.platform_type)
             status_text = "✅ Active" if recipient.enabled else "❌ Disabled"
             text = f"🎯 <b>{recipient.name}</b>\n\n"
-            text += f"📱 Platform: {recipient.platform_type.title()}\n"
+            text += f"📱 Platform: {escape_markdown(recipient.platform_type.title())}\n"
             text += f"📊 Status: {status_text}\n\n"
             text += "What would you like to do?"
             
@@ -653,7 +681,7 @@ async def handle_recipient_removal(callback_query: CallbackQuery, state: FSMCont
         await callback_query.message.edit_text(
             f"🗑️ <b>Delete Account</b>\n\n"
             f"Are you sure you want to delete:\n"
-            f"<b>{recipient.name}</b> ({recipient.platform_type.title()})\n\n"
+            f"<b>{recipient.name}</b> ({escape_markdown(recipient.platform_type.title())})\n\n"
             f"⚠️ This action cannot be undone.",
             reply_markup=keyboard,
             parse_mode='HTML',

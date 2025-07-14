@@ -12,6 +12,7 @@ from database.repositories import TaskRepository
 from database.unified_recipient_repository import UnifiedRecipientRepository
 from database.user_preferences_repository import UserPreferencesRepository
 from database.auth_request_repository import AuthRequestRepository
+from database.user.user_repository import UserRepository
 from services.parsing_service import ParsingService
 from services.recipient_service import RecipientService
 from services.recipient_task_service import RecipientTaskService
@@ -21,6 +22,7 @@ from services.image_processing import ImageProcessingService
 from services.oauth_state_manager import OAuthStateManager
 from services.google_oauth_service import GoogleOAuthService
 from services.sharing_service import SharingService
+from services.user_service import UserService
 
 
 class ApplicationContainer(containers.DeclarativeContainer):
@@ -54,6 +56,11 @@ class ApplicationContainer(containers.DeclarativeContainer):
     
     auth_request_repository = providers.Factory(
         AuthRequestRepository,
+        db_manager=database_manager
+    )
+    
+    user_repository = providers.Factory(
+        UserRepository,
         db_manager=database_manager
     )
     
@@ -103,11 +110,18 @@ class ApplicationContainer(containers.DeclarativeContainer):
         client_secret=config.provided.GOOGLE_CLIENT_SECRET
     )
     
+    # User service
+    user_service = providers.Factory(
+        UserService,
+        user_repository=user_repository
+    )
+    
     # Sharing service
     sharing_service = providers.Factory(
         SharingService,
         repository=unified_recipient_repository,
-        user_service=providers.Factory(lambda: None)  # Placeholder for user service
+        user_service=user_service,
+        config=config
     )
 
 

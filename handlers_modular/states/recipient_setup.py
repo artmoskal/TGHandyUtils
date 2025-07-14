@@ -8,6 +8,8 @@ from states.recipient_states import RecipientState
 from keyboards.recipient import get_platform_selection_keyboard
 from core.container import container
 from core.logging import get_logger
+from models.parameter_objects import RecipientCreationData, SharedRecipientCreationData
+from helpers.ui_helpers import escape_markdown
 
 logger = get_logger(__name__)
 
@@ -37,15 +39,15 @@ async def handle_credentials_input(message: Message, state: FSMContext):
             # Add personal recipient
             name = f"My {platform_type.title()}"
             logger.error(f"🔍 CREATING PERSONAL RECIPIENT: {name}")
-            recipient_id = recipient_service.add_personal_recipient(
-                user_id=user_id,
+            recipient_data = RecipientCreationData(
                 name=name,
                 platform_type=platform_type,
                 credentials=credentials
             )
+            recipient_id = recipient_service.add_personal_recipient(user_id, recipient_data)
             
             await message.reply(
-                f"✅ Successfully connected your {platform_type.title()}!\n\n"
+                f"✅ Successfully connected your {escape_markdown(platform_type.title())}!\n\n"
                 f"🎯 What's next?\n"
                 f"• Use /create_task to create your first task\n"
                 f"• Use /recipients to manage your accounts\n\n"
@@ -58,12 +60,12 @@ async def handle_credentials_input(message: Message, state: FSMContext):
             name = state_data.get('recipient_name', f"Shared {platform_type.title()}")
             logger.error(f"🔍 CREATING SHARED RECIPIENT: {name}")
             
-            recipient_id = recipient_service.add_shared_recipient(
-                user_id=user_id,
+            recipient_data = SharedRecipientCreationData(
                 name=name,
                 platform_type=platform_type,
                 credentials=credentials
             )
+            recipient_id = recipient_service.add_shared_recipient(user_id, recipient_data)
             
             await message.reply(
                 f"✅ Successfully added shared recipient '{name}'!\n\n"
@@ -108,12 +110,12 @@ async def handle_google_oauth_code(message: Message, state: FSMContext):
             # Add personal Google Calendar recipient
             name = "My Google Calendar"
             logger.info(f"Creating personal Google Calendar recipient: {name}")
-            recipient_id = recipient_service.add_personal_recipient(
-                user_id=user_id,
+            recipient_data = RecipientCreationData(
                 name=name,
                 platform_type="google_calendar",
                 credentials=credentials
             )
+            recipient_id = recipient_service.add_personal_recipient(user_id, recipient_data)
             
             await message.reply(
                 f"✅ Successfully connected your Google Calendar!\n\n"
@@ -129,12 +131,12 @@ async def handle_google_oauth_code(message: Message, state: FSMContext):
             name = state_data.get('recipient_name', "Shared Google Calendar")
             logger.info(f"Creating shared Google Calendar recipient: {name}")
             
-            recipient_id = recipient_service.add_shared_recipient(
-                user_id=user_id,
+            recipient_data = SharedRecipientCreationData(
                 name=name,
                 platform_type="google_calendar",
                 credentials=credentials
             )
+            recipient_id = recipient_service.add_shared_recipient(user_id, recipient_data)
             
             await message.reply(
                 f"✅ Successfully added shared Google Calendar '{name}'!\n\n"

@@ -11,6 +11,7 @@ from typing import List
 # Import database and service components
 from database.connection import DatabaseManager
 from database.unified_recipient_repository import UnifiedRecipientRepository
+from database.user_preferences_repository import UserPreferencesRepository
 from services.recipient_service import RecipientService
 from services.recipient_task_service import RecipientTaskService
 from database.repositories import TaskRepository
@@ -30,6 +31,7 @@ from tests.factories import (
 
 # Import models
 from models.unified_recipient import UnifiedRecipient
+from models.parameter_objects import RecipientCreationData, SharedRecipientCreationData
 
 
 class TestTaskCreationWorkflow:
@@ -39,8 +41,9 @@ class TestTaskCreationWorkflow:
         """Setup real database components for each test."""
         self.db_manager = DatabaseManager("data/db/tasks.db")
         self.recipient_repo = UnifiedRecipientRepository(self.db_manager)
+        self.preferences_repo = UserPreferencesRepository(self.db_manager)
         self.task_repo = TaskRepository(self.db_manager)
-        self.recipient_service = RecipientService(self.recipient_repo)
+        self.recipient_service = RecipientService(self.recipient_repo, self.preferences_repo)
         self.task_service = RecipientTaskService(self.task_repo, self.recipient_service)
         
         # Test user ID for isolation
@@ -63,12 +66,14 @@ class TestTaskCreationWorkflow:
         personal_todoist = TodoistRecipientFactory(
             user_id=self.test_user_id,
             is_personal=True,
+            is_default=True,
             enabled=True,
             name="My Todoist Personal"
         )
         personal_trello = TrelloRecipientFactory(
             user_id=self.test_user_id,
             is_personal=True,
+            is_default=True,
             enabled=True,
             name="My Trello Personal"
         )
@@ -129,6 +134,7 @@ class TestTaskCreationWorkflow:
         personal_recipient = PersonalRecipientFactory(
             user_id=self.test_user_id,
             is_personal=True,
+            is_default=True,
             enabled=True,
             name="My Personal Account"
         )
@@ -165,12 +171,12 @@ class TestTaskCreationWorkflow:
         The service method must properly set is_personal=False for shared accounts.
         """
         # Use real service to create shared recipient
-        recipient_id = self.recipient_service.add_shared_recipient(
-            user_id=self.test_user_id,
+        recipient_data = SharedRecipientCreationData(
             name="Test Shared Partner",
             platform_type="todoist",
             credentials="test_shared_token"
         )
+        recipient_id = self.recipient_service.add_shared_recipient(self.test_user_id, recipient_data)
         
         # Verify with real database query
         created_recipient = self.recipient_repo.get_recipient_by_id(self.test_user_id, recipient_id)
@@ -188,12 +194,12 @@ class TestTaskCreationWorkflow:
         Control test to verify personal recipient creation still works correctly.
         """
         # Use real service to create personal recipient
-        recipient_id = self.recipient_service.add_personal_recipient(
-            user_id=self.test_user_id,
+        recipient_data = RecipientCreationData(
             name="My Personal Test",
             platform_type="trello",
             credentials="test_personal_token"
         )
+        recipient_id = self.recipient_service.add_personal_recipient(self.test_user_id, recipient_data)
         
         # Verify with real database query
         created_recipient = self.recipient_repo.get_recipient_by_id(self.test_user_id, recipient_id)
@@ -217,8 +223,9 @@ class TestScreenshotAttachment:
         """Setup real database components for each test."""
         self.db_manager = DatabaseManager("data/db/tasks.db")
         self.recipient_repo = UnifiedRecipientRepository(self.db_manager)
+        self.preferences_repo = UserPreferencesRepository(self.db_manager)
         self.task_repo = TaskRepository(self.db_manager)
-        self.recipient_service = RecipientService(self.recipient_repo)
+        self.recipient_service = RecipientService(self.recipient_repo, self.preferences_repo)
         self.task_service = RecipientTaskService(self.task_repo, self.recipient_service)
         
         # Test user ID for isolation
@@ -241,6 +248,7 @@ class TestScreenshotAttachment:
         recipient = TodoistRecipientFactory(
             user_id=self.test_user_id,
             is_personal=True,
+            is_default=True,
             enabled=True,
             name="Test Screenshot Recipient"
         )
@@ -284,6 +292,7 @@ class TestScreenshotAttachment:
         recipient = TrelloRecipientFactory(
             user_id=self.test_user_id,
             is_personal=True,
+            is_default=True,
             enabled=True,
             name="Screenshot Test Recipient"
         )
@@ -313,12 +322,14 @@ class TestScreenshotAttachment:
         todoist_recipient = TodoistRecipientFactory(
             user_id=self.test_user_id,
             is_personal=True,
+            is_default=True,
             enabled=True,
             name="Todoist Screenshot Test"
         )
         trello_recipient = TrelloRecipientFactory(
             user_id=self.test_user_id,
             is_personal=True,
+            is_default=True,
             enabled=True,
             name="Trello Screenshot Test"
         )
@@ -352,7 +363,8 @@ class TestRealDatabaseIntegration:
         """Setup real database components."""
         self.db_manager = DatabaseManager("data/db/tasks.db")
         self.recipient_repo = UnifiedRecipientRepository(self.db_manager)
-        self.recipient_service = RecipientService(self.recipient_repo)
+        self.preferences_repo = UserPreferencesRepository(self.db_manager)
+        self.recipient_service = RecipientService(self.recipient_repo, self.preferences_repo)
         
         # Test user ID for isolation
         self.test_user_id = 999999997
@@ -381,6 +393,7 @@ class TestRealDatabaseIntegration:
         personal_recipient = PersonalRecipientFactory(
             user_id=self.test_user_id,
             is_personal=True,
+            is_default=True,
             name="Database Test Personal"
         )
         
@@ -411,8 +424,10 @@ class TestRealDatabaseIntegration:
         """
         # Create batch of recipients using factories
         recipients = [
-            TodoistRecipientFactory(user_id=self.test_user_id),
-            TrelloRecipientFactory(user_id=self.test_user_id),
+            TodoistRecipientFactory(
+            user_id=self.test_user_id),
+            TrelloRecipientFactory(
+            user_id=self.test_user_id),
             SharedRecipientFactory(user_id=self.test_user_id),
             PersonalRecipientFactory(user_id=self.test_user_id)
         ]

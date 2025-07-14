@@ -47,7 +47,10 @@ class TestServiceResultIntegration:
         # Mock the platform task creation to succeed
         with patch.object(task_service, '_create_platform_task') as mock_create, \
              patch.object(task_service, '_extract_platform_task_id') as mock_extract:
-            mock_create.return_value = (True, "https://todoist.com/showTask?id=task_123")
+            mock_create.return_value = ServiceResult.success_with_data(
+                "Task created successfully",
+                "https://todoist.com/showTask?id=task_123"
+            )
             mock_extract.return_value = "task_123"
             mock_task_repo.add_recipient.return_value = True
             
@@ -177,7 +180,10 @@ class TestServiceResultIntegration:
              patch.object(task_service, '_extract_platform_task_id') as mock_extract, \
              patch.object(task_service, '_generate_success_feedback') as mock_feedback, \
              patch.object(task_service, '_generate_post_task_actions') as mock_actions:
-            mock_create.return_value = (True, "https://todoist.com/showTask?id=task_123")
+            mock_create.return_value = ServiceResult.success_with_data(
+                "Task created successfully",
+                "https://todoist.com/showTask?id=task_123"
+            )
             mock_extract.return_value = "task_123"
             mock_task_repo.add_recipient.return_value = True
             mock_feedback.return_value = "✅ Task created successfully!"

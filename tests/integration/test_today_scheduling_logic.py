@@ -160,15 +160,17 @@ class TestTodaySchedulingLogic:
                     print(f"  ✅ Scheduled for: {due_time.date()}")
     
     def test_prompt_template_contains_midnight_rule(self, parsing_service):
-        """Verify the prompt template has the midnight special case."""
+        """Verify the prompt template has time handling rules."""
         prompt_template = parsing_service.prompt_template.template
         
         # Check for critical time handling features that actually exist
-        assert "midnight" in prompt_template.lower(), \
-            "Prompt should mention midnight handling"
-        assert "SPECIAL CASES" in prompt_template, \
-            "Prompt should have special cases section"
+        assert "PARSING RULES" in prompt_template, \
+            "Prompt should have parsing rules section"
         assert "timezone" in prompt_template.lower(), \
             "Prompt should mention timezone handling"
+        assert "If time has passed today, assume tomorrow" in prompt_template, \
+            "Prompt should have rule for past times"
+        assert "Current UTC" in prompt_template, \
+            "Prompt should reference current UTC time"
         
         print("✅ Prompt template contains time handling features")

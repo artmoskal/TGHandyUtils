@@ -7,6 +7,7 @@ from bot import router
 from core.container import container
 from core.logging import get_logger
 from models.task import TaskCreate
+from helpers.error_messages import ErrorMessages
 
 logger = get_logger(__name__)
 
@@ -52,13 +53,13 @@ async def add_shared_task(callback_query: CallbackQuery, state: FSMContext):
         
         # Add task to shared recipient
         task_service = container.recipient_task_service()
-        success, feedback = task_service.add_task_to_recipient(user_id, task_id, recipient_id)
+        result = task_service.add_task_to_recipient(user_id, task_id, recipient_id)
         
-        if success:
-            await callback_query.answer(f"✅ {feedback}")
+        if result.success:
+            await callback_query.answer(f"✅ {result.message}")
             # Update the message to show the task was added
             current_text = callback_query.message.text or ""
-            updated_text = current_text + f"\n\n✅ {feedback}"
+            updated_text = current_text + f"\n\n✅ {result.message}"
             
             # Remove the button that was just clicked from the message
             from keyboards.recipient import get_post_task_actions_keyboard
@@ -89,7 +90,7 @@ async def add_shared_task(callback_query: CallbackQuery, state: FSMContext):
                     parse_mode='Markdown'
                 )
         else:
-            await callback_query.answer(f"❌ {feedback}")
+            await callback_query.answer(f"❌ {result.message}")
             
     except Exception as e:
         logger.error(f"Error adding shared task: {e}")
@@ -125,9 +126,7 @@ async def confirm_transcription(callback_query: CallbackQuery, state: FSMContext
             ])
             
             await callback_query.message.edit_text(
-                "❌ NO RECIPIENTS CONFIGURED\n\n"
-                "You need to connect a recipient first!\n\n"
-                "🚀 Use /recipients to add your Todoist or Trello account.",
+                ErrorMessages.NO_RECIPIENTS_SETUP_HELP,
                 reply_markup=error_keyboard,
                 disable_web_page_preview=True
             )

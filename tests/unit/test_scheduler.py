@@ -47,15 +47,12 @@ class TestTaskScheduler:
             title="Team Meeting Reminder",
             description="Weekly team sync meeting",
             due_time="2024-01-01T12:00:00Z",
-            platform_task_id="task_meeting_123",
-            platform_type="todoist"
         )
         
         # Verify factory creates realistic task
         assert task.title == "Team Meeting Reminder"
         assert task.description == "Weekly team sync meeting"
         assert task.due_time == "2024-01-01T12:00:00Z"
-        assert task.platform_type == "todoist"
     
     def test_overdue_task_creation_with_factory(self):
         """Test creating overdue tasks using Factory Boy."""
@@ -68,14 +65,11 @@ class TestTaskScheduler:
             title="Overdue Project Deadline",
             description="Submit project proposal",
             due_time=past_time.isoformat(),
-            platform_task_id="task_overdue_456",
-            platform_type="trello"
         )
         
         # Verify overdue task properties
         assert "overdue" in overdue_task.title.lower()
         assert len(overdue_task.description) > 0
-        assert overdue_task.platform_type == "trello"
         
         # Verify task is actually overdue
         task_due_time = datetime.fromisoformat(overdue_task.due_time.replace('Z', '+00:00'))
@@ -93,8 +87,6 @@ class TestTaskScheduler:
             title="Upcoming Client Call",
             description="Quarterly review with client",
             due_time=future_time.isoformat(),
-            platform_task_id="task_future_789",
-            platform_type="todoist"
         )
         
         # Verify future task properties
@@ -219,8 +211,6 @@ class TestTaskScheduler:
             title="Overdue Report Submission",
             description="Submit monthly performance report",
             due_time=past_time.isoformat(),
-            platform_task_id="task_overdue_report",
-            platform_type="todoist"
         )
         
         current_time = datetime.now(timezone.utc)
@@ -250,8 +240,6 @@ class TestTaskScheduler:
             title="Upcoming Team Standup",
             description="Daily team synchronization meeting",
             due_time=future_time.isoformat(),
-            platform_task_id="task_future_standup",
-            platform_type="trello"
         )
         
         current_time = datetime.now(timezone.utc)
@@ -278,8 +266,6 @@ class TestTaskScheduler:
             title="Task with Invalid Time",
             description="This task has malformed due time",
             due_time="invalid-date-format",  # Invalid format
-            platform_task_id="task_invalid_time",
-            platform_type="todoist"
         )
         
         current_time = datetime.now(timezone.utc)
@@ -330,8 +316,6 @@ class TestTaskScheduler:
         assert hasattr(factory_task, 'title')
         assert hasattr(factory_task, 'description')
         assert hasattr(factory_task, 'due_time')
-        assert hasattr(factory_task, 'platform_task_id')
-        assert hasattr(factory_task, 'platform_type')
         
         # Verify factory sets realistic values
         assert factory_task.user_id == self.test_user_id
@@ -339,7 +323,6 @@ class TestTaskScheduler:
         assert factory_task.message_id == self.test_message_id
         assert len(factory_task.title) > 0
         assert len(factory_task.description) >= 0  # Can be empty
-        assert factory_task.platform_type in ['todoist', 'trello']
     
     def test_task_scheduler_time_parsing_with_factory_tasks(self):
         """Test that scheduler can parse various time formats from Factory Boy tasks."""
@@ -440,8 +423,6 @@ class TestTaskScheduler:
                 pytest.fail(f"Invalid due time format: {due_time}")
         
         # Should have proper platform types
-        platform_types = {task.platform_type for task in tasks}
-        assert platform_types.issubset({'todoist', 'trello'})
         
         # Should have realistic user/chat/message IDs
         for task in tasks:

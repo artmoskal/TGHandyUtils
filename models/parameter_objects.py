@@ -135,6 +135,26 @@ class AuthRequestData:
 
 
 @dataclass(frozen=True)
+class RecipientCreationData:
+    """Parameter object for recipient creation."""
+    name: str
+    platform_type: str
+    credentials: str
+    platform_config: Optional[Dict] = None
+    
+    def __post_init__(self):
+        """Validate required fields."""
+        if not self.name or not self.platform_type or not self.credentials:
+            raise ValueError("Name, platform_type, and credentials are required")
+
+
+@dataclass(frozen=True)
+class SharedRecipientCreationData(RecipientCreationData):
+    """Parameter object for shared recipient creation."""
+    shared_by_info: Optional[str] = None
+
+
+@dataclass(frozen=True)
 class PlatformTaskData:
     """Parameter object for platform-specific task creation.
     
