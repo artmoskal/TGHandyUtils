@@ -10,7 +10,7 @@ from langchain.output_parsers import PydanticOutputParser
 from langchain_core.messages import HumanMessage
 
 from models.task import TaskCreate
-from core.interfaces import IParsingService, IConfig, IUserPreferencesRepository
+from core.interfaces import IParsingService, IConfig
 from core.exceptions import ParsingError
 from core.logging import get_logger
 
@@ -19,9 +19,8 @@ logger = get_logger(__name__)
 class ParsingService(IParsingService):
     """Service for parsing text into structured task data."""
     
-    def __init__(self, config: IConfig, preferences_repo: IUserPreferencesRepository = None):
+    def __init__(self, config: IConfig):
         self.config = config
-        self.preferences_repo = preferences_repo
         
         if not config.OPENAI_API_KEY:
             raise ValueError("OpenAI API key is required for parsing service")
@@ -38,11 +37,16 @@ class ParsingService(IParsingService):
     def _create_prompt_template(self) -> PromptTemplate:
         """Create the prompt template for task parsing."""
         template = """
-        You are a multilingual task creation assistant. Create a task with 'title', 'due_time', and 'description'.
+        You are a multilingual task creation assistant. Create a task with 'title', 'due_time' (UTC ISO 8601), and 'description'.
 
         CURRENT CONTEXT:
-        - Current Time: {current_local_time}
+        - Current UTC: {current_utc_iso}
+        - Current Local: {current_local_iso} ({location})
+        - Timezone: {timezone_name} (UTC{timezone_offset_str})
         - Today: {today_date} | Tomorrow: {tomorrow_date}
+
+        TIME EXAMPLES (current time {current_local_simple}):
+        {time_examples}
 
         MULTILINGUAL TIME PARSING:
         Handle ALL time formats in ANY language including:
@@ -52,19 +56,19 @@ class ParsingService(IParsingService):
         - French: "aujourd'hui à 19h", "demain matin", "ce soir", "vers 8h", "après le déjeuner"
         - German: "heute um 19h", "morgen früh", "heute abend", "gegen 8", "nach dem Mittagessen"
         - Italian: "oggi alle 19", "domani mattina", "stasera", "verso le 8", "dopo pranzo"
-        - Ukrainian: "сьогодні о 19:00", "завтра вранці", "сьогодні ввечері", "близько 8", "після обіду"
+        - Russian: "сегодня в 19:00", "завтра утром", "сегодня вечером", "около 8", "после обеда"
 
         PARSING RULES:
         1. PRIORITY: Explicit dates/times in message override all defaults
-        2. ALL TIMES: Interpret as local time based on current context
-        3. Handle approximate times: "ish", "around", "about", "por volta", "sobre", "vers", "gegen", "verso", "близько"
+        2. ALL TIMES: Calculate in UTC directly - current UTC time is {current_utc_iso}
+        3. Handle approximate times: "ish", "around", "about", "por volta", "sobre", "vers", "gegen", "verso", "около"
         4. Handle relative times: "tonight", "this evening", "end of day", "after lunch", "before work"
         5. Handle military time: "1900", "0800", "1430" (assume 24-hour format)
         6. Handle alternative formats: "7.30pm", "19h30", "7,30", "19:30h"
-        7. Handle written numbers: "seven", "eight", "nine", "sete", "ocho", "sept", "sieben", "sette", "сім"
+        7. Handle written numbers: "seven", "eight", "nine", "sete", "ocho", "sept", "sieben", "sette", "семь"
         8. If time has passed today, assume tomorrow (unless explicitly "today")
-        9. No specific time = tomorrow 9AM
-        10. Output format MUST be: YYYY-MM-DDTHH:MM:SS (local time, no timezone)
+        9. No specific time = tomorrow 9AM local
+        10. Output format MUST be: YYYY-MM-DDTHH:MM:SSZ
 
         TITLE: Create informative, specific titles (<50 chars).
         AVOID: "Decide on X", "Check with Y", "Handle appointment"
@@ -87,7 +91,10 @@ class ParsingService(IParsingService):
         return PromptTemplate(
             template=template,
             input_variables=["content_message", "owner_name",
-                           "current_local_time", "today_date", "tomorrow_date"],
+                           "current_utc_iso", "current_local_iso", "location",
+                           "timezone_name", "timezone_offset_str",
+                           "today_date", "tomorrow_date",
+                           "current_local_simple", "time_examples"],
             partial_variables={"format_instructions": self.parser.get_format_instructions()}
         )
     
@@ -283,6 +290,21 @@ class ParsingService(IParsingService):
         
         return None
     
+    def _generate_time_examples(self, current_local: datetime, current_utc: datetime, offset_hours: int) -> str:
+        """Generate clear, non-confusing time interpretation examples."""
+        examples = []
+        
+        # Simple, clear examples that don't cause confusion
+        tomorrow = current_local + timedelta(days=1)
+        
+        examples.extend([
+            f'- "in 1 hour" → {(current_utc + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")}',
+            f'- "in 30 minutes" → {(current_utc + timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")}',
+            f'- "tomorrow 9am" → {(tomorrow.replace(hour=9, minute=0, second=0) - timedelta(hours=offset_hours)).strftime("%Y-%m-%dT%H:%M:%SZ")}',
+            f'- "asap" → {(current_utc + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")}'
+        ])
+        
+        return '\n'.join(examples)
     
     def _get_timezone_name(self, location: str) -> str:
         """Get a friendly timezone name for a location."""
@@ -322,14 +344,13 @@ class ParsingService(IParsingService):
         return f"{location} Time"
 
     def parse_content_to_task(self, content_message: str, owner_name: Optional[str] = None, 
-                             location: Optional[str] = None, user_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+                             location: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Parse content message into a structured task.
         
         Args:
             content_message: The message content to parse
             owner_name: Name of the task owner
             location: User's location for timezone context
-            user_id: User ID for preferences lookup
             
         Returns:
             Dictionary with task data or None if parsing fails
@@ -338,45 +359,49 @@ class ParsingService(IParsingService):
             ParsingError: If parsing fails
         """
         try:
-            # Get current UTC time
+            # Get current times
             current_utc = datetime.now(timezone.utc)
             
-            # Get or calculate UTC offset
-            offset_hours = 0
-            if self.preferences_repo and user_id:
-                user_prefs = self.preferences_repo.get_preferences(user_id)
-                if user_prefs and user_prefs.utc_offset is not None:
-                    offset_hours = user_prefs.utc_offset
-                    logger.debug(f"Using cached UTC offset: {offset_hours}")
-                elif user_prefs and user_prefs.location:
-                    # Calculate from location and cache it
-                    offset_hours = self.get_timezone_offset(user_prefs.location)
-                    from models.unified_recipient import UnifiedUserPreferencesUpdate
-                    self.preferences_repo.update_preferences(
-                        user_id, 
-                        UnifiedUserPreferencesUpdate(utc_offset=offset_hours)
-                    )
-                    logger.info(f"Calculated and cached UTC offset: {offset_hours}")
-            elif location:
-                # Fallback to location-based calculation
+            # Calculate user's local time and timezone offset
+            if location:
                 offset_hours = self.get_timezone_offset(location)
-                logger.debug(f"Calculated UTC offset from location: {offset_hours}")
+                user_local_time = current_utc + timedelta(hours=offset_hours)
+                timezone_name = self._get_timezone_name(location)
+            else:
+                offset_hours = 0
+                user_local_time = current_utc
+                timezone_name = "UTC"
+                location = "UTC"
             
-            # Calculate user's local time (no timezone info for LLM)
-            user_local_time = current_utc + timedelta(hours=offset_hours)
+            # Format timezone offset string (e.g., "+1" or "-5")
+            timezone_offset_str = f"+{offset_hours}" if offset_hours >= 0 else str(offset_hours)
             
-            # Prepare simplified prompt variables (no timezone info)
+            # LLM-FIRST APPROACH: Use LLM for ALL time parsing to handle multilingual and edge cases
+            # Static patterns are kept as fallback only in case LLM fails
+            logger.info(f"Using LLM-first parsing for: {content_message}")
+            content_with_time = content_message
+            
+            # Generate dynamic time examples
+            time_examples = self._generate_time_examples(user_local_time, current_utc, offset_hours)
+            
+            # Prepare all the variables for the prompt
             input_data = {
-                "content_message": content_message,
+                "content_message": content_with_time,
                 "owner_name": owner_name or "User",
-                "current_local_time": user_local_time.strftime("%Y-%m-%d %H:%M:%S"),
+                "current_utc_iso": current_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "current_local_iso": user_local_time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "location": location,
+                "timezone_name": timezone_name,
+                "timezone_offset_str": timezone_offset_str,
                 "today_date": user_local_time.strftime("%Y-%m-%d"),
                 "tomorrow_date": (user_local_time + timedelta(days=1)).strftime("%Y-%m-%d"),
+                "current_local_simple": user_local_time.strftime("%H:%M"),
+                "time_examples": time_examples
             }
             
             # Format the prompt
             prompt_text = self.prompt_template.format(**input_data)
-            logger.debug(f"LLM Input (timezone-agnostic): {prompt_text}")
+            logger.debug(f"LLM Input: {prompt_text}")
             
             # Call the language model
             output = self.llm.invoke([HumanMessage(content=prompt_text)])
@@ -388,11 +413,6 @@ class ParsingService(IParsingService):
             
             result = parsed_task.model_dump()
             
-            # Convert local time from LLM to UTC
-            local_due_time = datetime.fromisoformat(result['due_time'])
-            utc_due_time = local_due_time - timedelta(hours=offset_hours)
-            result['due_time'] = utc_due_time.strftime("%Y-%m-%dT%H:%M:%SZ")
-            
             # Ensure the task is at least 1 minute in the future
             parsed_due_time = datetime.fromisoformat(result['due_time'].replace('Z', '+00:00'))
             min_future_time = current_utc + timedelta(minutes=1)
@@ -401,7 +421,8 @@ class ParsingService(IParsingService):
                 result['due_time'] = (parsed_due_time + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
                 logger.info(f"Pushed task to tomorrow as it was too close to current time")
             
-            logger.info(f"Successfully parsed task: {result['title']} with timezone-agnostic approach")
+            # LLM handles all time parsing - no static overrides
+            logger.info(f"Successfully parsed task: {result['title']} with LLM-parsed time: {result['due_time']}")
             return result
             
         except Exception as e:
@@ -409,14 +430,6 @@ class ParsingService(IParsingService):
             
             # FALLBACK: Try static patterns only if LLM completely fails
             try:
-                # Calculate local time for static patterns
-                if not 'user_local_time' in locals():
-                    if location:
-                        offset_hours = self.get_timezone_offset(location)
-                    else:
-                        offset_hours = 0
-                    user_local_time = current_utc + timedelta(hours=offset_hours)
-                
                 precise_time = self._calculate_precise_time(content_message, user_local_time, current_utc, offset_hours)
                 if precise_time:
                     logger.info(f"Using static fallback for time pattern in: {content_message}")

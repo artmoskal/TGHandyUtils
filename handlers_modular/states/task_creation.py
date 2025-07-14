@@ -42,7 +42,8 @@ async def handle_task_creation(message: Message, state: FSMContext):
             parsed_task_dict = parsing_service.parse_content_to_task(
                 task_description,
                 owner_name=owner_name,
-                location=location
+                location=location,
+                user_id=user_id
             )
             
             if parsed_task_dict:

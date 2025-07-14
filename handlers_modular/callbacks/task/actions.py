@@ -145,7 +145,8 @@ async def confirm_transcription(callback_query: CallbackQuery, state: FSMContext
         parsed_task_dict = parsing_service.parse_content_to_task(
             transcribed_text,
             owner_name=owner_name,
-            location=location
+            location=location,
+            user_id=user_id
         )
         
         if parsed_task_dict:

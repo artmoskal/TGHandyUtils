@@ -149,6 +149,7 @@ class DatabaseMigrator:
             ("006_fix_default_recipients", "Fix default recipient logic and data", self._migration_006_fix_defaults),
             ("007_add_task_recipients", "Add multi-platform task tracking table", self._migration_007_task_recipients),
             ("008_add_users_table", "Add users table for username tracking", self._migration_008_users_table),
+            ("009_add_utc_offset", "Add UTC offset to user preferences for timezone handling", self._migration_009_add_utc_offset),
             # Add future migrations here
         ]
         
@@ -423,6 +424,56 @@ class DatabaseMigrator:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)")
         
         logger.info("Created users table for username tracking")
+    
+    def _migration_009_add_utc_offset(self, conn: sqlite3.Connection):
+        """Add UTC offset to user preferences for timezone-aware processing."""
+        # Add utc_offset column to user_preferences_unified table
+        conn.execute("""
+            ALTER TABLE user_preferences_unified 
+            ADD COLUMN utc_offset INTEGER DEFAULT 0
+        """)
+        
+        # Update existing records with UTC offset based on location
+        # This mapping matches the existing get_timezone_offset logic
+        location_offset_map = {
+            'portugal': 1, 'cascais': 1, 'lisbon': 1, 'porto': 1,
+            'spain': 1, 'madrid': 1, 'barcelona': 1,
+            'france': 1, 'paris': 1,
+            'germany': 1, 'berlin': 1,
+            'uk': 0, 'united kingdom': 0, 'london': 0,
+            'new york': -5, 'est': -5, 'eastern': -5,
+            'california': -8, 'pst': -8, 'pacific': -8,
+            'tokyo': 9, 'japan': 9,
+            'sydney': 10, 'australia': 10,
+            'moscow': 3, 'russia': 3,
+            'beijing': 8, 'china': 8,
+            'india': 5, 'mumbai': 5, 'delhi': 5,
+            'dubai': 4, 'uae': 4,
+        }
+        
+        # Get all user preferences with locations
+        cursor = conn.execute("SELECT user_id, location FROM user_preferences_unified WHERE location IS NOT NULL")
+        updates = []
+        
+        for user_id, location in cursor.fetchall():
+            if location:
+                location_lower = location.lower().strip()
+                # Find matching offset
+                offset = 0
+                for key, value in location_offset_map.items():
+                    if key in location_lower:
+                        offset = value
+                        break
+                updates.append((offset, user_id))
+        
+        # Apply updates
+        for offset, user_id in updates:
+            conn.execute(
+                "UPDATE user_preferences_unified SET utc_offset = ? WHERE user_id = ?",
+                (offset, user_id)
+            )
+        
+        logger.info(f"Added utc_offset column and updated {len(updates)} user preferences")
 
 
 def ensure_database_ready(db_path: str) -> bool:

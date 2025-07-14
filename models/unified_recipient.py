@@ -51,6 +51,7 @@ class UnifiedUserPreferences:
     telegram_notifications: bool = True
     owner_name: Optional[str] = None
     location: Optional[str] = None
+    utc_offset: int = 0
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -62,6 +63,7 @@ class UnifiedUserPreferencesCreate:
     telegram_notifications: bool = True
     owner_name: Optional[str] = None
     location: Optional[str] = None
+    utc_offset: Optional[int] = None
 
 
 @dataclass
@@ -71,3 +73,4 @@ class UnifiedUserPreferencesUpdate:
     telegram_notifications: Optional[bool] = None
     owner_name: Optional[str] = None
     location: Optional[str] = None
+    utc_offset: Optional[int] = None

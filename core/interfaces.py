@@ -62,7 +62,7 @@ class IParsingService(ABC):
     
     @abstractmethod
     def parse_content_to_task(self, content_message: str, owner_name: Optional[str] = None, 
-                             location: Optional[str] = None) -> Optional[Dict[str, Any]]:
+                             location: Optional[str] = None, user_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
         """Parse content message into structured task data."""
         pass
     

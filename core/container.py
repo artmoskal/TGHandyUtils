@@ -67,7 +67,8 @@ class ApplicationContainer(containers.DeclarativeContainer):
     # Services
     parsing_service = providers.Factory(
         ParsingService,
-        config=config
+        config=config,
+        preferences_repo=user_preferences_repository
     )
     
     recipient_service = providers.Factory(

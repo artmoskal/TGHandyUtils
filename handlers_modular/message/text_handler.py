@@ -41,7 +41,8 @@ async def process_thread_with_photos(message: Message, thread_content: List[Tupl
         parsed_task_dict = parsing_service.parse_content_to_task(
             concatenated_content,
             owner_name=owner_name,
-            location=location
+            location=location,
+            user_id=owner_id
         )
         
         if parsed_task_dict:
