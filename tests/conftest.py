@@ -9,6 +9,25 @@ from unittest.mock import Mock, AsyncMock, MagicMock
 from contextlib import contextmanager
 from dependency_injector import containers, providers
 
+# Check if tests are being run directly with pytest
+if not os.environ.get('RUNNING_IN_DOCKER'):
+    # Check if we're running in the test container
+    if not os.path.exists('/.dockerenv'):
+        pytest.exit(
+            "\n"
+            "❌ Direct pytest execution is not supported!\n"
+            "\n"
+            "Please use the test.sh script instead:\n"
+            "  ./test.sh unit              # Run unit tests\n"
+            "  ./test.sh integration       # Run integration tests (uses API credits!)\n"
+            "  ./test.sh all              # Run all tests\n"
+            "\n"
+            "For more options:\n"
+            "  ./test.sh --help\n"
+            "\n"
+            "This ensures proper environment setup and test isolation.\n"
+        )
+
 # Add the project root to Python path
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -18,12 +37,7 @@ from models.task import TaskCreate
 from models.unified_recipient import UnifiedRecipient, UnifiedRecipientCreate
 
 
-@pytest.fixture(scope="session")
-def event_loop():
-    """Create an instance of the default event loop for the test session."""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
+# Event loop is handled automatically by pytest-asyncio with asyncio_mode = auto
 
 
 class MockConfig(IConfig):
@@ -236,3 +250,15 @@ def mock_telegram_message():
     message.text = "Test message"
     message.reply = AsyncMock()
     return message
+
+
+@pytest.fixture(autouse=True, scope="session")
+def mock_openai_globally():
+    """Mock ChatOpenAI globally for all tests to prevent real API calls."""
+    from unittest.mock import patch
+    with patch('langchain_openai.ChatOpenAI') as mock_chat:
+        mock_instance = Mock()
+        mock_chat.return_value = mock_instance
+        yield mock_instance
+
+
