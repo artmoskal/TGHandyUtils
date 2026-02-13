@@ -149,7 +149,8 @@ class DatabaseMigrator:
             ("006_fix_default_recipients", "Fix default recipient logic and data", self._migration_006_fix_defaults),
             ("007_add_task_recipients", "Add multi-platform task tracking table", self._migration_007_task_recipients),
             ("008_add_users_table", "Add users table for username tracking", self._migration_008_users_table),
-            ("009_add_utc_offset", "Add UTC offset to user preferences for timezone handling", self._migration_009_add_utc_offset),
+            ("009_add_user_preferences_unified", "Add user preferences unified table", self._migration_009_add_user_preferences_unified),
+            ("010_add_utc_offset", "Add UTC offset to user preferences for timezone handling", self._migration_010_add_utc_offset),
             # Add future migrations here
         ]
         
@@ -425,13 +426,26 @@ class DatabaseMigrator:
         
         logger.info("Created users table for username tracking")
     
-    def _migration_009_add_utc_offset(self, conn: sqlite3.Connection):
-        """Add UTC offset to user preferences for timezone-aware processing."""
-        # Add utc_offset column to user_preferences_unified table
+    def _migration_009_add_user_preferences_unified(self, conn: sqlite3.Connection):
+        """Create user preferences unified table."""
         conn.execute("""
-            ALTER TABLE user_preferences_unified 
-            ADD COLUMN utc_offset INTEGER DEFAULT 0
+            CREATE TABLE IF NOT EXISTS user_preferences_unified (
+                user_id INTEGER PRIMARY KEY,
+                show_recipient_ui BOOLEAN DEFAULT 0,
+                telegram_notifications BOOLEAN DEFAULT 1,
+                owner_name TEXT,
+                location TEXT,
+                utc_offset INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
         """)
+        logger.info("Created user_preferences_unified table")
+    
+    def _migration_010_add_utc_offset(self, conn: sqlite3.Connection):
+        """Add UTC offset to user preferences for timezone-aware processing."""
+        # The utc_offset column is already created in migration 009
+        # This migration now just updates existing records with calculated offsets
         
         # Update existing records with UTC offset based on location
         # This mapping matches the existing get_timezone_offset logic

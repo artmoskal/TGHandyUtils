@@ -182,14 +182,21 @@ class RecipientService:
             return self.preferences_repo.create_preferences(user_id, new_prefs)
     
     def update_location(self, user_id: int, location: str) -> bool:
-        """Update user's location."""
+        """Update user's location and calculate timezone offset."""
+        from services.parsing_service import ParsingService
+        
+        # Calculate UTC offset for the new location using LLM
+        parsing_service = ParsingService(self.config, self.preferences_repo)
+        utc_offset = parsing_service.parse_timezone_with_llm(location)
+        
         prefs = self.preferences_repo.get_preferences(user_id)
         
         if prefs:
-            updates = UnifiedUserPreferencesUpdate(location=location)
+            # Update location and UTC offset together
+            updates = UnifiedUserPreferencesUpdate(location=location, utc_offset=utc_offset)
             return self.preferences_repo.update_preferences(user_id, updates)
         else:
-            new_prefs = UnifiedUserPreferencesCreate(location=location)
+            new_prefs = UnifiedUserPreferencesCreate(location=location, utc_offset=utc_offset)
             return self.preferences_repo.create_preferences(user_id, new_prefs)
     
     def delete_all_user_data(self, user_id: int) -> bool:

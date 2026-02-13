@@ -20,7 +20,7 @@ class TaskDB:
 class TaskCreate(BaseModel):
     """Model for creating a new task."""
     title: str = Field(description="The title of the task.")
-    due_time: str = Field(description="The due time in UTC ISO 8601 format (YYYY-MM-DDTHH:MM:SSZ).")
+    due_time: str = Field(description="The due time in ISO 8601 format (YYYY-MM-DDTHH:MM:SS).")
     description: Optional[str] = Field(description="The description or details of the task.")
     
     @field_validator('title')

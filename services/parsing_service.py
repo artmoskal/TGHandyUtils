@@ -5,8 +5,8 @@ from datetime import datetime, timezone, timedelta
 import zoneinfo
 
 from langchain_openai import ChatOpenAI
-from langchain.prompts import PromptTemplate
-from langchain.output_parsers import PydanticOutputParser
+from langchain_core.prompts import PromptTemplate
+from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.messages import HumanMessage
 
 from models.task import TaskCreate
@@ -18,6 +18,14 @@ logger = get_logger(__name__)
 
 class ParsingService(IParsingService):
     """Service for parsing text into structured task data."""
+    
+    # Class variable to track token usage across all instances
+    _token_usage = {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "call_count": 0
+    }
     
     def __init__(self, config: IConfig, preferences_repo: IUserPreferencesRepository = None):
         self.config = config
@@ -43,30 +51,44 @@ class ParsingService(IParsingService):
         CURRENT CONTEXT:
         - Current Time: {current_local_time}
         - Today: {today_date} | Tomorrow: {tomorrow_date}
+        - Late Night Mode: {is_late_night} (After 23:00, "today" means tomorrow for morning times)
 
-        MULTILINGUAL TIME PARSING:
-        Handle ALL time formats in ANY language including:
-        - English: "today 1900", "at 7", "tonight", "7.30pm", "19h", "8ish", "after lunch", "end of day"
-        - Portuguese: "hoje às 19h", "amanhã de manhã", "hoje à noite", "por volta das 8", "depois do almoço"
-        - Spanish: "hoy a las 19h", "mañana por la mañana", "esta noche", "sobre las 8", "después de comer"
-        - French: "aujourd'hui à 19h", "demain matin", "ce soir", "vers 8h", "après le déjeuner"
-        - German: "heute um 19h", "morgen früh", "heute abend", "gegen 8", "nach dem Mittagessen"
-        - Italian: "oggi alle 19", "domani mattina", "stasera", "verso le 8", "dopo pranzo"
-        - Ukrainian: "сьогодні о 19:00", "завтра вранці", "сьогодні ввечері", "близько 8", "після обіду"
+        TIME PARSING:
+        - Parse time expressions in ANY language
+        - Handle formats: "today 1900", "at 7pm", "19h", "tonight", "tomorrow morning"
+        - Understand relative times: "in 2 hours", "after lunch", "end of day"
 
-        PARSING RULES:
-        1. PRIORITY: Explicit dates/times in message override all defaults
-        2. ALL TIMES: Interpret as local time based on current context
-        3. Handle approximate times: "ish", "around", "about", "por volta", "sobre", "vers", "gegen", "verso", "близько"
-        4. Handle relative times: "tonight", "this evening", "end of day", "after lunch", "before work"
-        5. Handle military time: "1900", "0800", "1430" (assume 24-hour format)
-        6. Handle alternative formats: "7.30pm", "19h30", "7,30", "19:30h"
-        7. Handle written numbers: "seven", "eight", "nine", "sete", "ocho", "sept", "sieben", "sette", "сім"
-        8. If time has passed today, assume tomorrow (unless explicitly "today")
-        9. No specific time = tomorrow 9AM
-        10. Output format MUST be: YYYY-MM-DDTHH:MM:SS (local time, no timezone)
+        TIME SCHEDULING RULES:
+        1. Compare times in 24-hour format
+        2. If requested time > current time → schedule TODAY
+        3. If requested time < current time → schedule TOMORROW
+        4. Exception: After 23:00, "today + morning time" → TOMORROW
+        5. No time specified → tomorrow 9AM
+        6. "asap"/"now" → 1 hour from now
+        7. Relative times: "in X hours/days/weeks" = now + exact duration
+           - "in 10 minutes" = now + 10 minutes (NOT 1 hour!)
+           - "in 5 minutes" = now + 5 minutes
+           - "in 30 minutes" = now + 30 minutes
+           - "in 2 hours" = now + 2 hours
+           - "in a day" = now + 24 hours (NOT tomorrow 9AM)
+           - "in 3 days" = now + 72 hours
+        8. Time units: m=minutes, h=hours, d=days, w=weeks (e.g. "4m" = 4 minutes)
+        9. Output: YYYY-MM-DDTHH:MM:SS (local time)
+        
+        CRITICAL EARLY MORNING RULE:
+        When current time is between 00:00-06:00, and user says "today X":
+        - If X > current time → schedule for TODAY (not tomorrow)
+        - This applies to ALL times after midnight (2am, 5am, 9am, noon, etc.)
+        
+        EXAMPLES:
+        - Current: 01:30, "today 5am" → TODAY 05:00 ✓ (NOT tomorrow!)
+        - Current: 00:15, "today 2am" → TODAY 02:00 ✓ (NOT tomorrow!)
+        - Current: 00:15, "today 9am" → TODAY 09:00 ✓ (NOT tomorrow!)
+        - Current: 09:30, "today 5am" → TOMORROW 05:00
+        - Current: 23:30, "today 9am" → TOMORROW 09:00 (late night)
+        - Current: 15:00, "in 2 hours" → TODAY 17:00
 
-        TITLE: Create informative, specific titles (<50 chars).
+        TITLE: Create informative, specific titles. Preserve the user's exact wording and intent. Do NOT censor, sanitize, or rephrase the user's words.
         AVOID: "Decide on X", "Check with Y", "Handle appointment"
 
         DESCRIPTION:
@@ -133,9 +155,8 @@ class ParsingService(IParsingService):
             # Create target time for today
             target_local = current_local.replace(hour=hour, minute=minute, second=0, microsecond=0)
             
-            # If time has passed, it means tomorrow
-            if target_local <= current_local:
-                target_local += timedelta(days=1)
+            # For "today", if the time has already passed, it still means today
+            # Don't push to tomorrow - user explicitly said "today"
             
             # Convert to UTC
             target_utc = target_local - timedelta(hours=offset_hours)
@@ -151,14 +172,9 @@ class ParsingService(IParsingService):
                 hour, minute = 0, 0
             else:
                 # Check which pattern matched
-                if match.group(1):  # HH:MM format
-                    hour_str = match.group(1)
-                    minute_str = match.group(2)
-                    am_pm = match.group(3)
-                else:  # HH am/pm format
-                    hour_str = match.group(4)
-                    minute_str = "00"
-                    am_pm = match.group(5)
+                hour_str = match.group(1)
+                minute_str = match.group(2) if match.group(2) else "00"
+                am_pm = match.group(3)
                 
                 if not hour_str:
                     return None
@@ -218,7 +234,7 @@ class ParsingService(IParsingService):
             return target_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
         
         # Pattern 5: "at HH:MM" or "at H am/pm" patterns - require either full time or am/pm
-        at_time_pattern = r'\bat\s+(?:(\d{1,2}):(\d{2})(?:\s*(am|pm))?|(\d{1,2})\s+(am|pm))\b'
+        at_time_pattern = r'\bat\s+(?:(\d{1,2}):(\d{2})(?:\s*(am|pm))?|(\d{1,2})\s*(am|pm))\b'
         match = re.search(at_time_pattern, time_phrase.lower())
         if match:
             # Check which pattern matched
@@ -282,44 +298,6 @@ class ParsingService(IParsingService):
                     pass
         
         return None
-    
-    
-    def _get_timezone_name(self, location: str) -> str:
-        """Get a friendly timezone name for a location."""
-        if not location:
-            return "UTC"
-        
-        location_lower = location.lower()
-        
-        # Common timezone name mappings
-        timezone_names = {
-            'portugal': 'Portugal Time',
-            'cascais': 'Portugal Time',
-            'lisbon': 'Portugal Time',
-            'porto': 'Portugal Time',
-            'uk': 'UK Time',
-            'united kingdom': 'UK Time', 
-            'london': 'UK Time',
-            'spain': 'Spain Time',
-            'madrid': 'Spain Time',
-            'barcelona': 'Spain Time',
-            'france': 'France Time',
-            'paris': 'France Time',
-            'germany': 'Germany Time',
-            'berlin': 'Germany Time',
-            'new york': 'Eastern Time',
-            'california': 'Pacific Time',
-            'tokyo': 'Japan Time',
-            'sydney': 'Australia Time'
-        }
-        
-        # Check for matches
-        for key, name in timezone_names.items():
-            if key in location_lower:
-                return name
-        
-        # Default to location name + " Time"
-        return f"{location} Time"
 
     def parse_content_to_task(self, content_message: str, owner_name: Optional[str] = None, 
                              location: Optional[str] = None, user_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
@@ -372,6 +350,7 @@ class ParsingService(IParsingService):
                 "current_local_time": user_local_time.strftime("%Y-%m-%d %H:%M:%S"),
                 "today_date": user_local_time.strftime("%Y-%m-%d"),
                 "tomorrow_date": (user_local_time + timedelta(days=1)).strftime("%Y-%m-%d"),
+                "is_late_night": "Yes" if user_local_time.hour >= 23 else "No",
             }
             
             # Format the prompt
@@ -381,6 +360,17 @@ class ParsingService(IParsingService):
             # Call the language model
             output = self.llm.invoke([HumanMessage(content=prompt_text)])
             logger.debug(f"LLM Output: {output.content}")
+            
+            # Track token usage
+            if hasattr(output, 'response_metadata') and 'token_usage' in output.response_metadata:
+                usage = output.response_metadata['token_usage']
+                ParsingService._token_usage['prompt_tokens'] += usage.get('prompt_tokens', 0)
+                ParsingService._token_usage['completion_tokens'] += usage.get('completion_tokens', 0)
+                ParsingService._token_usage['total_tokens'] += usage.get('total_tokens', 0)
+                ParsingService._token_usage['call_count'] += 1
+                logger.debug(f"Token usage - Prompt: {usage.get('prompt_tokens', 0)}, "
+                           f"Completion: {usage.get('completion_tokens', 0)}, "
+                           f"Total: {usage.get('total_tokens', 0)}")
             
             # Parse the output
             parsed_task = self.parser.parse(output.content)
@@ -393,9 +383,9 @@ class ParsingService(IParsingService):
             utc_due_time = local_due_time - timedelta(hours=offset_hours)
             result['due_time'] = utc_due_time.strftime("%Y-%m-%dT%H:%M:%SZ")
             
-            # Ensure the task is at least 1 minute in the future
+            # Ensure the task is at least 35 seconds in the future
             parsed_due_time = datetime.fromisoformat(result['due_time'].replace('Z', '+00:00'))
-            min_future_time = current_utc + timedelta(minutes=1)
+            min_future_time = current_utc + timedelta(seconds=35)
             if parsed_due_time <= min_future_time:
                 # If the time is in the past or too close to now, push it to tomorrow at the same time
                 result['due_time'] = (parsed_due_time + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -409,6 +399,10 @@ class ParsingService(IParsingService):
             
             # FALLBACK: Try static patterns only if LLM completely fails
             try:
+                # Ensure we have current_utc
+                if 'current_utc' not in locals():
+                    current_utc = datetime.now(timezone.utc)
+                
                 # Calculate local time for static patterns
                 if not 'user_local_time' in locals():
                     if location:
@@ -430,62 +424,73 @@ class ParsingService(IParsingService):
                     return fallback_result
                 else:
                     logger.error(f"Static fallback also failed - no patterns matched")
-                    raise ParsingError(f"Both LLM and static parsing failed: {e}")
+                    raise ParsingError("Both LLM and static parsing failed")
+            except ParsingError:
+                # Re-raise ParsingError as-is
+                raise
             except Exception as fallback_e:
                 logger.error(f"Static fallback failed: {fallback_e}")
                 raise ParsingError(f"Content parsing failed: {e}")
     
-    def _get_timezone_info(self, location: Optional[str]) -> str:
-        """Get timezone information for a location."""
+    def parse_timezone_with_llm(self, location: str) -> int:
+        """Parse location string to UTC offset using LLM.
+        
+        Args:
+            location: Location string (e.g. "NY", "Portugal", "London")
+            
+        Returns:
+            UTC offset in hours (e.g. -5 for NY, 0 for London)
+        """
         if not location:
-            return "UTC+0"
-        
-        location_lower = location.lower()
-        
-        # Common timezone mappings
-        timezone_map = {
-            # Portugal
-            'portugal': 'UTC+1 (UTC+2 during DST)',
-            'cascais': 'UTC+1 (UTC+2 during DST)', 
-            'lisbon': 'UTC+1 (UTC+2 during DST)',
-            'porto': 'UTC+1 (UTC+2 during DST)',
+            return 0
             
-            # UK
-            'uk': 'UTC+0 (UTC+1 during DST)',
-            'united kingdom': 'UTC+0 (UTC+1 during DST)',
-            'london': 'UTC+0 (UTC+1 during DST)',
+        try:
+            prompt = f"""Determine the UTC timezone offset for this location: "{location}"
+
+IMPORTANT: Return ONLY a single number representing the UTC offset in hours.
+Consider daylight saving time if currently active.
+
+Examples:
+- "NY" or "New York" → -5 (or -4 during DST)
+- "London" or "UK" → 0 (or 1 during BST)
+- "PT" or "Portugal" → 0 (or 1 during summer)
+- "California" or "LA" → -8 (or -7 during DST)
+- "Tokyo" → 9
+- "Sydney" → 10 (or 11 during DST)
+
+Location: {location}
+UTC offset (hours):"""
+
+            # Create a simple LLM call without complex parsing
+            response = self.llm.invoke([HumanMessage(content=prompt)])
+            offset_str = response.content.strip()
             
-            # Spain
-            'spain': 'UTC+1 (UTC+2 during DST)',
-            'madrid': 'UTC+1 (UTC+2 during DST)',
-            'barcelona': 'UTC+1 (UTC+2 during DST)',
+            # Track token usage
+            if hasattr(response, 'response_metadata') and 'token_usage' in response.response_metadata:
+                usage = response.response_metadata['token_usage']
+                ParsingService._token_usage['prompt_tokens'] += usage.get('prompt_tokens', 0)
+                ParsingService._token_usage['completion_tokens'] += usage.get('completion_tokens', 0)
+                ParsingService._token_usage['total_tokens'] += usage.get('total_tokens', 0)
+                ParsingService._token_usage['call_count'] += 1
             
-            # France
-            'france': 'UTC+1 (UTC+2 during DST)',
-            'paris': 'UTC+1 (UTC+2 during DST)',
-            
-            # Germany
-            'germany': 'UTC+1 (UTC+2 during DST)',
-            'berlin': 'UTC+1 (UTC+2 during DST)',
-            
-            # USA East Coast
-            'new york': 'UTC-5 (UTC-4 during DST)',
-            'est': 'UTC-5 (UTC-4 during DST)',
-            'eastern': 'UTC-5 (UTC-4 during DST)',
-            
-            # USA West Coast  
-            'california': 'UTC-8 (UTC-7 during DST)',
-            'pst': 'UTC-8 (UTC-7 during DST)',
-            'pacific': 'UTC-8 (UTC-7 during DST)',
-        }
-        
-        # Check for exact matches first
-        for key, tz in timezone_map.items():
-            if key in location_lower:
-                return tz
-        
-        # Default fallback
-        return "UTC+0 (please specify timezone for accuracy)"
+            # Parse the response - should be a simple number
+            try:
+                offset = int(offset_str)
+                # Validate reasonable range
+                if -12 <= offset <= 14:  # Valid UTC offsets
+                    logger.info(f"LLM parsed location '{location}' to UTC offset {offset}")
+                    return offset
+                else:
+                    logger.warning(f"LLM returned invalid offset {offset} for location '{location}'")
+                    return 0
+            except ValueError:
+                logger.warning(f"LLM returned non-numeric offset '{offset_str}' for location '{location}'")
+                return 0
+                
+        except Exception as e:
+            logger.error(f"LLM timezone parsing failed for '{location}': {e}")
+            # Fall back to existing hardcoded method
+            return self.get_timezone_offset(location)
     
     def get_timezone_offset(self, location: Optional[str]) -> int:
         """Get dynamic timezone offset in hours for a location (handles DST automatically)."""
@@ -646,5 +651,20 @@ class ParsingService(IParsingService):
             logger.error(f"Error converting time for display: {e}")
             # Fallback to simple string format
             return f"Error parsing time: {utc_time_str} (UTC)"
+    
+    @classmethod
+    def get_token_usage(cls) -> dict:
+        """Get current token usage statistics."""
+        return cls._token_usage.copy()
+    
+    @classmethod
+    def reset_token_usage(cls):
+        """Reset token usage statistics."""
+        cls._token_usage = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "call_count": 0
+        }
 
 # Remove global instance - use DI container instead

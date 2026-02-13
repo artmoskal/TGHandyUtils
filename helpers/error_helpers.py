@@ -7,6 +7,7 @@ from functools import wraps
 import requests
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from helpers.ui_helpers import escape_markdown
+from core.interfaces import ServiceResult
 
 logger = logging.getLogger(__name__)
 
@@ -77,8 +78,8 @@ def with_timeout_and_retry(max_retries: int = 3, backoff_factor: float = 2.0):
                     if e.response.status_code in [401, 403]:
                         # Don't retry auth errors
                         raise PlatformAuthError(platform_name, f"HTTP {e.response.status_code}: {e.response.text}")
-                    elif e.response.status_code in [400, 404, 422]:
-                        # Don't retry client errors
+                    elif e.response.status_code in [400, 404, 410, 422]:
+                        # Don't retry client errors (410 Gone = deprecated API endpoint)
                         raise PlatformConfigError(platform_name, f"HTTP {e.response.status_code}: {e.response.text}")
                     else:
                         # Retry server errors
@@ -103,7 +104,7 @@ def with_timeout_and_retry(max_retries: int = 3, backoff_factor: float = 2.0):
     return decorator
 
 
-def handle_platform_error(platform: str, error: Exception) -> Tuple[bool, str]:
+def handle_platform_error(platform: str, error: Exception) -> ServiceResult:
     """
     Handle platform errors and return user-friendly messages.
     
@@ -112,7 +113,8 @@ def handle_platform_error(platform: str, error: Exception) -> Tuple[bool, str]:
         error: The exception that occurred
         
     Returns:
-        Tuple of (is_retryable, user_message)
+        ServiceResult with success=False and appropriate message
+        data field contains 'retryable' boolean
     """
     platform_emoji_map = {
         "todoist": "📋",
@@ -124,29 +126,29 @@ def handle_platform_error(platform: str, error: Exception) -> Tuple[bool, str]:
     emoji = platform_emoji_map.get(platform, "📱")
     
     if isinstance(error, PlatformTimeoutError):
-        return True, f"🔴 {platform_display} is temporarily unavailable. Please try again in a moment."
+        return ServiceResult(False, f"🔴 {platform_display} is temporarily unavailable. Please try again in a moment.", {"retryable": True})
         
     elif isinstance(error, PlatformConnectionError):
-        return True, f"🔴 {platform_display} connection failed. Please check your internet connection."
+        return ServiceResult(False, f"🔴 {platform_display} connection failed. Please check your internet connection.", {"retryable": True})
         
     elif isinstance(error, PlatformAuthError):
-        return False, f"🔴 {platform_display} authorization expired. Please re-connect your account in Settings."
+        return ServiceResult(False, f"🔴 {platform_display} authorization expired. Please re-connect your account in Settings.", {"retryable": False})
         
     elif isinstance(error, PlatformConfigError):
         if platform == "trello":
-            return False, f"🔴 {platform_display} configuration error. Please check your board permissions in Settings."
+            return ServiceResult(False, f"🔴 {platform_display} configuration error. Please check your board permissions in Settings.", {"retryable": False})
         else:
-            return False, f"🔴 {platform_display} configuration error. Please check your account settings."
+            return ServiceResult(False, f"🔴 {platform_display} configuration error. Please check your account settings.", {"retryable": False})
             
     elif isinstance(error, PlatformError):
         if error.retryable:
-            return True, f"🔴 {platform_display} temporary error: {error.message}"
+            return ServiceResult(False, f"🔴 {platform_display} temporary error: {error.message}", {"retryable": True})
         else:
-            return False, f"🔴 {platform_display} error: {error.message}"
+            return ServiceResult(False, f"🔴 {platform_display} error: {error.message}", {"retryable": False})
     
     else:
         # Generic error
-        return True, f"🔴 {platform_display} unexpected error. Please try again."
+        return ServiceResult(False, f"🔴 {platform_display} unexpected error. Please try again.", {"retryable": True})
 
 
 def create_retry_keyboard(original_callback: str, platform: str) -> InlineKeyboardMarkup:
