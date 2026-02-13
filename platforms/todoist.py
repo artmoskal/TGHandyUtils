@@ -23,7 +23,7 @@ class TodoistPlatform(AbstractTaskPlatform):
             api_token (str): The Todoist API token
         """
         self.api_token = api_token
-        self.base_url = 'https://api.todoist.com/rest/v2'
+        self.base_url = 'https://api.todoist.com/api/v1'
         self.headers = {
             'Content-Type': 'application/json',
             'Authorization': f'Bearer {api_token}'
