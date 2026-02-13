@@ -74,8 +74,8 @@ class DatabaseManager:
     
     def _initialize_recipient_schema(self, conn) -> None:
         """Initialize clean recipient schema."""
-        from database.recipient_schema import create_recipient_tables
-        create_recipient_tables(conn)
+        from database.unified_recipient_schema import create_unified_recipient_table
+        create_unified_recipient_table(conn)
     
     def _create_tables(self, conn: sqlite3.Connection) -> None:
         """Create clean database tables for recipient system only."""

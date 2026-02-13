@@ -62,12 +62,14 @@ class DatabaseMigrator:
             
             # Record initial migration
             self._record_migration(conn, "001_initial_schema", "Initial database schema")
-            
+
             conn.commit()
             conn.close()
-            
+
             logger.info(f"New database created successfully: {self.db_path}")
-            return True
+
+            # Apply remaining migrations (002-010+) on the fresh database
+            return self._check_and_migrate()
             
         except Exception as e:
             logger.error(f"Failed to create new database: {e}")
