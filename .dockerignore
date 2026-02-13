@@ -1,0 +1,13 @@
+.git
+.gitignore
+data/
+__pycache__
+*.pyc
+.env
+.env.sample
+*.md
+tests/
+infra/docker-compose.test*.yml
+CLAUDE.md
+CLAUDE.local.md
+.idea/
