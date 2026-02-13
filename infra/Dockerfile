@@ -1,20 +1,14 @@
-FROM continuumio/miniconda3
+FROM condaforge/miniforge3
 
 WORKDIR /app
 
 ENV CONDA_ENV_PATH /opt/conda/envs/TGHandyUtils
 ENV PATH $CONDA_ENV_PATH/bin:$PATH
 
-# Update conda and install tools via conda
-RUN conda update -n base -c defaults conda -y && \
-    conda config --add channels conda-forge && \
-    conda config --set channel_priority flexible
-
-# Install system libraries required for OpenCV
+# Install system libraries required for compilation
 RUN apt-get update && \
     apt-get install -y curl gcc g++ libgl1-mesa-dev && \
-    rm -rf /var/lib/apt/lists/* && \
-    conda install libarchive mamba gcc_linux-64 gxx_linux-64 -c conda-forge
+    rm -rf /var/lib/apt/lists/*
 
 # Create necessary directories
 RUN mkdir -p /app/data/db /app/data/logs
