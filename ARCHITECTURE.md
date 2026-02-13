@@ -57,7 +57,8 @@ Telegram → main.py → MessageHandler
 MessageHandler → ParsingService
     - Extracts: title="Call doctor"
     - Parses: due_time="tomorrow at 3 PM" → UTC timestamp
-    - Detects: user's timezone from preferences
+    - Handles timezone: User's location (e.g., "NY") → LLM determines UTC offset
+    - Timezone-agnostic: LLM sees local time only, prevents confusion
 ```
 
 ### 3. **Task Creation**
@@ -175,13 +176,19 @@ result = service.create_task(request)
 
 ## 🧪 Testing
 
-### Unit Tests
+### Running Tests
+
+⚠️ **IMPORTANT**: Always use test.sh script!
+
 ```bash
 # Run all tests
-docker-compose run --rm bot python -m pytest
+./test.sh all
 
-# Run specific test file
-docker-compose run --rm bot python -m pytest tests/unit/test_recipient_task_service.py
+# Run unit tests only
+./test.sh unit
+
+# Run integration tests (uses API)
+./test.sh integration
 ```
 
 ### Test Organization

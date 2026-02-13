@@ -8,11 +8,11 @@ Are you tired of manually creating tasks in Todoist after every chat with your f
 - 🎤 **Voice Message Support**: Transcribes voice messages using OpenAI Whisper  
 - 📸 **Image Processing**: Supports both inline photos and document image attachments with OCR
 - 🔔 **Notification Control**: Toggle Telegram notifications while keeping platform task creation
-- 🌍 **Timezone Intelligence**: Properly handles local time zones (Portugal, UK, US, etc.)
+- 🌍 **Timezone Intelligence**: AI-powered location parsing (e.g., "NY" → UTC-5) with automatic DST handling
 - 📋 **Multi-Platform Support**: Works with Todoist and Trello seamlessly (extensible architecture)
 - 🔄 **Interactive UI**: Beautiful inline keyboards and task management interface
 - 👥 **Multi-User**: Supports unlimited users with individual configurations (data properly isolated, no chaos!)
-- ⏰ **Smart Scheduling**: Understands natural language like "tomorrow at 3 PM"
+- ⏰ **Smart Scheduling**: Understands natural language like "tomorrow at 3 PM", "in 5 minutes", "next Monday"
 - 🏥 **Real-World Ready**: Handles appointment reminders, meeting scheduling, etc.
 - 🤝 **Recipient System**: Share tasks with family/colleagues across different platforms (e.g., your Todoist + wife's Trello)
 
@@ -85,7 +85,7 @@ During your first interaction with the bot, it will ask you to choose your prefe
 **✅ Updated Setup Process (2025):**
 1. **Platform Selection**: Choose Todoist or Trello
 2. **API Configuration**: Enter your credentials securely  
-3. **Location Setup**: Set your timezone (e.g., "Portugal", "Cascais", "New York")
+3. **Location Setup**: Set your timezone (e.g., "Portugal", "NY", "London") - AI automatically determines UTC offset
 4. **Board/List Selection** (Trello only): Choose which board and list for tasks
 
 Your chosen platform and credentials will be securely stored in the database for future use. No need to re-enter your tokens every time you sneeze or switch platforms - we've got your back! 🔐
@@ -152,6 +152,9 @@ Because everyone deserves to escape the task management nightmare.
 "Call mom in 2 hours" 
 → Creates task 2 hours from now
 
+"Remind me in 10 minutes to check the oven"
+→ Creates task exactly 10 minutes from now
+
 [Image with caption: "Fix this bug in 3h"]
 → Extracts text from image + caption, creates task due in 3 hours
 ```
@@ -168,6 +171,12 @@ We believe in open-source software, and we're not really in this for the money a
 ---
 
 ## ✅ **Latest Updates (July 2025)**
+
+### **🎯 Recent Fixes & Improvements**
+- **🌍 AI-Powered Timezone Parsing**: Locations like "NY", "PT", "London" now use LLM for accurate UTC offset detection
+- **⏰ Fixed Minute-Level Scheduling**: "Remind me in 10 minutes" now works correctly (was scheduling 1 hour ahead)
+- **🔧 Timezone Updates on Location Change**: UTC offset recalculates immediately when you change location
+- **📝 Timezone-Agnostic LLM**: Internal architecture now handles timezones properly without confusing the AI
 
 ### **🚀 Major Architectural Improvements**
 - **🏗️ Clean Architecture**: ServiceResult pattern replaces tuple returns for better error handling
@@ -187,8 +196,8 @@ We believe in open-source software, and we're not really in this for the money a
 - **Maintainability**: Methods now have maximum 4 parameters for clarity
 - **SOLID Principles**: Single Responsibility applied throughout
 
-### **🌍 Supported Timezones**
-Portugal, Spain, France, Germany, UK, New York, California, and more!
+### **🌍 Supported Locations**
+Any location! Just type it naturally: "NY", "New York", "PT", "Portugal", "London", "Tokyo", "Sydney" - AI figures out the timezone automatically with DST support.
 
 ---
 

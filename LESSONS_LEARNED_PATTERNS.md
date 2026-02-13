@@ -5,8 +5,7 @@
 ### **THE RULE:**
 ```bash
 # EVERY SINGLE TIME after making changes:
-docker-compose down && docker-compose up -d --build
-docker-compose exec bot python -m pytest tests/unit/ -v --tb=short
+./test.sh unit    # or ./test.sh integration
 ```
 
 ### **WHY THIS MATTERS:**
@@ -21,11 +20,10 @@ docker-compose exec bot python -m pytest tests/unit/ -v --tb=short
 
 ### **CORRECT FLOW:**
 1. **Make Changes** (code/config modifications)
-2. **Rebuild Container** (`docker-compose down && docker-compose up -d --build`)
-3. **Run Tests** (`docker-compose exec bot python -m pytest`)
-4. **Fix Failures** (iterate until all tests pass)
-5. **ONLY THEN** claim completion
-6. **Update Documentation** with honest status
+2. **Run Tests** (`./test.sh unit` or `./test.sh integration`)
+3. **Fix Failures** (iterate until all tests pass)
+4. **ONLY THEN** claim completion
+5. **Update Documentation** with honest status
 
 ### **ANTI-PATTERN (What I Keep Doing Wrong):**
 1. Make changes
@@ -38,30 +36,9 @@ docker-compose exec bot python -m pytest tests/unit/ -v --tb=short
 
 ## 📊 **TEST FAILURE ANALYSIS PATTERN**
 
-### **Current Status (2025-07-12 Updated):**
-```
-✅ 220 tests passed (+14 improvement)
-❌ 35 tests failed (+5, but eliminated all errors)  
-❌ 0 errors (-19, ELIMINATED ALL ERRORS!)
-🚨 Status: MUCH IMPROVED - Critical runtime crashes fixed
-```
-
-### **Fixed Issues ✅:**
-1. **Constructor Signature Changes**: ✅ FIXED
-   - ✅ `RecipientService.__init__()` calls updated with `preferences_repo`
-   - ✅ `RecipientTaskService.__init__()` calls corrected
-   
-2. **Return Type Changes**: ✅ FIXED 
-   - ✅ Tuple unpacking in handlers eliminated
-   - ✅ ServiceResult usage properly implemented
-
-### **Remaining Issues ⚠️:**
-1. **Test Data Setup Issues**:
-   - Some tests expect specific recipient counts but get 0
-   - Factory Boy setup issues in isolated test environment
-   
-2. **Timezone/Scheduler Tests**:
-   - Likely related to environment differences in container
+### **Status:**
+Run `./test.sh unit` and `./test.sh integration` for current pass/fail counts.
+Stale counts removed — always verify live.
 
 ---
 
@@ -131,17 +108,10 @@ grep -rn "success, .*= " tests/
 
 ### **WHEN TESTS FAIL:**
 ```bash
-# 1. Run specific failing test with full traceback
-docker-compose exec bot python -m pytest tests/unit/test_file.py::TestClass::test_method -v --tb=long
+# 1. Run specific failing test via test.sh
+./test.sh unit tests/unit/test_file.py::TestClass::test_method
 
-# 2. Check constructor signatures
-docker-compose exec bot python -c "
-from services.service_name import ServiceClass
-import inspect
-print(inspect.signature(ServiceClass.__init__))
-"
-
-# 3. Fix test, re-run, repeat
+# 2. Fix test, re-run, repeat
 ```
 
 ---
@@ -149,32 +119,20 @@ print(inspect.signature(ServiceClass.__init__))
 ## 📝 **DOCUMENTATION HONESTY PATTERN**
 
 ### **ACTUAL VS CLAIMED STATUS:**
-```markdown
-## HONEST PROGRESS TRACKING
-
-| Component | Claimed | Actual | Test Status |
-|-----------|---------|--------|-------------|
-| Tuple Returns | 95% ✅ | 70% ⚠️ | 5 tests failing |
-| String Dedup | 99% ✅ | 99% ✅ | All tests pass |
-| Parameter Objects | 85% ✅ | 85% ✅ | All tests pass |
-| God Classes | 15% ❌ | 15% ❌ | Not started |
-
-**CRITICAL**: Cannot deploy until test failures = 0
-```
+Always run `./test.sh` to get the real status. Never trust stale tables.
 
 ---
 
 ## 🚀 **DEPLOYMENT READINESS CHECKLIST**
 
 ### **BEFORE ANY DEPLOYMENT:**
-- [ ] `docker-compose down && docker-compose up -d --build` ✅
-- [ ] Container starts without errors ✅
-- [ ] All unit tests pass ❌ (30 failing)
-- [ ] All integration tests pass ❌ (19 errors)
-- [ ] No exceptions in container logs ✅
-- [ ] Manual verification of key workflows ❌ (pending)
+- [ ] `./test.sh unit` — all pass
+- [ ] `./test.sh integration` — all pass
+- [ ] Container starts without errors
+- [ ] No exceptions in container logs
+- [ ] Manual verification of key workflows
 
-**Current Status: NOT READY FOR DEPLOYMENT**
+**Current Status: Run `./test.sh` to verify**
 
 ---
 
@@ -194,8 +152,42 @@ print(inspect.signature(ServiceClass.__init__))
 
 ---
 
-**Last Updated**: 2025-07-12 19:20  
-**Container Status**: ✅ Running  
-**Test Status**: ❌ 30 failures, 19 errors  
-**Next Action**: Fix test failures systematically  
-**Deployment Ready**: ❌ NO
+---
+
+## 🎯 **TIMEZONE HANDLING LESSONS (July 2025)**
+
+### **LESSON 1: Timezone Should Update on Settings Change**
+**Problem**: UTC offset was only calculated during task creation
+**Solution**: Calculate timezone offset immediately when location is updated
+```python
+# BAD: Wait until task creation
+def parse_task():
+    offset = calculate_offset(location)  # Too late!
+
+# GOOD: Update immediately
+def update_location(location):
+    offset = parse_timezone_with_llm(location)
+    save_offset(offset)
+```
+
+### **LESSON 2: LLM Timezone Confusion**
+**Problem**: LLM was getting confused when given timezone info
+**Solution**: Timezone-agnostic approach - LLM only sees local time
+```python
+# BAD: "Current time: 15:30 UTC+1"
+# GOOD: "Current time: 15:30" (no timezone info)
+```
+
+### **LESSON 3: Use test.sh ALWAYS**
+**Problem**: Direct pytest commands miss environment setup
+**Solution**: Always use `./test.sh` wrapper script
+```bash
+# BAD: docker-compose exec bot pytest
+# BAD: python -m pytest
+# GOOD: ./test.sh unit
+```
+
+---
+
+**Last Updated**: 2025-07-17
+**Deployment Ready**: Always verify with `./test.sh` before deploying

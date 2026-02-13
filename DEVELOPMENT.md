@@ -35,18 +35,25 @@ Welcome to the TGHandyUtils development guide! This document will help you get s
 ## 🧪 Testing
 
 ### Running Tests
+
+⚠️ **IMPORTANT**: Always use the test.sh script, never run pytest directly!
+
 ```bash
 # Run all tests
-docker-compose run --rm bot python -m pytest
+./test.sh all
 
-# Run with coverage
-docker-compose run --rm bot python -m pytest --cov
+# Run unit tests only (no API calls)
+./test.sh unit
+
+# Run integration tests (uses real API)
+./test.sh integration
 
 # Run specific test file
-docker-compose run --rm bot python -m pytest tests/unit/test_recipient_task_service.py -v
+./test.sh unit -- tests/unit/test_recipient_task_service.py -v
 
-# Run tests matching pattern
-docker-compose run --rm bot python -m pytest -k "test_create_task"
+# Run tests in batches (for large test suites)
+./test_batch.sh 50 0     # First 50 tests
+./test_all_batches.sh    # Run all tests in batches automatically
 ```
 
 ### Writing Tests
