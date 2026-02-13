@@ -6,6 +6,8 @@ from services.parsing_service import ParsingService
 from config import Config
 from dateutil import parser as date_parser
 
+pytestmark = pytest.mark.integration
+
 
 class TestSchedulingValidation:
     """Validate that timezone scheduling works correctly."""

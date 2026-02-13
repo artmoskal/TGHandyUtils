@@ -11,6 +11,7 @@ from tests.factories.user_factory import UserFactory
 from core.exceptions import DatabaseError
 
 
+pytestmark = pytest.mark.unit
 class TestUserRepository:
     """Test cases for UserRepository."""
     

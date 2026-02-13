@@ -8,6 +8,7 @@ from unittest.mock import Mock
 from models.parameter_objects import TaskCreationRequest, TaskFeedbackData
 
 
+pytestmark = pytest.mark.unit
 class TestTaskCreationRequest:
     """Test the TaskCreationRequest parameter object."""
     

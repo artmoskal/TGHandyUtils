@@ -3,6 +3,8 @@
 import pytest
 from unittest.mock import Mock, patch
 
+pytestmark = pytest.mark.unit
+
 from core.interfaces import ServiceResult
 from services.recipient_task_service import RecipientTaskService
 from tests.factories import (

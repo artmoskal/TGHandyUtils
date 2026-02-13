@@ -9,6 +9,7 @@ from models.parameter_objects import PlatformTaskData as PlatformTaskParams
 from helpers.error_helpers import PlatformError
 
 
+pytestmark = pytest.mark.unit
 class TestTupleReturnFix:
     """Test that all methods return ServiceResult instead of tuples."""
     

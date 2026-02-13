@@ -8,6 +8,7 @@ from helpers.error_messages import ErrorMessages
 from helpers.constants import HttpConstants
 
 
+pytestmark = pytest.mark.unit
 class TestErrorMessages:
     """Test centralized error messages."""
     

@@ -16,6 +16,8 @@ from tests.factories import (
     TelegramMessageFactory
 )
 
+pytestmark = pytest.mark.integration
+
 
 class TestScreenshotAttachmentReal:
     """Integration test using real service implementation to catch attachment bugs."""

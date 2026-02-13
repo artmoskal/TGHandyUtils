@@ -6,6 +6,9 @@ Enhanced with Factory Boy to test with realistic recipient data scenarios.
 """
 
 import pytest
+
+pytestmark = pytest.mark.unit
+
 from unittest.mock import Mock, MagicMock
 
 # Import services

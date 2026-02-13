@@ -5,6 +5,9 @@ with realistic data and proper validation rules are enforced.
 """
 
 import pytest
+
+pytestmark = pytest.mark.unit
+
 from pydantic import ValidationError
 from datetime import datetime
 

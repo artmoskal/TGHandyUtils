@@ -5,6 +5,9 @@ objects, replacing the previous mock-based testing that hid critical implementat
 """
 
 import pytest
+
+pytestmark = pytest.mark.unit
+
 from datetime import datetime
 from unittest.mock import patch, Mock
 
@@ -41,7 +44,16 @@ class TestRecipientTaskService:
     
     def setup_method(self):
         """Setup real database components for each test."""
-        self.db_manager = DatabaseManager("data/db/tasks.db")
+        # Import migrations
+        from database.migrations import DatabaseMigrator
+        
+        # Run migrations to ensure database is up to date
+        db_path = "data/db/tasks.db"
+        migrator = DatabaseMigrator(db_path)
+        migrator.ensure_database_ready()
+        
+        self.db_manager = DatabaseManager(db_path)
+        
         self.recipient_repo = UnifiedRecipientRepository(self.db_manager)
         self.preferences_repo = UserPreferencesRepository(self.db_manager)
         self.task_repo = TaskRepository(self.db_manager)

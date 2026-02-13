@@ -9,6 +9,7 @@ from models.auth_request import AuthRequest
 from models.user import User
 
 
+pytestmark = pytest.mark.unit
 class TestSharingServiceUpdated:
     """Test cases for updated sharing service."""
     

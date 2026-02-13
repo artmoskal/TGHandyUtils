@@ -6,6 +6,8 @@ from aiogram.types import Message, PhotoSize, Document, User, Chat
 
 from handlers_modular.message.message_handler import process_user_input_with_photo
 
+pytestmark = pytest.mark.integration
+
 
 class TestPhotoCaptionProcessing:
     """Test photo caption processing handles both inline photos and document attachments."""

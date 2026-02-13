@@ -6,6 +6,9 @@ to ensure proper error handling in realistic scenarios.
 
 import pytest
 
+pytestmark = pytest.mark.unit
+
+
 # Import core components
 from core.exceptions import (
     ParsingError, TaskCreationError, ValidationError, 

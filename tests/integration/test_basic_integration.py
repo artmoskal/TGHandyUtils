@@ -5,6 +5,8 @@ import os
 from services.parsing_service import ParsingService
 from config import Config
 
+pytestmark = pytest.mark.integration
+
 
 class TestBasicIntegration:
     """Simple integration tests to verify API connectivity."""

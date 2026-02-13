@@ -8,6 +8,7 @@ from database.user_preferences_repository import UserPreferencesRepository
 from database.auth_request_repository import AuthRequestRepository
 
 
+pytestmark = pytest.mark.unit
 class TestUserPreferencesRepository:
     """Test extracted user preferences repository."""
     

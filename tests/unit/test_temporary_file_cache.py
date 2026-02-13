@@ -8,6 +8,7 @@ import shutil
 from services.temporary_file_cache import TemporaryFileCache
 
 
+pytestmark = pytest.mark.unit
 class TestTemporaryFileCache:
     """Test cases for temporary file cache."""
     

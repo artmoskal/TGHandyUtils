@@ -4,6 +4,9 @@ This module tests edge cases and overflow scenarios in timezone calculations
 while using Factory Boy for realistic user and location data where applicable."""
 
 import pytest
+
+pytestmark = pytest.mark.unit
+
 from unittest.mock import patch, Mock
 from datetime import datetime, timezone, timedelta
 import zoneinfo

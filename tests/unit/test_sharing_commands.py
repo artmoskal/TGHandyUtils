@@ -12,6 +12,8 @@ from handlers_modular.commands.sharing_commands import (
 )
 from models.auth_request import AuthRequest
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture
 def mock_message():

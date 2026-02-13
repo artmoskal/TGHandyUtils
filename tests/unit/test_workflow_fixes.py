@@ -6,6 +6,9 @@ and database integration to catch actual bugs.
 """
 
 import pytest
+
+pytestmark = pytest.mark.unit
+
 from typing import List
 
 # Import database and service components

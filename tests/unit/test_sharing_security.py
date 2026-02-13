@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from services.sharing_service import SharingService
 from models.shared_authorization import SharedAuthorization
 
+pytestmark = pytest.mark.unit
 @pytest.fixture
 def mock_sharing_service():
     mock_repo = Mock()

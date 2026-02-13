@@ -10,6 +10,8 @@ from services.parsing_service import ParsingService
 from config import Config
 from dateutil import parser as date_parser
 
+pytestmark = pytest.mark.integration
+
 
 class TestParsingServiceIntegration:
     """Integration tests that make actual OpenAI API calls."""
@@ -33,7 +35,7 @@ class TestParsingServiceIntegration:
         location = "Cascais"
         owner_name = "Test User"
         
-        result = parsing_service.parse_content_to_task(content, owner_name, location)
+        result = parsing_service.parse_content_to_task(content, owner_name, location, user_id=123456)
         
         assert result is not None
         
@@ -41,9 +43,10 @@ class TestParsingServiceIntegration:
         due_time = date_parser.isoparse(result['due_time'])
         expected_time = current_time + timedelta(minutes=4)
         
-        # Allow for some variance due to processing time (within 2 minutes)
+        # Should be exact - we're passing explicit times
         time_diff = abs((due_time - expected_time).total_seconds())
-        assert time_diff < 120, f"Due time {due_time} not within 2 minutes of expected {expected_time}"
+        # 1 minute tolerance max for any rounding
+        assert time_diff < 60, f"Due time {due_time} not within 1 minute of expected {expected_time}"
     
     def test_schedule_next_monday_11am(self, parsing_service, current_time):
         """Test scheduling next Monday at 11am."""
@@ -51,7 +54,7 @@ class TestParsingServiceIntegration:
         location = "Cascais"
         owner_name = "Test User"
         
-        result = parsing_service.parse_content_to_task(content, owner_name, location)
+        result = parsing_service.parse_content_to_task(content, owner_name, location, user_id=123456)
         
         assert result is not None
         
@@ -66,7 +69,7 @@ class TestParsingServiceIntegration:
         location = "Cascais"
         owner_name = "Test User"
         
-        result = parsing_service.parse_content_to_task(content, owner_name, location)
+        result = parsing_service.parse_content_to_task(content, owner_name, location, user_id=123456)
         
         assert result is not None
         
@@ -84,7 +87,7 @@ class TestParsingServiceIntegration:
         location = "Cascais"
         owner_name = "Test User"
         
-        result = parsing_service.parse_content_to_task(content, owner_name, location)
+        result = parsing_service.parse_content_to_task(content, owner_name, location, user_id=123456)
         
         assert result is not None
         
@@ -101,7 +104,7 @@ class TestParsingServiceIntegration:
         location = "Cascais"
         owner_name = "Test User"
         
-        result = parsing_service.parse_content_to_task(content, owner_name, location)
+        result = parsing_service.parse_content_to_task(content, owner_name, location, user_id=123456)
         
         assert result is not None
         
@@ -133,16 +136,17 @@ class TestParsingServiceIntegration:
         owner_name = "Test User"
         
         for content, expected_minutes in test_cases:
-            result = parsing_service.parse_content_to_task(content, owner_name, location)
+            result = parsing_service.parse_content_to_task(content, owner_name, location, user_id=123456)
             
             assert result is not None, f"Failed to parse: {content}"
             
             due_time = date_parser.isoparse(result['due_time'])
             expected_time = current_time + timedelta(minutes=expected_minutes)
             
-            # Allow for 5 minutes variance due to processing time and LLM interpretation
+            # Should be exact - we're passing explicit times
             time_diff = abs((due_time - expected_time).total_seconds())
-            assert time_diff < 300, f"For '{content}': Due time {due_time} not within 5 minutes of expected {expected_time}"
+            # 1 minute tolerance max for any rounding
+            assert time_diff < 60, f"For '{content}': time difference {time_diff/60:.1f} minutes exceeds tolerance"
     
     def test_different_timezones(self, parsing_service, current_time):
         """Test parsing with different timezone locations."""
@@ -157,16 +161,16 @@ class TestParsingServiceIntegration:
         ]
         
         for location, expected_offset in test_locations:
-            result = parsing_service.parse_content_to_task(content, owner_name, location)
+            result = parsing_service.parse_content_to_task(content, owner_name, location, user_id=123456)
             
             assert result is not None, f"Failed to parse for location: {location}"
             
             due_time = date_parser.isoparse(result['due_time'])
             expected_time = current_time + timedelta(minutes=15)
             
-            # Allow for timezone calculation variance and processing time
+            # Timezone math is exact - no variance needed
             time_diff = abs((due_time - expected_time).total_seconds())
-            assert time_diff < 300, f"For {location}: Due time {due_time} not within 5 minutes of expected {expected_time}"
+            assert time_diff < 60, f"For {location}: Due time {due_time} not within 1 minute of expected {expected_time}"
     
     def test_content_types_prioritization(self, parsing_service):
         """Test that [CAPTION] content is prioritized over other content types."""
@@ -177,7 +181,7 @@ class TestParsingServiceIntegration:
         location = "Cascais"
         owner_name = "Test User"
         
-        result = parsing_service.parse_content_to_task(content, owner_name, location)
+        result = parsing_service.parse_content_to_task(content, owner_name, location, user_id=123456)
         
         assert result is not None
         
@@ -259,7 +263,8 @@ class TestParsingServiceIntegration:
             result = parsing_service.parse_content_to_task(
                 case["content"],
                 "Test User",
-                "Portugal"
+                "Portugal",
+                user_id=123456
             )
             
             assert result is not None, f"Failed to parse: {case['content']}"

@@ -5,6 +5,8 @@ from unittest.mock import Mock, patch, AsyncMock
 from services.sharing_service import SharingService
 from models.auth_request import AuthRequest
 
+pytestmark = pytest.mark.integration
+
 @pytest.fixture
 def mock_sharing_service():
     mock_repo = Mock()

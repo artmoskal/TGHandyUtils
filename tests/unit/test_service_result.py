@@ -4,6 +4,7 @@ import pytest
 from core.interfaces import ServiceResult
 
 
+pytestmark = pytest.mark.unit
 class TestServiceResult:
     """Test ServiceResult class behavior."""
     

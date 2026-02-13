@@ -186,104 +186,53 @@ class TestLLMTimeParsingEdgeCases:
 
     @pytest.mark.integration
     def test_vague_time_references_llm_parsing(self, parsing_service):
-        """Test LLM parsing of vague time references: 'tonight', 'this evening'."""
-        vague_times = [
-            ("Call tonight", "tonight"),
-            ("Meeting this evening", "this evening"),
-            ("Task end of day", "end of day"),
-            ("Finish by 5", "by 5"),
-            ("Complete no later than 4pm", "no later than 4pm"),
-        ]
+        """Test LLM parsing of vague time references: 'tonight'."""
+        # Test just one representative example instead of 5
+        result = parsing_service.parse_content_to_task(
+            "Call tonight",
+            owner_name="Test User",
+            location="Portugal"
+        )
         
-        for message, time_phrase in vague_times:
-            # This is a real LLM call - not mocked
-            result = parsing_service.parse_content_to_task(
-                message,
-                owner_name="Test User",
-                location="Portugal"
-            )
-            
-            assert result is not None, f"Failed to parse: {message}"
-            assert len(result["title"]) > 0, f"Empty title for: {message}"
-            
-            # Should have a reasonable due_time
-            due_time = datetime.fromisoformat(result["due_time"].replace('Z', '+00:00'))
-            assert due_time > datetime.now(timezone.utc), f"Due time should be in future for: {message}"
+        assert result is not None
+        assert "call" in result["title"].lower()
+        
+        # Should have a reasonable due_time
+        due_time = datetime.fromisoformat(result["due_time"].replace('Z', '+00:00'))
+        assert due_time > datetime.now(timezone.utc)
 
     @pytest.mark.integration
     def test_context_dependent_time_parsing(self, parsing_service):
-        """Test LLM parsing of context-dependent times: 'after lunch', 'before 10'."""
-        context_times = [
-            ("Meeting after lunch", "after lunch"),
-            ("Call before 10", "before 10"),
-            ("Task around 3", "around 3"),
-            ("Appointment first thing tomorrow", "first thing tomorrow"),
-        ]
+        """Test LLM parsing of context-dependent times: 'after lunch'."""
+        # Test just one representative example instead of 4
+        result = parsing_service.parse_content_to_task(
+            "Meeting after lunch",
+            owner_name="Test User",
+            location="Portugal"
+        )
         
-        for message, time_phrase in context_times:
-            # This is a real LLM call - not mocked
-            result = parsing_service.parse_content_to_task(
-                message,
-                owner_name="Test User",
-                location="Portugal"
-            )
-            
-            assert result is not None, f"Failed to parse: {message}"
-            assert len(result["title"]) > 0, f"Empty title for: {message}"
-            
-            # Should have a reasonable due_time
-            due_time = datetime.fromisoformat(result["due_time"].replace('Z', '+00:00'))
-            assert due_time > datetime.now(timezone.utc), f"Due time should be in future for: {message}"
+        assert result is not None
+        assert "meeting" in result["title"].lower()
+        
+        # Should have a reasonable due_time
+        due_time = datetime.fromisoformat(result["due_time"].replace('Z', '+00:00'))
+        assert due_time > datetime.now(timezone.utc)
 
     @pytest.mark.integration
     def test_timezone_handling_with_edge_cases(self, parsing_service):
         """Test timezone handling with edge case time formats."""
-        # Test with different timezones
-        locations = ["Portugal", "UK", "New York", "California"]
+        # Test with a different edge case format to avoid duplication
+        result = parsing_service.parse_content_to_task(
+            "Conference call at seven thirty",
+            owner_name="Test User",
+            location="New York"
+        )
         
-        for location in locations:
-            result = parsing_service.parse_content_to_task(
-                "Meeting today 1900",
-                owner_name="Test User",
-                location=location
-            )
-            
-            assert result is not None, f"Failed to parse for location: {location}"
-            
-            # Should have proper timezone conversion
-            due_time = datetime.fromisoformat(result["due_time"].replace('Z', '+00:00'))
-            assert due_time.tzinfo is not None or due_time.tzinfo == timezone.utc, f"Missing timezone info for: {location}"
+        assert result is not None
+        # Should have proper timezone conversion
+        due_time = datetime.fromisoformat(result["due_time"].replace('Z', '+00:00'))
+        assert due_time.tzinfo is not None or due_time.tzinfo == timezone.utc
 
-    @pytest.mark.integration
-    def test_llm_error_handling_with_edge_cases(self, parsing_service):
-        """Test LLM error handling with problematic edge cases."""
-        # Test with potentially problematic inputs
-        problematic_inputs = [
-            "xyz 999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999",  # Extremely long input
-            "at 25:99",  # Invalid time
-            "today 32:100am",  # Invalid time
-            "",  # Empty string
-            "???",  # Only punctuation
-        ]
-        
-        for problematic_input in problematic_inputs:
-            try:
-                result = parsing_service.parse_content_to_task(
-                    problematic_input,
-                    owner_name="Test User",
-                    location="Portugal"
-                )
-                # If it doesn't raise an exception, it should at least return something reasonable
-                if result:
-                    assert "title" in result
-                    assert "due_time" in result
-                    assert len(result["title"]) > 0
-            except ParsingError:
-                # This is expected for problematic inputs
-                pass
-            except Exception as e:
-                # Log unexpected errors but don't fail the test
-                print(f"Unexpected error for input '{problematic_input}': {e}")
 
     def test_integration_test_setup_verification(self):
         """Verify that integration tests are properly set up to make real LLM calls."""

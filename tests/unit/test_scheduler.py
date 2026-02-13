@@ -5,6 +5,9 @@ hardcoded test data, ensuring realistic scheduling scenarios are tested.
 """
 
 import pytest
+
+pytestmark = pytest.mark.unit
+
 from unittest.mock import Mock, AsyncMock, patch
 from datetime import datetime, timezone, timedelta
 

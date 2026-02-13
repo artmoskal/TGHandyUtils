@@ -7,6 +7,8 @@ from aiogram.types import Message, PhotoSize, User, Chat
 from handlers_modular.message.text_handler import process_thread_with_photos
 from models.task import TaskCreate
 
+pytestmark = pytest.mark.integration
+
 
 class TestScreenshotProcessingSimple:
     """Simplified screenshot processing tests."""

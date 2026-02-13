@@ -6,6 +6,9 @@ objects, replacing the previous mock-based testing that hid implementation bugs.
 
 import pytest
 
+pytestmark = pytest.mark.unit
+
+
 # Import database and service components
 from database.connection import DatabaseManager
 from database.unified_recipient_repository import UnifiedRecipientRepository

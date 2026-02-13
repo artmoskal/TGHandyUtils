@@ -11,6 +11,7 @@ from models.user import User
 from tests.factories.user_factory import UserFactory
 
 
+pytestmark = pytest.mark.unit
 class TestUserService:
     """Test cases for UserService."""
     

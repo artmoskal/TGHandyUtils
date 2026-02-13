@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from platforms.google_calendar import GoogleCalendarPlatform
 from core.exceptions import PlatformError, OAuthError
 
+pytestmark = pytest.mark.unit
 @pytest.fixture
 def mock_credentials():
     return json.dumps({

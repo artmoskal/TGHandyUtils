@@ -5,6 +5,9 @@ realistic user scenarios from different timezones, without making OpenAI API cal
 """
 
 import pytest
+
+pytestmark = pytest.mark.unit
+
 from datetime import datetime, timezone, timedelta
 import zoneinfo
 from unittest.mock import Mock, patch
@@ -159,24 +162,6 @@ class TestTimezoneConversionUnit:
         offset = parsing_service.get_timezone_offset(None)
         assert offset == 0
     
-    def test_timezone_info_mapping_with_factory_user_locations(self, parsing_service):
-        """Test timezone info string generation with realistic user locations."""
-        # Create users from different locations
-        test_users_and_locations = [
-            (TelegramUserFactory(first_name="António", language_code="pt"), "Cascais", "UTC+1 (UTC+2 during DST)"),
-            (TelegramUserFactory(first_name="Pedro", language_code="pt"), "Portugal", "UTC+1 (UTC+2 during DST)"),
-            (TelegramUserFactory(first_name="Oliver", language_code="en"), "London", "UTC+0 (UTC+1 during DST)"),
-            (TelegramUserFactory(first_name="Michael", language_code="en"), "New York", "UTC-5 (UTC-4 during DST)"),
-            (TelegramUserFactory(first_name="Alex", language_code="en"), "UnknownPlace", "UTC+0 (please specify timezone for accuracy)"),
-        ]
-        
-        for user, location, expected in test_users_and_locations:
-            result = parsing_service._get_timezone_info(location)
-            assert result == expected, f"For {location}: expected {expected}, got {result}"
-            
-            # Verify factory user is realistic
-            assert len(user.first_name) > 0
-            assert user.language_code in ["pt", "en", "ja"]
     
     def test_convert_utc_to_local_display_cascais_with_factory_task(self, parsing_service):
         """Test UTC to local time conversion for display with realistic task data."""
@@ -332,21 +317,15 @@ class TestTimezoneConversionUnit:
         example_utc_time = example_local_time - timedelta(hours=offset_hours)
         
         # Use the real input data preparation logic matching parsing service
-        timezone_offset_str = f"+{offset_hours}" if offset_hours >= 0 else str(offset_hours)
+        # Now the prompt only uses local time, no timezone info
         
         input_data = {
             "content_message": telegram_message.text,
             "owner_name": f"{telegram_message.from_user.first_name} {telegram_message.from_user.last_name}",
-            "current_year": current_utc.year,
-            "current_utc_iso": current_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "current_local_iso": user_local_time.strftime("%Y-%m-%dT%H:%M:%S"),
-            "location": "Cascais",
-            "timezone_name": "Portugal Time",
-            "timezone_offset_str": timezone_offset_str,
+            "current_local_time": user_local_time.strftime("%Y-%m-%d %H:%M:%S"),
             "today_date": user_local_time.strftime("%Y-%m-%d"),
             "tomorrow_date": (user_local_time + timedelta(days=1)).strftime("%Y-%m-%d"),
-            "current_local_simple": user_local_time.strftime("%H:%M"),
-            "time_examples": "- \"today 5am\" → 2025-07-04T04:00:00Z\n- \"today noon\" → 2025-07-04T11:00:00Z"
+            "is_late_night": user_local_time.hour >= 23
         }
         
         # Test that the real prompt template can format with this data
@@ -354,11 +333,14 @@ class TestTimezoneConversionUnit:
         
         # Verify key elements are in the formatted prompt
         assert "Maria Costa" in prompt_text
-        assert "UTC" in prompt_text  
-        assert "Cascais" in prompt_text
-        assert str(offset_hours) in prompt_text
-        assert "2025" in prompt_text
-        assert "timezone:" in prompt_text.lower()  # Template uses "Timezone: {timezone_name}"
+        assert telegram_message.text in prompt_text  
+        assert user_local_time.strftime("%Y-%m-%d") in prompt_text  # Today's date
+        
+        # Should NOT contain timezone-specific info in the prompt
+        # Note: We don't check for "UTC" as it might appear in format instructions or examples
+        assert "offset" not in prompt_text.lower()
+        assert "Cascais" not in prompt_text  # Location not in prompt anymore
+        assert str(current_utc.year) in prompt_text  # Current year
         assert "schedule meeting" in prompt_text.lower()  # Message content included
         
         # Verify factory message is realistic

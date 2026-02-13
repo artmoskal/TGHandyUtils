@@ -5,6 +5,9 @@ replacing excessive mocking while maintaining necessary mocks for external servi
 """
 
 import pytest
+
+pytestmark = pytest.mark.unit
+
 from unittest.mock import Mock, patch
 from datetime import datetime, timezone
 
@@ -26,6 +29,13 @@ from tests.factories import (
 class TestParsingService:
     """Test cases for ParsingService with Factory Boy integration."""
     
+    @pytest.fixture(autouse=True)
+    def mock_chat_openai(self):
+        """Mock ChatOpenAI for all tests in this class."""
+        with patch('services.parsing_service.ChatOpenAI') as mock:
+            mock.return_value = Mock()
+            yield mock
+    
     @pytest.fixture
     def mock_config(self):
         """Create a mock config with realistic API key."""
@@ -34,9 +44,17 @@ class TestParsingService:
         return config
     
     @pytest.fixture
-    def parsing_service(self, mock_config):
+    def mock_preferences_repo(self):
+        """Create a mock preferences repository."""
+        mock_repo = Mock()
+        # Return None for get_preferences by default
+        mock_repo.get_preferences.return_value = None
+        return mock_repo
+    
+    @pytest.fixture
+    def parsing_service(self, mock_config, mock_preferences_repo):
         """Create a parsing service instance for testing."""
-        return ParsingService(config=mock_config)
+        return ParsingService(config=mock_config, preferences_repo=mock_preferences_repo)
     
     def test_initialization_with_api_key(self, mock_config):
         """Test parsing service initializes correctly with API key."""
@@ -53,26 +71,6 @@ class TestParsingService:
         with pytest.raises(ValueError, match="OpenAI API key is required"):
             ParsingService(config=mock_config)
     
-    def test_get_timezone_info_with_realistic_locations(self, parsing_service):
-        """Test timezone information retrieval with realistic location data."""
-        # Test Portugal timezone
-        assert "UTC+1" in parsing_service._get_timezone_info("Portugal")
-        assert "UTC+1" in parsing_service._get_timezone_info("cascais")
-        assert "UTC+1" in parsing_service._get_timezone_info("Lisbon")
-        
-        # Test UK timezone
-        assert "UTC+0" in parsing_service._get_timezone_info("UK")
-        assert "UTC+0" in parsing_service._get_timezone_info("london")
-        
-        # Test US timezones
-        assert "UTC-5" in parsing_service._get_timezone_info("New York")
-        assert "UTC-8" in parsing_service._get_timezone_info("California")
-        
-        # Test unknown location
-        assert "UTC+0" in parsing_service._get_timezone_info("Unknown Location")
-        
-        # Test None location
-        assert "UTC+0" in parsing_service._get_timezone_info(None)
     
     def test_get_timezone_offset_with_factory_user_data(self, parsing_service):
         """Test timezone offset calculation using Factory Boy user data."""
@@ -153,22 +151,23 @@ class TestParsingService:
         factory_task = TaskFactory(
             title="Doctor Appointment",
             description="Annual checkup with Dr. Smith",
-            due_time="2025-06-12T11:00:00Z"
+            due_time="2025-06-12T11:00:00"  # Local time (no Z)
         )
         
-        # Mock LLM response with factory task data
+        # Mock LLM response with factory task data (local time format)
         mock_response = Mock()
         mock_response.content = f'''{{
     "title": "{factory_task.title}",
     "due_time": "{factory_task.due_time}",
     "description": "{factory_task.description}"
 }}'''
+        mock_response.response_metadata = {}  # Add response_metadata to avoid 'Mock is not iterable' error
         
         # Mock parser response with factory task data
         mock_task = Mock()
         mock_task.model_dump.return_value = {
             "title": factory_task.title,
-            "due_time": factory_task.due_time,
+            "due_time": factory_task.due_time,  # Local time
             "description": factory_task.description
         }
         
@@ -182,13 +181,15 @@ class TestParsingService:
         result = parsing_service.parse_content_to_task(
             "Create task for doctor appointment at 11 AM",
             owner_name="Test User",
-            location="Portugal"
+            location="Portugal",
+            user_id=123
         )
         
         assert result is not None
         assert result["title"] == factory_task.title
-        # Don't check exact due_time since parsing service may calculate it differently
+        # Don't check exact due_time since parsing service converts to UTC
         assert "due_time" in result
+        assert result["due_time"].endswith("Z")  # Should be UTC
         assert result["description"] == factory_task.description
     
     def test_parse_content_to_task_with_screenshot_task(self, parsing_service):
@@ -200,20 +201,21 @@ class TestParsingService:
             priority="high"
         )
         
-        # Mock LLM response
+        # Mock LLM response (local time format)
         mock_response = Mock()
         mock_response.content = f'''{{
     "title": "{screenshot_task.title}",
-    "due_time": "2025-06-12T14:00:00Z",
+    "due_time": "2025-06-12T14:00:00",
     "description": "{screenshot_task.description}",
     "priority": "{screenshot_task.priority}"
 }}'''
+        mock_response.response_metadata = {}  # Add response_metadata to avoid 'Mock is not iterable' error
         
         # Mock parser response
         mock_task = Mock()
         mock_task.model_dump.return_value = {
             "title": screenshot_task.title,
-            "due_time": "2025-06-12T14:00:00Z",
+            "due_time": "2025-06-12T14:00:00",  # Local time
             "description": screenshot_task.description,
             "priority": screenshot_task.priority
         }
@@ -228,7 +230,8 @@ class TestParsingService:
         result = parsing_service.parse_content_to_task(
             "Create task to review this screenshot for UI bugs",
             owner_name="Developer",
-            location="UK"
+            location="UK",
+            user_id=123
         )
         
         assert result is not None
@@ -244,20 +247,21 @@ class TestParsingService:
             priority="urgent"
         )
         
-        # Mock LLM response
+        # Mock LLM response (local time format)
         mock_response = Mock()
         mock_response.content = f'''{{
     "title": "{urgent_task.title}",
-    "due_time": "2025-06-12T09:00:00Z",
+    "due_time": "2025-06-12T09:00:00",
     "description": "{urgent_task.description}",
     "priority": "{urgent_task.priority}"
 }}'''
+        mock_response.response_metadata = {}  # Add response_metadata to avoid 'Mock is not iterable' error
         
         # Mock parser response
         mock_task = Mock()
         mock_task.model_dump.return_value = {
             "title": urgent_task.title,
-            "due_time": "2025-06-12T09:00:00Z",
+            "due_time": "2025-06-12T09:00:00",  # Local time
             "description": urgent_task.description,
             "priority": urgent_task.priority
         }
@@ -272,7 +276,8 @@ class TestParsingService:
         result = parsing_service.parse_content_to_task(
             "URGENT: Need to fix the production bug immediately!",
             owner_name="DevOps Engineer",
-            location="New York"
+            location="New York",
+            user_id=123
         )
         
         assert result is not None
@@ -285,8 +290,8 @@ class TestParsingService:
         parsing_service.llm = Mock()
         parsing_service.llm.invoke.side_effect = Exception("LLM Error")
         
-        with pytest.raises(ParsingError, match="Content parsing failed"):
-            parsing_service.parse_content_to_task("Test message")
+        with pytest.raises(ParsingError, match="Both LLM and static parsing failed"):
+            parsing_service.parse_content_to_task("Test message", user_id=123)
     
     def test_prompt_template_creation(self, parsing_service):
         """Test prompt template contains required elements."""
@@ -294,27 +299,17 @@ class TestParsingService:
         assert parsing_service.prompt_template is not None
         
         # Check template has the required input variables
-        expected_vars = {"content_message", "owner_name", "current_utc_iso", "current_local_iso", "location", "timezone_name", "timezone_offset_str", "today_date", "tomorrow_date", "current_local_simple", "time_examples"}
+        expected_vars = {"content_message", "owner_name", "current_local_time", "today_date", "tomorrow_date", "is_late_night"}
         actual_vars = set(parsing_service.prompt_template.input_variables)
-        assert expected_vars.issubset(actual_vars), f"Missing variables: {expected_vars - actual_vars}"
+        assert expected_vars == actual_vars, f"Variables mismatch: expected {expected_vars}, got {actual_vars}"
     
     def test_prompt_template_variables(self, parsing_service):
         """Test prompt template has correct input variables."""
-        expected_vars = ["content_message", "owner_name", "current_utc_iso", "current_local_iso", "location", "timezone_name", "timezone_offset_str", "today_date", "tomorrow_date", "current_local_simple", "time_examples"]
+        expected_vars = ["content_message", "owner_name", "current_local_time", "today_date", "tomorrow_date", "is_late_night"]
         
         for var in expected_vars:
             assert var in parsing_service.prompt_template.input_variables
     
-    @pytest.mark.parametrize("content,location,expected_timezone", [
-        ("Meeting tomorrow at 3 PM", "Portugal", "UTC+1"),
-        ("Call at 9 AM", "UK", "UTC+0"),
-        ("Appointment at 2 PM", "New York", "UTC-5"),
-        ("Task for 5 PM", "California", "UTC-8"),
-    ])
-    def test_timezone_handling_parametrized(self, parsing_service, content, location, expected_timezone):
-        """Test timezone handling for different locations."""
-        timezone_info = parsing_service._get_timezone_info(location)
-        assert expected_timezone in timezone_info
     
     def test_current_year_in_prompt_data(self, parsing_service):
         """Test that current year is included in prompt data."""
@@ -323,6 +318,7 @@ class TestParsingService:
         # Mock the LLM and parser
         mock_response = Mock()
         mock_response.content = '{"title":"test","due_time":"2025-06-12T11:00:00Z","description":"test"}'
+        mock_response.response_metadata = {}  # Add response_metadata to avoid 'Mock is not iterable' error
         parsing_service.llm = Mock()
         parsing_service.llm.invoke.return_value = mock_response
         
@@ -332,7 +328,7 @@ class TestParsingService:
         parsing_service.parser.parse.return_value = mock_task
         
         try:
-            parsing_service.parse_content_to_task("test message")
+            parsing_service.parse_content_to_task("test message", user_id=123)
             
             # Check that the prompt was formatted with current year
             call_args = parsing_service.llm.invoke.call_args[0][0][0].content
@@ -357,22 +353,23 @@ class TestParsingService:
         expected_task = TaskFactory(
             title="Meeting with Client",
             description="Scheduled meeting as requested",
-            due_time="2025-06-13T14:00:00Z"
+            due_time="2025-06-13T14:00:00"  # Local time
         )
         
-        # Mock LLM response with realistic data
+        # Mock LLM response with realistic data (local time format)
         mock_response = Mock()
         mock_response.content = f'''{{
     "title": "{expected_task.title}",
     "due_time": "{expected_task.due_time}",
     "description": "{expected_task.description}"
 }}'''
+        mock_response.response_metadata = {}  # Add response_metadata to avoid 'Mock is not iterable' error
         
         # Mock parser response
         mock_task = Mock()
         mock_task.model_dump.return_value = {
             "title": expected_task.title,
-            "due_time": expected_task.due_time,
+            "due_time": expected_task.due_time,  # Local time
             "description": expected_task.description
         }
         
@@ -386,7 +383,8 @@ class TestParsingService:
         result = parsing_service.parse_content_to_task(
             telegram_message.text,
             owner_name=f"{telegram_message.from_user.first_name} {telegram_message.from_user.last_name}",
-            location="Portugal"
+            location="Portugal",
+            user_id=123
         )
         
         assert result is not None
@@ -416,6 +414,7 @@ class TestParsingService:
     "due_time": "{scenario['due_time']}",
     "description": "{scenario['description']}"
 }}'''
+            mock_response.response_metadata = {}  # Add response_metadata to avoid 'Mock is not iterable' error
             
             parsing_service.llm = Mock()
             parsing_service.llm.invoke.return_value = mock_response
@@ -429,7 +428,8 @@ class TestParsingService:
                 parsing_service.parse_content_to_task(
                     "Create task from problematic data",
                     owner_name="Test User",
-                    location="UK"
+                    location="UK",
+                    user_id=123
                 )
     
     def test_parsing_service_integration_with_factory_scenarios(self, parsing_service):
@@ -445,18 +445,19 @@ class TestParsingService:
         
         # Test that parsing service can handle variety of task types
         for i, task in enumerate(task_scenarios):
-            # Mock LLM response for each scenario
+            # Mock LLM response for each scenario (local time format)
             mock_response = Mock()
             mock_response.content = f'''{{
     "title": "{task.title}",
-    "due_time": "2025-06-1{i+2}T{10+i}:00:00Z",
+    "due_time": "2025-06-1{i+2}T{10+i}:00:00",
     "description": "{task.description}"
 }}'''
+            mock_response.response_metadata = {}  # Add response_metadata to avoid 'Mock is not iterable' error
             
             mock_task = Mock()
             mock_task.model_dump.return_value = {
                 "title": task.title,
-                "due_time": f"2025-06-1{i+2}T{10+i}:00:00Z",
+                "due_time": f"2025-06-1{i+2}T{10+i}:00:00",  # Local time
                 "description": task.description
             }
             
@@ -470,7 +471,8 @@ class TestParsingService:
             result = parsing_service.parse_content_to_task(
                 f"Create task: {task.title}",
                 owner_name="Test User",
-                location="Portugal"
+                location="Portugal",
+                user_id=123
             )
             
             # Verify parsing works for all task types

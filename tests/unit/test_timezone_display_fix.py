@@ -9,6 +9,7 @@ from services.recipient_service import RecipientService
 from models.parameter_objects import TaskFeedbackData
 
 
+pytestmark = pytest.mark.unit
 class TestTimezoneDisplayFix:
     """Test that task success messages display time in user's local timezone."""
 

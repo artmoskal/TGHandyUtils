@@ -7,6 +7,8 @@ from unittest.mock import patch
 from services.parsing_service import ParsingService
 from config import Config
 
+pytestmark = pytest.mark.integration
+
 
 class TestTimeParsingBugReproduction:
     """Reproduce the actual time parsing bug with real OpenAI calls."""

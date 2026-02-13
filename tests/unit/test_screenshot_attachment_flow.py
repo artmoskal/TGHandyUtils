@@ -6,6 +6,9 @@ implementation bugs and couldn't catch integration issues.
 """
 
 import pytest
+
+pytestmark = pytest.mark.unit
+
 from datetime import datetime
 from unittest.mock import patch
 

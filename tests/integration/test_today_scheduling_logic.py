@@ -73,7 +73,7 @@ class TestTodaySchedulingLogic:
         # Find a time that's definitely in the past
         if current_hour > 3:  # If after 3am
             past_hour = current_hour - 3  # 3 hours ago
-            test_input = f"remind me today at {past_hour}:00"
+            test_input = f"remind me today at {past_hour}am"
         else:  # Very early morning
             past_hour = 1
             test_input = "remind me today at 1am"
@@ -164,13 +164,12 @@ class TestTodaySchedulingLogic:
         prompt_template = parsing_service.prompt_template.template
         
         # Check for critical time handling features that actually exist
-        assert "PARSING RULES" in prompt_template, \
-            "Prompt should have parsing rules section"
-        assert "timezone" in prompt_template.lower(), \
-            "Prompt should mention timezone handling"
-        assert "If time has passed today, assume tomorrow" in prompt_template, \
-            "Prompt should have rule for past times"
-        assert "Current UTC" in prompt_template, \
-            "Prompt should reference current UTC time"
+        # Note: "PARSING RULES" was removed from the prompt template
+        assert "local time" in prompt_template.lower(), \
+            "Prompt should mention local time handling"
+        assert "Current Time:" in prompt_template or "current_local_time" in prompt_template, \
+            "Prompt should reference current time"
+        assert "is_late_night" in parsing_service.prompt_template.input_variables, \
+            "Prompt should have late night handling"
         
         print("✅ Prompt template contains time handling features")

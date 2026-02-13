@@ -7,6 +7,7 @@ from aiogram.types import Message, CallbackQuery, User
 from handlers_modular.middleware.user_tracking import UserTrackingMiddleware
 
 
+pytestmark = pytest.mark.unit
 class TestUserTrackingMiddleware:
     """Test cases for user tracking middleware."""
     

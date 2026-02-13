@@ -5,6 +5,9 @@ correctly with realistic recipient and task data, while maintaining appropriate 
 """
 
 import pytest
+
+pytestmark = pytest.mark.unit
+
 from unittest.mock import Mock, patch, MagicMock
 import requests
 

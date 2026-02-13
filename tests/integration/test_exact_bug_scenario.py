@@ -7,6 +7,8 @@ from unittest.mock import patch
 from services.parsing_service import ParsingService
 from config import Config
 
+pytestmark = pytest.mark.integration
+
 
 class TestExactBugScenario:
     """Test the exact scenario reported: current time 23:39 UTC on June 28."""
@@ -33,6 +35,7 @@ class TestExactBugScenario:
         with patch('services.parsing_service.datetime') as mock_datetime:
             mock_datetime.now.return_value = test_time
             mock_datetime.timezone = timezone
+            mock_datetime.fromisoformat = datetime.fromisoformat
             
             # Test the exact cases user reported
             result_3am = parsing_service.parse_content_to_task(

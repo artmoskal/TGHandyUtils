@@ -1,15 +1,16 @@
 """Tests for response utilities."""
 
 import pytest
-
-pytestmark = pytest.mark.unit
+import sys
 from unittest.mock import AsyncMock, Mock
 from aiogram.types import Message, CallbackQuery
 
-# Mock the imports
-with pytest.MonkeyPatch().context() as mp:
-    mp.setattr('core.logging.get_logger', Mock())
-    from handlers_modular.utils.responses import MessageResponses, CallbackResponses, FormattedResponses
+pytestmark = pytest.mark.unit
+if 'core.logging' not in sys.modules:
+    sys.modules['core.logging'] = Mock()
+    sys.modules['core.logging'].get_logger = Mock()
+
+from handlers_modular.utils.responses import MessageResponses, CallbackResponses, FormattedResponses
 
 
 class TestMessageResponses:
@@ -81,7 +82,8 @@ class TestCallbackResponses:
         mock_callback_query.message.edit_text.assert_called_once_with(
             "✅ Update successful",
             reply_markup=None,
-            parse_mode='Markdown'
+            parse_mode='Markdown',
+            disable_web_page_preview=True
         )
         mock_callback_query.answer.assert_called_once()
     

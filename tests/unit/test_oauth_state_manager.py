@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 
 from services.oauth_state_manager import OAuthStateManager
 
+pytestmark = pytest.mark.unit
 @pytest.fixture
 def mock_db_manager():
     """Create a mock database manager."""

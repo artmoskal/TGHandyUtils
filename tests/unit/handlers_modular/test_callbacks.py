@@ -1,21 +1,33 @@
 """Tests for modular callback handlers."""
 
 import pytest
-
-pytestmark = pytest.mark.unit
+import sys
 from unittest.mock import AsyncMock, Mock, patch
 from aiogram.types import CallbackQuery, Message
 from aiogram.fsm.context import FSMContext
+
+pytestmark = pytest.mark.unit
 
 # Create mock router
 mock_router = Mock()
 mock_router.callback_query = Mock(side_effect=lambda f: lambda func: func)
 
+# Import the real core.logging first to ensure it exists
+import core.logging as real_core_logging
+
 # Mock the imports before importing handlers
 with patch.dict('sys.modules', {
     'bot': Mock(router=mock_router),
     'core.container': Mock(),
-    'keyboards.recipient': Mock(),
+    'keyboards.recipient': Mock(
+        get_main_menu_keyboard=Mock(return_value=Mock()),
+        get_settings_main_keyboard=Mock(return_value=Mock()),
+        get_recipient_management_keyboard=Mock(return_value=Mock()),
+        get_recipient_selection_keyboard=Mock(return_value=Mock()),
+        get_platform_selection_keyboard=Mock(return_value=Mock()),
+        get_profile_settings_keyboard=Mock(return_value=Mock())
+    ),
+    'keyboards.settings': Mock(get_profile_settings_keyboard=Mock(return_value=Mock())),
     'states.recipient_states': Mock(),
     'core.logging': Mock(get_logger=Mock(return_value=Mock()))
 }):
@@ -24,6 +36,9 @@ with patch.dict('sys.modules', {
     from handlers_modular.callbacks.task import actions
     from handlers_modular.callbacks.settings import profile, notifications
     from handlers_modular.callbacks.navigation import menus
+
+# Restore the real core.logging module
+sys.modules['core.logging'] = real_core_logging
 
 
 class TestRecipientCallbacks:
@@ -152,13 +167,14 @@ class TestSettingsCallbacks:
     @pytest.mark.asyncio
     async def test_profile_settings_callback(self, mock_callback_query, mock_state):
         """Test profile settings callback."""
-        with patch('handlers_modular.callbacks.settings.profile.get_profile_settings_keyboard') as mock_keyboard:
+        with patch('keyboards.recipient.get_profile_settings_keyboard') as mock_keyboard:
             mock_keyboard.return_value = Mock()
             
             await profile.profile_settings_callback(mock_callback_query, mock_state)
             
             mock_callback_query.message.edit_text.assert_called_once()
             args = mock_callback_query.message.edit_text.call_args[0]
+            # Check for the actual text with emoji and markdown
             assert "Profile Settings" in args[0]
 
 

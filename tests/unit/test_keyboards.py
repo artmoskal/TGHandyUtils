@@ -5,6 +5,9 @@ hardcoded test data, ensuring keyboards work correctly with realistic recipient 
 """
 
 import pytest
+
+pytestmark = pytest.mark.unit
+
 from datetime import datetime
 
 # Import keyboard components
