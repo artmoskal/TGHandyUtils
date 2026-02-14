@@ -27,7 +27,7 @@ async def handle_credentials_input(message: Message, state: FSMContext):
         
         recipient_service = container.recipient_service()
         
-        logger.error(f"🔍 CREDENTIALS HANDLER: user={user_id}, platform={platform_type}, mode={mode}, state_data={state_data}")
+        logger.debug(f"CREDENTIALS HANDLER: user={user_id}, platform={platform_type}, mode={mode}, state_data={state_data}")
         
         # For Trello, we need additional configuration (list selection)
         if platform_type == "trello":
@@ -38,7 +38,7 @@ async def handle_credentials_input(message: Message, state: FSMContext):
         if mode == "user_platform":
             # Add personal recipient
             name = f"My {platform_type.title()}"
-            logger.error(f"🔍 CREATING PERSONAL RECIPIENT: {name}")
+            logger.debug(f"CREATING PERSONAL RECIPIENT: {name}")
             recipient_data = RecipientCreationData(
                 name=name,
                 platform_type=platform_type,
