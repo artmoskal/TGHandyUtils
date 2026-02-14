@@ -23,25 +23,15 @@ dp.callback_query.middleware(UserTrackingMiddleware())
 # Initialize bot with proper configuration
 bot = initialize_bot()
 
-# Database initialization with migration support
-from core.container import container
+# Database initialization - migrations.py is the single source of truth
 from database.migrations import ensure_database_ready
-from database.unified_recipient_schema import initialize_unified_schema
 
 logger.info("Checking database status...")
 config = services.get_config()
 if not ensure_database_ready(config.DATABASE_PATH):
     logger.error("Database initialization failed. Exiting.")
     sys.exit(1)
-
-# Legacy schema initialization (for compatibility)
-db_manager = container.database_manager()
-try:
-    initialize_unified_schema(db_manager)
-    logger.info("Database ready and schema verified")
-except Exception as e:
-    logger.warning(f"Legacy schema initialization warning: {e}")
-    # Continue anyway since the new migration system should handle this
+logger.info("Database ready and schema verified")
 
 # Log configuration
 config = services.get_config()

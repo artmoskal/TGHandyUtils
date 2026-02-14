@@ -111,9 +111,13 @@ class DatabaseMigrator:
             
             # Verify critical tables exist
             if not self._verify_schema(conn):
-                logger.error("Database schema verification failed")
-                conn.close()
-                return False
+                logger.warning("Schema verification failed, attempting repair...")
+                if self._repair_schema(conn) and self._verify_schema(conn):
+                    logger.info("Schema repair successful")
+                else:
+                    logger.error("Schema repair failed — database is corrupt")
+                    conn.close()
+                    return False
             
             conn.commit()
             conn.close()
@@ -159,25 +163,82 @@ class DatabaseMigrator:
         return [m for m in all_migrations if m[0] not in applied]
     
     def _verify_schema(self, conn: sqlite3.Connection) -> bool:
-        """Verify that all required tables exist with correct structure."""
-        required_tables = ["tasks", "recipients", "migration_history", "task_recipients"]
-        
-        for table in required_tables:
+        """Verify that all required tables exist with correct columns.
+
+        This is the last line of defense against schema drift. If a table
+        exists but is missing columns, the bot will crash at runtime with
+        cryptic 'no such column' errors. Fail loudly here instead.
+        """
+        expected_schema = {
+            'tasks': ['id', 'user_id', 'title', 'description', 'due_time',
+                      'platform_task_id', 'platform_type', 'recipient_id',
+                      'chat_id', 'message_id', 'created_at', 'updated_at', 'status',
+                      'screenshot_file_id'],
+            'recipients': ['id', 'user_id', 'name', 'platform_type', 'credentials',
+                          'platform_config', 'is_personal', 'is_default', 'enabled',
+                          'shared_by', 'created_at', 'updated_at',
+                          'owner_name', 'location', 'show_recipient_ui', 'telegram_notifications'],
+            'task_recipients': ['id', 'task_id', 'recipient_id', 'platform_task_id',
+                               'platform_type', 'created_at', 'status'],
+            'user_preferences_unified': ['user_id', 'show_recipient_ui', 'telegram_notifications',
+                                        'owner_name', 'location', 'utc_offset',
+                                        'created_at', 'updated_at'],
+            'migration_history': ['id', 'migration_id', 'description', 'applied_at'],
+            'users': ['user_id', 'username', 'first_name', 'last_name', 'last_seen', 'created_at'],
+        }
+
+        all_ok = True
+        for table, expected_columns in expected_schema.items():
             if not self._table_exists(conn, table):
                 logger.error(f"Required table missing: {table}")
-                return False
-        
-        # Verify critical columns exist
-        try:
-            # Test basic queries to ensure schema is correct
-            conn.execute("SELECT id, title, description, due_time FROM tasks LIMIT 1")
-            conn.execute("SELECT id, name, platform_type, credentials FROM recipients LIMIT 1")
-            conn.execute("SELECT id, task_id, recipient_id, platform_task_id FROM task_recipients LIMIT 1")
-            return True
-        except sqlite3.OperationalError as e:
-            logger.error(f"Schema verification failed: {e}")
-            return False
-    
+                all_ok = False
+                continue
+
+            actual_columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+            missing = set(expected_columns) - actual_columns
+            if missing:
+                logger.error(f"Table '{table}' missing columns: {missing}")
+                all_ok = False
+
+        if not all_ok:
+            logger.error("Schema verification FAILED - database is corrupt or migrations didn't apply correctly")
+
+        return all_ok
+
+    def _repair_schema(self, conn: sqlite3.Connection) -> bool:
+        """Attempt to repair known schema issues from legacy init race conditions.
+
+        This handles databases where migrations were recorded as applied but
+        a competing init system (unified_recipient_schema.py) created tables
+        with missing columns. We add missing columns with their defaults.
+        """
+        # Map of table -> column -> (type, default) for columns that may be missing
+        # due to the old unified_recipient_schema.py race condition
+        repairs = {
+            'user_preferences_unified': {
+                'utc_offset': ('INTEGER', '0'),
+            },
+        }
+
+        repaired = False
+        for table, columns in repairs.items():
+            if not self._table_exists(conn, table):
+                continue
+            actual = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+            for col, (col_type, default) in columns.items():
+                if col not in actual:
+                    try:
+                        conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type} DEFAULT {default}")
+                        logger.info(f"Repaired: added {col} to {table}")
+                        repaired = True
+                    except sqlite3.Error as e:
+                        logger.error(f"Failed to repair {table}.{col}: {e}")
+                        return False
+
+        if repaired:
+            conn.commit()
+        return True
+
     def _record_migration(self, conn: sqlite3.Connection, migration_id: str, description: str):
         """Record a migration in the history table."""
         conn.execute(
@@ -446,8 +507,18 @@ class DatabaseMigrator:
     
     def _migration_010_add_utc_offset(self, conn: sqlite3.Connection):
         """Add UTC offset to user preferences for timezone-aware processing."""
-        # The utc_offset column is already created in migration 009
-        # This migration now just updates existing records with calculated offsets
+        # Defensively add utc_offset column if missing - handles legacy databases where
+        # table was created without this column before migration 009 existed
+        try:
+            conn.execute("ALTER TABLE user_preferences_unified ADD COLUMN utc_offset INTEGER DEFAULT 0")
+            logger.info("Added missing utc_offset column to user_preferences_unified")
+        except sqlite3.OperationalError as e:
+            if "duplicate column" in str(e).lower():
+                logger.debug("utc_offset column already exists, skipping ALTER TABLE")
+            else:
+                raise
+
+        # Update existing records with calculated offsets
         
         # Update existing records with UTC offset based on location
         # This mapping matches the existing get_timezone_offset logic

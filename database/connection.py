@@ -15,8 +15,6 @@ class DatabaseManager:
     
     def __init__(self, database_path: str = "data/db/tasks.db", timeout: int = 30):
         self._local = threading.local()
-        self._lock = threading.Lock()
-        self._initialized = False
         self.database_path = database_path
         self.timeout = timeout
         
@@ -56,71 +54,4 @@ class DatabaseManager:
             logger.error(f"Database transaction failed: {e}")
             raise DatabaseError(f"Database operation failed: {e}")
     
-    def initialize_schema(self) -> None:
-        """Initialize database schema."""
-        if self._initialized:
-            return
-        
-        with self._lock:
-            if self._initialized:
-                return
-            
-            with self.get_connection() as conn:
-                self._create_tables(conn)
-                self._migrate_schema(conn)
-                self._initialize_recipient_schema(conn)
-                self._initialized = True
-                logger.info("Database schema initialized")
-    
-    def _initialize_recipient_schema(self, conn) -> None:
-        """Initialize clean recipient schema."""
-        from database.unified_recipient_schema import create_unified_recipient_table
-        create_unified_recipient_table(conn)
-    
-    def _create_tables(self, conn: sqlite3.Connection) -> None:
-        """Create clean database tables for recipient system only."""
-        
-        # Create tasks table
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS tasks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                chat_id INTEGER NOT NULL,
-                message_id INTEGER NOT NULL,
-                title TEXT NOT NULL,
-                description TEXT,
-                due_time TEXT NOT NULL,
-                platform_task_id TEXT,
-                platform_type TEXT NOT NULL,
-                screenshot_file_id TEXT,
-                screenshot_filename TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        # Create indices for better performance
-        conn.execute('CREATE INDEX IF NOT EXISTS idx_tasks_user_id ON tasks(user_id)')
-        conn.execute('CREATE INDEX IF NOT EXISTS idx_tasks_due_time ON tasks(due_time)')
-    
-    def _migrate_schema(self, conn: sqlite3.Connection) -> None:
-        """Handle schema migrations."""
-        # Add screenshot fields to existing tasks table if they don't exist
-        try:
-            # Check if screenshot columns exist
-            cursor = conn.execute("PRAGMA table_info(tasks)")
-            columns = [row[1] for row in cursor.fetchall()]
-            
-            if 'screenshot_file_id' not in columns:
-                conn.execute('ALTER TABLE tasks ADD COLUMN screenshot_file_id TEXT')
-                logger.info("Added screenshot_file_id column to tasks table")
-                
-            if 'screenshot_filename' not in columns:
-                conn.execute('ALTER TABLE tasks ADD COLUMN screenshot_filename TEXT')
-                logger.info("Added screenshot_filename column to tasks table")
-                
-        except sqlite3.Error as e:
-            logger.warning(f"Schema migration warning: {e}")
-            # Continue - this might be a new database
-
 # Remove global instance - use DI container instead
