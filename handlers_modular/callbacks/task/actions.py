@@ -41,9 +41,8 @@ async def add_shared_task(callback_query: CallbackQuery, state: FSMContext):
         
         # Get the last created task ID from the database
         task_repo = container.task_repository()
-        # Get most recent task for this user (ordered by due_time)
         # This is a simplification - ideally we'd store task_id in state or message
-        user_tasks = task_repo.get_by_user(user_id)
+        user_tasks = await asyncio.to_thread(task_repo.get_by_user, user_id)
         
         if not user_tasks:
             await callback_query.answer("❌ No tasks found to add to shared recipient")
@@ -266,13 +265,14 @@ async def handle_add_task_to_recipient(callback_query: CallbackQuery):
         if success:
             # Get the current task from database to know which recipients were already used
             task_repo = container.task_repository()
-            task = task_repo.get_by_id(int(task_id))
-            
+            task = await asyncio.to_thread(task_repo.get_by_id, int(task_id))
+
             # Regenerate actions excluding the newly added recipient
-            updated_actions = task_service._generate_post_task_actions(
-                user_id=user_id, 
+            updated_actions = await asyncio.to_thread(
+                task_service._generate_post_task_actions,
+                user_id=user_id,
                 used_recipients=[],  # Determined from database in the method
-                task_id=int(task_id), 
+                task_id=int(task_id),
                 exclude_recipient_ids=[int(recipient_id)]
             )
             
@@ -331,10 +331,11 @@ async def handle_remove_task_from_recipient(callback_query: CallbackQuery):
 
         if success:
             # Regenerate buttons with the removed recipient available for adding again
-            updated_actions = task_service._generate_post_task_actions(
-                user_id=user_id, 
+            updated_actions = await asyncio.to_thread(
+                task_service._generate_post_task_actions,
+                user_id=user_id,
                 used_recipients=[],  # We don't track used recipients in the current design
-                task_id=int(task_id), 
+                task_id=int(task_id),
                 exclude_recipient_ids=[]  # Don't exclude any since we just removed one
             )
             

@@ -2,6 +2,7 @@
 
 import asyncio
 import faulthandler
+import os
 import signal
 import sys
 import time
@@ -14,7 +15,7 @@ logger = get_logger(__name__)
 
 # Enable faulthandler: send SIGUSR1 to dump all thread stacks (e.g. on freeze)
 faulthandler.register(signal.SIGUSR1)
-logger.info("faulthandler registered on SIGUSR1 — send `kill -SIGUSR1 1` to dump stacks")
+logger.info(f"faulthandler registered on SIGUSR1 — send `kill -SIGUSR1 {os.getpid()}` to dump stacks")
 
 # Initialize dependency injection
 wire_application()
