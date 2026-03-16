@@ -1,5 +1,6 @@
 """Task action callback handlers."""
 
+import asyncio
 from aiogram.types import CallbackQuery
 from aiogram.fsm.context import FSMContext
 
@@ -53,8 +54,10 @@ async def add_shared_task(callback_query: CallbackQuery, state: FSMContext):
         
         # Add task to shared recipient
         task_service = container.recipient_task_service()
-        result = task_service.add_task_to_recipient(user_id, task_id, recipient_id)
-        
+        result = await asyncio.to_thread(
+            task_service.add_task_to_recipient, user_id, task_id, recipient_id
+        )
+
         if result.success:
             await callback_query.answer(f"✅ {result.message}")
             # Update the message to show the task was added
@@ -142,7 +145,8 @@ async def confirm_transcription(callback_query: CallbackQuery, state: FSMContext
         from core.initialization import services
         parsing_service = services.get_parsing_service()
         
-        parsed_task_dict = parsing_service.parse_content_to_task(
+        parsed_task_dict = await asyncio.to_thread(
+            parsing_service.parse_content_to_task,
             transcribed_text,
             owner_name=owner_name,
             location=location,
@@ -152,7 +156,8 @@ async def confirm_transcription(callback_query: CallbackQuery, state: FSMContext
         if parsed_task_dict:
             # Use parsed data but keep original text as description
             task_service = container.recipient_task_service()
-            result = task_service.create_task_for_recipients(
+            result = await asyncio.to_thread(
+                task_service.create_task_for_recipients,
                 user_id=user_id,
                 title=parsed_task_dict['title'],
                 description=transcribed_text,  # Keep full transcribed text
@@ -171,7 +176,8 @@ async def confirm_transcription(callback_query: CallbackQuery, state: FSMContext
             due_time = tomorrow.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
             
             task_service = container.recipient_task_service()
-            result = task_service.create_task_for_recipients(
+            result = await asyncio.to_thread(
+                task_service.create_task_for_recipients,
                 user_id=user_id,
                 title=transcribed_text[:100],  # Truncate for title
                 description=transcribed_text,
@@ -246,16 +252,17 @@ async def handle_add_task_to_recipient(callback_query: CallbackQuery):
         
         # Get task service and add task to recipient
         task_service = container.recipient_task_service()
-        result = task_service.add_task_to_recipient(
+        result = await asyncio.to_thread(
+            task_service.add_task_to_recipient,
             user_id=user_id,
             task_id=int(task_id),
             recipient_id=int(recipient_id)
         )
-        
+
         # Extract ServiceResult components
         success = result.success
         message = result.message
-        
+
         if success:
             # Get the current task from database to know which recipients were already used
             task_repo = container.task_repository()
@@ -311,16 +318,17 @@ async def handle_remove_task_from_recipient(callback_query: CallbackQuery):
         
         # Get task service and remove task from recipient
         task_service = container.recipient_task_service()
-        result = task_service.remove_task_from_recipient(
+        result = await asyncio.to_thread(
+            task_service.remove_task_from_recipient,
             user_id=user_id,
             task_id=int(task_id),
             recipient_id=int(recipient_id)
         )
-        
+
         # Extract ServiceResult components
         success = result.success
         message = result.message
-        
+
         if success:
             # Regenerate buttons with the removed recipient available for adding again
             updated_actions = task_service._generate_post_task_actions(

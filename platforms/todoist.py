@@ -89,12 +89,12 @@ class TodoistPlatform(AbstractTaskPlatform):
             data['due_datetime'] = task_data['due_time']
         
         try:
-            response = requests.post(url, headers=self.headers, json=data)
+            response = requests.post(url, headers=self.headers, json=data, timeout=HttpConstants.HTTP_TIMEOUT)
             return response.status_code in [200, 201, 204]
         except Exception as e:
             logger.error(f"Todoist API error: {e}")
             return False
-    
+
     @with_timeout_and_retry(max_retries=HttpConstants.MAX_RETRIES)
     def delete_task(self, task_id):
         """
@@ -125,7 +125,7 @@ class TodoistPlatform(AbstractTaskPlatform):
         url = f'{self.base_url}/tasks/{task_id}'
         
         try:
-            response = requests.get(url, headers=self.headers)
+            response = requests.get(url, headers=self.headers, timeout=HttpConstants.HTTP_TIMEOUT)
             if response.status_code == 200:
                 task = response.json()
                 return {
@@ -171,7 +171,7 @@ class TodoistPlatform(AbstractTaskPlatform):
         }
         
         try:
-            response = requests.post(upload_url, headers=headers, files=files)
+            response = requests.post(upload_url, headers=headers, files=files, timeout=HttpConstants.HTTP_TIMEOUT)
             if response.status_code in [200, 201]:
                 result = response.json()
                 logger.debug(f"Successfully uploaded file to Todoist: {file_name}")
@@ -212,7 +212,7 @@ class TodoistPlatform(AbstractTaskPlatform):
         }
         
         try:
-            response = requests.post(url, headers=self.headers, json=data)
+            response = requests.post(url, headers=self.headers, json=data, timeout=HttpConstants.HTTP_TIMEOUT)
             if response.status_code in [200, 201, 204]:
                 logger.debug(f"Successfully added comment with attachment to task {task_id}")
                 return True
@@ -245,7 +245,7 @@ class TodoistPlatform(AbstractTaskPlatform):
                     'task_id': task_id,
                     'content': f"📸 Screenshot processed: {file_name}\n\n*Note: Screenshot analysis was used to create this task but file upload failed.*"
                 }
-                response = requests.post(url, headers=self.headers, json=data)
+                response = requests.post(url, headers=self.headers, json=data, timeout=HttpConstants.HTTP_TIMEOUT)
                 return response.status_code in [200, 201, 204]
             
             # Add comment with file attachment

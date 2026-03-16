@@ -1,13 +1,20 @@
 """Main application entry point."""
 
 import asyncio
+import faulthandler
+import signal
 import sys
+import time
 from bot import dp, initialize_bot
 from scheduler import task_scheduler
 from core.initialization import wire_application, unwire_application, services
 from core.logging import get_logger
 
 logger = get_logger(__name__)
+
+# Enable faulthandler: send SIGUSR1 to dump all thread stacks (e.g. on freeze)
+faulthandler.register(signal.SIGUSR1)
+logger.info("faulthandler registered on SIGUSR1 — send `kill -SIGUSR1 1` to dump stacks")
 
 # Initialize dependency injection
 wire_application()
@@ -48,6 +55,19 @@ for r in [dp] + list(dp.sub_routers):
         logger.info(f"Router {id(r)}: {count} handlers")
 logger.info(f"Total handlers before main(): {total}")
 
+async def _watchdog():
+    """Detect event loop freezes via drift measurement."""
+    interval = 60
+    while True:
+        t0 = time.monotonic()
+        await asyncio.sleep(interval)
+        drift = time.monotonic() - t0 - interval
+        if drift > 5:
+            logger.warning(f"watchdog: event loop was blocked for {drift:.1f}s")
+        else:
+            logger.debug(f"watchdog: alive, drift={drift:.2f}s")
+
+
 async def main():
     """Main application function."""
     try:
@@ -66,15 +86,20 @@ async def main():
                         if hasattr(f.callback, 'commands'):
                             logger.info(f"  Command: /{','.join(f.callback.commands)}")
         logger.info(f"Total message handlers: {total_handlers}")
-        
+
         # Start the task scheduler in the background
         scheduler_task = asyncio.create_task(task_scheduler(bot))
         logger.info("Task scheduler started")
 
+        # Start event-loop watchdog
+        watchdog_task = asyncio.create_task(_watchdog())
+        logger.info("Event loop watchdog started (60s interval)")
+
         # Start polling to receive updates from Telegram
         logger.info("Starting bot...")
         await dp.start_polling(bot)
-        
+        logger.warning("start_polling() returned — this should not happen in normal operation")
+
     except Exception as e:
         logger.error(f"Error in main application: {e}")
         raise
@@ -86,10 +111,18 @@ async def main():
                 await scheduler_task
             except asyncio.CancelledError:
                 pass
-        
+
+        # Cancel watchdog task
+        if 'watchdog_task' in locals():
+            watchdog_task.cancel()
+            try:
+                await watchdog_task
+            except asyncio.CancelledError:
+                pass
+
         # Unwire dependency injection
         unwire_application()
-        
+
         # Close the bot session cleanly when stopping
         await bot.session.close()
         logger.info("Bot stopped.")

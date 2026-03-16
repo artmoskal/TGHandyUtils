@@ -1,5 +1,6 @@
 """Text message processing with photo support."""
 
+import asyncio
 from typing import List, Tuple, Optional, Dict
 from aiogram.types import Message
 
@@ -38,7 +39,8 @@ async def process_thread_with_photos(message: Message, thread_content: List[Tupl
         from core.initialization import services
         parsing_service = services.get_parsing_service()
         
-        parsed_task_dict = parsing_service.parse_content_to_task(
+        parsed_task_dict = await asyncio.to_thread(
+            parsing_service.parse_content_to_task,
             concatenated_content,
             owner_name=owner_name,
             location=location,
@@ -73,7 +75,8 @@ async def process_thread_with_photos(message: Message, thread_content: List[Tupl
         recipient_service = container.recipient_service()
         
         # First create tasks for personal recipients only
-        result = task_service.create_task_for_recipients(
+        result = await asyncio.to_thread(
+            task_service.create_task_for_recipients,
             user_id=owner_id,
             title=task_data.title,
             description=task_data.description,

@@ -26,9 +26,12 @@ async def task_scheduler(bot_instance=None):
     while True:
         try:
             await _check_and_process_due_tasks()
+        except asyncio.CancelledError:
+            logger.warning("Scheduler task was cancelled")
+            raise
         except Exception as e:
             logger.error(f"Error in task scheduler: {e}")
-        
+
         # Wait before checking again
         await asyncio.sleep(services.get_config().SCHEDULER_INTERVAL)
 

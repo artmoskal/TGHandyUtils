@@ -1,5 +1,6 @@
 """Task creation state handlers."""
 
+import asyncio
 from aiogram.types import Message
 from aiogram.fsm.context import FSMContext
 
@@ -39,7 +40,8 @@ async def handle_task_creation(message: Message, state: FSMContext):
             location = user_prefs.location if user_prefs else None
             
             # Use the proper parsing method that handles time correctly
-            parsed_task_dict = parsing_service.parse_content_to_task(
+            parsed_task_dict = await asyncio.to_thread(
+                parsing_service.parse_content_to_task,
                 task_description,
                 owner_name=owner_name,
                 location=location,
@@ -84,7 +86,8 @@ async def handle_task_creation(message: Message, state: FSMContext):
         # Create the task
         task_service = container.recipient_task_service()
         recipient_ids = [r.id for r in recipients]
-        result = task_service.create_task_for_recipients(
+        result = await asyncio.to_thread(
+            task_service.create_task_for_recipients,
             user_id=user_id,
             title=task_data.title,
             description=task_data.description,
