@@ -7,6 +7,7 @@ cards into a per-user buffer that can be exported as one deck.
 
 import asyncio
 import os
+import re
 import uuid
 
 from aiogram.types import FSInputFile
@@ -21,6 +22,27 @@ from services.content import anki_buffer
 logger = get_logger(__name__)
 
 BUFFER_MEDIA_DIR = "data/temp_cache/anki"
+
+
+def _strip_html(text: str) -> str:
+    """Drop HTML (e.g. embedded <img>/<br>) so the preview shows plain text."""
+    return re.sub(r"<[^>]+>", "", text).strip()
+
+
+def _format_preview(cards, budget: int) -> str:
+    """Render 'front → back' for as many cards as fit within `budget` characters."""
+    lines, shown = [], 0
+    for c in cards:
+        block = f"• {_strip_html(c.question)}\n   ↳ {_strip_html(c.answer)}"
+        candidate = "\n".join(lines + [block])
+        if lines and len(candidate) > budget:
+            break
+        lines.append(block)
+        shown += 1
+    preview = "\n".join(lines)
+    if shown < len(cards):
+        preview += f"\n…and {len(cards) - shown} more"
+    return preview
 
 
 class AnkiProcessor(IContentProcessor):
@@ -118,17 +140,16 @@ class AnkiProcessor(IContentProcessor):
             anki_buffer.add(ctx.user_id, cards, media_files)
             total = anki_buffer.count(ctx.user_id)
 
-            preview = "\n".join(f"• {c.question.split('<')[0].strip()}" for c in cards[:5])
-            if len(cards) > 5:
-                preview += f"\n…and {len(cards) - 5} more"
+            header = (
+                f"🃏 {len(cards)} card(s) — added to your deck ({total} total). "
+                f"Import this file, or collect more and Export once.\n\n"
+            )
+            caption = header + _format_preview(cards, budget=1024 - len(header) - 20)
 
             from keyboards.recipient import get_anki_buffer_keyboard
             await message.reply_document(
                 FSInputFile(out_path, filename="flashcards.apkg"),
-                caption=(
-                    f"🃏 {len(cards)} card(s) — added to your deck ({total} total). "
-                    f"Import this file, or collect more and Export once.\n\n{preview}"
-                ),
+                caption=caption,
                 reply_markup=get_anki_buffer_keyboard(total),
             )
             try:

@@ -55,6 +55,10 @@ async def test_anki_processor_delivers_document():
     svc.extract_cards.assert_called_once()
     svc.build_package.assert_called_once()
     message.reply_document.assert_called_once()
+    # caption previews BOTH front and back so the user can check correctness
+    caption = message.reply_document.call_args.kwargs["caption"]
+    assert "Capital of France?" in caption  # front
+    assert "Paris" in caption               # back
 
 
 @pytest.mark.unit
