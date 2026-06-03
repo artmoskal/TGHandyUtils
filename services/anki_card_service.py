@@ -59,6 +59,12 @@ HARD RULES:
   formatting markers. Strip and ignore that scaffolding completely.
 - Every card must be fully self-contained: someone seeing ONLY the card (not the source) must be
   able to understand the question. No references like "in this message" or "according to the author".
+- NEVER give the answer away in the question. The question must not contain, paraphrase, or
+  strongly hint at its own answer, and must avoid leading set-ups whose wording already implies the
+  answer. Ask the most direct question that still has a single correct answer; keep the revealing
+  part on the BACK only. (Bad: "When a state's own laws apply in its territory, which law prevails
+  over ICAO Air Law?" — the set-up hints the answer. Good: "Which Air Law takes precedence over
+  ICAO Air Law inside a sovereign state's own territory?" → back: "That state's own (national) Air Law.")
 - Answers must be concise and correct. Do NOT invent facts that are not in the content.
 - Preserve the content's original language.
 - Add 0-3 short lowercase tags per card (no spaces) when an obvious topic exists.

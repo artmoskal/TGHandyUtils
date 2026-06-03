@@ -25,3 +25,9 @@ samples:
 
   - name: qa_dialogue
     content: "Vasya: what is OOP? Artem: it's object-oriented programming"
+
+  - name: leading_question_risk
+    content: >
+      All ICAO member states are sovereign states and will inevitably elect to pass laws which
+      have force in their country alone. Where this is so, it is the Air Law of the individual
+      state which prevails over International (ICAO) Air Law.
