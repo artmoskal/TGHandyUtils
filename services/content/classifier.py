@@ -29,7 +29,8 @@ Answer (one word - reminder or anki):"""
     @property
     def llm(self):
         if self._llm is None:
-            self._llm = create_chat_llm(self.config, temperature=0.0)
+            model = getattr(self.config, "ANKI_CARD_MODEL", "gpt-5.4-mini")
+            self._llm = create_chat_llm(self.config, model=model, temperature=0.0)
         return self._llm
 
     def classify(self, content: str) -> Intent:

@@ -14,6 +14,8 @@ class Config(IConfig):
     
     # OpenAI Configuration
     OPENAI_API_KEY: str = os.getenv('OPENAI_API_KEY', '')
+    # Model for Anki card extraction + the reminder/anki auto-classifier (instruction-following).
+    ANKI_CARD_MODEL: str = os.getenv('ANKI_CARD_MODEL', 'gpt-5.4-mini')
     
     # Database Configuration
     DATABASE_PATH: str = os.getenv('DATABASE_PATH', 'data/db/tasks.db')
