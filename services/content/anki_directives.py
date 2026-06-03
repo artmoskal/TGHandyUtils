@@ -20,7 +20,8 @@ HELP_TEXT = (
     "`[i ibf]` 1st image back, 2nd front · `[i i-]` no image (text only)\n\n"
     "*Questions:*\n"
     "`[i qs]` split into several (default) · `[i qm]` one combined question · `[i q3]` exactly 3\n\n"
-    "*Card type:* auto by default · `[i basic]` force Q/A · `[i cloze]` force fill-in-the-blank\n\n"
+    "*Card type:* auto by default · `[i basic]` force Q/A · `[i cloze]` one cloze card "
+    "(several deletions) · `[i cloze3]` three cloze cards\n\n"
     "*Guide:* `<source> [i p] <instruction>` — text before `[i p]` is the source, text after is "
     "an instruction for how to make the card (e.g. `JAA = Joint Aviation Authorities [i p] abbr expand` "
     "→ front: JAA, back: full form)\n\n"
@@ -69,7 +70,9 @@ def parse_directives(text: str) -> Tuple[AnkiDirectives, str]:
         elif re.fullmatch(r"q\d+", flag):
             d.strategy, d.count = "count", int(flag[1:])
         elif flag in ("cloze", "c"):
-            d.card_type = "cloze"
+            d.card_type = "cloze"  # default: one cloze note
+        elif re.fullmatch(r"cloze\d+", flag):
+            d.card_type, d.count = "cloze", int(flag[5:])  # N cloze notes
         elif flag == "basic":
             d.card_type = "basic"
         elif flag == "p":

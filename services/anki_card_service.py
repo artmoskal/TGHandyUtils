@@ -103,10 +103,18 @@ COMMON PATTERNS:
 
 CARD TYPE — choose the best per card:
 - "basic": explicit question on the front, answer on the back. Good for Q->A, acronyms, term->definition.
-- "cloze": a complete sentence with the key fact hidden as {{c1::...}} ({{c2::...}} etc. for more
-  blanks). PREFER cloze when the fact is best recalled in context, when a Q/A would give the answer
-  away or only allow a binary guess, or for fill-in-the-blank facts. Example:
-  "Within a sovereign state, {{c1::the state's own Air Law}} prevails over ICAO Air Law."
+- "cloze": present the fact as a sentence and hide the KEY facts as SEPARATE deletions
+  {{c1::...}}, {{c2::...}}, {{c3::...}} — one per distinct testable fact. If the sentence contains
+  several important facts, hide EACH of them; do NOT hide only one and leave the other key facts
+  visible. Never hide connective/filler words ("inevitably", "will elect to"), and keep enough
+  surrounding context that each blank is answerable. Trim obvious rambling but keep the substance.
+  PREFER cloze when facts are best learned in context or when a Q/A would give the answer away /
+  allow only a binary guess.
+  BAD (hides only one fact, leaves the rest exposed): "All ICAO member states are
+  {{c1::sovereign states}} and will inevitably pass laws with force in their country alone..."
+  GOOD (each key fact hidden): "All ICAO member states are {{c1::sovereign states}}; where a state
+  passes its own laws, it is the Air Law of the {{c2::individual state}} that prevails over
+  {{c3::International (ICAO) Air Law}}."
 For a "basic" card set type="basic" and fill question + answer (leave text empty). For a "cloze"
 card set type="cloze" and fill text (leave question + answer empty). Always set "type".
 {instructions}
@@ -138,16 +146,25 @@ CONTENT:
     def _build_instructions(strategy: str, count: Optional[int], guide: Optional[str],
                             card_type: Optional[str] = None) -> str:
         lines = []
-        if strategy == "merge":
-            lines.append("- Produce EXACTLY ONE flashcard with a single broad question covering the key idea.")
-        elif strategy == "count" and count:
-            lines.append(f"- Produce EXACTLY {count} flashcard(s).")
-        else:
-            lines.append("- Each card tests ONE fact. Prefer several focused cards over one broad card.")
         if card_type == "cloze":
-            lines.append("- Make EVERY card a CLOZE card (type 'cloze') using {{c1::...}} deletions.")
-        elif card_type == "basic":
-            lines.append("- Make EVERY card a BASIC question/answer card (type 'basic').")
+            # Cloze: ONE note by default (a single sentence with several deletions), N if asked.
+            if count:
+                lines.append(f"- Produce EXACTLY {count} separate cloze cards (each type 'cloze').")
+            else:
+                lines.append(
+                    "- Produce EXACTLY ONE cloze card (type 'cloze'): a single sentence with each key "
+                    "fact hidden as a separate deletion {{c1::...}}, {{c2::...}}, …. Do NOT split it "
+                    "into multiple cloze notes."
+                )
+        else:
+            if strategy == "merge":
+                lines.append("- Produce EXACTLY ONE flashcard with a single broad question covering the key idea.")
+            elif strategy == "count" and count:
+                lines.append(f"- Produce EXACTLY {count} flashcard(s).")
+            else:
+                lines.append("- Each card tests ONE fact. Prefer several focused cards over one broad card.")
+            if card_type == "basic":
+                lines.append("- Make EVERY card a BASIC question/answer card (type 'basic').")
         if guide:
             lines.append(
                 f'- FOLLOW THE USER INSTRUCTION EXACTLY: "{guide}". It overrides the default '

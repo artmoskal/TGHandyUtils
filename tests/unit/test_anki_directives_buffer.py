@@ -55,6 +55,15 @@ def test_parse_card_type_flags():
     assert parse_directives("[i cloze] x")[0].card_type == "cloze"
     assert parse_directives("[i basic] x")[0].card_type == "basic"
     assert parse_directives("[i qs] x")[0].card_type is None  # auto by default
+    d = parse_directives("[i cloze3] x")[0]
+    assert d.card_type == "cloze" and d.count == 3
+
+
+@pytest.mark.unit
+def test_cloze_instructions_default_one_vs_n():
+    from services.anki_card_service import AnkiCardService
+    assert "EXACTLY ONE cloze" in AnkiCardService._build_instructions("split", None, None, "cloze")
+    assert "EXACTLY 3 separate cloze" in AnkiCardService._build_instructions("split", 3, None, "cloze")
 
 
 @pytest.mark.unit
