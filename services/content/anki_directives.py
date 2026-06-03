@@ -20,7 +20,9 @@ HELP_TEXT = (
     "`[i ibf]` 1st image back, 2nd front · `[i i-]` no image (text only)\n\n"
     "*Questions:*\n"
     "`[i qs]` split into several (default) · `[i qm]` one combined question · `[i q3]` exactly 3\n\n"
-    "*Guide:* `[i p] your instruction` — use your text as direction, not literal card content\n\n"
+    "*Guide:* `<source> [i p] <instruction>` — text before `[i p]` is the source, text after is "
+    "an instruction for how to make the card (e.g. `JAA = Joint Aviation Authorities [i p] abbr expand` "
+    "→ front: JAA, back: full form)\n\n"
     "Combine them: `[i if qm] what parts does the valve have?`\n\n"
     "Cards collect into a deck — tap *📦 Export* when done, *🗑 Clear* to reset.\n"
     "Type `/anki help` to see this again."
@@ -34,7 +36,8 @@ class AnkiDirectives:
     multi_split: bool = False       # ibf: 1st image -> back, 2nd -> front
     strategy: str = "split"         # split | merge | count
     count: Optional[int] = None
-    guide_mode: bool = False        # text is an instruction/guide, not card content
+    guide_mode: bool = False        # p flag present
+    guide: Optional[str] = None     # the instruction text (what follows [i p])
     help: bool = False
 
 
@@ -68,5 +71,16 @@ def parse_directives(text: str) -> Tuple[AnkiDirectives, str]:
         elif flag in ("h", "help", "?"):
             d.help = True
 
-    cleaned = (text[:m.start()] + text[m.end():]).strip()
+    before = text[:m.start()].strip()
+    after = text[m.end():].strip()
+
+    if d.guide_mode:
+        # Convention: "<source> [i p] <instruction>" — text after the tag is the instruction,
+        # text before it is the source material. (If there's no source text, an attached image
+        # is the source.)
+        d.guide = after or None
+        cleaned = before
+    else:
+        cleaned = (before + " " + after).strip()
+
     return d, cleaned

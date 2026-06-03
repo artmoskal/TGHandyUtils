@@ -43,6 +43,14 @@ def test_parse_count_and_guide_and_multi():
 
 
 @pytest.mark.unit
+def test_parse_guide_splits_source_and_instruction():
+    d, content = parse_directives("JAA = Joint Aviation Authorities [i p] abbr expand")
+    assert d.guide_mode is True
+    assert d.guide == "abbr expand"
+    assert content == "JAA = Joint Aviation Authorities"
+
+
+@pytest.mark.unit
 def test_parse_help_and_no_tags():
     assert parse_directives("[i h]")[0].help is True
     d, cleaned = parse_directives("plain content")

@@ -79,7 +79,7 @@ CONTENT:
         return self._llm
 
     @staticmethod
-    def _build_instructions(strategy: str, count: Optional[int], guide_mode: bool) -> str:
+    def _build_instructions(strategy: str, count: Optional[int], guide: Optional[str]) -> str:
         lines = []
         if strategy == "merge":
             lines.append("- Produce EXACTLY ONE flashcard with a single broad question covering the key idea.")
@@ -87,12 +87,16 @@ CONTENT:
             lines.append(f"- Produce EXACTLY {count} flashcard(s).")
         else:
             lines.append("- Each card tests ONE fact. Prefer several focused cards over one broad card.")
-        if guide_mode:
-            lines.append("- The content includes the user's own instructions/guidance — follow them when "
-                         "deciding what to ask and how many cards to make.")
+        if guide:
+            lines.append(
+                f'- FOLLOW THE USER INSTRUCTION EXACTLY: "{guide}". It overrides the default '
+                f"question style. For example, if it says to expand an abbreviation, put the "
+                f"abbreviation on the FRONT and its full form/definition on the BACK; if it asks "
+                f"for a definition, put the term on the front and the definition on the back."
+            )
         return "\n".join(lines)
 
-    def extract_cards(self, content: str, guide_mode: bool = False,
+    def extract_cards(self, content: str, guide: Optional[str] = None,
                       strategy: str = "split", count: Optional[int] = None) -> List[AnkiCard]:
         """Use the LLM to extract flashcards from content. Raises ParsingError on failure."""
         if not content or not content.strip():
@@ -100,7 +104,7 @@ CONTENT:
         try:
             prompt_text = self._prompt.format(
                 content=content,
-                instructions=self._build_instructions(strategy, count, guide_mode),
+                instructions=self._build_instructions(strategy, count, guide),
             )
             output = self.llm.invoke([HumanMessage(content=prompt_text)])
             card_set = self._parser.parse(output.content)

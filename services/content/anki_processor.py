@@ -91,7 +91,7 @@ class AnkiProcessor(IContentProcessor):
         try:
             cards = await asyncio.to_thread(
                 self.anki_card_service.extract_cards,
-                content, directives.guide_mode, directives.strategy, directives.count,
+                content, directives.guide, directives.strategy, directives.count,
             )
 
             # Embed images into cards per directives.
