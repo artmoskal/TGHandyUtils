@@ -30,6 +30,12 @@ def test_parse_no_image_flag():
 
 
 @pytest.mark.unit
+def test_parse_short_image_aliases():
+    assert parse_directives("[i b qm] x")[0].image_placement == "back"
+    assert parse_directives("[i f] x")[0].image_placement == "front"
+
+
+@pytest.mark.unit
 def test_parse_count_and_guide_and_multi():
     assert parse_directives("[i q3] x")[0].count == 3
     assert parse_directives("[i p] focus on valves")[0].guide_mode is True

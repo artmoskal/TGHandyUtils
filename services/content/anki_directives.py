@@ -16,7 +16,7 @@ _TAG_RE = re.compile(r"\[i\s+([^\]]+)\]", re.IGNORECASE)
 HELP_TEXT = (
     "🃏 *Anki card tags* — put `[i ...]` anywhere in your message:\n\n"
     "*Image* (when a photo is attached):\n"
-    "`[i ib]` image on back (default) · `[i if]` image on front\n"
+    "`[i ib]`/`[i b]` image on back (default) · `[i if]`/`[i f]` image on front\n"
     "`[i ibf]` 1st image back, 2nd front · `[i i-]` no image (text only)\n\n"
     "*Questions:*\n"
     "`[i qs]` split into several (default) · `[i qm]` one combined question · `[i q3]` exactly 3\n\n"
@@ -49,9 +49,9 @@ def parse_directives(text: str) -> Tuple[AnkiDirectives, str]:
         return d, text
 
     for flag in m.group(1).lower().split():
-        if flag == "ib":
+        if flag in ("ib", "b"):
             d.include_image, d.image_placement = True, "back"
-        elif flag == "if":
+        elif flag in ("if", "f"):
             d.include_image, d.image_placement = True, "front"
         elif flag == "ibf":
             d.include_image, d.multi_split = True, True
