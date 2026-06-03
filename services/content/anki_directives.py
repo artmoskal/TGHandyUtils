@@ -20,6 +20,7 @@ HELP_TEXT = (
     "`[i ibf]` 1st image back, 2nd front · `[i i-]` no image (text only)\n\n"
     "*Questions:*\n"
     "`[i qs]` split into several (default) · `[i qm]` one combined question · `[i q3]` exactly 3\n\n"
+    "*Card type:* auto by default · `[i basic]` force Q/A · `[i cloze]` force fill-in-the-blank\n\n"
     "*Guide:* `<source> [i p] <instruction>` — text before `[i p]` is the source, text after is "
     "an instruction for how to make the card (e.g. `JAA = Joint Aviation Authorities [i p] abbr expand` "
     "→ front: JAA, back: full form)\n\n"
@@ -36,6 +37,7 @@ class AnkiDirectives:
     multi_split: bool = False       # ibf: 1st image -> back, 2nd -> front
     strategy: str = "split"         # split | merge | count
     count: Optional[int] = None
+    card_type: Optional[str] = None  # None=auto, or forced "basic" / "cloze"
     guide_mode: bool = False        # p flag present
     guide: Optional[str] = None     # the instruction text (what follows [i p])
     help: bool = False
@@ -66,6 +68,10 @@ def parse_directives(text: str) -> Tuple[AnkiDirectives, str]:
             d.strategy = "merge"
         elif re.fullmatch(r"q\d+", flag):
             d.strategy, d.count = "count", int(flag[1:])
+        elif flag in ("cloze", "c"):
+            d.card_type = "cloze"
+        elif flag == "basic":
+            d.card_type = "basic"
         elif flag == "p":
             d.guide_mode = True
         elif flag in ("h", "help", "?"):

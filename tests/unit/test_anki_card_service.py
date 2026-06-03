@@ -44,6 +44,23 @@ def test_build_package_tags_with_spaces_are_normalised(tmp_path):
 
 
 @pytest.mark.unit
+def test_build_package_cloze_card(tmp_path):
+    cards = [AnkiCard(type="cloze", text="Paris is the capital of {{c1::France}}.")]
+    out = tmp_path / "cloze.apkg"
+    _service().build_package(cards, output_path=str(out))
+    assert out.exists() and zipfile.is_zipfile(str(out))
+
+
+@pytest.mark.unit
+def test_build_package_cloze_without_deletion_falls_back(tmp_path):
+    # marked cloze but no {{c...}} -> must not crash (falls back to a basic note)
+    cards = [AnkiCard(type="cloze", text="just a sentence with no deletion")]
+    out = tmp_path / "fallback.apkg"
+    _service().build_package(cards, output_path=str(out))
+    assert out.exists() and zipfile.is_zipfile(str(out))
+
+
+@pytest.mark.unit
 def test_build_package_empty_cards_raises():
     with pytest.raises(ValueError):
         _service().build_package([])

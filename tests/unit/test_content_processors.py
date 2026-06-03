@@ -87,6 +87,29 @@ async def test_anki_processor_uses_configured_deck_name():
 
 
 @pytest.mark.unit
+async def test_anki_processor_cloze_preview_shows_hidden_span():
+    svc = Mock()
+    svc.extract_cards.return_value = [AnkiCard(type="cloze", text="Paris is the capital of {{c1::France}}.")]
+    svc.build_package.return_value = "/tmp/does_not_exist.apkg"
+
+    message = Mock()
+    message.reply = AsyncMock(return_value=Mock(delete=AsyncMock()))
+    message.reply_document = AsyncMock()
+
+    ctx = ProcessingContext(
+        message=message, thread_content=[("U", "paris france")], user_id=771, owner_name="U", location=None
+    )
+    await AnkiProcessor(svc).process(ctx)
+
+    caption = message.reply_document.call_args.kwargs["caption"]
+    assert "(cloze)" in caption
+    assert "[France]" in caption  # hidden span shown in brackets for review
+
+    from services.content import anki_buffer
+    anki_buffer.clear(771)
+
+
+@pytest.mark.unit
 async def test_anki_processor_empty_content_replies_error():
     svc = Mock()
     message = Mock()

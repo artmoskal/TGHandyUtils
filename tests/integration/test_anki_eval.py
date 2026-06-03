@@ -44,8 +44,11 @@ def test_generate_cards_for_sample(sample):
 
     print(f"\n=== {name} -> {len(cards)} card(s) ===")
     for i, card in enumerate(cards, 1):
-        print(f"  [{i}] Q: {card.question}")
-        print(f"      A: {card.answer}")
+        if getattr(card, "type", "basic") == "cloze":
+            print(f"  [{i}] CLOZE: {card.text}")
+        else:
+            print(f"  [{i}] Q: {card.question}")
+            print(f"      A: {card.answer}")
         print(f"      tags: {card.tags}")
 
     out_path = os.path.join(OUTPUT_DIR, f"{name}.apkg")

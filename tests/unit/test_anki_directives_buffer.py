@@ -51,6 +51,13 @@ def test_parse_guide_splits_source_and_instruction():
 
 
 @pytest.mark.unit
+def test_parse_card_type_flags():
+    assert parse_directives("[i cloze] x")[0].card_type == "cloze"
+    assert parse_directives("[i basic] x")[0].card_type == "basic"
+    assert parse_directives("[i qs] x")[0].card_type is None  # auto by default
+
+
+@pytest.mark.unit
 def test_parse_help_and_no_tags():
     assert parse_directives("[i h]")[0].help is True
     d, cleaned = parse_directives("plain content")

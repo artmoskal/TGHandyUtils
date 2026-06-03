@@ -26,6 +26,7 @@ logger = get_logger(__name__)
 # Fixed IDs so re-imported packages update the same model/deck instead of duplicating it.
 # (genanki recommends stable per-application IDs.)
 _ANKI_MODEL_ID = 1741927384
+_ANKI_CLOZE_MODEL_ID = 1741927385
 _ANKI_DECK_ID = 2059400110
 DEFAULT_DECK_NAME = "Telegram Cards"
 
@@ -41,6 +42,25 @@ _BASIC_MODEL = genanki.Model(
         }
     ],
 )
+
+_CLOZE_MODEL = genanki.Model(
+    _ANKI_CLOZE_MODEL_ID,
+    "TGHandyUtils Cloze",
+    fields=[{"name": "Text"}, {"name": "Back Extra"}],
+    templates=[
+        {
+            "name": "Cloze",
+            "qfmt": "{{cloze:Text}}",
+            "afmt": "{{cloze:Text}}<br>{{Back Extra}}",
+        }
+    ],
+    model_type=genanki.Model.CLOZE,
+)
+
+
+def _is_cloze(card) -> bool:
+    """A card is a real cloze only if marked cloze AND it has a {{c...}} deletion."""
+    return getattr(card, "type", "basic") == "cloze" and "{{c" in (card.text or "")
 
 
 class AnkiCardService:
@@ -80,6 +100,15 @@ COMMON PATTERNS:
   the question on the front and the answer on the back — WITHOUT any of the speakers' names
   (front: "What is OOP?", back: "Object-oriented programming").
 - A plain fact or statement: ask for that fact directly.
+
+CARD TYPE — choose the best per card:
+- "basic": explicit question on the front, answer on the back. Good for Q->A, acronyms, term->definition.
+- "cloze": a complete sentence with the key fact hidden as {{c1::...}} ({{c2::...}} etc. for more
+  blanks). PREFER cloze when the fact is best recalled in context, when a Q/A would give the answer
+  away or only allow a binary guess, or for fill-in-the-blank facts. Example:
+  "Within a sovereign state, {{c1::the state's own Air Law}} prevails over ICAO Air Law."
+For a "basic" card set type="basic" and fill question + answer (leave text empty). For a "cloze"
+card set type="cloze" and fill text (leave question + answer empty). Always set "type".
 {instructions}
 
 CONTENT:
@@ -106,7 +135,8 @@ CONTENT:
         return self._llm
 
     @staticmethod
-    def _build_instructions(strategy: str, count: Optional[int], guide: Optional[str]) -> str:
+    def _build_instructions(strategy: str, count: Optional[int], guide: Optional[str],
+                            card_type: Optional[str] = None) -> str:
         lines = []
         if strategy == "merge":
             lines.append("- Produce EXACTLY ONE flashcard with a single broad question covering the key idea.")
@@ -114,6 +144,10 @@ CONTENT:
             lines.append(f"- Produce EXACTLY {count} flashcard(s).")
         else:
             lines.append("- Each card tests ONE fact. Prefer several focused cards over one broad card.")
+        if card_type == "cloze":
+            lines.append("- Make EVERY card a CLOZE card (type 'cloze') using {{c1::...}} deletions.")
+        elif card_type == "basic":
+            lines.append("- Make EVERY card a BASIC question/answer card (type 'basic').")
         if guide:
             lines.append(
                 f'- FOLLOW THE USER INSTRUCTION EXACTLY: "{guide}". It overrides the default '
@@ -124,14 +158,15 @@ CONTENT:
         return "\n".join(lines)
 
     def extract_cards(self, content: str, guide: Optional[str] = None,
-                      strategy: str = "split", count: Optional[int] = None) -> List[AnkiCard]:
+                      strategy: str = "split", count: Optional[int] = None,
+                      card_type: Optional[str] = None) -> List[AnkiCard]:
         """Use the LLM to extract flashcards from content. Raises ParsingError on failure."""
         if not content or not content.strip():
             raise ParsingError("Cannot create flashcards from empty content")
         try:
             prompt_text = self._prompt.format(
                 content=content,
-                instructions=self._build_instructions(strategy, count, guide),
+                instructions=self._build_instructions(strategy, count, guide, card_type),
             )
             output = self.llm.invoke([HumanMessage(content=prompt_text)])
             card_set = self._parser.parse(output.content)
@@ -162,11 +197,13 @@ CONTENT:
 
         deck = genanki.Deck(_ANKI_DECK_ID, deck_name)
         for card in cards:
-            note = genanki.Note(
-                model=_BASIC_MODEL,
-                fields=[card.question, card.answer],
-                tags=[t.replace(" ", "_") for t in card.tags] if card.tags else [],
-            )
+            tags = [t.replace(" ", "_") for t in card.tags] if card.tags else []
+            if _is_cloze(card):
+                note = genanki.Note(model=_CLOZE_MODEL, fields=[card.text, ""], tags=tags)
+            else:
+                # basic card; if mis-tagged as cloze without a deletion, fall back to text->question
+                question = card.question or card.text
+                note = genanki.Note(model=_BASIC_MODEL, fields=[question, card.answer], tags=tags)
             deck.add_note(note)
 
         if output_path is None:

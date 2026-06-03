@@ -29,11 +29,22 @@ def _strip_html(text: str) -> str:
     return re.sub(r"<[^>]+>", "", text).strip()
 
 
+def _cloze_to_display(text: str) -> str:
+    """Turn '{{c1::answer}}' into '[answer]' so the hidden span is visible in the preview."""
+    return re.sub(r"\{\{c\d+::(.*?)(?:::.*?)?\}\}", r"[\1]", text)
+
+
+def _preview_block(card) -> str:
+    if getattr(card, "type", "basic") == "cloze" and card.text:
+        return f"• (cloze) {_strip_html(_cloze_to_display(card.text))}"
+    return f"• {_strip_html(card.question)}\n   ↳ {_strip_html(card.answer)}"
+
+
 def _format_preview(cards, budget: int) -> str:
-    """Render 'front → back' for as many cards as fit within `budget` characters."""
+    """Render each card (front → back, or cloze sentence) for as many as fit within `budget`."""
     lines, shown = [], 0
     for c in cards:
-        block = f"• {_strip_html(c.question)}\n   ↳ {_strip_html(c.answer)}"
+        block = _preview_block(c)
         candidate = "\n".join(lines + [block])
         if lines and len(candidate) > budget:
             break
@@ -113,7 +124,7 @@ class AnkiProcessor(IContentProcessor):
         try:
             cards = await asyncio.to_thread(
                 self.anki_card_service.extract_cards,
-                content, directives.guide, directives.strategy, directives.count,
+                content, directives.guide, directives.strategy, directives.count, directives.card_type,
             )
 
             # Embed images into cards per directives.
@@ -123,10 +134,14 @@ class AnkiProcessor(IContentProcessor):
             back_html = "".join(f'<img src="{b}">' for b in back)
             if front_html or back_html:
                 for c in cards:
-                    if front_html:
-                        c.question = f"{c.question}<br>{front_html}"
-                    if back_html:
-                        c.answer = f"{c.answer}<br>{back_html}"
+                    if getattr(c, "type", "basic") == "cloze":
+                        # cloze has a single Text field shown on both sides
+                        c.text = f"{c.text}<br>{front_html}{back_html}"
+                    else:
+                        if front_html:
+                            c.question = f"{c.question}<br>{front_html}"
+                        if back_html:
+                            c.answer = f"{c.answer}<br>{back_html}"
             media_files = [p for p, _ in images]
 
             deck = self._deck_name(ctx.user_id)

@@ -5,9 +5,11 @@ from pydantic import BaseModel, Field
 
 
 class AnkiCard(BaseModel):
-    """A single Anki flashcard (question/answer pair)."""
-    question: str = Field(description="The front of the card - a clear, self-contained question")
-    answer: str = Field(description="The back of the card - a concise, correct answer")
+    """A flashcard. Either a basic Q/A card or a cloze (fill-in-the-blank) card."""
+    type: str = Field(default="basic", description="'basic' for a question/answer card, or 'cloze' for a fill-in-the-blank card")
+    question: str = Field(default="", description="Basic cards: the front - a clear, self-contained question")
+    answer: str = Field(default="", description="Basic cards: the back - a concise, correct answer")
+    text: str = Field(default="", description="Cloze cards: a full sentence with the key fact hidden using {{c1::...}} (and {{c2::...}} for more)")
     tags: List[str] = Field(default_factory=list, description="Optional topic tags, lowercase, no spaces")
 
 
