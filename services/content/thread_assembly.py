@@ -23,3 +23,12 @@ def assemble_thread(thread_content: List[Any]) -> Tuple[str, Optional[dict]]:
 
     concatenated = "\n".join([f"{sender}: {text}" for sender, text in text_content])
     return concatenated, screenshot_data
+
+
+def collect_screenshots(thread_content: List[Any]) -> List[dict]:
+    """Return all screenshot_data dicts in the thread (in order), for multi-image support."""
+    shots = []
+    for item in thread_content:
+        if len(item) == 3 and item[2]:
+            shots.append(item[2])
+    return shots

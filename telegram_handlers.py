@@ -32,6 +32,7 @@ try:
     from handlers_modular.callbacks.task import actions  # Task action callbacks
     from handlers_modular.callbacks.settings import profile, notifications, content_mode  # Settings callbacks
     from handlers_modular.callbacks import auto_commit  # Auto-mode override buttons
+    from handlers_modular.callbacks import anki_buffer_cb  # Anki deck export/clear
     from handlers_modular.callbacks.navigation import menus  # Navigation callbacks
     
     # State handlers

@@ -24,6 +24,12 @@ async def _handle_content_command(message: Message, command: CommandObject, inte
     user_id = message.from_user.id
     args = (command.args or "").strip()
 
+    # /anki help -> show the tag reference
+    if intent == Intent.ANKI and args.lower() in ("help", "h", "?"):
+        from services.content.anki_directives import HELP_TEXT
+        await message.reply(HELP_TEXT, parse_mode="Markdown", disable_web_page_preview=True)
+        return
+
     recipient_service = container.recipient_service()
     prefs = recipient_service.get_user_preferences(user_id)
     owner_name = prefs.owner_name if prefs else "User"
