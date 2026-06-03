@@ -19,8 +19,21 @@ class AnkiProcessor(IContentProcessor):
     No recipients required - this is independent of the reminder/platform system.
     """
 
-    def __init__(self, anki_card_service: AnkiCardService):
+    def __init__(self, anki_card_service: AnkiCardService, preferences_repo=None):
         self.anki_card_service = anki_card_service
+        self.preferences_repo = preferences_repo
+
+    def _deck_name(self, user_id: int):
+        """The user's configured deck name, or None to use the service default."""
+        if not self.preferences_repo:
+            return None
+        try:
+            prefs = self.preferences_repo.get_preferences(user_id)
+            if prefs and prefs.anki_deck_name:
+                return prefs.anki_deck_name
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning(f"Could not read anki_deck_name for {user_id}: {e}")
+        return None
 
     async def process(self, ctx: ProcessingContext) -> ServiceResult:
         message = ctx.message
@@ -34,7 +47,11 @@ class AnkiProcessor(IContentProcessor):
         out_path = None
         try:
             cards = await asyncio.to_thread(self.anki_card_service.extract_cards, content)
-            out_path = await asyncio.to_thread(self.anki_card_service.build_package, cards)
+            deck_name = self._deck_name(ctx.user_id)
+            if deck_name:
+                out_path = await asyncio.to_thread(self.anki_card_service.build_package, cards, deck_name)
+            else:
+                out_path = await asyncio.to_thread(self.anki_card_service.build_package, cards)
 
             preview = "\n".join(f"• {c.question}" for c in cards[:5])
             if len(cards) > 5:

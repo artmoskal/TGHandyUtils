@@ -27,7 +27,8 @@ class UserPreferencesRepository(IUserPreferencesRepository):
             with self.db_manager.get_connection() as conn:
                 cursor = conn.execute('''
                     SELECT user_id, show_recipient_ui, telegram_notifications,
-                           owner_name, location, utc_offset, content_mode, created_at, updated_at
+                           owner_name, location, utc_offset, content_mode, anki_deck_name,
+                           created_at, updated_at
                     FROM user_preferences_unified
                     WHERE user_id = ?
                 ''', (user_id,))
@@ -44,8 +45,9 @@ class UserPreferencesRepository(IUserPreferencesRepository):
                     location=row[4],
                     utc_offset=row[5] if row[5] is not None else 0,
                     content_mode=row[6] if row[6] else "reminder",
-                    created_at=datetime.fromisoformat(row[7]) if row[7] else None,
-                    updated_at=datetime.fromisoformat(row[8]) if row[8] else None
+                    anki_deck_name=row[7],
+                    created_at=datetime.fromisoformat(row[8]) if row[8] else None,
+                    updated_at=datetime.fromisoformat(row[9]) if row[9] else None
                 )
                 
         except sqlite3.Error as e:
@@ -58,12 +60,12 @@ class UserPreferencesRepository(IUserPreferencesRepository):
             with self.db_manager.get_connection() as conn:
                 conn.execute('''
                     INSERT INTO user_preferences_unified
-                    (user_id, show_recipient_ui, telegram_notifications, owner_name, location, utc_offset, content_mode)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (user_id, show_recipient_ui, telegram_notifications, owner_name, location, utc_offset, content_mode, anki_deck_name)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     user_id, prefs.show_recipient_ui, prefs.telegram_notifications,
                     prefs.owner_name, prefs.location, prefs.utc_offset or 0,
-                    prefs.content_mode or 'reminder'
+                    prefs.content_mode or 'reminder', prefs.anki_deck_name
                 ))
                 
                 logger.info(f"Created preferences for user {user_id}")
@@ -102,6 +104,10 @@ class UserPreferencesRepository(IUserPreferencesRepository):
             if updates.content_mode is not None:
                 set_clauses.append("content_mode = ?")
                 params.append(updates.content_mode)
+
+            if updates.anki_deck_name is not None:
+                set_clauses.append("anki_deck_name = ?")
+                params.append(updates.anki_deck_name)
 
             if len(set_clauses) == 1:  # Only timestamp
                 return True

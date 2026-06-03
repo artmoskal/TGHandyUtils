@@ -85,7 +85,8 @@ class ApplicationContainer(containers.DeclarativeContainer):
     reminder_processor = providers.Factory(ReminderProcessor)
     anki_processor = providers.Factory(
         AnkiProcessor,
-        anki_card_service=anki_card_service
+        anki_card_service=anki_card_service,
+        preferences_repo=user_preferences_repository
     )
     intent_classifier = providers.Factory(
         IntentClassifier,

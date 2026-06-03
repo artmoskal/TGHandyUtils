@@ -50,6 +50,40 @@ async def handle_owner_name_input(message: Message, state: FSMContext):
         await state.clear()
 
 
+@router.message(RecipientState.waiting_for_anki_deck)
+async def handle_anki_deck_input(message: Message, state: FSMContext):
+    """Handle Anki deck name input."""
+    user_id = message.from_user.id
+    deck_name = (message.text or "").strip()
+
+    if not deck_name:
+        await message.reply("❌ Deck name cannot be empty. Please enter a deck name:", disable_web_page_preview=True)
+        return
+
+    try:
+        recipient_service = container.recipient_service()
+        success = recipient_service.update_anki_deck_name(user_id, deck_name)
+
+        if success:
+            await state.clear()
+            keyboard = get_back_to_settings_keyboard()
+            await message.reply(
+                f"✅ *Anki Deck Updated*\n\n"
+                f"New flashcards will import into: *{deck_name}*",
+                reply_markup=keyboard,
+                parse_mode='Markdown',
+                disable_web_page_preview=True
+            )
+        else:
+            await message.reply("❌ Failed to update deck name. Please try again.", disable_web_page_preview=True)
+        await state.clear()
+
+    except Exception as e:
+        logger.error(f"Failed to update anki deck name for user {user_id}: {e}")
+        await message.reply("❌ Error updating deck name. Please try again.", disable_web_page_preview=True)
+        await state.clear()
+
+
 @router.message(RecipientState.waiting_for_location)
 async def handle_location_input(message: Message, state: FSMContext):
     """Handle location input."""

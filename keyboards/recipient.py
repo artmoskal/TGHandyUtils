@@ -163,7 +163,8 @@ def get_settings_main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
-def get_content_mode_keyboard(current_mode: str = "reminder") -> InlineKeyboardMarkup:
+def get_content_mode_keyboard(current_mode: str = "reminder",
+                              current_deck: str = "Telegram Cards") -> InlineKeyboardMarkup:
     """Keyboard for choosing how sent content is processed (reminder / anki / auto)."""
     def label(mode: str, text: str) -> str:
         return f"✅ {text}" if current_mode == mode else text
@@ -172,6 +173,7 @@ def get_content_mode_keyboard(current_mode: str = "reminder") -> InlineKeyboardM
         [InlineKeyboardButton(text=label("reminder", "📝 Reminders/Tasks"), callback_data="set_content_mode_reminder")],
         [InlineKeyboardButton(text=label("anki", "🃏 Anki Flashcards"), callback_data="set_content_mode_anki")],
         [InlineKeyboardButton(text=label("auto", "🤖 Auto (decide per message)"), callback_data="set_content_mode_auto")],
+        [InlineKeyboardButton(text=f"🗂 Anki Deck: {current_deck}", callback_data="edit_anki_deck")],
         [InlineKeyboardButton(text="« Back to Settings", callback_data="back_to_settings")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)

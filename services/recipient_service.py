@@ -187,6 +187,22 @@ class RecipientService:
             new_prefs = UnifiedUserPreferencesCreate(content_mode=mode)
             return self.preferences_repo.create_preferences(user_id, new_prefs)
 
+    def get_anki_deck_name(self, user_id: int) -> str:
+        """Get the user's configured Anki deck name (falls back to the default)."""
+        from services.anki_card_service import DEFAULT_DECK_NAME
+        prefs = self.preferences_repo.get_preferences(user_id)
+        return prefs.anki_deck_name if (prefs and prefs.anki_deck_name) else DEFAULT_DECK_NAME
+
+    def update_anki_deck_name(self, user_id: int, deck_name: str) -> bool:
+        """Set the user's Anki deck name."""
+        prefs = self.preferences_repo.get_preferences(user_id)
+        if prefs:
+            updates = UnifiedUserPreferencesUpdate(anki_deck_name=deck_name)
+            return self.preferences_repo.update_preferences(user_id, updates)
+        else:
+            new_prefs = UnifiedUserPreferencesCreate(anki_deck_name=deck_name)
+            return self.preferences_repo.create_preferences(user_id, new_prefs)
+
     def update_owner_name(self, user_id: int, owner_name: str) -> bool:
         """Update user's owner name."""
         prefs = self.preferences_repo.get_preferences(user_id)

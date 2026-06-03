@@ -53,6 +53,7 @@ class UnifiedUserPreferences:
     location: Optional[str] = None
     utc_offset: int = 0
     content_mode: str = "reminder"  # reminder | anki | auto
+    anki_deck_name: Optional[str] = None  # None -> default deck name
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -66,6 +67,7 @@ class UnifiedUserPreferencesCreate:
     location: Optional[str] = None
     utc_offset: Optional[int] = None
     content_mode: Optional[str] = None
+    anki_deck_name: Optional[str] = None
 
 
 @dataclass
@@ -77,3 +79,4 @@ class UnifiedUserPreferencesUpdate:
     location: Optional[str] = None
     utc_offset: Optional[int] = None
     content_mode: Optional[str] = None
+    anki_deck_name: Optional[str] = None

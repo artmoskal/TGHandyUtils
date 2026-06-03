@@ -22,3 +22,4 @@ class RecipientState(StatesGroup):
     # Settings management
     waiting_for_owner_name = State()
     waiting_for_location = State()
+    waiting_for_anki_deck = State()

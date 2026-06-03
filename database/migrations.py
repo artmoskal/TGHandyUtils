@@ -158,6 +158,7 @@ class DatabaseMigrator:
             ("009_add_user_preferences_unified", "Add user preferences unified table", self._migration_009_add_user_preferences_unified),
             ("010_add_utc_offset", "Add UTC offset to user preferences for timezone handling", self._migration_010_add_utc_offset),
             ("011_add_content_mode", "Add content_mode (reminder/anki/auto) to user preferences", self._migration_011_add_content_mode),
+            ("012_add_anki_deck_name", "Add anki_deck_name to user preferences", self._migration_012_add_anki_deck_name),
             # Add future migrations here
         ]
         
@@ -183,7 +184,7 @@ class DatabaseMigrator:
                                'platform_type', 'created_at', 'status'],
             'user_preferences_unified': ['user_id', 'show_recipient_ui', 'telegram_notifications',
                                         'owner_name', 'location', 'utc_offset', 'content_mode',
-                                        'created_at', 'updated_at'],
+                                        'anki_deck_name', 'created_at', 'updated_at'],
             'migration_history': ['id', 'migration_id', 'description', 'applied_at'],
             'users': ['user_id', 'username', 'first_name', 'last_name', 'last_seen', 'created_at'],
         }
@@ -219,6 +220,7 @@ class DatabaseMigrator:
             'user_preferences_unified': {
                 'utc_offset': ('INTEGER', '0'),
                 'content_mode': ('TEXT', "'reminder'"),
+                'anki_deck_name': ('TEXT', 'NULL'),
             },
         }
 
@@ -574,6 +576,17 @@ class DatabaseMigrator:
         except sqlite3.OperationalError as e:
             if "duplicate column" in str(e).lower():
                 logger.debug("content_mode column already exists, skipping ALTER TABLE")
+            else:
+                raise
+
+    def _migration_012_add_anki_deck_name(self, conn: sqlite3.Connection):
+        """Add anki_deck_name column for the user's configurable Anki deck."""
+        try:
+            conn.execute("ALTER TABLE user_preferences_unified ADD COLUMN anki_deck_name TEXT")
+            logger.info("Added anki_deck_name column to user_preferences_unified")
+        except sqlite3.OperationalError as e:
+            if "duplicate column" in str(e).lower():
+                logger.debug("anki_deck_name column already exists, skipping ALTER TABLE")
             else:
                 raise
 

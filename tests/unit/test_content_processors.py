@@ -58,6 +58,31 @@ async def test_anki_processor_delivers_document():
 
 
 @pytest.mark.unit
+async def test_anki_processor_uses_configured_deck_name():
+    from models.unified_recipient import UnifiedUserPreferences
+
+    svc = Mock()
+    svc.extract_cards.return_value = [AnkiCard(question="Q", answer="A")]
+    svc.build_package.return_value = "/tmp/does_not_exist.apkg"
+
+    repo = Mock()
+    repo.get_preferences.return_value = UnifiedUserPreferences(user_id=1, anki_deck_name="Languages::Spanish")
+
+    message = Mock()
+    message.reply = AsyncMock(return_value=Mock(delete=AsyncMock()))
+    message.reply_document = AsyncMock()
+
+    ctx = ProcessingContext(
+        message=message, thread_content=[("U", "vocab")], user_id=1, owner_name="U", location=None
+    )
+
+    await AnkiProcessor(svc, preferences_repo=repo).process(ctx)
+
+    # deck name passed positionally to build_package(cards, deck_name)
+    assert svc.build_package.call_args.args[1] == "Languages::Spanish"
+
+
+@pytest.mark.unit
 async def test_anki_processor_empty_content_replies_error():
     svc = Mock()
     message = Mock()

@@ -1,9 +1,10 @@
 """Content mode settings callbacks (reminder / anki / auto)."""
 
-from aiogram.types import CallbackQuery
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 
 from bot import router
+from states.recipient_states import RecipientState
 from keyboards.recipient import get_content_mode_keyboard
 from core.container import container
 from core.logging import get_logger
@@ -24,6 +25,7 @@ async def content_mode_settings(callback_query: CallbackQuery, state: FSMContext
     try:
         recipient_service = container.recipient_service()
         current = recipient_service.get_content_mode(user_id)
+        deck = recipient_service.get_anki_deck_name(user_id)
 
         text = (
             "🧠 *Content Mode*\n\n"
@@ -31,11 +33,12 @@ async def content_mode_settings(callback_query: CallbackQuery, state: FSMContext
             "📝 *Reminders/Tasks* — create a reminder (default)\n"
             "🃏 *Anki Flashcards* — generate flashcards and send an .apkg file\n"
             "🤖 *Auto* — decide per message (you can override with /tasks or /anki)\n\n"
-            f"Current: *{_MODE_LABELS.get(current, current)}*"
+            f"Current: *{_MODE_LABELS.get(current, current)}*\n"
+            f"Anki deck: *{deck}* (cards import here)"
         )
         await callback_query.message.edit_text(
             text,
-            reply_markup=get_content_mode_keyboard(current),
+            reply_markup=get_content_mode_keyboard(current, deck),
             parse_mode='Markdown',
             disable_web_page_preview=True
         )
@@ -43,6 +46,24 @@ async def content_mode_settings(callback_query: CallbackQuery, state: FSMContext
     except Exception as e:
         logger.error(f"Failed to show content mode settings for {user_id}: {e}")
         await callback_query.answer("Error loading content mode settings")
+
+
+@router.callback_query(lambda c: c.data == "edit_anki_deck")
+async def edit_anki_deck(callback_query: CallbackQuery, state: FSMContext):
+    """Prompt the user to type a new Anki deck name."""
+    cancel_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Cancel", callback_data="content_mode_settings")]
+    ])
+    await callback_query.message.edit_text(
+        "🗂 *Anki Deck Name*\n\n"
+        "Send the name of the deck flashcards should import into.\n"
+        "Use `::` for sub-decks, e.g. `Languages::Spanish`.",
+        reply_markup=cancel_keyboard,
+        parse_mode='Markdown',
+        disable_web_page_preview=True
+    )
+    await state.set_state(RecipientState.waiting_for_anki_deck)
+    await callback_query.answer()
 
 
 @router.callback_query(lambda c: c.data and c.data.startswith("set_content_mode_"))
