@@ -75,6 +75,29 @@ def test_buffer_add_count_get_clear(tmp_path):
     assert not media.exists()  # clear removes media
 
 
+@pytest.mark.unit
+def test_buffer_undo_last(tmp_path):
+    uid = 99994
+    anki_buffer.clear(uid)
+    m1 = tmp_path / "a.jpg"
+    m1.write_bytes(b"x")
+    m2 = tmp_path / "b.jpg"
+    m2.write_bytes(b"y")
+    anki_buffer.add(uid, [AnkiCard(question="Q1", answer="A1")], [str(m1)])
+    anki_buffer.add(uid, [AnkiCard(question="Q2", answer="A2"), AnkiCard(question="Q3", answer="A3")], [str(m2)])
+    assert anki_buffer.count(uid) == 3
+
+    removed = anki_buffer.undo_last(uid)
+    assert removed == 2
+    assert anki_buffer.count(uid) == 1
+    assert m1.exists()        # first batch kept
+    assert not m2.exists()    # undone batch's media removed
+
+    assert anki_buffer.undo_last(uid) == 1
+    assert anki_buffer.undo_last(uid) == 0  # nothing left
+    anki_buffer.clear(uid)
+
+
 # ---- image embedding in the processor ----
 
 @pytest.mark.unit

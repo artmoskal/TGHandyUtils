@@ -1,7 +1,8 @@
-"""Per-user accumulation buffer for Anki cards.
+"""Per-user accumulation buffer for Anki cards, tracked as per-message batches.
 
 Cards (with any image HTML already embedded) and their media file paths pile up here so the
-user can export them as a single deck instead of importing one .apkg per message.
+user can export them as a single deck instead of importing one .apkg per message. Batches let
+"Undo last" drop the most recent message's cards if it produced junk.
 """
 
 import os
@@ -9,33 +10,51 @@ from typing import Dict, List, Tuple
 
 from models.anki import AnkiCard
 
-# user_id -> {"cards": [AnkiCard], "media": [filepath]}
+# user_id -> {"batches": [ {"cards": [AnkiCard], "media": [filepath]} ]}
 _buffers: Dict[int, dict] = {}
 
 
 def add(user_id: int, cards: List[AnkiCard], media_paths: List[str]) -> None:
-    buf = _buffers.setdefault(user_id, {"cards": [], "media": []})
-    buf["cards"].extend(cards)
-    for p in media_paths or []:
-        if p and p not in buf["media"]:
-            buf["media"].append(p)
+    buf = _buffers.setdefault(user_id, {"batches": []})
+    buf["batches"].append({"cards": list(cards), "media": list(media_paths or [])})
 
 
 def count(user_id: int) -> int:
-    return len(_buffers.get(user_id, {}).get("cards", []))
+    return sum(len(b["cards"]) for b in _buffers.get(user_id, {}).get("batches", []))
 
 
 def get(user_id: int) -> Tuple[List[AnkiCard], List[str]]:
-    buf = _buffers.get(user_id, {"cards": [], "media": []})
-    return list(buf["cards"]), list(buf["media"])
+    """Flatten all batches into (cards, deduped media paths)."""
+    cards, media = [], []
+    for b in _buffers.get(user_id, {}).get("batches", []):
+        cards.extend(b["cards"])
+        for p in b["media"]:
+            if p and p not in media:
+                media.append(p)
+    return cards, media
+
+
+def undo_last(user_id: int) -> int:
+    """Remove the most recent batch; return how many cards were removed."""
+    buf = _buffers.get(user_id)
+    if not buf or not buf["batches"]:
+        return 0
+    last = buf["batches"].pop()
+    for p in last["media"]:
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+    return len(last["cards"])
 
 
 def clear(user_id: int) -> None:
     buf = _buffers.pop(user_id, None)
     if not buf:
         return
-    for p in buf["media"]:
-        try:
-            os.remove(p)
-        except OSError:
-            pass
+    for b in buf["batches"]:
+        for p in b["media"]:
+            try:
+                os.remove(p)
+            except OSError:
+                pass

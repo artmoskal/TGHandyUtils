@@ -44,6 +44,24 @@ async def anki_export(callback_query: CallbackQuery, state: FSMContext):
                 pass
 
 
+@router.callback_query(lambda c: c.data == "anki_undo_last")
+async def anki_undo_last(callback_query: CallbackQuery, state: FSMContext):
+    """Drop the most recent batch from the deck (e.g. if a message produced junk cards)."""
+    user_id = callback_query.from_user.id
+    removed = anki_buffer.undo_last(user_id)
+    if removed == 0:
+        await callback_query.answer("Nothing to undo.")
+        return
+    remaining = anki_buffer.count(user_id)
+    await callback_query.answer(f"↩️ Removed last {removed} card(s). {remaining} left.")
+    from keyboards.recipient import get_anki_buffer_keyboard
+    try:
+        markup = get_anki_buffer_keyboard(remaining) if remaining > 0 else None
+        await callback_query.message.edit_reply_markup(reply_markup=markup)
+    except Exception:
+        pass
+
+
 @router.callback_query(lambda c: c.data == "anki_clear")
 async def anki_clear(callback_query: CallbackQuery, state: FSMContext):
     """Empty the accumulated deck."""

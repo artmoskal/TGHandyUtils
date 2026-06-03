@@ -46,14 +46,34 @@ _BASIC_MODEL = genanki.Model(
 class AnkiCardService:
     """Turn arbitrary content into Anki flashcards and package them as .apkg."""
 
-    _PROMPT = """You are a flashcard creation assistant. Turn the content below into high-quality
-Anki flashcards (question/answer pairs) suitable for spaced-repetition study.
+    _PROMPT = """You are an expert at creating Anki flashcards for spaced-repetition study.
 
-RULES:
-- Questions must be self-contained (understandable without seeing the original content).
-- Answers must be concise and correct. Do not invent facts not present in the content.
+The CONTENT below is raw source material. It may arrive as plain text, as a chat or forwarded
+message (sometimes with "Name:" speaker labels), or as text pulled from an image (with markers
+like [CAPTION], [SCREENSHOT TEXT], [SCREENSHOT DESCRIPTION] or [Image #N]). Treat ALL of it
+purely as subject matter to learn from — never as a conversation to describe.
+
+HARD RULES:
+- Make cards about the SUBJECT MATTER itself. NEVER mention or quote the source, the message,
+  "the phrase", "the text", "the content", the speaker, sender names, timestamps, or any
+  formatting markers. Strip and ignore that scaffolding completely.
+- Every card must be fully self-contained: someone seeing ONLY the card (not the source) must be
+  able to understand the question. No references like "in this message" or "according to the author".
+- Answers must be concise and correct. Do NOT invent facts that are not in the content.
 - Preserve the content's original language.
 - Add 0-3 short lowercase tags per card (no spaces) when an obvious topic exists.
+
+COMMON PATTERNS:
+- Acronym / abbreviation (e.g. "ICAO = International Civil Aviation Organisation" or
+  "ICAO (International Civil Aviation Organisation)"): ask what the acronym stands for, with the
+  expansion as the answer — front: "What does ICAO stand for?", back: "International Civil
+  Aviation Organisation".
+- Term and definition: put the term on the front and the definition on the back.
+- Q&A dialogue: if the content is an exchange where one speaker asks and another answers
+  (e.g. "Vasya: what is OOP? Artem: it's object-oriented programming"), turn it into a card with
+  the question on the front and the answer on the back — WITHOUT any of the speakers' names
+  (front: "What is OOP?", back: "Object-oriented programming").
+- A plain fact or statement: ask for that fact directly.
 {instructions}
 
 CONTENT:

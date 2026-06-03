@@ -19,3 +19,9 @@ samples:
 
   - name: short_fact
     content: "The Great Wall of China is over 21,000 km long."
+
+  - name: chat_acronym_with_sender
+    content: "Artem Moskalenko: ICAO International Civil Aviation Organisation"
+
+  - name: qa_dialogue
+    content: "Vasya: what is OOP? Artem: it's object-oriented programming"

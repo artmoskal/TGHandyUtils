@@ -180,11 +180,12 @@ def get_content_mode_keyboard(current_mode: str = "reminder",
 
 
 def get_anki_buffer_keyboard(count: int) -> InlineKeyboardMarkup:
-    """Buttons shown with delivered flashcards to export/clear the accumulated deck."""
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text=f"📦 Export deck ({count})", callback_data="anki_export"),
-        InlineKeyboardButton(text="🗑 Clear", callback_data="anki_clear"),
-    ]])
+    """Buttons shown with delivered flashcards to export/undo/clear the accumulated deck."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"📦 Export deck ({count})", callback_data="anki_export")],
+        [InlineKeyboardButton(text="↩️ Undo last", callback_data="anki_undo_last"),
+         InlineKeyboardButton(text="🗑 Clear", callback_data="anki_clear")],
+    ])
 
 
 def get_profile_settings_keyboard() -> InlineKeyboardMarkup:
