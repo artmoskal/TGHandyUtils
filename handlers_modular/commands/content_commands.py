@@ -39,7 +39,12 @@ async def _handle_content_command(message: Message, command: CommandObject, inte
     if not args:
         overrides.arm(user_id, intent)
         if intent == Intent.ANKI:
-            await message.reply("🃏 Send me the content and I'll turn it into flashcards.")
+            await message.reply(
+                "🃏 Send me the content and I'll turn it into flashcards.\n\n"
+                "Tip: use `/anki help` to see formatting tags (image placement, "
+                "question style, etc.).",
+                parse_mode="Markdown",
+            )
         else:
             await message.reply("📝 Send me what you'd like to be reminded about.")
         return
