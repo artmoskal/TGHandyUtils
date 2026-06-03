@@ -156,8 +156,23 @@ def get_settings_main_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="👤 Profile Settings", callback_data="profile_settings")],
         [InlineKeyboardButton(text="📱 Manage Accounts", callback_data="show_recipients")],
         [InlineKeyboardButton(text="🔔 Notifications", callback_data="notification_settings")],
+        [InlineKeyboardButton(text="🧠 Content Mode", callback_data="content_mode_settings")],
         [InlineKeyboardButton(text="🗑️ Delete All Data", callback_data="confirm_delete_data")],
         [InlineKeyboardButton(text="« Back to Menu", callback_data="back_to_menu")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def get_content_mode_keyboard(current_mode: str = "reminder") -> InlineKeyboardMarkup:
+    """Keyboard for choosing how sent content is processed (reminder / anki / auto)."""
+    def label(mode: str, text: str) -> str:
+        return f"✅ {text}" if current_mode == mode else text
+
+    keyboard = [
+        [InlineKeyboardButton(text=label("reminder", "📝 Reminders/Tasks"), callback_data="set_content_mode_reminder")],
+        [InlineKeyboardButton(text=label("anki", "🃏 Anki Flashcards"), callback_data="set_content_mode_anki")],
+        [InlineKeyboardButton(text=label("auto", "🤖 Auto (decide per message)"), callback_data="set_content_mode_auto")],
+        [InlineKeyboardButton(text="« Back to Settings", callback_data="back_to_settings")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 

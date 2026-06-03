@@ -52,6 +52,7 @@ class UnifiedUserPreferences:
     owner_name: Optional[str] = None
     location: Optional[str] = None
     utc_offset: int = 0
+    content_mode: str = "reminder"  # reminder | anki | auto
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -64,6 +65,7 @@ class UnifiedUserPreferencesCreate:
     owner_name: Optional[str] = None
     location: Optional[str] = None
     utc_offset: Optional[int] = None
+    content_mode: Optional[str] = None
 
 
 @dataclass
@@ -74,3 +76,4 @@ class UnifiedUserPreferencesUpdate:
     owner_name: Optional[str] = None
     location: Optional[str] = None
     utc_offset: Optional[int] = None
+    content_mode: Optional[str] = None

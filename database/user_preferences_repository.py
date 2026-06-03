@@ -26,16 +26,16 @@ class UserPreferencesRepository(IUserPreferencesRepository):
         try:
             with self.db_manager.get_connection() as conn:
                 cursor = conn.execute('''
-                    SELECT user_id, show_recipient_ui, telegram_notifications, 
-                           owner_name, location, utc_offset, created_at, updated_at
-                    FROM user_preferences_unified 
+                    SELECT user_id, show_recipient_ui, telegram_notifications,
+                           owner_name, location, utc_offset, content_mode, created_at, updated_at
+                    FROM user_preferences_unified
                     WHERE user_id = ?
                 ''', (user_id,))
-                
+
                 row = cursor.fetchone()
                 if not row:
                     return None
-                
+
                 return UnifiedUserPreferences(
                     user_id=row[0],
                     show_recipient_ui=bool(row[1]),
@@ -43,8 +43,9 @@ class UserPreferencesRepository(IUserPreferencesRepository):
                     owner_name=row[3],
                     location=row[4],
                     utc_offset=row[5] if row[5] is not None else 0,
-                    created_at=datetime.fromisoformat(row[6]) if row[6] else None,
-                    updated_at=datetime.fromisoformat(row[7]) if row[7] else None
+                    content_mode=row[6] if row[6] else "reminder",
+                    created_at=datetime.fromisoformat(row[7]) if row[7] else None,
+                    updated_at=datetime.fromisoformat(row[8]) if row[8] else None
                 )
                 
         except sqlite3.Error as e:
@@ -56,12 +57,13 @@ class UserPreferencesRepository(IUserPreferencesRepository):
         try:
             with self.db_manager.get_connection() as conn:
                 conn.execute('''
-                    INSERT INTO user_preferences_unified 
-                    (user_id, show_recipient_ui, telegram_notifications, owner_name, location, utc_offset)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO user_preferences_unified
+                    (user_id, show_recipient_ui, telegram_notifications, owner_name, location, utc_offset, content_mode)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     user_id, prefs.show_recipient_ui, prefs.telegram_notifications,
-                    prefs.owner_name, prefs.location, prefs.utc_offset or 0
+                    prefs.owner_name, prefs.location, prefs.utc_offset or 0,
+                    prefs.content_mode or 'reminder'
                 ))
                 
                 logger.info(f"Created preferences for user {user_id}")
@@ -96,7 +98,11 @@ class UserPreferencesRepository(IUserPreferencesRepository):
             if updates.utc_offset is not None:
                 set_clauses.append("utc_offset = ?")
                 params.append(updates.utc_offset)
-            
+
+            if updates.content_mode is not None:
+                set_clauses.append("content_mode = ?")
+                params.append(updates.content_mode)
+
             if len(set_clauses) == 1:  # Only timestamp
                 return True
             

@@ -1,0 +1,21 @@
+# Sample content for the Anki eval test. Add entries to evaluate Q/A quality on real input.
+# Each item becomes one generated .apkg under test-results/anki_eval/.
+samples:
+  - name: photosynthesis_fact
+    content: >
+      Photosynthesis is the process by which green plants use sunlight, water and carbon
+      dioxide to produce glucose and oxygen. It mainly happens in the chloroplasts, which
+      contain the pigment chlorophyll.
+
+  - name: spanish_vocab
+    content: >
+      Today I learned some Spanish kitchen words: la cuchara means spoon, el tenedor means
+      fork, el cuchillo means knife, and el plato means plate.
+
+  - name: programming_note
+    content: >
+      In Python, a list comprehension like [x*2 for x in range(5)] builds a new list in one
+      line. It is generally faster and more readable than an equivalent for-loop with append.
+
+  - name: short_fact
+    content: "The Great Wall of China is over 21,000 km long."

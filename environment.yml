@@ -32,6 +32,8 @@ dependencies:
   - pip:
       - aiogram
       - openai  # For OpenAI API access
+      - genanki  # Generate Anki .apkg flashcard packages (no running Anki required)
+      - PyYAML  # Parse sample content files for the Anki eval test
       - typing-extensions  # Compatibility for typing in different Python versions
       - aioresponses  # For mocking HTTP requests in async tests
       - factory-boy  # For test data generation

@@ -14,6 +14,11 @@ from database.user_preferences_repository import UserPreferencesRepository
 from database.auth_request_repository import AuthRequestRepository
 from database.user.user_repository import UserRepository
 from services.parsing_service import ParsingService
+from services.anki_card_service import AnkiCardService
+from services.content.reminder_processor import ReminderProcessor
+from services.content.anki_processor import AnkiProcessor
+from services.content.intent_resolver import IntentResolver
+from services.content.classifier import IntentClassifier
 from services.recipient_service import RecipientService
 from services.recipient_task_service import RecipientTaskService
 from services.openai_service import OpenAIService
@@ -70,7 +75,28 @@ class ApplicationContainer(containers.DeclarativeContainer):
         config=config,
         preferences_repo=user_preferences_repository
     )
-    
+
+    anki_card_service = providers.Factory(
+        AnkiCardService,
+        config=config
+    )
+
+    # Content-processing seam: intent -> processor (see services/content/router.py)
+    reminder_processor = providers.Factory(ReminderProcessor)
+    anki_processor = providers.Factory(
+        AnkiProcessor,
+        anki_card_service=anki_card_service
+    )
+    intent_classifier = providers.Factory(
+        IntentClassifier,
+        config=config
+    )
+    intent_resolver = providers.Factory(
+        IntentResolver,
+        preferences_repo=user_preferences_repository,
+        classifier=intent_classifier
+    )
+
     recipient_service = providers.Factory(
         RecipientService,
         repository=unified_recipient_repository,

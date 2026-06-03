@@ -1,9 +1,30 @@
 """Abstract interfaces for dependency injection."""
 
 from abc import ABC, abstractmethod
+from enum import Enum
 from typing import Optional, Dict, Any, List, Tuple, BinaryIO, Union
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from models.task import TaskCreate, TaskDB
+
+
+class Intent(str, Enum):
+    """What the user wants done with a piece of content."""
+    REMINDER = "reminder"   # create a task/reminder (the original behaviour)
+    ANKI = "anki"           # create Anki flashcards
+
+
+@dataclass(frozen=True)
+class ProcessingContext:
+    """Raw inputs handed to a content processor. Data only - no behaviour, no services.
+
+    `message` is an aiogram Message (typed as Any to keep core import-light); `thread_content`
+    is the assembled list of (sender, text) / (sender, text, screenshot) tuples from threading.
+    """
+    message: Any
+    thread_content: List[Any]
+    user_id: int
+    owner_name: str
+    location: Optional[str] = None
 
 
 @dataclass
@@ -76,6 +97,18 @@ class IParsingService(ABC):
         """Convert UTC time to local display."""
         pass
 
+
+
+class IContentProcessor(ABC):
+    """Turns assembled user content into some outcome (a reminder, flashcards, ...).
+
+    This is THE extension seam: a new content mode = one new implementation + one wiring entry.
+    """
+
+    @abstractmethod
+    async def process(self, ctx: ProcessingContext) -> ServiceResult:
+        """Process the content. Implementations own their own Telegram replies."""
+        pass
 
 
 class IConfig(ABC):

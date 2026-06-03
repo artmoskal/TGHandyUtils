@@ -157,6 +157,7 @@ class DatabaseMigrator:
             ("008_add_users_table", "Add users table for username tracking", self._migration_008_users_table),
             ("009_add_user_preferences_unified", "Add user preferences unified table", self._migration_009_add_user_preferences_unified),
             ("010_add_utc_offset", "Add UTC offset to user preferences for timezone handling", self._migration_010_add_utc_offset),
+            ("011_add_content_mode", "Add content_mode (reminder/anki/auto) to user preferences", self._migration_011_add_content_mode),
             # Add future migrations here
         ]
         
@@ -181,7 +182,7 @@ class DatabaseMigrator:
             'task_recipients': ['id', 'task_id', 'recipient_id', 'platform_task_id',
                                'platform_type', 'created_at', 'status'],
             'user_preferences_unified': ['user_id', 'show_recipient_ui', 'telegram_notifications',
-                                        'owner_name', 'location', 'utc_offset',
+                                        'owner_name', 'location', 'utc_offset', 'content_mode',
                                         'created_at', 'updated_at'],
             'migration_history': ['id', 'migration_id', 'description', 'applied_at'],
             'users': ['user_id', 'username', 'first_name', 'last_name', 'last_seen', 'created_at'],
@@ -217,6 +218,7 @@ class DatabaseMigrator:
         repairs = {
             'user_preferences_unified': {
                 'utc_offset': ('INTEGER', '0'),
+                'content_mode': ('TEXT', "'reminder'"),
             },
         }
 
@@ -561,6 +563,19 @@ class DatabaseMigrator:
             )
         
         logger.info(f"Added utc_offset column and updated {len(updates)} user preferences")
+
+    def _migration_011_add_content_mode(self, conn: sqlite3.Connection):
+        """Add content_mode column controlling reminder vs anki-card processing."""
+        try:
+            conn.execute(
+                "ALTER TABLE user_preferences_unified ADD COLUMN content_mode TEXT DEFAULT 'reminder'"
+            )
+            logger.info("Added content_mode column to user_preferences_unified")
+        except sqlite3.OperationalError as e:
+            if "duplicate column" in str(e).lower():
+                logger.debug("content_mode column already exists, skipping ALTER TABLE")
+            else:
+                raise
 
 
 def ensure_database_ready(db_path: str) -> bool:

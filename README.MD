@@ -132,9 +132,24 @@ Because everyone deserves to escape the task management nightmare.
 - `/start` - Welcome message and quick start guide
 - `/recipients` - Manage your platforms and shared recipients
 - `/create_task` - Create a new task with recipient selection
+- `/settings` - Settings, including **Content Mode** (Reminders / Anki / Auto)
+- `/tasks <text>` - Force this message to become a reminder/task (override the current mode)
+- `/anki <text>` - Force this message to become Anki flashcards (sent back as an `.apkg` file).
+  Send `/anki` or `/tasks` with no text to apply it to your next message.
+
+### **Content Modes**
+The bot can turn what you send into either reminders or Anki flashcards. Set a default under
+`/settings → 🧠 Content Mode`:
+- **📝 Reminders/Tasks** - create reminders (default behaviour)
+- **🃏 Anki Flashcards** - generate Q/A flashcards and send an importable `.apkg` file (no
+  recipients required)
+- **🤖 Auto** - the bot guesses per message and gives you a 5-second window with buttons to
+  switch before anything is created
+Per-message `/tasks` and `/anki` always override the saved mode.
 
 ### **Interactive Features** 
 - **Platform Management**: Add/edit/disable your platforms and shared recipients
+- **Content Mode**: Choose Reminders / Anki flashcards / Auto-detect
 - **Recipient Settings**: Toggle UI selection, enable/disable Telegram notifications
 - **Task Creation**: Choose recipients or use default platforms
 - **Voice Transcription**: Confirm/cancel voice message parsing

@@ -45,7 +45,7 @@ class TestScreenshotProcessingSimple:
         ]
         
         # Mock both services completely at the module level
-        with patch('handlers_modular.message.text_handler.container') as mock_container, \
+        with patch('core.container.container') as mock_container, \
              patch('core.initialization.services.get_parsing_service') as mock_parsing_service:
             
             # Setup parsing service
@@ -97,7 +97,7 @@ class TestScreenshotProcessingSimple:
             ("User", "urgent task", sample_screenshot_data)
         ]
         
-        with patch('handlers_modular.message.text_handler.container') as mock_container, \
+        with patch('core.container.container') as mock_container, \
              patch('core.initialization.services.get_parsing_service') as mock_parsing_service:
             
             # Setup parsing service to fail

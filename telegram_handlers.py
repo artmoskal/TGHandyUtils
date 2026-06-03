@@ -18,6 +18,7 @@ try:
     from handlers_modular.commands.main_commands import cmd_start, show_recipient_management
     from handlers_modular.commands.task_commands import create_task_with_recipients
     from handlers_modular.commands.settings_commands import show_settings, initiate_drop_user_data
+    from handlers_modular.commands.content_commands import cmd_anki, cmd_tasks  # /anki, /tasks overrides
     from handlers_modular.commands.menu_commands import show_main_menu, cancel_command
     from handlers_modular.commands.sharing_commands import router as sharing_router  # Sharing commands
     
@@ -29,7 +30,8 @@ try:
     # Callback handlers
     from handlers_modular.callbacks.recipient import management  # Recipient management callbacks
     from handlers_modular.callbacks.task import actions  # Task action callbacks
-    from handlers_modular.callbacks.settings import profile, notifications  # Settings callbacks
+    from handlers_modular.callbacks.settings import profile, notifications, content_mode  # Settings callbacks
+    from handlers_modular.callbacks import auto_commit  # Auto-mode override buttons
     from handlers_modular.callbacks.navigation import menus  # Navigation callbacks
     
     # State handlers

@@ -28,9 +28,16 @@ async def process_user_input(text: str, user_id: int, message_obj: Message, stat
     """Process user text input with threading support - groups messages within 1 second (30 seconds if voice messages are involved)."""
     try:
         recipient_service = container.recipient_service()
-        recipients = recipient_service.get_enabled_recipients(user_id)
-        
-        if not recipients:
+
+        # A one-shot override may have been armed by a prior bare /anki or /tasks command.
+        # Peek for the gate decision; it is consumed only when the thread is actually processed.
+        from services.content import overrides
+        armed_override = overrides.peek(user_id)
+
+        # The recipient gate only applies to the reminder flow. Card/auto modes generate
+        # output independently and must work even when the user has no recipients set up.
+        if container.intent_resolver().requires_recipient_gate(user_id, armed_override) \
+                and not recipient_service.get_enabled_recipients(user_id):
             await message_obj.reply(ErrorMessages.NO_RECIPIENTS_SETUP_HELP)
             return False
 
@@ -72,9 +79,15 @@ async def process_user_input(text: str, user_id: int, message_obj: Message, stat
                 owner_name = user_prefs.owner_name if user_prefs else "User"
                 location = user_prefs.location if user_prefs else None
                 
+                # Consume the one-shot override now that we're actually processing the thread.
+                intent_override = overrides.consume(user_id)
+
                 # Import here to avoid circular imports
                 from .text_handler import process_thread_with_photos
-                await process_thread_with_photos(message_obj, thread_content, owner_name, location, user_id)
+                await process_thread_with_photos(
+                    message_obj, thread_content, owner_name, location, user_id,
+                    intent_override=intent_override
+                )
         
         return True
         

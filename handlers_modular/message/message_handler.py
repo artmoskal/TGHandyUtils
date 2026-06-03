@@ -122,10 +122,16 @@ async def process_user_input_with_photo(text: str, user_id: int, message_obj: Me
     """Process user input with photo attachment - handles image to text conversion."""
     try:
         from core.container import container
+        from services.content import overrides
         recipient_service = container.recipient_service()
-        recipients = recipient_service.get_enabled_recipients(user_id)
-        
-        if not recipients:
+
+        # /anki or /tasks may lead the photo caption; otherwise honor an armed one-shot override.
+        caption_override, text = overrides.parse_caption_override(text)
+        effective_override = caption_override or overrides.peek(user_id)
+
+        # Recipient gate only applies to the reminder flow; card/auto modes need no recipients.
+        if container.intent_resolver().requires_recipient_gate(user_id, effective_override) \
+                and not recipient_service.get_enabled_recipients(user_id):
             await message_obj.reply(ErrorMessages.NO_RECIPIENTS_SETUP_HELP)
             return False
 
@@ -209,11 +215,15 @@ async def process_user_input_with_photo(text: str, user_id: int, message_obj: Me
                 owner_name = user_prefs.owner_name if user_prefs else "User"
                 location = user_prefs.location if user_prefs else None
                 
+                final_override = caption_override or overrides.consume(user_id)
                 from .text_handler import process_thread_with_photos
-                await process_thread_with_photos(message_obj, thread_content, owner_name, location, user_id)
-        
+                await process_thread_with_photos(
+                    message_obj, thread_content, owner_name, location, user_id,
+                    intent_override=final_override
+                )
+
         return True
-        
+
     except Exception as e:
         logger.error(f"Error processing user input with photo: {e}")
         await message_obj.reply("❌ Error processing your message. Please try again.")

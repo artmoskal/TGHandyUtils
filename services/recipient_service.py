@@ -170,6 +170,23 @@ class RecipientService:
             new_prefs = UnifiedUserPreferencesCreate(telegram_notifications=enabled)
             return self.preferences_repo.create_preferences(user_id, new_prefs)
     
+    def get_content_mode(self, user_id: int) -> str:
+        """Get the user's content-processing mode (reminder | anki | auto)."""
+        prefs = self.preferences_repo.get_preferences(user_id)
+        return prefs.content_mode if (prefs and prefs.content_mode) else "reminder"
+
+    def set_content_mode(self, user_id: int, mode: str) -> bool:
+        """Set the user's content-processing mode."""
+        if mode not in ("reminder", "anki", "auto"):
+            raise ValueError(f"Invalid content mode: {mode}")
+        prefs = self.preferences_repo.get_preferences(user_id)
+        if prefs:
+            updates = UnifiedUserPreferencesUpdate(content_mode=mode)
+            return self.preferences_repo.update_preferences(user_id, updates)
+        else:
+            new_prefs = UnifiedUserPreferencesCreate(content_mode=mode)
+            return self.preferences_repo.create_preferences(user_id, new_prefs)
+
     def update_owner_name(self, user_id: int, owner_name: str) -> bool:
         """Update user's owner name."""
         prefs = self.preferences_repo.get_preferences(user_id)
