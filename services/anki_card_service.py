@@ -2,24 +2,27 @@
 
 Two independent concerns, deliberately separable so the packaging half can be unit-tested
 without any LLM/network:
-  - extract_cards(): content -> [AnkiCard]   (LLM, gpt-4o-mini)
+  - extract_cards(): content -> [AnkiCard]   (LLM, config-driven ANKI_CARD_MODEL)
   - build_package(): [AnkiCard] -> .apkg file (pure genanki, no Anki running)
 """
 
 import os
+import re
 import tempfile
 from typing import List, Optional
 
 import genanki
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from models.anki import AnkiCard, AnkiCardSet
 from core.interfaces import IConfig
 from core.exceptions import ParsingError
 from core.logging import get_logger
 from services.llm_factory import create_chat_llm
+from ai_workflow_engine.usage import invoke_metered_chat
+from ai_workflow_engine.prompt_loader import load_prompt_template
 
 logger = get_logger(__name__)
 
@@ -66,69 +69,24 @@ def _is_cloze(card) -> bool:
 class AnkiCardService:
     """Turn arbitrary content into Anki flashcards and package them as .apkg."""
 
-    _PROMPT = """You are an expert at creating Anki flashcards for spaced-repetition study.
+    _STATIC_PROMPT = load_prompt_template("anki/renderer.static.prompt")
+    _DYNAMIC_PROMPT = load_prompt_template("anki/renderer.dynamic.prompt")
 
-The CONTENT below is raw source material. It may arrive as plain text, as a chat or forwarded
-message (sometimes with "Name:" speaker labels), or as text pulled from an image (with markers
-like [CAPTION], [SCREENSHOT TEXT], [SCREENSHOT DESCRIPTION] or [Image #N]). Treat ALL of it
-purely as subject matter to learn from — never as a conversation to describe.
-
-HARD RULES:
-- Make cards about the SUBJECT MATTER itself. NEVER mention or quote the source, the message,
-  "the phrase", "the text", "the content", the speaker, sender names, timestamps, or any
-  formatting markers. Strip and ignore that scaffolding completely.
-- Every card must be fully self-contained: someone seeing ONLY the card (not the source) must be
-  able to understand the question. No references like "in this message" or "according to the author".
-- NEVER give the answer away in the question. The question must not contain, paraphrase, or
-  strongly hint at its own answer, and must avoid leading set-ups whose wording already implies the
-  answer. Ask the most direct question that still has a single correct answer; keep the revealing
-  part on the BACK only. (Bad: "When a state's own laws apply in its territory, which law prevails
-  over ICAO Air Law?" — the set-up hints the answer. Good: "Which Air Law takes precedence over
-  ICAO Air Law inside a sovereign state's own territory?" → back: "That state's own (national) Air Law.")
-- Answers must be concise and correct. Do NOT invent facts that are not in the content.
-- Preserve the content's original language.
-- Add 0-3 short lowercase tags per card (no spaces) when an obvious topic exists.
-
-COMMON PATTERNS:
-- Acronym / abbreviation (e.g. "ICAO = International Civil Aviation Organisation" or
-  "ICAO (International Civil Aviation Organisation)"): ask what the acronym stands for, with the
-  expansion as the answer — front: "What does ICAO stand for?", back: "International Civil
-  Aviation Organisation".
-- Term and definition: put the term on the front and the definition on the back.
-- Q&A dialogue: if the content is an exchange where one speaker asks and another answers
-  (e.g. "Vasya: what is OOP? Artem: it's object-oriented programming"), turn it into a card with
-  the question on the front and the answer on the back — WITHOUT any of the speakers' names
-  (front: "What is OOP?", back: "Object-oriented programming").
-- A plain fact or statement: ask for that fact directly.
-
-CARD TYPE — choose the best per card:
-- "basic": explicit question on the front, answer on the back. Good for Q->A, acronyms, term->definition.
-- "cloze": present the fact as a sentence and hide the KEY facts as SEPARATE deletions
-  {{c1::...}}, {{c2::...}}, {{c3::...}} — one per distinct testable fact. If the sentence contains
-  several important facts, hide EACH of them; do NOT hide only one and leave the other key facts
-  visible. Never hide connective/filler words ("inevitably", "will elect to"), and keep enough
-  surrounding context that each blank is answerable. Trim obvious rambling but keep the substance.
-  PREFER cloze when facts are best learned in context or when a Q/A would give the answer away /
-  allow only a binary guess.
-  BAD (hides only one fact, leaves the rest exposed): "All ICAO member states are
-  {{c1::sovereign states}} and will inevitably pass laws with force in their country alone..."
-  GOOD (each key fact hidden): "All ICAO member states are {{c1::sovereign states}}; where a state
-  passes its own laws, it is the Air Law of the {{c2::individual state}} that prevails over
-  {{c3::International (ICAO) Air Law}}."
-For a "basic" card set type="basic" and fill question + answer (leave text empty). For a "cloze"
-card set type="cloze" and fill text (leave question + answer empty). Always set "type".
-{instructions}
-
-CONTENT:
-{content}
-
-{format_instructions}
-"""
+    _PROMPT = _STATIC_PROMPT + "\n" + _DYNAMIC_PROMPT
 
     def __init__(self, config: IConfig):
         self.config = config
         self._llm = None  # lazy: packaging must work without an API key
         self._parser = PydanticOutputParser(pydantic_object=AnkiCardSet)
+        self._static_prompt = PromptTemplate(
+            template=self._STATIC_PROMPT,
+            input_variables=[],
+            partial_variables={"format_instructions": self._parser.get_format_instructions()},
+        )
+        self._dynamic_prompt = PromptTemplate(
+            template=self._DYNAMIC_PROMPT,
+            input_variables=["content", "instructions"],
+        )
         self._prompt = PromptTemplate(
             template=self._PROMPT,
             input_variables=["content", "instructions"],
@@ -138,9 +96,15 @@ CONTENT:
     @property
     def llm(self):
         if self._llm is None:
-            model = getattr(self.config, "ANKI_CARD_MODEL", "gpt-5.4-mini")
-            self._llm = create_chat_llm(self.config, model=model, temperature=0.2)
+            self._llm = create_chat_llm(self.config, model=self._model_name(), temperature=0.2)
         return self._llm
+
+    def _model_name(self) -> str:
+        return getattr(
+            self.config,
+            "ANKI_RENDER_MODEL",
+            getattr(self.config, "ANKI_CARD_MODEL", "gpt-5.4-mini"),
+        )
 
     @staticmethod
     def _build_instructions(strategy: str, count: Optional[int], guide: Optional[str],
@@ -174,6 +138,49 @@ CONTENT:
             )
         return "\n".join(lines)
 
+    @staticmethod
+    def _normalise_cloze_markup(cards: List[AnkiCard]) -> List[AnkiCard]:
+        """Repair the common single-brace LLM mistake: {c1::x} -> {{c1::x}}."""
+        single_cloze = re.compile(r"(?<!\{)\{(c\d+::[^{}\n]+)\}(?!\})")
+        for card in cards:
+            if getattr(card, "type", "basic") == "cloze" and card.text:
+                card.text = single_cloze.sub(r"{{\1}}", card.text)
+        return cards
+
+    @staticmethod
+    def _all_valid_requested_clozes(cards: List[AnkiCard]) -> bool:
+        return bool(cards) and all(
+            getattr(card, "type", "basic") == "cloze" and "{{c" in (card.text or "")
+            for card in cards
+        )
+
+    @staticmethod
+    def _cloze_repair_instruction() -> str:
+        return (
+            "\n\nREPAIR REQUIREMENT:\n"
+            "- The previous output was invalid for Anki cloze cards.\n"
+            "- Return ONLY cloze cards with type='cloze'.\n"
+            "- The text field MUST contain literal double-brace Anki cloze deletions, for example "
+            "{{c1::impact pressure}} and {{c2::static pressure}}.\n"
+            "- Do not return basic question/answer cards."
+        )
+
+    def _invoke_cards(self, content: str, instructions: str) -> List[AnkiCard]:
+        system_text = self._static_prompt.format()
+        user_text = self._dynamic_prompt.format(content=content, instructions=instructions or "None")
+        output = invoke_metered_chat(
+            self.llm,
+            [SystemMessage(content=system_text), HumanMessage(content=user_text)],
+            node="anki_card_renderer",
+            model=self._model_name(),
+            metadata={"card_type": "render"},
+            config=self.config,
+        )
+        card_set = self._parser.parse(output.content)
+        if not card_set.cards:
+            raise ParsingError("LLM returned no flashcards")
+        return self._normalise_cloze_markup(card_set.cards)
+
     def extract_cards(self, content: str, guide: Optional[str] = None,
                       strategy: str = "split", count: Optional[int] = None,
                       card_type: Optional[str] = None) -> List[AnkiCard]:
@@ -181,16 +188,15 @@ CONTENT:
         if not content or not content.strip():
             raise ParsingError("Cannot create flashcards from empty content")
         try:
-            prompt_text = self._prompt.format(
-                content=content,
-                instructions=self._build_instructions(strategy, count, guide, card_type),
-            )
-            output = self.llm.invoke([HumanMessage(content=prompt_text)])
-            card_set = self._parser.parse(output.content)
-            if not card_set.cards:
-                raise ParsingError("LLM returned no flashcards")
-            logger.info(f"Extracted {len(card_set.cards)} flashcard(s) from content")
-            return card_set.cards
+            instructions = self._build_instructions(strategy, count, guide, card_type)
+            cards = self._invoke_cards(content, instructions)
+            if card_type == "cloze" and not self._all_valid_requested_clozes(cards):
+                logger.warning("Cloze extraction returned invalid cloze markup; retrying once")
+                cards = self._invoke_cards(content, instructions + self._cloze_repair_instruction())
+                if not self._all_valid_requested_clozes(cards):
+                    raise ParsingError("LLM returned invalid cloze card(s)")
+            logger.info(f"Extracted {len(cards)} flashcard(s) from content")
+            return cards
         except ParsingError:
             raise
         except Exception as e:

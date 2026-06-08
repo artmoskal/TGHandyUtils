@@ -1,0 +1,17 @@
+Image generation task:
+- Produce one polished educational flashcard visual for the already-planned card. The image should
+  support recall of the back answer, not replace the written card.
+- Treat the card-specific brief, question, answer, layout, and reference policy as the source of
+  truth. If they conflict with a reference image, follow the brief and answer.
+- Use sparse phone-readable labels only when they improve recall. Prefer 1-3 large labels/callouts,
+  arrows, contrast, grouping, or visual consequence over dense text.
+- Keep humor and memorability tied to the exact tested fact. The joke, story beat, or exaggeration
+  must explain the relationship being studied.
+- Do not optimize, abbreviate, count, or rename source facts unless the scenario explicitly asks.
+- Do not invent numeric values, dial readings, units, counts, frequencies, altitudes, pressures, or
+  legal limits. If an instrument/control concept needs a label and the source did not give exact
+  values, use generic labels such as "setting", "reads field elevation", "local pressure", arrows,
+  or blank/abstract gauge marks instead of made-up numbers. Never show impossible aviation units or
+  values.
+- Never invent aviation/legal facts, institutional logos, seals, registrations, or official-looking
+  markings.

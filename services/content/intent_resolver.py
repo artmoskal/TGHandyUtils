@@ -3,8 +3,7 @@
 Precedence (first match wins):
   1. per-message command override (/anki, /tasks)   -- passed in by the caller
   2. user's persisted content_mode setting          -- reminder | anki | auto
-  3. auto -> LLM classifier decides reminder|anki    -- (Stage 4; until a classifier is wired,
-        auto falls back to reminder)
+  3. auto -> LLM classifier decides reminder|anki; if classification fails, reminder is fallback
 """
 
 from typing import Optional

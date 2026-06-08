@@ -297,7 +297,7 @@ class TestTimezoneAgnosticIntegration:
         
         def capture_invoke(messages):
             nonlocal captured_prompt
-            captured_prompt = messages[0].content
+            captured_prompt = "\n\n".join(str(message.content) for message in messages)
             return original_invoke(messages)
         
         # Temporarily replace the method

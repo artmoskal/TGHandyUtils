@@ -61,8 +61,8 @@ Usage: ./test.sh <type> [options] [-- pytest args]
 
 Test Types:
   unit          Run unit tests only (mocked, no API calls)
-  integration   Run integration tests (uses real API keys)  
-  all           Run all tests
+  integration   Run integration tests (blocked unless ALLOW_PAID_TESTS=1)
+  all           Run all tests (blocked unless ALLOW_PAID_TESTS=1)
 
 Options:
   --batch SIZE       Run tests in batches of SIZE (default: all at once)
@@ -72,7 +72,7 @@ Options:
 
 Basic Examples:
   ./test.sh unit                     # Run all unit tests
-  ./test.sh integration              # Run integration tests (uses API credits!)
+  ALLOW_PAID_TESTS=1 ./test.sh integration  # Run paid integration tests intentionally
   ./test.sh unit --batch 50          # Run unit tests in batches of 50
   ./test.sh unit --batch 50 --start 100  # Continue from test 100
 
@@ -93,7 +93,7 @@ Advanced Examples (with pytest args):
   ./test.sh unit -- -k "test_parsing"
   
   # Debug a specific integration test
-  ./test.sh integration -- tests/integration/test_time_parsing.py::TestClass::test_method -xvs
+  ALLOW_PAID_TESTS=1 ./test.sh integration -- tests/integration/test_time_parsing.py::TestClass::test_method -xvs
   
   # Show only failed tests from last run
   ./test.sh unit -- --lf
@@ -130,11 +130,15 @@ if [[ ! "$TEST_TYPE" =~ ^(unit|integration|all)$ ]]; then
     exit 1
 fi
 
-# Warning for integration tests
+# Warning and hard opt-in for paid integration tests
 if [ "$TEST_TYPE" = "integration" ] || [ "$TEST_TYPE" = "all" ]; then
-    echo -e "${YELLOW}⚠️  Warning: Integration tests will use real API keys and may incur costs!${NC}"
-    echo -e "${YELLOW}   Press Ctrl+C to cancel, or wait 3 seconds to continue...${NC}"
-    sleep 3
+    if [ "${ALLOW_PAID_TESTS:-0}" != "1" ]; then
+        echo -e "${RED}❌ Paid integration tests are blocked by default.${NC}"
+        echo -e "${YELLOW}   Set ALLOW_PAID_TESTS=1 when you explicitly want real provider/API spend.${NC}"
+        echo -e "${YELLOW}   Use ./test.sh unit for mocked no-spend validation.${NC}"
+        exit 2
+    fi
+    echo -e "${YELLOW}⚠️  Paid integration tests enabled by ALLOW_PAID_TESTS=1 and may incur costs.${NC}"
 fi
 
 echo "🧪 TGHandyUtils Test Suite"
@@ -185,15 +189,12 @@ run_tests() {
     fi
     
     docker-compose -f docker-compose.test.yml run --rm -e RUNNING_IN_DOCKER=1 bot-test bash -c "
-        echo 'Installing test dependencies...' &&
-        mamba install -y pytest pytest-asyncio pytest-mock pytest-cov coverage -c conda-forge &&
-        pip install aioresponses factory-boy &&
         echo 'Running tests...' &&
         python -m pytest $test_files -v \
             $PYTEST_MARKER \
             --log-cli-level=DEBUG \
             --log-cli-format='%(asctime)s [%(levelname)s] %(name)s - %(message)s' \
-            --cov=services --cov=platforms --cov=database --cov=models --cov=core \
+            --cov=services --cov=ai_workflow_engine --cov=platforms --cov=database --cov=models --cov=core \
             --cov-report=term-missing \
             --cov-report=html:/app/test-results/$coverage_html_dir \
             --cov-report=xml:/app/test-results/coverage$coverage_suffix.xml \

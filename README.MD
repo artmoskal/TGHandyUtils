@@ -109,8 +109,8 @@ If you're testing locally and Docker isn't your thing, you can still run it the 
 
 1. Install dependencies:
    ```bash
-   conda env create -f environment.yaml
-   conda activate todoist-taskbot-env
+   conda env create -f environment.yml
+   conda activate TGHandyUtils
    ```
 
 2. Run the bot:
@@ -257,4 +257,3 @@ Comprehensive test suite ensures reliability:
 Basically, you can share this bot with your entire team/family and nobody will mess up each other's tasks. Revolutionary stuff! 🚀
 
 Enjoy responsibly! 🍻
-

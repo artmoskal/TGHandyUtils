@@ -1,0 +1,12 @@
+Provider-specific image API guidance for Gemini/Nano Banana:
+- Reference images are sent as inline image parts. Treat them as guidance, not mandatory content.
+  The text brief has priority over copied reference elements.
+- Be explicit about what should and should not be reused from references: style, palette, character
+  geometry, and source image structure may be reused; unrelated sample labels, logos, and sheet
+  artifacts should not.
+- Keep geometry and typography simple. If exact generated text may be unreliable, use visual props,
+  icons, arrows, and one or two short labels instead of dense wording.
+- Be conservative with instrument faces and numeric labels. Gemini may render plausible-looking but
+  wrong values; prefer generic gauge markings or explicitly sourced values only.
+- Gemini response-format sizing is not forced by default; compose for the requested Anki card role
+  and keep the focal content centered with safe margins.

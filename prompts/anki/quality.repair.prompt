@@ -1,0 +1,9 @@
+The previous quality-evaluation output was invalid.
+
+Validation/parsing error:
+{error}
+
+Return a corrected JSON object only. Do not include prose or Markdown fences.
+
+Original evaluation request:
+{original_prompt}

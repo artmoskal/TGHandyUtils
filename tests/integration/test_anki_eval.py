@@ -1,4 +1,4 @@
-"""Integration eval: generate real flashcards with gpt-4o-mini and write .apkg files.
+"""Integration eval: generate real flashcards with the configured Anki model and write .apkg files.
 
 This is an evaluation harness, not a strict assertion test - its value is the printed Q/A and
 the .apkg files (under test-results/anki_eval/) which you import into Anki to judge quality and

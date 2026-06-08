@@ -51,6 +51,67 @@ def test_parse_guide_splits_source_and_instruction():
 
 
 @pytest.mark.unit
+def test_parse_bare_guide_tag_splits_source_and_instruction_to_end():
+    d, content = parse_directives("JAA = Joint Aviation Authorities [i] abbr expand")
+    assert d.guide_mode is True
+    assert d.guide == "abbr expand"
+    assert content == "JAA = Joint Aviation Authorities"
+
+
+@pytest.mark.unit
+def test_parse_bare_guide_tag_with_closing_tag_keeps_after_text_as_source():
+    d, content = parse_directives("JAA = Joint Aviation Authorities [i] abbr expand[i] aviation authority acronym")
+    assert d.guide_mode is True
+    assert d.guide == "abbr expand"
+    assert content == "JAA = Joint Aviation Authorities aviation authority acronym"
+
+
+@pytest.mark.unit
+def test_parse_instruction_block_with_closing_tag():
+    d, content = parse_directives("Bernoulli principle [i visual gen] make image funny[i]")
+    assert d.card_type == "visual"
+    assert d.image_policy == "generate"
+    assert d.guide_mode is True
+    assert d.guide == "make image funny"
+    assert content == "Bernoulli principle"
+
+
+@pytest.mark.unit
+def test_parse_instruction_block_to_end_when_source_precedes_tag():
+    d, content = parse_directives("Bernoulli principle [i visual] make image funny")
+    assert d.card_type == "visual"
+    assert d.guide_mode is True
+    assert d.guide == "make image funny"
+    assert content == "Bernoulli principle"
+
+
+@pytest.mark.unit
+def test_parse_prefix_directive_keeps_text_source_without_image_source():
+    d, content = parse_directives("[i cloze] Paris is in France")
+    assert d.card_type == "cloze"
+    assert d.guide is None
+    assert content == "Paris is in France"
+
+
+@pytest.mark.unit
+def test_parse_prefix_directive_ignores_thread_speaker_prefix_for_guidance_detection():
+    d, content = parse_directives("User: [i cloze] Paris is in France")
+    assert d.card_type == "cloze"
+    assert d.guide is None
+    assert content == "User: Paris is in France"
+
+
+@pytest.mark.unit
+def test_parse_image_source_instruction_block_to_end():
+    d, content = parse_directives("[i gen] make it funny", source_has_images=True)
+    assert d.card_type == "visual"
+    assert d.image_policy == "generate"
+    assert d.guide_mode is True
+    assert d.guide == "make it funny"
+    assert content == ""
+
+
+@pytest.mark.unit
 def test_parse_card_type_flags():
     assert parse_directives("[i cloze] x")[0].card_type == "cloze"
     assert parse_directives("[i basic] x")[0].card_type == "basic"
@@ -144,5 +205,8 @@ async def test_anki_processor_embeds_image_on_back_by_default():
     assert media_files and os.path.exists(media_files[0])
     assert "<img" in args[0][0].answer
     assert "<img" not in args[0][0].question
+    caption = message.reply_document.call_args.kwargs["caption"]
+    assert "Images in Anki: 1 uploaded back." in caption
+    assert "[back image:" in caption
 
     anki_buffer.clear(uid)

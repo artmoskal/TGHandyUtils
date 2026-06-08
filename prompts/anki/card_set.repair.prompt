@@ -1,0 +1,9 @@
+The previous card-set planning output was invalid.
+
+Validation/parsing error:
+{error}
+
+Return a corrected JSON object only. Do not include prose or Markdown fences.
+
+Original planning request:
+{original_prompt}

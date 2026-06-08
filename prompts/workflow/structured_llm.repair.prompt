@@ -1,0 +1,9 @@
+The previous structured-output response was invalid.
+
+Validation/parsing error:
+{error}
+
+Return a corrected JSON object only. Do not include prose or Markdown fences.
+
+Original request:
+{original_prompt}

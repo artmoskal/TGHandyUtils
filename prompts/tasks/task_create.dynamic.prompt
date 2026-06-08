@@ -1,0 +1,7 @@
+        CURRENT CONTEXT:
+        - Current Time: {current_local_time}
+        - Today: {today_date} | Tomorrow: {tomorrow_date}
+        - Late Night Mode: {is_late_night} (After 23:00, "today" means tomorrow for morning times)
+
+        Message: {content_message}
+        Owner: {owner_name}

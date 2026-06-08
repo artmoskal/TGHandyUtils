@@ -5,7 +5,7 @@ Welcome to the TGHandyUtils development guide! This document will help you get s
 ## 🚀 Getting Started
 
 ### Prerequisites
-- Python 3.10+
+- Python 3.11
 - Docker & Docker Compose
 - Telegram Bot Token
 - OpenAI API Key
@@ -27,7 +27,7 @@ Welcome to the TGHandyUtils development guide! This document will help you get s
 
 3. **Run locally (for debugging)**
    ```bash
-   conda env create -f environment.yaml
+   conda env create -f environment.yml
    conda activate TGHandyUtils
    python main.py
    ```

@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-workflow-engine"
+version = "0.1.0"
+description = "Small reusable AI workflow orchestration primitives."
+requires-python = ">=3.10"
+dependencies = [
+    "langchain-core>=1.4.0",
+    "pydantic>=2.13.0",
+    "PyYAML>=6.0.2",
+]
+
+[project.optional-dependencies]
+media = [
+    "openai>=2.41.0",
+    "requests>=2.34.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ai_workflow_engine*"]

@@ -7,17 +7,22 @@ import zoneinfo
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from models.task import TaskCreate
 from core.interfaces import IParsingService, IConfig, IUserPreferencesRepository
 from core.exceptions import ParsingError
 from core.logging import get_logger
+from services.openai_cache import openai_prompt_cache_kwargs
+from ai_workflow_engine.prompt_loader import load_prompt_template
+from ai_workflow_engine.usage import invoke_metered_chat
 
 logger = get_logger(__name__)
 
 class ParsingService(IParsingService):
     """Service for parsing text into structured task data."""
+
+    _FIXED_TEMPERATURE_PREFIXES = ("gpt-5", "o1", "o3", "o4")
     
     # Class variable to track token usage across all instances
     _token_usage = {
@@ -34,83 +39,62 @@ class ParsingService(IParsingService):
         if not config.OPENAI_API_KEY:
             raise ValueError("OpenAI API key is required for parsing service")
         
-        self.llm = ChatOpenAI(
-            model="gpt-4o-mini",
-            temperature=0.0,  # Maximum precision for mathematical calculations
-            openai_api_key=config.OPENAI_API_KEY
-        )
+        model = self._model_name()
+        llm_params = {
+            "model": model,
+            "openai_api_key": config.OPENAI_API_KEY,
+        }
+        if not model.startswith(self._FIXED_TEMPERATURE_PREFIXES):
+            llm_params["temperature"] = 0.0  # Maximum precision for mathematical calculations.
+        cache_kwargs = openai_prompt_cache_kwargs(config, model=model)
+        if cache_kwargs:
+            llm_params["model_kwargs"] = cache_kwargs
+        self.llm = ChatOpenAI(**llm_params)
         
         self.parser = PydanticOutputParser(pydantic_object=TaskCreate)
         self.prompt_template = self._create_prompt_template()
+        self.static_prompt_template = self._create_static_prompt_template()
+        self.dynamic_prompt_template = self._create_dynamic_prompt_template()
+
+    def _model_name(self) -> str:
+        model = getattr(self.config, "TASK_PARSING_MODEL", None)
+        if not isinstance(model, str) or not model.strip():
+            return "gpt-5.4-mini"
+        return model
     
     def _create_prompt_template(self) -> PromptTemplate:
         """Create the prompt template for task parsing."""
-        template = """
-        You are a multilingual task creation assistant. Create a task with 'title', 'due_time', and 'description'.
-
-        CURRENT CONTEXT:
-        - Current Time: {current_local_time}
-        - Today: {today_date} | Tomorrow: {tomorrow_date}
-        - Late Night Mode: {is_late_night} (After 23:00, "today" means tomorrow for morning times)
-
-        TIME PARSING:
-        - Parse time expressions in ANY language
-        - Handle formats: "today 1900", "at 7pm", "19h", "tonight", "tomorrow morning"
-        - Understand relative times: "in 2 hours", "after lunch", "end of day"
-
-        TIME SCHEDULING RULES:
-        1. Compare times in 24-hour format
-        2. If requested time > current time → schedule TODAY
-        3. If requested time < current time → schedule TOMORROW
-        4. Exception: After 23:00, "today + morning time" → TOMORROW
-        5. No time specified → tomorrow 9AM
-        6. "asap"/"now" → 1 hour from now
-        7. Relative times: "in X hours/days/weeks" = now + exact duration
-           - "in 10 minutes" = now + 10 minutes (NOT 1 hour!)
-           - "in 5 minutes" = now + 5 minutes
-           - "in 30 minutes" = now + 30 minutes
-           - "in 2 hours" = now + 2 hours
-           - "in a day" = now + 24 hours (NOT tomorrow 9AM)
-           - "in 3 days" = now + 72 hours
-        8. Time units: m=minutes, h=hours, d=days, w=weeks (e.g. "4m" = 4 minutes)
-        9. Output: YYYY-MM-DDTHH:MM:SS (local time)
-        
-        CRITICAL EARLY MORNING RULE:
-        When current time is between 00:00-06:00, and user says "today X":
-        - If X > current time → schedule for TODAY (not tomorrow)
-        - This applies to ALL times after midnight (2am, 5am, 9am, noon, etc.)
-        
-        EXAMPLES:
-        - Current: 01:30, "today 5am" → TODAY 05:00 ✓ (NOT tomorrow!)
-        - Current: 00:15, "today 2am" → TODAY 02:00 ✓ (NOT tomorrow!)
-        - Current: 00:15, "today 9am" → TODAY 09:00 ✓ (NOT tomorrow!)
-        - Current: 09:30, "today 5am" → TOMORROW 05:00
-        - Current: 23:30, "today 9am" → TOMORROW 09:00 (late night)
-        - Current: 15:00, "in 2 hours" → TODAY 17:00
-
-        TITLE: Create informative, specific titles. Preserve the user's exact wording and intent. Do NOT censor, sanitize, or rephrase the user's words.
-        AVOID: "Decide on X", "Check with Y", "Handle appointment"
-
-        DESCRIPTION:
-        1. Brief action summary
-        2. Full original conversation (with sender names)
-
-        CONTENT PRIORITY:
-        [CAPTION] → Primary instruction (title/timing)
-        [SCREENSHOT TEXT] → Task details
-        [SCREENSHOT DESCRIPTION] → Context only
-
-        Message: {content_message}
-        Owner: {owner_name}
-
-        {format_instructions}
-        """
+        template = load_prompt_template("tasks/task_create.full.prompt")
         
         return PromptTemplate(
             template=template,
             input_variables=["content_message", "owner_name",
-                           "current_local_time", "today_date", "tomorrow_date"],
+                           "current_local_time", "today_date", "tomorrow_date", "is_late_night"],
             partial_variables={"format_instructions": self.parser.get_format_instructions()}
+        )
+
+    def _create_static_prompt_template(self) -> PromptTemplate:
+        """Create the cacheable static prompt prefix for task parsing."""
+        template = load_prompt_template("tasks/task_create.static.prompt")
+        return PromptTemplate(
+            template=template,
+            input_variables=[],
+            partial_variables={"format_instructions": self.parser.get_format_instructions()},
+        )
+
+    def _create_dynamic_prompt_template(self) -> PromptTemplate:
+        """Create the dynamic prompt tail for task parsing."""
+        template = load_prompt_template("tasks/task_create.dynamic.prompt")
+        return PromptTemplate(
+            template=template,
+            input_variables=[
+                "content_message",
+                "owner_name",
+                "current_local_time",
+                "today_date",
+                "tomorrow_date",
+                "is_late_night",
+            ],
         )
     
     def _calculate_precise_time(self, time_phrase: str, current_local: datetime, current_utc: datetime, offset_hours: int) -> Optional[str]:
@@ -353,12 +337,20 @@ class ParsingService(IParsingService):
                 "is_late_night": "Yes" if user_local_time.hour >= 23 else "No",
             }
             
-            # Format the prompt
-            prompt_text = self.prompt_template.format(**input_data)
+            # Format cache-friendly messages: stable rules/schema first, request context last.
+            system_prompt = self.static_prompt_template.format()
+            user_prompt = self.dynamic_prompt_template.format(**input_data)
+            prompt_text = f"{system_prompt}\n\n{user_prompt}"
             logger.debug(f"LLM Input (timezone-agnostic): {prompt_text}")
             
             # Call the language model
-            output = self.llm.invoke([HumanMessage(content=prompt_text)])
+            output = invoke_metered_chat(
+                self.llm,
+                [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)],
+                node="task_parser",
+                model=self._model_name(),
+                config=self.config,
+            )
             logger.debug(f"LLM Output: {output.content}")
             
             # Track token usage
@@ -445,7 +437,7 @@ class ParsingService(IParsingService):
             return 0
             
         try:
-            prompt = f"""Determine the UTC timezone offset for this location: "{location}"
+            system_prompt = """Determine the UTC timezone offset for a user-provided location.
 
 IMPORTANT: Return ONLY a single number representing the UTC offset in hours.
 Consider daylight saving time if currently active.
@@ -457,12 +449,19 @@ Examples:
 - "California" or "LA" → -8 (or -7 during DST)
 - "Tokyo" → 9
 - "Sydney" → 10 (or 11 during DST)
+"""
 
-Location: {location}
+            user_prompt = f"""Location: {location}
 UTC offset (hours):"""
 
             # Create a simple LLM call without complex parsing
-            response = self.llm.invoke([HumanMessage(content=prompt)])
+            response = invoke_metered_chat(
+                self.llm,
+                [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)],
+                node="timezone_offset_parser",
+                model=self._model_name(),
+                config=self.config,
+            )
             offset_str = response.content.strip()
             
             # Track token usage

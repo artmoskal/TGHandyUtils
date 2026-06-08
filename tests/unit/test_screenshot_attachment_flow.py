@@ -54,13 +54,27 @@ class TestScreenshotAttachmentFlow:
         
         # Test user ID for isolation
         self.test_user_id = 555555555  # Unique ID to avoid conflicts
+        self._cleanup_test_data()
     
     def teardown_method(self):
         """Clean up test data after each test."""
+        self._cleanup_test_data()
+
+    def _cleanup_test_data(self):
+        """Remove persistent state for this class's test user."""
         with self.db_manager.get_connection() as conn:
-            # Clean up test recipients and tasks
+            conn.execute(
+                """
+                DELETE FROM task_recipients
+                WHERE task_id IN (SELECT id FROM tasks WHERE user_id = ?)
+                   OR recipient_id IN (SELECT id FROM recipients WHERE user_id = ?)
+                """,
+                (self.test_user_id, self.test_user_id),
+            )
             conn.execute("DELETE FROM recipients WHERE user_id = ?", (self.test_user_id,))
             conn.execute("DELETE FROM tasks WHERE user_id = ?", (self.test_user_id,))
+            conn.execute("DELETE FROM user_preferences_unified WHERE user_id = ?", (self.test_user_id,))
+            conn.execute("DELETE FROM users WHERE user_id = ?", (self.test_user_id,))
     
     def test_screenshot_data_structure_validation_with_real_recipients(self):
         """Test screenshot data structure validation with real recipients.
@@ -324,7 +338,7 @@ class TestScreenshotAttachmentFlow:
         screenshot handling with real database integration.
         """
         # Create real recipients
-        personal_recipient = PersonalRecipientFactory(
+        personal_recipient = TodoistRecipientFactory(
             user_id=self.test_user_id,
             is_personal=True,
             is_default=True,
@@ -372,13 +386,21 @@ class TestScreenshotAttachmentFlow:
             # Step 2: Test screenshot task creation service call
             # Note: This tests service layer without actual platform API calls
             with patch('platforms.todoist.TodoistPlatform.create_task', return_value='todoist-task-123'), \
-                 patch('platforms.trello.TrelloPlatform.create_task', return_value='trello-task-456'):
+                 patch('platforms.todoist.TodoistPlatform.attach_screenshot', return_value=True) as todoist_attach, \
+                 patch('platforms.trello.TrelloPlatform.create_task', return_value='trello-task-456'), \
+                 patch('platforms.trello.TrelloPlatform.attach_screenshot', return_value=True) as trello_attach:
                 result = self.task_service.create_task_for_recipients(
                     user_id=self.test_user_id,
                     title=screenshot_task.title,
                     description=screenshot_task.description,
                     screenshot_data=screenshot_data
                 )
+                todoist_attach.assert_called_once_with(
+                    'todoist-task-123',
+                    screenshot_data['image_data'],
+                    screenshot_data['file_name'],
+                )
+                trello_attach.assert_not_called()
             
             # Verify service layer handles the workflow correctly
             assert isinstance(result.success, bool)

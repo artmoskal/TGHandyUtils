@@ -1,0 +1,43 @@
+workflow:
+  profile_id: workflow.default
+  workflow_type: generic_workflow
+  fail_mode: fallback
+  requested_capabilities: []
+  scheduling:
+    mode: run_immediately
+    max_queue_size: 1
+  limits:
+    max_steps: 32
+    max_retries: 1
+    max_retrace: 1
+    max_parallel_children: 4
+    max_estimated_usd: 0
+
+models:
+  default:
+    provider: openai
+    model: gpt-5.4-mini
+    temperature: 0
+    max_retries: 1
+  supervisor:
+    provider: openai
+    model: gpt-5.5
+    temperature: 0
+    max_retries: 1
+
+settings:
+  task_parsing_model: gpt-5.4-mini
+  openai_prompt_cache_key_prefix: tghandyutils
+  openai_prompt_cache_retention: ""
+  workflow_usage_tracking_enabled: true
+  workflow_show_usage_in_reply: true
+  workflow_max_text_calls_per_run: 16
+  workflow_max_image_calls_per_run: 1
+  workflow_max_voice_calls_per_run: 1
+  workflow_max_estimated_usd_per_run: 0
+  workflow_model_price_overrides_json: ""
+  database_timeout: 30
+  default_task_platform: todoist
+  scheduler_interval: 20
+  thread_timeout: 1.0
+  allow_self_auth_requests: false

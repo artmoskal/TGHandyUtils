@@ -1,0 +1,17 @@
+Source:
+{source_material}
+
+Directives:
+{directive_summary}
+
+Build plan:
+{build_plan_summary}
+
+Scenario:
+{scenario_summary}
+
+Rendered cards:
+{rendered_summary}
+
+Generated media:
+{media_summary}

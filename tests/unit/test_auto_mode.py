@@ -68,11 +68,22 @@ async def test_auto_flow_button_commits_choice_and_cancels_timer():
     with patch("services.content.auto_flow.get_processor", return_value=fake_processor):
         await auto_flow.start_auto_window(ctx, Intent.REMINDER)
         token = list(auto_flow._pending.keys())[-1]
+        entry = auto_flow._pending[token]
+
+        assert entry["clarification_request"].question == "What should this message become?"
+        assert entry["clarification_request"].default_value == Intent.REMINDER.value
+        assert entry["clarification_result"].status == "pending"
+        assert any(
+            event.node == "auto_intent_correction" and event.decision == "partial"
+            for event in entry["trace_sink"].events
+        )
 
         committed = await auto_flow.commit_choice(token, Intent.ANKI)
 
         assert committed is True
         fake_processor.process.assert_awaited_once()
+        assert entry["clarification_response"].status == "answered"
+        assert entry["clarification_response"].value == Intent.ANKI.value
         assert token not in auto_flow._pending
 
 

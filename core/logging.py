@@ -42,6 +42,11 @@ def setup_logging(log_level: str = "DEBUG", log_file: str = "data/logs/bot.log",
     # Add handlers to logger
     logger.addHandler(file_handler)
     logger.addHandler(console_handler)
+
+    # Provider HTTP clients can log full request payloads at DEBUG, including base64 images.
+    # Keep application-level debug logs without storing paid media/request bodies in bot.log.
+    for noisy_logger in ("openai", "httpx", "httpcore"):
+        logging.getLogger(noisy_logger).setLevel(logging.WARNING)
     
     return logger
 

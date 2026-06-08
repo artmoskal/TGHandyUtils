@@ -1,0 +1,5 @@
+Provider-specific image API guidance for comparison mode:
+- Use provider-neutral language that both OpenAI and Gemini can follow. Do not rely on one
+  provider's private syntax.
+- Make the learning relationship, sparse labels, and reference reuse rules explicit enough that the
+  two provider outputs can be compared fairly.

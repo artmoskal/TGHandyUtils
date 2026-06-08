@@ -6,9 +6,11 @@ cards into a per-user buffer that can be exported as one deck.
 """
 
 import asyncio
+import json
 import os
 import re
 import uuid
+from collections import Counter
 
 from aiogram.types import FSInputFile
 
@@ -17,16 +19,31 @@ from core.logging import get_logger
 from services.anki_card_service import AnkiCardService, DEFAULT_DECK_NAME
 from services.content.thread_assembly import assemble_thread, collect_screenshots
 from services.content.anki_directives import parse_directives, HELP_TEXT
+from services.content.anki_generation_graph import AnkiGenerationGraph
+from services.content.anki_source import build_content_source
 from services.content import anki_buffer
+from ai_workflow_engine.usage import format_usage_summary
 
 logger = get_logger(__name__)
 
 BUFFER_MEDIA_DIR = "data/temp_cache/anki"
+TELEGRAM_DOCUMENT_CAPTION_LIMIT = 1024
+TELEGRAM_TEXT_MESSAGE_LIMIT = 4096
+
+
+_IMG_RE = re.compile(r"<img\b[^>]*\bsrc=[\"']?([^\"'>\s]+)", re.IGNORECASE)
+_BR_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)
+
+
+def _image_sources(text: str) -> list[str]:
+    return [os.path.basename(src) for src in _IMG_RE.findall(text or "")]
 
 
 def _strip_html(text: str) -> str:
     """Drop HTML (e.g. embedded <img>/<br>) so the preview shows plain text."""
-    return re.sub(r"<[^>]+>", "", text).strip()
+    text = _BR_RE.sub("\n", text or "")
+    text = re.sub(r"<[^>]+>", "", text)
+    return "\n".join(line.strip() for line in text.splitlines() if line.strip())
 
 
 def _cloze_to_display(text: str) -> str:
@@ -34,19 +51,56 @@ def _cloze_to_display(text: str) -> str:
     return re.sub(r"\{\{c\d+::(.*?)(?:::.*?)?\}\}", r"[\1]", text)
 
 
+def _ellipsize(text: str, limit: int) -> str:
+    if limit <= 0:
+        return ""
+    if len(text) <= limit:
+        return text
+    if limit <= 1:
+        return "…"
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _field_preview(text: str, label: str, indent: str) -> list[str]:
+    plain = _strip_html(text)
+    images = _image_sources(text)
+    lines = [plain] if plain else []
+    if images and not plain:
+        lines.append(f"[{label} image only]")
+    for src in images:
+        lines.append(f"[{label} image: {src}]")
+    if not lines:
+        return [""]
+    return [lines[0], *[f"{indent}{line}" for line in lines[1:]]]
+
+
 def _preview_block(card) -> str:
     if getattr(card, "type", "basic") == "cloze" and card.text:
-        return f"• (cloze) {_strip_html(_cloze_to_display(card.text))}"
-    return f"• {_strip_html(card.question)}\n   ↳ {_strip_html(card.answer)}"
+        lines = _field_preview(_cloze_to_display(card.text), "cloze", "  ")
+        return "• (cloze) " + "\n  ".join(lines)
+
+    front_lines = _field_preview(card.question, "front", "  ")
+    back_lines = _field_preview(card.answer, "back", "      ")
+    block = [f"• {front_lines[0]}"]
+    block.extend(front_lines[1:])
+    block.append(f"   ↳ {back_lines[0]}")
+    block.extend(back_lines[1:])
+    return "\n".join(block)
 
 
 def _format_preview(cards, budget: int) -> str:
     """Render each card (front → back, or cloze sentence) for as many as fit within `budget`."""
+    if budget <= 0:
+        return ""
     lines, shown = [], 0
     for c in cards:
         block = _preview_block(c)
         candidate = "\n".join(lines + [block])
-        if lines and len(candidate) > budget:
+        if len(block) > budget and not lines:
+            lines.append(_ellipsize(block, budget))
+            shown += 1
+            break
+        if len(candidate) > budget:
             break
         lines.append(block)
         shown += 1
@@ -56,12 +110,139 @@ def _format_preview(cards, budget: int) -> str:
     return preview
 
 
+def _split_text_message(text: str, limit: int = TELEGRAM_TEXT_MESSAGE_LIMIT) -> list[str]:
+    """Split long Telegram text into message-sized chunks without relying on caption limits."""
+    if not text:
+        return []
+    chunks: list[str] = []
+    remaining = text.strip()
+    while remaining:
+        if len(remaining) <= limit:
+            chunks.append(remaining)
+            break
+        split_at = remaining.rfind("\n\n", 0, limit)
+        if split_at < limit // 2:
+            split_at = remaining.rfind("\n", 0, limit)
+        if split_at < limit // 2:
+            split_at = limit
+        chunks.append(remaining[:split_at].strip())
+        remaining = remaining[split_at:].strip()
+    return chunks
+
+
+def _build_delivery_messages(header: str, cards) -> tuple[str, list[str]]:
+    """Build a safe document caption plus optional follow-up messages for long previews."""
+    full_preview = _format_preview(cards, budget=TELEGRAM_TEXT_MESSAGE_LIMIT - 128)
+    full_text = (header + full_preview).strip()
+    if len(full_text) <= TELEGRAM_DOCUMENT_CAPTION_LIMIT:
+        return full_text, []
+
+    marker = "\n\nFull preview follows."
+    caption_budget = TELEGRAM_DOCUMENT_CAPTION_LIMIT - len(marker)
+    if len(header) < caption_budget - 80:
+        preview_budget = caption_budget - len(header)
+        caption = (header + _format_preview(cards, budget=preview_budget) + marker).strip()
+    else:
+        caption = _ellipsize(header.strip(), caption_budget).strip() + marker
+    caption = _ellipsize(caption, TELEGRAM_DOCUMENT_CAPTION_LIMIT)
+
+    followups = _split_text_message("Card preview / details:\n\n" + full_text)
+    return caption, followups
+
+
+def _format_delivery_notes(
+    rendered,
+    front_images: list[str],
+    back_images: list[str],
+    show_usage: bool = False,
+) -> str:
+    notes = []
+    image_bits = []
+    if front_images:
+        image_bits.append(f"{len(front_images)} uploaded front")
+    if back_images:
+        image_bits.append(f"{len(back_images)} uploaded back")
+    generated = getattr(rendered, "generated_media", []) or []
+    if generated:
+        image_counts = Counter(media.role for media in generated if media.role != "audio")
+        image_bits.extend(f"{count} generated {role}" for role, count in sorted(image_counts.items()))
+    if image_bits:
+        notes.append("Images in Anki: " + ", ".join(image_bits) + ".")
+    audio_count = sum(1 for media in generated if media.role == "audio")
+    if audio_count:
+        notes.append(f"Audio in Anki: {audio_count} generated pronunciation.")
+    fallback_reason = (getattr(rendered, "fallback_reason", None) or "").strip()
+    if getattr(rendered, "fallback_used", False):
+        suffix = f" ({fallback_reason})." if fallback_reason else "."
+        notes.append("Fallback used: text card" + suffix)
+    elif fallback_reason.startswith("voice fallback:"):
+        notes.append("Voice fallback: " + fallback_reason.removeprefix("voice fallback:").strip())
+    if show_usage:
+        usage = format_usage_summary(getattr(rendered, "usage_summary", None))
+        if usage:
+            notes.append(usage)
+    return "\n".join(notes)
+
+
+async def _send_generated_media_previews(message, generated_media) -> None:
+    if not generated_media:
+        return
+    for media in generated_media[:3]:
+        if not os.path.exists(media.path):
+            continue
+        provider = (media.metadata or {}).get("provider") or (media.metadata or {}).get("model") or "generated"
+        if media.role == "audio":
+            if not hasattr(message, "reply_audio"):
+                continue
+            try:
+                await message.reply_audio(
+                    FSInputFile(media.path, filename=media.basename),
+                    caption=f"Generated pronunciation audio ({provider}).",
+                )
+            except Exception as exc:
+                logger.warning("Could not send generated audio preview %s: %s", media.path, exc)
+            continue
+        if not hasattr(message, "reply_photo"):
+            continue
+        try:
+            await message.reply_photo(
+                FSInputFile(media.path, filename=media.basename),
+                caption=f"Generated card image preview ({media.role}, {provider}).",
+            )
+        except Exception as exc:  # preview should not block package delivery
+            logger.warning("Could not send generated media preview %s: %s", media.path, exc)
+        for artifact in _comparison_artifacts(media)[:2]:
+            path = artifact.get("path") or ""
+            if not path or not os.path.exists(path):
+                continue
+            provider_label = artifact.get("provider") or artifact.get("model") or "comparison"
+            try:
+                await message.reply_photo(
+                    FSInputFile(path, filename=artifact.get("basename") or os.path.basename(path)),
+                    caption=f"Comparison image preview ({provider_label}).",
+                )
+            except Exception as exc:
+                logger.warning("Could not send comparison media preview %s: %s", path, exc)
+
+
+def _comparison_artifacts(media) -> list[dict]:
+    raw = (media.metadata or {}).get("comparison_alternatives") or ""
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
 class AnkiProcessor(IContentProcessor):
     """Turn assembled content into Anki flashcards and deliver them as an .apkg file."""
 
-    def __init__(self, anki_card_service: AnkiCardService, preferences_repo=None):
+    def __init__(self, anki_card_service: AnkiCardService, preferences_repo=None, anki_graph=None):
         self.anki_card_service = anki_card_service
         self.preferences_repo = preferences_repo
+        self.anki_graph = anki_graph or AnkiGenerationGraph(anki_card_service)
 
     def _deck_name(self, user_id: int) -> str:
         if self.preferences_repo:
@@ -89,22 +270,6 @@ class AnkiProcessor(IContentProcessor):
             out.append((path, basename))
         return out
 
-    @staticmethod
-    def _placement(images, directives):
-        """Return (front_basenames, back_basenames) per directives."""
-        front, back = [], []
-        if not images:
-            return front, back
-        if directives.multi_split and len(images) >= 2:
-            back.append(images[0][1])
-            front.append(images[1][1])
-            back.extend(b for _, b in images[2:])
-        elif directives.image_placement == "front":
-            front.extend(b for _, b in images)
-        else:
-            back.extend(b for _, b in images)
-        return front, back
-
     async def process(self, ctx: ProcessingContext) -> ServiceResult:
         message = ctx.message
         content, _first = assemble_thread(ctx.thread_content)
@@ -121,15 +286,18 @@ class AnkiProcessor(IContentProcessor):
 
         status_msg = await message.reply("🃏 Generating flashcards…")
         out_path = None
+        media_files = []
+        buffered = False
         try:
-            cards = await asyncio.to_thread(
-                self.anki_card_service.extract_cards,
-                content, directives.guide, directives.strategy, directives.count, directives.card_type,
-            )
+            source = build_content_source(ctx.thread_content, ctx.user_id, ctx.owner_name, ctx.location)
+            rendered = await self.anki_graph.run(source, message=message)
+            cards = rendered.cards
+            image_plan = rendered.image_asset_plan
 
-            # Embed images into cards per directives.
-            images = self._save_images(ctx.user_id, screenshots) if screenshots else []
-            front, back = self._placement(images, directives)
+            # Embed uploaded images into cards per graph image-asset decision.
+            images = self._save_images(ctx.user_id, screenshots) if screenshots and image_plan.uses_uploaded_media else []
+            front = [images[i][1] for i in image_plan.candidate_front_images if i < len(images)]
+            back = [images[i][1] for i in image_plan.candidate_back_images if i < len(images)]
             front_html = "".join(f'<img src="{b}">' for b in front)
             back_html = "".join(f'<img src="{b}">' for b in back)
             if front_html or back_html:
@@ -142,7 +310,8 @@ class AnkiProcessor(IContentProcessor):
                             c.question = f"{c.question}<br>{front_html}"
                         if back_html:
                             c.answer = f"{c.answer}<br>{back_html}"
-            media_files = [p for p, _ in images]
+            generated_media_files = [media.path for media in rendered.generated_media]
+            media_files = [p for p, _ in images] + generated_media_files
 
             deck = self._deck_name(ctx.user_id)
 
@@ -153,20 +322,31 @@ class AnkiProcessor(IContentProcessor):
 
             # Accumulate into the running deck (keeps media files for later export).
             anki_buffer.add(ctx.user_id, cards, media_files)
+            buffered = True
             total = anki_buffer.count(ctx.user_id)
 
             header = (
                 f"🃏 {len(cards)} card(s) — added to your deck ({total} total). "
                 f"Import this file, or collect more and Export once.\n\n"
             )
-            caption = header + _format_preview(cards, budget=1024 - len(header) - 20)
+            show_usage = getattr(self.anki_card_service.config, "WORKFLOW_SHOW_USAGE_IN_REPLY", False)
+            notes = _format_delivery_notes(rendered, front, back, show_usage=show_usage)
+            if notes:
+                header += notes + "\n\n"
+            caption, followups = _build_delivery_messages(header, cards)
 
             from keyboards.recipient import get_anki_buffer_keyboard
+            await _send_generated_media_previews(message, rendered.generated_media)
             await message.reply_document(
                 FSInputFile(out_path, filename="flashcards.apkg"),
                 caption=caption,
                 reply_markup=get_anki_buffer_keyboard(total),
             )
+            for followup in followups:
+                try:
+                    await message.reply(followup)
+                except Exception as exc:
+                    logger.warning("Could not send Anki delivery follow-up: %s", exc)
             try:
                 await status_msg.delete()
             except Exception:
@@ -189,3 +369,9 @@ class AnkiProcessor(IContentProcessor):
                     os.remove(out_path)
                 except OSError:
                     pass
+            if media_files and not buffered:
+                for path in media_files:
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass

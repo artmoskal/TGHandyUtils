@@ -1,44 +1,49 @@
-name: bot_env
+name: TGHandyUtils
 channels:
   - defaults
   - conda-forge
 dependencies:
-  - python=3.10
+  - python=3.11
   - pip
   - sqlite
-  - requests
-  - python-dotenv
-  - langchain
-  - langchain-openai
-  - pydantic
-  - python-dateutil
-  - jsonschema
-  - openai
-  - fastapi
-  - unicorn
 
   # Optional packages for extended timezone and datetime support
   - tzdata
-  - pytz
-
-  # Testing dependencies
-  - pytest
-  - pytest-asyncio
-  - pytest-mock
-  - pytest-cov
-  - coverage
   
-  # PIP dependencies
+  # Runtime and test dependencies are pinned together in pip to avoid
+  # Conda/pip resolver splits across LangChain, LangGraph, OpenAI, and Pydantic.
   - pip:
-      - aiogram
-      - openai  # For OpenAI API access
-      - genanki  # Generate Anki .apkg flashcard packages (no running Anki required)
-      - PyYAML  # Parse sample content files for the Anki eval test
-      - typing-extensions  # Compatibility for typing in different Python versions
-      - aioresponses  # For mocking HTTP requests in async tests
-      - factory-boy  # For test data generation
-      - dependency-injector  # Professional DI framework
-      - freezegun  # For freezing time in tests
-      - google-api-python-client==2.88.0  # Google Calendar API
-      - google-auth-httplib2==0.1.0  # Google Auth HTTP library
-      - google-auth-oauthlib==1.0.0  # Google OAuth library
+      # Telegram bot runtime
+      - aiogram==3.28.2
+
+      # OpenAI + workflow orchestration stack
+      - -e ./packages/ai_workflow_engine
+      - openai==2.41.0
+      - langchain-core==1.4.0
+      - langchain-openai==1.2.2
+      - langgraph==1.2.4
+      - pydantic==2.13.4
+
+      # Application runtime
+      - dependency-injector==4.49.0
+      - genanki==0.13.1
+      - python-dotenv==1.2.2
+      - python-dateutil==2.9.0.post0
+      - requests==2.34.2
+      - PyYAML==6.0.3
+
+      # Google Calendar/OAuth runtime
+      - google-auth==2.53.0
+      - google-api-python-client==2.197.0
+      - google-auth-httplib2==0.4.0
+      - google-auth-oauthlib==1.4.0
+
+      # Tests
+      - pytest==9.0.3
+      - pytest-asyncio==1.4.0
+      - pytest-mock==3.15.1
+      - pytest-cov==7.1.0
+      - coverage==7.14.1
+      - aioresponses==0.7.8
+      - factory-boy==3.3.3
+      - freezegun==1.5.5

@@ -1,0 +1,668 @@
+# Workflow Engine Architecture
+
+Status: target architecture
+Owner: Artem
+Last updated: 2026-06-08
+
+Current Anki/workflow acceptance criteria and validation evidence are tracked in
+`docs/anki-acceptance-criteria.md`.
+
+Related project documents:
+
+- [Workflow engine extraction discussion](/Users/artemm/PycharmProjects/TGHandyUtils/docs/_discussion/2026-06-07-workflow-engine-extraction.md)
+- [AI workflow engine README](/Users/artemm/PycharmProjects/TGHandyUtils/packages/ai_workflow_engine/README.md)
+- [Anki acceptance criteria](/Users/artemm/PycharmProjects/TGHandyUtils/docs/anki-acceptance-criteria.md)
+- [Anki implementation plan](/Users/artemm/PycharmProjects/TGHandyUtils/docs/anki-implementation-plan.md)
+- [MageQA QA orchestrator design](/Users/artemm/PycharmProjects/MageQA/docs/17-qa-orchestrator-architecture.md)
+- [MageQA agentic tester architecture](/Users/artemm/PycharmProjects/MageQA/docs/14-agentic-tester-architecture.md)
+- [GoPro workflow execution engine requirements](/Users/artemm/PycharmProjects/gopro-streaming/docs/architecture/workflow-execution-engine-requirements.md)
+- [GoPro universal profile sheet](/Users/artemm/PycharmProjects/gopro-streaming/docs/universal_event_descriptor/UNIVERSAL_PROFILE_SHEET.md)
+- [GoPro home inventory case](/Users/artemm/PycharmProjects/gopro-streaming/docs/universal_event_descriptor/HOME_INVENTORY_CASE.md)
+
+## Goal
+
+Build a small reusable workflow engine that can run goal-oriented AI pipelines in this project and
+can later be extracted into another project if it proves useful.
+
+The engine is not an Anki engine. Anki is the first product workflow using it.
+
+Scope decision (2026-06-07, Artem): build the FULL framework now — all primitives listed below —
+validate it end-to-end on Anki, then adopt the same engine in GoPro and MageQA. This supersedes any
+earlier "add machinery only when a second workflow needs it" guidance elsewhere in this doc. The
+implementation order and per-phase Anki acceptance live in
+`docs/workflow-engine-implementation-plan.md`.
+
+The framework must also fit future goal-driven workflows that are neither flashcards nor QA, for
+example building a user's calendar from available time, energy level, priorities, task pool, and
+focus projects. This is a planning/constraint workload: it uses low-level scripts and integrations,
+but only as typed capabilities driven by a higher-level goal and evaluator.
+
+## Core Concept
+
+```text
+WorkflowGoal / WorkflowProfile
+  -> Supervisor
+       -> chooses instruments
+       -> runs typed workflow nodes or subgraphs
+       -> evaluates output against the goal
+       -> loops, retries, retraces, or falls back within policy
+  -> product delivery
+```
+
+## Engine Soul
+
+The engine is a goal-driven capability runtime.
+
+It is not:
+
+- an Anki-specific graph with reusable-looking names;
+- a no-code workflow builder;
+- a menu of scripts;
+- an interface-only package where each product has to reimplement the real runtime;
+- an unrestricted autonomous agent that can invent tools, side effects, and retry loops at runtime.
+
+It should feel like a small framework for agentic product workflows:
+
+- a product states a goal, profile, constraints, evidence, and delivery target;
+- the supervisor sees the goal plus a registry of typed capabilities it is allowed to use;
+- capabilities may be LLM calls, deterministic Python tools, media generators, voice generators,
+  browser/CLI agents, subworkflows, human-clarification steps, or external adapters;
+- every capability has a schema, description, side-effect policy, budget policy, timeout policy,
+  trace policy, and quality contract;
+- the evaluator can accept, repair, retry one capability, retrace to a prior step, fall back, fail,
+  or ask the user, within bounded policy;
+- artifacts, cost, prompt/cache metadata, branches, rejected outputs, and fallback reasons are
+  visible in trace instead of being hidden inside product code.
+
+Low-level scripts and tools are explicitly allowed. They become architecture only after they are
+registered as capabilities with typed inputs/outputs, limits, trace, and failure semantics. A Python
+script that optimizes a calendar, a browser agent that audits a page, a frame sampler that inspects
+video, and an image generator that creates a flashcard visual are the same class of runtime object:
+a capability the supervisor may select and the evaluator may judge.
+
+## Completeness Bar
+
+The engine must ship reusable implementation, not just abstractions.
+
+Product code should not need to reimplement:
+
+- capability registration and invocation;
+- supervisor planning over capabilities;
+- structured LLM calls and JSON repair;
+- model/profile selection;
+- prompt loading and static/dynamic prompt separation;
+- evaluator decisions, retrace, retry, fallback, and fail modes;
+- loop and recursion limits;
+- usage, budget, cache, and cost tracing;
+- artifact ownership and cleanup;
+- media/voice provider seams and default adapters;
+- external process/agent wrappers;
+- fan-out/gather execution;
+- scheduling policies;
+- human clarification hooks;
+- trace sinks and replayable run records.
+
+Product code still owns domain facts: schemas, product prompts, rubrics, adapters for domain systems,
+delivery, and product-specific state. If a second project must copy more than product-pack code to
+use the engine, that is a framework gap, not acceptable "client implementation."
+
+The reusable engine should own product-agnostic execution primitives:
+
+- workflow goal and constraints;
+- workflow profile and compiled runtime plan;
+- trigger/evidence strategy and evidence references;
+- task/session state lifecycle;
+- instrument registry;
+- model profile selection;
+- node execution wrappers;
+- capability/tool allow-list and side-effect policy;
+- structured output parsing and retry policy;
+- scheduling/concurrency policy;
+- explicit fail mode;
+- external/domain adapter boundary;
+- human clarification capability;
+- trace events and artifact ownership;
+- bounded loop/retrace primitives and shared policy hooks;
+- checkpointing/replay seams where a product needs restart recovery.
+
+Product workflows own:
+
+- product-specific state models;
+- product-specific prompts and schemas;
+- product-specific validators;
+- product-specific branch, retry, retrace, and fallback decisions;
+- product-specific rendering and side effects;
+- product-specific delivery.
+
+This boundary is not an excuse to keep 90% of implementation client-side. Product workflows describe
+what a capability means in their domain; the engine runs, traces, limits, retries, evaluates, and
+connects capabilities under a shared control model.
+
+Current implementation note: Anki still owns its domain quality rules and concrete graph topology
+inside `AnkiGenerationGraph`; those rules should stay product-specific. The shared engine now
+provides the generic execution pieces around that domain graph: `WorkflowRunner`,
+`WorkflowSupervisor`, `WorkflowInstrumentRegistry`, `StructuredLLMNode`, workflow trace/usage/artifact
+models, `CapabilitySpec`/`CapabilityRuntime`, `WorkflowProfile`/`RuntimePlanCompiler`,
+`EvidenceRef`, `EvaluationDecision`, retry/retrace policy models, `TraceSink` implementations,
+`ExternalProcessCapability`, bounded fan-out, `WorkflowScheduler`, and a bounded
+`WorkflowLoopController`. Fake-backed site-audit and inventory pilots now exercise MageQA/GoPro-
+shaped runtime pressure, but real MageQA/GoPro adapters still need to wire in before open-ended
+agency and streaming/durable lifetime can be called production-ready.
+
+## Library Boundary
+
+Start as an internal package, not a published generic library.
+
+Recommended package shape:
+
+```text
+packages/ai_workflow_engine/
+  pyproject.toml
+  ai_workflow_engine/
+    models.py
+    engine/
+      supervisor.py
+      instruments.py
+      llm_node.py
+      runner.py
+      artifacts.py
+    usage.py
+    prompt_loader.py
+    image_generation.py
+    image_models.py
+    voice_generation.py
+```
+
+Current internal package:
+
+```text
+packages/ai_workflow_engine/
+```
+
+This package no longer imports TGHandyUtils app config interfaces, app logging helpers, app
+exception classes, or the app LLM factory. Product code must inject concrete LLM clients or an
+`llm_factory` into `StructuredLLMNode`; TGHandyUtils Anki planners inject `services.llm_factory`
+from outside the engine. Prompt loading supports a custom prompt root through `PromptTemplateLoader`
+so another project can keep its own prompt directory.
+
+External-git rule: only move this internal package into a separate git repository after at least two
+real product workflows use it.
+For example:
+
+- Anki card generation;
+- home inventory video/image processing;
+- calendar building from availability, energy, priorities, tasks, and focus projects;
+- task/reminder enrichment or another non-Anki workflow.
+
+Before that point, keep the boundary clean but avoid a generic framework that hides product logic.
+
+## Framework Decision
+
+Use LangGraph as the explicit graph-control backend for product workflows that need conditional
+edges, cycles, retrace/fallback, interrupts, or checkpointing.
+
+Why:
+
+- LangGraph is explicitly a low-level orchestration framework for long-running, stateful agents and
+  workflows.
+- It supports routing, orchestrator-worker patterns, evaluator-optimizer loops, persistence,
+  checkpointing, interrupts, and time travel.
+- It does not force a single prompt or state shape.
+- Product workflows can remain typed and explicit.
+
+Use LangChain only for model/tool integration where useful.
+
+Do not replace the engine with Pydantic AI now. Pydantic AI is attractive for reusable typed agents,
+tools, output validation, model profiles, and agent-style apps, but the current need is explicit
+graph flow control. It can be used later inside nodes or reconsidered if workflows become mostly
+agent/tool loops rather than explicit graphs.
+
+External frameworks:
+
+- LangGraph: best fit for explicit graph customization, routing, orchestrator-worker patterns,
+  evaluator-optimizer loops, persistence, and retrace/time-travel style debugging.
+- LangChain agents: useful for common tool-calling loops, but too implicit for product workflows
+  that need exact branch/fallback behavior.
+- Pydantic AI: useful for typed agents/tools/output validation and may be good inside individual
+  nodes; not the primary graph engine for this project yet.
+- AutoGen/Crew-style multi-agent systems: useful for collaborative agent chat patterns, but too
+  broad for deterministic product pipelines unless a later use case needs multi-agent debate.
+
+This does not mean every reusable engine primitive imports LangGraph. The package-level capability
+runtime, scheduler, evaluator, trace, budget, and adapter primitives stay plain Python and
+framework-neutral; product graphs such as Anki may use LangGraph and pass runtime controls such as
+`recursion_limit` through `WorkflowRunner`. The engine is not a replacement for LangGraph and not a
+no-code workflow product.
+
+## Key Engine Objects
+
+```python
+class WorkflowGoal(BaseModel):
+    workflow_type: str
+    objective: str
+    constraints: dict[str, Any]
+    delivery_target: str | None
+    user_id: int | None
+    metadata: dict[str, Any]
+    goal_id: str
+
+class WorkflowInstrumentSpec(BaseModel):
+    name: str
+    kind: Literal["workflow", "llm", "tool", "deterministic"]
+    description: str
+    input_schema: type[BaseModel] | None
+    output_schema: type[BaseModel] | None
+
+class ModelProfile(BaseModel):
+    name: str
+    model: str
+    temperature: float
+    timeout_s: int | None
+    max_retries: int
+```
+
+Model profiles are required because different nodes may need different models:
+
+- current mini model for routing, scenario planning, card descriptors, and quality checks by
+  default;
+- stronger model for rare complex supervisor decisions;
+- image model/provider for visual generation;
+- optional future nano profile for high-volume gates only after evals.
+
+Current OpenAI text profile guidance, checked on 2026-06-04:
+
+- use `gpt-5.4-mini` for decision gates, smoke tests, routine scenario planning, card rendering,
+  and quality evaluation by default;
+- treat `gpt-5.4-nano` as a later explicit optimization only after evals show routing and card
+  quality still hold;
+- use `gpt-5.5` only for complex supervisor decisions where higher cost is justified;
+- avoid adding `gpt-4o-mini` defaults in new workflow-engine code. It is legacy for this
+  architecture.
+
+Cost visibility and generated-image rollout:
+
+- the local usage meter includes official current prices for `gpt-5.4-mini`/snapshot aliases,
+  `gpt-5.4`, `gpt-5.4-nano`, `gpt-5.5`, `gpt-image-2`,
+  `gemini-2.5-flash-image`, `gemini-3.1-flash-image`, and `gemini-3-pro-image`;
+- cached input tokens are charged at cached-input rates when provider usage metadata reports them;
+- for Gemini image models, cached token counts are displayed if returned, but current image-pricing
+  docs do not publish cached-image discounts, so estimates price cached image input the same as
+  normal input unless `WORKFLOW_MODEL_PRICE_OVERRIDES_JSON` overrides it;
+- usage replies include cached input tokens when present, so cache behavior is visible during live
+  Telegram testing;
+- `WORKFLOW_SHOW_USAGE_IN_REPLY=true` surfaces compact usage and estimated USD in Telegram replies;
+- `ANKI_IMAGE_GENERATION_ENABLED=true` enables explicit generated-image requests such as `[i gen]`;
+- `ANKI_AUTO_IMAGE_GENERATION_ENABLED=false` keeps AI-decided generated images opt-in, even when the
+  type planner thinks a visual card would be useful.
+- `ANKI_IMAGE_PROVIDER=openai|gemini|comparison` selects the image backend without changing graph
+  topology. OpenAI defaults to `gpt-image-2`; Gemini defaults to `gemini-3.1-flash-image`
+  (Nano Banana 2). Use `ANKI_GEMINI_IMAGE_MODEL=gemini-2.5-flash-image` for cheaper Gemini
+  comparisons.
+- `AnkiImagePromptPolicy` is the product-level image prompt seam. It keeps the shared PPLA
+  visual identity and base learning rules stable first for cache affinity, then appends
+  provider-specific OpenAI/Gemini/comparison guidance before the card-specific brief.
+- The image prompt policy also adds dynamic factuality guards, including a no-invented-numbers
+  guard when the source/scenario does not provide numeric values.
+- Gemini reference images are sent as inline image parts. Gemini response-format controls
+  (`aspectRatio`/`imageSize`) are disabled by default via `ANKI_GEMINI_RESPONSE_FORMAT_ENABLED=false`
+  because live REST validation can reject documented values during model/API rollout; enable it only
+  for measured provider experiments.
+- comparison mode uses `ANKI_IMAGE_COMPARE_PROVIDERS=openai,gemini` and returns only the configured
+  primary provider image to the Anki card. Alternative provider outputs are saved for Telegram
+  preview/log comparison, not embedded into the note. It intentionally requires
+  `WORKFLOW_MAX_IMAGE_CALLS_PER_RUN` high enough for every compared provider.
+- `ANKI_VOICE_GENERATION_ENABLED=true` enables explicit language-card audio requests such as
+  `[i langvoice ukr->pt gen] ...`. The graph calls a provider-neutral voice tool seam, currently
+  backed by ElevenLabs. Voice calls are capped separately by `WORKFLOW_MAX_VOICE_CALLS_PER_RUN`
+  and are recorded as tool usage with provider/model/voice ID/character count. Because ElevenLabs
+  effective USD cost depends on the account plan, set `ANKI_ELEVENLABS_USD_PER_1K_CHARS` only when
+  you want local USD estimates for audio.
+
+Prompt caching rule:
+
+- every new LLM node must put stable instructions, examples, style identity, tool policy, and JSON
+  schema in the first/static message;
+- dynamic material must stay in later user messages: user text, OCR, uploaded-image analysis,
+  `[i ...]` guidance, selected facts, card plan, rendered cards, and tool results;
+- do not append reusable schemas after dynamic source content; that defeats prefix-cache reuse;
+- prompt text belongs in repository-owned files under `prompts/`, loaded through
+  `ai_workflow_engine.prompt_loader`. Use LangChain f-string-style `{variable}` placeholders by
+  default; introduce Jinja/Mustache-style template logic only when a prompt genuinely needs loops,
+  conditionals, or nested rendering;
+- keep the core split provider-agnostic through LangChain `SystemMessage`/`HumanMessage` ordering.
+  Provider-specific knobs such as OpenAI `prompt_cache_key` or Claude cache-control blocks belong in
+  adapter/model-profile code, not in product prompts;
+- OpenAI chat calls may use `OPENAI_PROMPT_CACHE_KEY_PREFIX` and
+  `OPENAI_PROMPT_CACHE_RETENTION` (`in_memory` or `24h`) to pass cache-affinity hints from the
+  OpenAI adapter. Leave the prefix empty to disable this hint without changing prompts;
+- image-generation prompts should also keep reusable visual identity/style instructions before the
+  per-card facts. Reused style/source reference images should be stable inputs when possible, but
+  generated image output remains separately billed.
+
+Current implementation note:
+
+- the reusable `ModelProfile` class/registry exists in the engine package and is loaded from
+  YAML-backed workflow config;
+- `StructuredLLMNode` already takes injected LLM clients/factories, so provider construction is not
+  hardcoded into the engine;
+- the Anki branch already has direct config-level profiles:
+  - `ANKI_DECISION_MODEL`;
+  - `ANKI_SCENARIO_MODEL`;
+  - `ANKI_RENDER_MODEL`;
+  - `ANKI_QUALITY_MODEL`;
+  - `ANKI_COMPLEX_SUPERVISOR_MODEL`;
+  - `ANKI_IMAGE_MODEL`.
+  - `ANKI_IMAGE_PROVIDER`;
+  - `ANKI_OPENAI_IMAGE_MODEL`;
+- `ANKI_GEMINI_IMAGE_MODEL`.
+- `ANKI_VOICE_PROVIDER`;
+- `ANKI_ELEVENLABS_MODEL`.
+
+Per the 2026-06-07 scope decision (build the full framework now, validate on Anki, then
+GoPro/MageQA), the reusable `ModelProfile` registry is framework-owned; `config.py` now consumes the
+YAML/profile bundle instead of owning non-secret model defaults directly.
+
+Sources:
+
+- <https://developers.openai.com/api/docs/models>
+- <https://developers.openai.com/api/docs/pricing>
+
+## Guidance Propagation
+
+User guidance is not consumed by one early parser.
+
+`[i ...]` and free-form guidance become structured constraints/preferences on the goal and product
+state, then flow into later prompts where relevant.
+
+Example:
+
+```text
+[i visual funny] explain Bernoulli principle
+```
+
+Expected propagation:
+
+- card planner sees visual/funny as constraints/preferences;
+- visual scenario planner receives `style_preference="funny"`;
+- image prompt includes the humor/style request while preserving factual constraints;
+- evaluator checks that humor did not damage study quality or invent facts.
+
+## Closed Loop
+
+Every serious workflow should be able to complete this loop:
+
+```text
+plan
+  -> scenario
+  -> tool/render
+  -> evaluate
+  -> accept | repair | retry | retrace | fallback
+```
+
+The loop must be bounded. Every retry/retrace path has a max attempt count and records why it ran.
+
+## Scenario And Renderer Boundary
+
+Current Anki rule:
+
+- card-set planning chooses one card family for the input: `basic`, `cloze`, or `visual_basic`;
+- each family has its own scenario planner because the useful planning questions differ by type;
+- renderers run after scenario planning and convert the planned scenario into Anki front/back/media
+  fields;
+- visual rendering is deterministic: the visual scenario must already contain exact
+  `question_text`, exact `answer_text`, layout, and image prompt. The renderer only attaches the
+  generated image to the front or back according to layout;
+- text and cloze rendering are branch-specific wrappers over one shared Anki-card LLM renderer.
+  This avoids duplicating Anki JSON/repair rules while the scenario prompts carry most type-specific
+  behavior.
+
+Card-count policy is coverage-first:
+
+- the planner counts independent study objectives, not source bullets;
+- sibling items under one heading/category are treated as one set when that is the study objective;
+- one grouped card is acceptable only when the answer covers the complete planned set or grouped
+  categories;
+- if one answer is unreadable, split into 2-3 logical groups rather than one card per item by
+  default;
+- quality evaluation rejects one-card outputs that silently sample one item from a planned set.
+
+Pros of the current split:
+
+- keeps the expensive/generative decision work in the scenario stage where branch-specific context is
+  clearest;
+- keeps visual cards from being rewritten by a generic text-card renderer after image planning;
+- keeps Anki packaging/front-back media placement deterministic and easy to test;
+- avoids three nearly identical renderer prompts for basic/cloze while card quality is still driven
+  by per-type scenario planners.
+
+Risks to watch:
+
+- shared text/cloze renderer can still drift from the scenario guide, especially for cloze deletion
+  quality;
+- if basic and cloze renderer behavior diverges more, split the final renderer prompts too instead of
+  adding conditional complexity to one prompt;
+- front/back leakage rules must be side-aware: front/question content must not reveal the answer,
+  but a back-side generated image should explain or reveal the answer relationship as a mnemonic.
+
+Cost guard rule:
+
+- all paid provider calls must go through metered app wrappers, not raw product-code API calls;
+- workflow runs carry a local `WorkflowUsageSummary` with per-call model, node, attempt, tokens,
+  request id, image call count, and estimated USD when pricing is known;
+- paid tool nodes need an explicit per-run cap before they are wired into production;
+- text and image call counts have configurable per-run caps;
+- USD caps are enforced locally when estimates are available; LangSmith is optional observability,
+  not the runtime budget guard;
+- image generation defaults to one generation attempt per run in the Anki workflow;
+- model-based quality repair defaults to one repair/retry loop per run;
+- fallback cards skip an extra LLM quality pass by default after deterministic validation;
+- budget exhaustion routes to fallback or failure, never another paid retry.
+
+## What Should Stay Product-Specific
+
+Do not make the engine understand Anki fields, video inventory schemas, Telegram reply formats, or
+OpenAI image prompts.
+
+For the home-inventory example, the same engine could run:
+
+```text
+WorkflowGoal("build searchable home inventory from video")
+  -> source analyzer
+  -> frame sampler
+  -> object/location extractor
+  -> room/container relation planner
+  -> deduplicator
+  -> quality evaluator
+  -> searchable index writer
+```
+
+The reusable part is orchestration, model profiles, retries, tracing, and artifact handling. The
+inventory schemas and prompts stay in that product workflow.
+
+For the calendar-builder example, the same engine could run:
+
+```text
+WorkflowGoal("build a realistic calendar for the next week")
+  -> availability reader
+  -> task/focus-project reader
+  -> energy and priority interpreter
+  -> schedule planner
+  -> deterministic constraint optimizer
+  -> conflict and overload evaluator
+  -> repair/retrace if overbooked or priority coverage is poor
+  -> calendar write or user-review adapter
+```
+
+The reusable part is still the supervisor, capability runtime, structured LLM wrappers, model
+profiles, retrace policy, trace, budgets, artifact/state lifecycle, and human clarification. The
+calendar product owns task schemas, calendar APIs, user preference models, scheduling rubrics, and
+final write/review UX.
+
+For MageQA, the same engine should drive a supervisor that can choose browser agents, deterministic
+test scripts, screenshot analysis, performance checks, accessibility checks, and report generation.
+For GoPro, it should drive evidence strategies, frame/video processing, drop-stale scheduling,
+home-inventory extraction, and index writing. These projects differ in tools and schemas, not in the
+runtime pattern.
+
+## Degradation Prevention Gates
+
+These are architectural gates, not optional implementation hygiene:
+
+- no unregistered tool or provider call inside a workflow;
+- no raw provider calls that bypass usage, budget, timeout, retry, and trace wrappers;
+- no silent fallback: every downgrade records the failed step, reason, criticism, and selected fail
+  mode;
+- no unbounded agent loops, fan-out, retries, retrace, or recursive subworkflows;
+- no product-specific field names in core engine APIs;
+- no product media bytes stored in shared state when an `EvidenceRef`/artifact reference is enough;
+- no fallback that changes the user-visible meaning without an evaluator decision;
+- no branch that spends money without per-run caps and visible cost accounting;
+- no prompt drift that puts dynamic user content before reusable static instructions when caching is
+  possible;
+- no "works on Anki" claim for open-ended agentic control or streaming/durable lifetime until
+  MageQA/GoPro exercise those axes.
+- no obsolete behavior, data shape, config alias, or compatibility bridge preserved during
+  architecture work unless Artem explicitly approves it.
+
+The implementation plan converts these into tests and acceptance gates.
+
+## Non-Goals
+
+- No no-code n8n clone.
+- No generic prompt that can solve every workflow.
+- No thin interface package that pushes the real engine into client applications.
+- No script menu without goal, evaluator, trace, and budget control.
+- No cross-project publishing before a second workflow proves the boundary.
+- No product-level restart/recovery guarantee until retries, user review, or long-running tools
+  prove it is needed and a product maps engine checkpoints back to domain state.
+- No mixing several unrelated product-specific state schemas into the engine.
+
+## Capability Coverage Model — how Anki informs and validates the framework
+
+Why this section exists: a reviewer (including future-me after context loss) reading the flat
+primitive list above can wrongly conclude "Anki only exercises half of these primitives, so the
+framework has no concrete source material." That conclusion is false and was reached once during
+review. Every target engine primitive below is a **generalization of a concrete behavior that already
+exists in the Anki flow**.
+
+Be precise about the claim: before Phase 1 defines the generic contracts, Anki is the concrete
+source workload and regression gate. After the primitive is implemented and wired into the Anki
+flow, Anki validates that primitive's Anki-shaped contract/data-model instance. Anki structurally
+fails to stress only **two execution axes** — everything else should be proven by toy tests first and
+then by the Anki migration. Keep this table updated when a primitive is added.
+
+| Engine primitive | Concrete Anki instance | What Anki validates | Stress mode Anki can't reach → validator |
+| --- | --- | --- | --- |
+| Capability runtime / registry | every planner/renderer/generator/evaluator | typed invoke, schema, trace, usage | open selection among many tools → MageQA |
+| Supervisor / decision gate | card-set planner picks basic/cloze/visual | LLM decision gate over a **closed** set | self-directed action loop over an open set → MageQA |
+| `WorkflowProfile` → `RuntimePlan` | `[i ...]` + content_mode → constraints | profile parse → structured constraints → routing; unknown keys dropped(=warn) | rich multi-strategy profiles → GoPro |
+| External side-effecting capability (timeout/cost/artifact/salvage/cleanup) | image-gen + voice-gen calls | bounded external call, budget, artifact capture, failure routing, cleanup | autonomous agent loop + raw process I/O → MageQA |
+| Fan-out / gather | multiple cards / could gen multiple images | child set, per-child trace/budget, failure isolation (serial) | true concurrency race (1-of-N timeout) → MageQA (or parallel image-gen) |
+| Evaluator / retry / retrace / fallback | quality evaluator → repair/retry-scenario/retry-plan/fallback | full accept/repair/retry/retrace/fallback under caps | — (fully validated on Anki) |
+| `EvidenceRef` / roles | uploaded image bytes + OCR/summary in `ContentSource` | evidence carried + roled through stages | refs-not-bytes at scale/privacy → GoPro |
+| Human clarification (`ask_user`) | 5s auto-mode correction window (guess → buttons → user picks → continue) | emit clarification, await human answer, continue on choice | durable pause/resume across a long gap → GoPro/checkpointing |
+| `FailMode` (fail_open/closed) | text fallback on degradation | policy-routed failure | fail-closed "block, don't degrade" safety gate → MageQA/GoPro |
+| Trace / budget / model profiles | per-node trace, `WorkflowUsageSummary`, per-stage models | tracing, metering, budget caps, model selection | — (validated on Anki) |
+
+The **two irreducible axes** Anki cannot stress (because card-gen is a closed-decision, single-shot
+domain — this is "Anki's domain doesn't need it", not "the framework can't be tested"):
+
+1. **Open-ended agentic control** — an agent choosing its own next action from an open/uncertain
+   space and looping on it. Anki's decisions are closed sets; its loops are fixed graph cycles.
+   Validated by **MageQA** (autonomous browser agents).
+2. **Long-lived / streaming / resumable run lifetime** — live drop-stale/single-flight-cancel under a
+   continuous stream, durable suspend/resume across long gaps, multi-turn evolving session state.
+   Anki runs are ephemeral and single-shot. Validated by **GoPro** (live camera hot path).
+
+Human-in-the-loop is not absent from the product: the 5s correction window is now the concrete source
+behavior for `ask_user`, using `HumanClarificationCapability` with Telegram as the product-owned
+channel. This proves short correction-window clarification; durable pause/resume across long gaps
+still belongs to the GoPro/checkpointing pressure test.
+
+Workload complementarity (none redundant): **Anki** proves the typed pipeline core after migration;
+**MageQA** proves open-ended agency; **GoPro** proves continuity; the **calendar-builder toy
+workload** proves multi-constraint planning/optimization without media or browser automation. The
+two Anki-unstressable axes map onto MageQA and GoPro, while calendar-building prevents the engine
+from overfitting to card generation and media-heavy workflows.
+
+Honest residual risk: the agentic-autonomy and streaming/durable-lifetime code is built and
+toy-tested, including fake-backed site-audit and inventory pilots, but is not battle-tested until
+MageQA/GoPro wire in real browser/camera/domain adapters (Phases 7–9). Do not call those two axes
+production-ready off package pilots alone.
+
+## Current Fit Audit
+
+Status checked on 2026-06-08 (coverage model + scope decision added 2026-06-07).
+
+| Concept | Current fit | Remaining limit |
+| --- | --- | --- |
+| Reusable engine, not Anki-only code | `packages/ai_workflow_engine` is an installable internal package with `models`, `engine`, `usage`, `prompt_loader`, capability runtime, scheduler, loop controller, generic evaluator controller, external process wrapper, external/domain write adapter, uncertainty result envelope, and media/voice seams. It avoids TGHandyUtils app config/logging/exception/LLM-factory imports. Public engine names/model fields are guarded against product-specific terms; Telegram correlation IDs now live in product-supplied metadata instead of shared fields. Anki schemas/prompts/rendering live outside the package. Fake-backed site-audit and inventory pilots prove the package can express non-Anki workloads. | The engine is still internal to this repo, not a separate git dependency. External extraction waits for real second-product adoption or an explicit user decision. |
+| Master/supervisor style orchestration | `WorkflowSupervisor`, `WorkflowDecisionPlanner`, `WorkflowInstrumentRegistry`, and `WorkflowLoopController` can choose among registered instruments/capabilities and run bounded multi-step loops. Anki graph nodes invoke through `CapabilityRuntime` with a compiled `RuntimePlan` capability inventory. | Telegram still uses command/settings/auto routing directly. Anki graph topology is product-authored rather than dynamically assembled by an autonomous supervisor, which is intentional for the first production workflow. |
+| AI decision gates inside product flow | Anki has an AI card-set planner that chooses `basic`, `cloze`, or `visual_basic`, image policy, count, source facts, and fallback. | If the planner fails, the graph uses a conservative deterministic fallback. |
+| Per-type scenario preparation | Text, cloze, and visual branches have separate scenario planners with branch-specific prompts and schemas. | Mixed card families from one input are intentionally out of scope for the first workflow. |
+| Flexible but controlled branching | LangGraph conditional edges route by card kind, visual generation need, validation, quality decision, card-plan retry, repair, scenario retry, and fallback. `WorkflowRunner` forwards explicit graph runtime config, detects graph recursion exhaustion, and delegates to workflow-owned fallback policy. Anki sets a recursion limit sized from retry/media caps and has an adversarial tiny-limit test proving fallback without leaked `GraphRecursionError`. | The graph shape is explicit and typed; it is not dynamically assembled by an autonomous agent. Second-product adapter battle testing remains separate from the current package/Anki proof. |
+| Bounded retry and repair | Structured LLM nodes retry invalid JSON once; the generic `EvaluationController` can retry one failed capability with criticism, retrace to an earlier capability, route to fallback/repair, ask the user, or fail under explicit caps. Anki quality rejection can retry the card-set planner, retry per-type scenario planning, repair rendering, or fall back under a run cap; image generation has run caps. Rejections emit generic `EvaluationDecision` metadata. | Product-level restart recovery is deferred until long-running tools or restart loss become measured problems. |
+| Prompt-cache-aware LLM calls | Structured nodes, the Anki renderer, classifier, task parser, timezone parser, and image analyzer use stable system/static prefixes followed by dynamic user/source tails. Usage summaries expose cached input tokens when providers return them. | OpenAI chat cache-affinity hints are enabled through the provider adapter when `OPENAI_PROMPT_CACHE_KEY_PREFIX` is set; retention remains optional. Add provider-specific controls only through adapters after cross-provider tests. |
+| Generated image support | Switchable image provider seam exists, generated image cards can be packaged and previewed, and style/source references are supported for OpenAI and Gemini image models. | Explicit `[i gen]` image generation is enabled by default; AI-chosen automatic generation remains opt-in. Broad live visual quality eval remains manual/API-backed, not a full golden-set benchmark. |
+| Uploaded image handling | Uploaded image bytes are preserved as source assets; planner can reuse, ignore, or use them as references. | Image understanding happens upstream before `ContentSource`; the graph does not independently call a vision analysis step if upstream analysis is missing. |
+| Cost safety | Image generation and quality repairs are capped; fallback avoids paid retry loops by default; `./test.sh integration` is fail-closed unless `ALLOW_PAID_TESTS=1` is explicitly set. | No per-user/day budget ledger yet. Add only if usage volume requires it. |
+| Persistence/restart recovery | Generated local artifacts are tracked and cleaned on abandoned branches; engine checkpoint stores exist for loop progress. | Product-level restart recovery is deferred until long-running tools or restart loss become measured problems. |
+
+Conclusion: the current implementation is ready as the current **package + Anki validation
+milestone**:
+capability/runtime/profile/evidence/evaluator-controller/trace/external/fan-out/scheduler/supervisor-loop
+primitives exist in the reusable package and are toy-tested; fake-backed site-audit and inventory
+pilots cover MageQA/GoPro-shaped pressure; Anki graph nodes run through the generic
+`CapabilityRuntime` with a compiled `RuntimePlan`; and Telegram auto-mode clarification uses
+`HumanClarificationCapability`. The package can be handed to MageQA/GoPro for adapter binding.
+Two axes — open-ended agentic control and streaming/durable run lifetime (see the Capability
+Coverage Model above) — remain downstream adoption risks until MageQA and GoPro wire real
+browser/camera/domain adapters. Do not describe those two axes as production-ready before that
+second-product evidence exists.
+
+Extraction readiness test coverage:
+
+- `tests/unit/test_workflow_engine.py::test_engine_public_contract_has_no_product_specific_names`
+  proves public exports and shared model fields stay product-neutral.
+- `tests/unit/test_workflow_engine.py::test_workflow_runner_forwards_optional_graph_config` and
+  `tests/unit/test_anki_generation_graph.py::test_graph_invokes_runner_with_explicit_recursion_limit`
+  prove graph runtime controls can be passed explicitly and Anki does not rely on LangGraph's
+  default recursion cap.
+- `tests/unit/test_workflow_engine.py::test_workflow_runner_routes_recursion_exhaustion_to_policy_fallback`
+  and
+  `tests/unit/test_anki_generation_graph.py::test_graph_recursion_exhaustion_uses_text_fallback_instead_of_leaking_error`
+  prove graph recursion exhaustion routes through a workflow-owned fallback instead of leaking
+  `GraphRecursionError`.
+- `tests/unit/test_workflow_engine.py::test_engine_runs_toy_non_anki_workflow_through_supervisor_and_runner`
+  proves the supervisor/runner can execute a non-Anki workflow.
+- `tests/unit/test_workflow_engine.py::test_workflow_loop_controller_runs_supervisor_style_steps_to_completion`
+  proves the generic loop controller can drive multiple capability decisions to completion.
+- `tests/unit/test_workflow_engine.py::test_workflow_loop_controller_fails_closed_on_step_limit`
+  proves supervisor loops are bounded and fail closed when no terminal decision appears.
+- `tests/unit/test_workflow_engine.py::test_workflow_supervisor_selects_different_instruments_for_different_goals`
+  proves the supervisor can select different instruments for different goals instead of acting as a
+  fixed linear runner.
+- `tests/unit/test_workflow_engine.py::test_evaluation_controller_retries_one_capability_with_criticism_then_accepts`,
+  `test_evaluation_controller_retraces_to_earlier_capability_with_criticism`, and
+  `test_evaluation_controller_falls_back_or_fails_when_policy_exhausts` prove evaluator-driven
+  retry, retrace, fallback, and cap-exhaustion behavior.
+- `tests/unit/test_workflow_engine.py::test_workflow_scheduler_modes_priority_coalesce_and_backend_caps`
+  proves scheduler mode coverage for replay priority, coalescing, live latest-only, drop-not-queue,
+  fan-out gather, and backend caps.
+- `tests/unit/test_workflow_engine.py::test_external_adapter_capability_writes_idempotently` and
+  `test_jsonl_external_write_sink_records_machine_readable_audit` prove the domain-write adapter is a
+  real idempotent capability with audit output, not just an interface.
+- `tests/unit/test_workflow_engine.py::test_structured_llm_node_requires_injected_llm_or_factory`
+  proves provider construction is not hidden inside the engine.
+- `tests/unit/test_prompt_loader.py::test_prompt_template_loader_accepts_custom_root` and
+  `test_default_prompt_loader_accepts_custom_root` prove prompt roots are project-injectable.
+
+## References
+
+- LangGraph overview: <https://docs.langchain.com/oss/python/langgraph/overview>
+- LangGraph workflows and agents: <https://docs.langchain.com/oss/python/langgraph/workflows-agents>
+- LangGraph persistence: <https://docs.langchain.com/oss/python/langgraph/persistence>
+- Pydantic AI agents: <https://pydantic.dev/docs/ai/core-concepts/agent/>
+- Pydantic AI output: <https://pydantic.dev/docs/ai/core-concepts/output/>
+- Gemini image generation: <https://ai.google.dev/gemini-api/docs/image-generation>
+- Gemini API pricing: <https://ai.google.dev/gemini-api/docs/pricing>

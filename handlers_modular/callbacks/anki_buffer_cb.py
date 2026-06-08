@@ -14,6 +14,11 @@ from services.content import anki_buffer
 logger = get_logger(__name__)
 
 
+def _export_caption(card_count: int, media_count: int, deck: str) -> str:
+    media_note = f" Includes {media_count} media file(s)." if media_count else ""
+    return f"📦 Your full deck: {card_count} card(s) → import into '{deck}'.{media_note}"
+
+
 @router.callback_query(lambda c: c.data == "anki_export")
 async def anki_export(callback_query: CallbackQuery, state: FSMContext):
     """Build and send one .apkg containing the whole accumulated deck."""
@@ -31,7 +36,7 @@ async def anki_export(callback_query: CallbackQuery, state: FSMContext):
         out_path = await asyncio.to_thread(service.build_package, cards, deck, None, media)
         await callback_query.message.answer_document(
             FSInputFile(out_path, filename="deck.apkg"),
-            caption=f"📦 Your full deck: {len(cards)} card(s) → import into '{deck}'.",
+            caption=_export_caption(len(cards), len(media), deck),
         )
     except Exception as e:
         logger.error(f"Anki export failed for {user_id}: {e}")

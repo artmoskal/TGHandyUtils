@@ -7,7 +7,13 @@ import pytest
 from core.interfaces import Intent, ProcessingContext
 from models.anki import AnkiCard
 from services.content.intent_resolver import IntentResolver
-from services.content.anki_processor import AnkiProcessor
+from services.content.anki_processor import (
+    AnkiProcessor,
+    TELEGRAM_DOCUMENT_CAPTION_LIMIT,
+    TELEGRAM_TEXT_MESSAGE_LIMIT,
+    _build_delivery_messages,
+    _format_preview,
+)
 
 
 @pytest.mark.unit
@@ -110,6 +116,29 @@ async def test_anki_processor_cloze_preview_shows_hidden_span():
 
 
 @pytest.mark.unit
+def test_anki_preview_truncates_single_oversized_card():
+    preview = _format_preview(
+        [AnkiCard(question="What is in the source image?", answer="A" * 5000)],
+        budget=500,
+    )
+
+    assert len(preview) <= 500
+    assert preview.endswith("…")
+
+
+@pytest.mark.unit
+def test_anki_delivery_caption_splits_oversized_preview():
+    caption, followups = _build_delivery_messages(
+        "🃏 1 card(s) — added to your deck (1 total).\n\n",
+        [AnkiCard(question="Front", answer="Back " + "x" * 5000)],
+    )
+
+    assert len(caption) <= TELEGRAM_DOCUMENT_CAPTION_LIMIT
+    assert followups
+    assert all(len(text) <= TELEGRAM_TEXT_MESSAGE_LIMIT for text in followups)
+
+
+@pytest.mark.unit
 async def test_anki_processor_empty_content_replies_error():
     svc = Mock()
     message = Mock()
@@ -128,3 +157,14 @@ async def test_anki_processor_empty_content_replies_error():
     assert not result.success
     svc.extract_cards.assert_not_called()
     message.reply.assert_called_once()
+
+
+@pytest.mark.unit
+def test_anki_export_caption_mentions_media_count():
+    from handlers_modular.callbacks.anki_buffer_cb import _export_caption
+
+    caption = _export_caption(3, 2, "Biology::Cells")
+
+    assert "3 card(s)" in caption
+    assert "Biology::Cells" in caption
+    assert "Includes 2 media file(s)." in caption

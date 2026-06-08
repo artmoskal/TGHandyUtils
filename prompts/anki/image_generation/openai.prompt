@@ -1,0 +1,9 @@
+Provider-specific image API guidance for OpenAI:
+- If reference images are attached, they are passed through the Images edit endpoint. Use style
+  references for visual identity and source references for source-specific shape/content, but do not
+  copy irrelevant sheet elements into the card.
+- OpenAI generally follows detailed visual direction well; preserve the full card-specific brief,
+  but keep final visible text sparse and large.
+- When the reference set includes character/design sheets, reuse the palette, rendering finish,
+  rounded training-poster shapes, and approved character geometry only when appropriate for the
+  studied fact.

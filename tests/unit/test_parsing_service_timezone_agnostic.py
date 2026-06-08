@@ -57,7 +57,7 @@ class TestTimezoneAgnosticParsing:
         captured_prompt = None
         def capture_prompt(messages):
             nonlocal captured_prompt
-            captured_prompt = messages[0].content
+            captured_prompt = "\n\n".join(str(message.content) for message in messages)
             return mock_llm_response
         
         with patch.object(parsing_service.llm, 'invoke', side_effect=capture_prompt):

@@ -16,9 +16,6 @@ services:
     working_dir: /app
     command: >
       bash -c "
-        echo '=== Installing test dependencies ===' &&
-        mamba install -y pytest pytest-asyncio pytest-mock pytest-cov coverage -c conda-forge &&
-        pip install aioresponses factory-boy python-dotenv &&
         echo '=== Running integration tests ===' &&
         python -m pytest ${TEST_PATH:-tests/integration/} ${PYTEST_ARGS:--v} --tb=short
       "

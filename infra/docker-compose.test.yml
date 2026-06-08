@@ -8,7 +8,7 @@ services:
     env_file: ../.env
     environment:
       # Python path for imports
-      - PYTHONPATH=/app
+      - PYTHONPATH=/app:/app/packages/ai_workflow_engine
     volumes:
       # Mount source code for development
       - ../:/app
@@ -17,11 +17,8 @@ services:
     working_dir: /app
     command: >
       bash -c "
-        echo 'Installing test dependencies...' &&
-        mamba install -y pytest pytest-asyncio pytest-mock pytest-cov coverage -c conda-forge &&
-        pip install aioresponses factory-boy &&
         echo 'Running tests...' &&
-        python -m pytest tests/ -v --log-cli-level=DEBUG --log-cli-format='%(asctime)s [%(levelname)s] %(name)s - %(message)s' --cov=services --cov=platforms --cov=database --cov=models --cov=core --cov-report=term-missing --cov-report=html:/app/test-results/htmlcov --cov-report=xml:/app/test-results/coverage.xml --junit-xml=/app/test-results/junit.xml
+        python -m pytest tests/ -v --log-cli-level=DEBUG --log-cli-format='%(asctime)s [%(levelname)s] %(name)s - %(message)s' --cov=services --cov=ai_workflow_engine --cov=platforms --cov=database --cov=models --cov=core --cov-report=term-missing --cov-report=html:/app/test-results/htmlcov --cov-report=xml:/app/test-results/coverage.xml --junit-xml=/app/test-results/junit.xml
       "
     networks:
       - test-network

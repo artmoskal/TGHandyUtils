@@ -1,0 +1,11 @@
+Available capabilities:
+- uploaded_image_count: {uploaded_image_count}
+- can_generate_images: {can_generate_images}
+- initial_uploaded_image_role: {image_role}
+- initial_uploaded_image_rationale: {image_rationale}
+
+Directive constraints:
+{directive_summary}
+
+Source material:
+{source_material}

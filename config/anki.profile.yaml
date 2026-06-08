@@ -1,0 +1,99 @@
+workflow:
+  profile_id: anki.default
+  workflow_type: anki_generation
+  fail_mode: fallback
+  requested_capabilities:
+    - source_package
+    - card_type_gate
+    - scenario_planner
+    - renderer
+    - quality_evaluator
+    - media_generator
+  constraints:
+    card_count_policy: prefer_fewer_cards
+    image_policy: visual_when_memorable_and_useful
+    humor_policy: witty_memorable_without_distorting_facts
+  scheduling:
+    mode: run_immediately
+    max_queue_size: 1
+  limits:
+    max_steps: 32
+    max_retries: 1
+    max_retrace: 1
+    max_parallel_children: 4
+    max_estimated_usd: 0
+
+models:
+  anki_card:
+    provider: openai
+    model: gpt-5.4-mini
+    temperature: 0
+    max_retries: 1
+  anki_decision:
+    provider: openai
+    model: gpt-5.4-mini
+    temperature: 0
+    max_retries: 1
+  anki_scenario:
+    provider: openai
+    model: gpt-5.4-mini
+    temperature: 0
+    max_retries: 1
+  anki_render:
+    provider: openai
+    model: gpt-5.4-mini
+    temperature: 0
+    max_retries: 1
+  anki_quality:
+    provider: openai
+    model: gpt-5.4-mini
+    temperature: 0
+    max_retries: 1
+  anki_complex_supervisor:
+    provider: openai
+    model: gpt-5.5
+    temperature: 0
+    max_retries: 1
+  anki_openai_image:
+    provider: openai
+    model: gpt-image-2
+    max_retries: 1
+  anki_stable_image:
+    provider: openai
+    model: gpt-image-2-2026-04-21
+    max_retries: 1
+  anki_gemini_image:
+    provider: gemini
+    model: gemini-3.1-flash-image
+    max_retries: 1
+  anki_elevenlabs_voice:
+    provider: elevenlabs
+    model: eleven_multilingual_v2
+    max_retries: 1
+
+settings:
+  anki_quality_evaluation_enabled: true
+  anki_quality_inspect_images: true
+  anki_evaluate_fallback_cards: false
+  anki_max_quality_repairs_per_run: 1
+  anki_max_image_generations_per_run: 1
+  anki_image_generation_enabled: true
+  anki_auto_image_generation_enabled: false
+  anki_image_provider: openai
+  anki_image_compare_providers: ""
+  anki_image_comparison_primary_provider: ""
+  anki_gemini_response_format_enabled: false
+  anki_image_size: 1536x1024
+  anki_image_quality: low
+  anki_image_output_format: png
+  anki_gemini_image_size: ""
+  anki_image_provider_timeout_seconds: 120
+  anki_style_character_reference_image: assets/anki/ppla-character-reference-v3.png
+  anki_style_design_reference_image: assets/anki/ppla-design-reference-v2.png
+  anki_style_reference_version: ppla-split-v3
+  anki_voice_generation_enabled: true
+  anki_voice_provider: elevenlabs
+  anki_elevenlabs_voice_id: bBNhdwrIjl4fcVYiRbT2
+  anki_elevenlabs_output_format: mp3_44100_128
+  anki_elevenlabs_timeout_seconds: 60
+  anki_elevenlabs_usd_per_1k_chars: 0
