@@ -204,6 +204,9 @@ class Config(IConfig):
     WORKFLOW_MAX_VOICE_CALLS_PER_RUN: int = _int_setting('workflow_max_voice_calls_per_run', 1)
     WORKFLOW_USAGE_TRACKING_ENABLED: bool = _bool_setting('workflow_usage_tracking_enabled', True)
     WORKFLOW_SHOW_USAGE_IN_REPLY: bool = _bool_setting('workflow_show_usage_in_reply', True)
+    # When true, send a separate debug message with the engine trace (key flow, decisions, LLM
+    # outputs, timings, cost) after delivery. Configurable via WORKFLOW_DEBUG_TRACE_ENABLED.
+    WORKFLOW_DEBUG_TRACE_ENABLED: bool = _bool_setting('workflow_debug_trace_enabled', True)
     WORKFLOW_MAX_TEXT_CALLS_PER_RUN: int = _int_setting('workflow_max_text_calls_per_run', 16)
     WORKFLOW_MAX_IMAGE_CALLS_PER_RUN: int = _int_setting('workflow_max_image_calls_per_run', 1)
     # 0 disables USD budget enforcement. Token/image-call caps still apply.

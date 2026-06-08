@@ -347,3 +347,51 @@ async def test_anki_processor_caption_can_show_usage_summary():
         assert "total: 1 text, 0 image, 100 in, 0 cached, 20 out, est $0.0012" in caption
     finally:
         anki_buffer.clear(user_id)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_anki_processor_sends_engine_trace_as_plain_text_debug_message():
+    # Regression: the engine trace can carry card HTML (<br>, <img>); the debug message must send
+    # as plain text (parse_mode=None) so Telegram's entity parser does not reject it.
+    from ai_workflow_engine.models import WorkflowTraceEvent
+
+    user_id = 777010
+    anki_buffer.clear(user_id)
+    config = Config()
+    config.WORKFLOW_DEBUG_TRACE_ENABLED = True
+    service = AnkiCardService(config)
+    rendered = RenderedCardSet(
+        cards=[AnkiCard(question="Q", answer='A<br><img src="x.png">')],
+        image_asset_plan=ImageAssetPlan(image_role="ignore_media"),
+    )
+    graph = FakeGraph(rendered)
+    graph.last_run_state = {
+        "trace": [
+            WorkflowTraceEvent(
+                node="render_visual",
+                decision="generated",
+                metadata={"cards_preview": 'A<br><img src="x.png">'},
+            )
+        ],
+        "usage_summary": None,
+    }
+    message = FakeTelegramMessage()
+    processor = AnkiProcessor(service, anki_graph=graph)
+
+    result = await processor.process(
+        ProcessingContext(
+            message=message,
+            thread_content=[("User", "some content")],
+            user_id=user_id,
+            owner_name="User",
+        )
+    )
+
+    try:
+        assert result.success is True
+        debug = [(text, kwargs) for (text, kwargs) in message.replies if "engine trace" in text.lower()]
+        assert debug, "engine trace debug message was not sent"
+        assert all(kwargs.get("parse_mode") is None for _text, kwargs in debug)
+    finally:
+        anki_buffer.clear(user_id)

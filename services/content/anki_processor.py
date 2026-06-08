@@ -270,6 +270,48 @@ class AnkiProcessor(IContentProcessor):
             out.append((path, basename))
         return out
 
+    async def _send_debug_trace(self, message, usage=None) -> None:
+        """Forward the engine's run trace to Telegram as a separate debug message (if enabled).
+
+        Traceability/formatting lives in the engine (``format_trace_events``); this only delivers it.
+        """
+
+        if not getattr(self.anki_card_service.config, "WORKFLOW_DEBUG_TRACE_ENABLED", False):
+            return
+        state = getattr(self.anki_graph, "last_run_state", None) or {}
+        events = state.get("trace") or []
+        if not events:
+            return
+        from ai_workflow_engine import format_trace_events
+
+        try:
+            text = format_trace_events(
+                events,
+                usage=usage or state.get("usage_summary"),
+                title="🔎 Anki engine trace (debug)",
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Could not format debug trace: %s", exc)
+            return
+        # Telegram caps messages at 4096 chars; chunk on line boundaries. Send as PLAIN text
+        # (parse_mode=None) because the trace can contain card HTML (<br>, <img>) and raw model
+        # text that would otherwise break Telegram entity parsing.
+        chunk = ""
+        for line in text.split("\n"):
+            if len(chunk) + len(line) + 1 > 3900:
+                try:
+                    await message.reply(chunk, parse_mode=None)
+                except Exception as exc:
+                    logger.warning("Could not send debug trace: %s", exc)
+                    return
+                chunk = ""
+            chunk += line + "\n"
+        if chunk.strip():
+            try:
+                await message.reply(chunk, parse_mode=None)
+            except Exception as exc:
+                logger.warning("Could not send debug trace: %s", exc)
+
     async def process(self, ctx: ProcessingContext) -> ServiceResult:
         message = ctx.message
         content, _first = assemble_thread(ctx.thread_content)
@@ -352,6 +394,7 @@ class AnkiProcessor(IContentProcessor):
             except Exception:
                 pass
 
+            await self._send_debug_trace(message, rendered.usage_summary)
             logger.info(f"Delivered {len(cards)} flashcards to user {ctx.user_id} (buffer {total})")
             return ServiceResult.success_with_data(f"{len(cards)} flashcards", {"count": len(cards)})
 
@@ -361,6 +404,7 @@ class AnkiProcessor(IContentProcessor):
                 await status_msg.edit_text("❌ Could not generate flashcards from that. Please try again.")
             except Exception:
                 await message.reply("❌ Could not generate flashcards from that. Please try again.")
+            await self._send_debug_trace(message)
             return ServiceResult.failure(str(e))
         finally:
             # The per-message .apkg is disposable; buffer media files are kept until export/clear.
