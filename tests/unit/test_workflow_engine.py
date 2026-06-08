@@ -1465,7 +1465,7 @@ async def test_toy_site_audit_pilot_fans_out_adjudicates_and_writes_report():
     assert any(event.node == "write_audit_report" and event.decision == "accepted" for event in trace.events)
 
 
-async def test_toy_inventory_pilot_uses_evidence_refs_scheduler_and_clarification():
+async def test_toy_inventory_pilot_uses_evidence_refs_and_external_write():
     contents = EvidenceRef(
         role="contents",
         uri="frame://camera-1/latest",
@@ -1477,14 +1477,14 @@ async def test_toy_inventory_pilot_uses_evidence_refs_scheduler_and_clarificatio
         InventoryPilotInput(location_hint=None, evidence_refs=[contents])
     )
 
-    assert result.scheduling_actions == ["drop", "queue_latest"]
     assert result.used_provisional_location is True
     assert result.write_status == "created"
     assert {observation.item for observation in result.observations} == {"glue", "USB-C cable"}
     assert all(observation.location == "unknown location" for observation in result.observations)
     assert all(observation.evidence_ref_ids == [contents.ref_id] for observation in result.observations)
+    # Evidence is carried as refs, never raw bytes, all the way to the external write.
     assert "image_data" not in result.model_dump_json()
-    assert any(event.node == "ask_location_clarification" and event.decision == "accepted" for event in trace.events)
+    assert any(event.node == "extract_inventory_items" and event.decision == "accepted" for event in trace.events)
     assert any(event.node == "write_inventory_observations" for event in trace.events)
 
 
@@ -1801,3 +1801,921 @@ async def test_workflow_decision_planner_repairs_bad_json_once():
     assert decision.instrument_name == "anki_generation"
     assert len(llm.messages) == 2
     assert "previous workflow-supervisor output was invalid" in llm.messages[1][0].content
+
+
+# ======================================================================================
+# Executable workflow engine — P1: WorkflowDefinition + WorkflowBuilder (AC-1)
+# ======================================================================================
+
+from ai_workflow_engine import (  # noqa: E402
+    END,
+    Fallback,
+    Retrace,
+    Retry,
+    SubworkflowRef,
+    WorkflowBuilder,
+    WorkflowDefinition,
+    WorkflowEdge,
+    WorkflowNode,
+    WorkflowValidationError,
+)
+
+
+def _home_inventory_builder() -> WorkflowBuilder:
+    """The canonical builder example from the engine contract (all branch targets defined)."""
+
+    return (
+        WorkflowBuilder("home_inventory", description="GoPro inventory toy")
+        .step("select_evidence")
+        .branch(
+            "evidence_quality_gate",
+            {
+                "enough": "extract_items",
+                "ambiguous": "ask_location",
+                "bad": "fallback_or_fail",
+            },
+        )
+        .step("extract_items")
+        .evaluate("quality_gate", on_reject=Retrace("select_evidence"))
+        .step("write_inventory")
+        .human("ask_location")
+        .step("fallback_or_fail")
+    )
+
+
+def test_control_directives_accept_positional_args():
+    assert Retry(3).max_attempts == 3
+    assert Retrace("select_evidence").target == "select_evidence"
+    assert Fallback("fallback_cap").capability == "fallback_cap"
+    assert SubworkflowRef("child_flow").workflow_id == "child_flow"
+
+
+def test_workflow_builder_builds_valid_definition():
+    definition = _home_inventory_builder().build()
+
+    assert isinstance(definition, WorkflowDefinition)
+    assert definition.workflow_id == "home_inventory"
+    assert definition.entry == "select_evidence"
+    assert set(definition.node_ids()) == {
+        "select_evidence",
+        "evidence_quality_gate",
+        "extract_items",
+        "quality_gate",
+        "write_inventory",
+        "ask_location",
+        "fallback_or_fail",
+    }
+    assert definition.node("select_evidence").capability == "select_evidence"
+    assert definition.node("quality_gate").target_capability == "extract_items"
+    assert isinstance(definition.node("quality_gate").on_reject, Retrace)
+
+
+def test_workflow_builder_wires_sequential_and_branch_edges():
+    definition = _home_inventory_builder().build()
+    edges = {(e.source, e.target, e.label, e.conditional) for e in definition.edges}
+
+    assert ("select_evidence", "evidence_quality_gate", None, False) in edges
+    assert ("evidence_quality_gate", "extract_items", "enough", True) in edges
+    assert ("evidence_quality_gate", "ask_location", "ambiguous", True) in edges
+    assert ("evidence_quality_gate", "fallback_or_fail", "bad", True) in edges
+    assert not any(e.source == "evidence_quality_gate" and not e.conditional for e in definition.edges)
+    assert ("extract_items", "quality_gate", None, False) in edges
+    assert ("quality_gate", "write_inventory", None, False) in edges
+    assert ("write_inventory", END, None, False) in edges
+    assert ("ask_location", END, None, False) in edges
+    assert ("fallback_or_fail", END, None, False) in edges
+
+
+def test_workflow_builder_rejects_unknown_branch_target():
+    with pytest.raises(WorkflowValidationError) as exc:
+        (
+            WorkflowBuilder("bad_branch")
+            .step("a")
+            .branch("gate", {"ok": "missing_node"})
+            .build()
+        )
+    assert any("unknown node: missing_node" in e for e in exc.value.errors)
+
+
+def test_workflow_builder_rejects_duplicate_node_ids():
+    with pytest.raises(WorkflowValidationError) as exc:
+        WorkflowBuilder("dupe").step("a").step("a").build()
+    assert any("duplicate node id: a" in e for e in exc.value.errors)
+
+
+def test_workflow_builder_rejects_empty_workflow():
+    with pytest.raises(WorkflowValidationError):
+        WorkflowBuilder("empty").build()
+
+
+def test_workflow_definition_flags_unsupported_node_kind():
+    definition = WorkflowDefinition(
+        workflow_id="bogus",
+        nodes=[WorkflowNode(id="a", kind="teleport")],  # type: ignore[arg-type]
+        edges=[WorkflowEdge(source="a", target=END)],
+        entry="a",
+    )
+    errors = definition.validate_graph()
+    assert any("unsupported kind: teleport" in e for e in errors)
+
+
+def test_workflow_evaluate_retrace_target_must_exist():
+    with pytest.raises(WorkflowValidationError) as exc:
+        (
+            WorkflowBuilder("bad_retrace")
+            .step("extract")
+            .evaluate("gate", on_reject=Retrace("does_not_exist"))
+            .build()
+        )
+    assert any("retrace target unknown: does_not_exist" in e for e in exc.value.errors)
+
+
+# ======================================================================================
+# Executable workflow engine — P2: WorkflowExecutor + WorkflowEngine + DI (AC-2, AC-3, AC-4)
+# ======================================================================================
+
+from pydantic import BaseModel as _BaseModel  # noqa: E402
+from ai_workflow_engine import (  # noqa: E402
+    BranchDecision,
+    NodeResult,
+    StructuredLLMNode,
+    WorkflowConfigBundle,
+    WorkflowEngine,
+    WorkflowEngineBuilder,
+    WorkflowExecutor,
+    WorkflowRunResult,
+)
+from ai_workflow_engine.workflow import WorkflowEdge as _Edge  # noqa: E402
+
+
+def _shout_engine() -> WorkflowEngine:
+    builder = WorkflowEngineBuilder()
+    builder.register_capability("upper", lambda ctx, p: p.upper(), kind="deterministic")
+    builder.register_capability("exclaim", lambda ctx, p: p + "!", kind="deterministic")
+    builder.register_workflow(WorkflowBuilder("shout").step("upper").step("exclaim").build())
+    return builder.build()
+
+
+async def test_executor_runs_deterministic_sequential_workflow():
+    engine = _shout_engine()
+    result = await engine.run("shout", "hi")
+
+    assert isinstance(result, WorkflowRunResult)
+    assert result.status == "completed"
+    assert result.output == "HI!"
+    # Result envelope carries status, output, node records, usage summary, and trace.
+    assert [r.node_id for r in result.node_results] == ["upper", "exclaim"]
+    assert all(r.status == "accepted" for r in result.node_results)
+    assert result.usage is not None
+    assert any(e.node == "upper" for e in result.trace)
+
+
+async def test_executor_runs_structured_llm_step_with_fake_llm():
+    class Greeting(_BaseModel):
+        greeting: str
+
+    node = StructuredLLMNode(
+        name="greet",
+        config=object(),
+        output_model=Greeting,
+        prompt_template="Greet {name}.",
+        input_variables=["name"],
+        llm=FakeLLM(['{"greeting": "hello world"}']),
+    )
+
+    async def greet(ctx, payload):
+        return await node.run({"name": payload["name"]})
+
+    engine = (
+        WorkflowEngineBuilder()
+        .register_capability("greet", greet, kind="llm")
+        .register_workflow(WorkflowBuilder("greeter").step("greet").build())
+        .build()
+    )
+    result = await engine.run("greeter", {"name": "Ada"})
+
+    assert result.status == "completed"
+    assert isinstance(result.output, Greeting)
+    assert result.output.greeting == "hello world"
+
+
+async def test_executor_fails_loudly_on_unsupported_node_kind():
+    engine = WorkflowEngineBuilder().build()
+    bogus = WorkflowDefinition(
+        workflow_id="bogus",
+        nodes=[WorkflowNode(id="a", kind="teleport")],  # type: ignore[arg-type]
+        edges=[_Edge(source="a", target=END)],
+        entry="a",
+    )
+    result = await engine.run(bogus, {})
+
+    assert result.status == "failed"
+    assert "unsupported kind: teleport" in (result.error or "")
+    # Loud: a trace event records the rejection; no node ran.
+    assert any(e.decision == "rejected" for e in result.trace)
+    assert result.node_results == []
+
+
+async def test_executor_fails_loudly_on_missing_capability():
+    engine = WorkflowEngineBuilder().build()
+    engine.register_workflow(WorkflowBuilder("ghosted").step("ghost").build())
+    result = await engine.run("ghosted", {})
+
+    assert result.status == "failed"
+    assert "unregistered capability: ghost" in (result.error or "")
+
+
+async def test_engine_builder_register_pack_runs():
+    class DoublerPack:
+        def register(self, builder):
+            builder.register_capability("double", lambda ctx, p: p * 2, kind="deterministic")
+            builder.register_workflow(WorkflowBuilder("doubler").step("double").build())
+
+    engine = WorkflowEngineBuilder().register_pack(DoublerPack()).build()
+    result = await engine.run("doubler", 21)
+
+    assert result.status == "completed"
+    assert result.output == 42
+
+
+def test_engine_from_config_swaps_profile_without_touching_workflow():
+    # The SAME workflow definition gets different limits purely from config/profile.
+    workflow = WorkflowBuilder("cfg_demo").step("noop").build()
+
+    def make(limits) -> WorkflowEngine:
+        bundle = WorkflowConfigBundle(
+            profile=WorkflowProfile(workflow_type="cfg_demo", limits=limits)
+        )
+        engine = WorkflowEngine.from_config(bundle)
+        engine.register_capability("noop", lambda ctx, p: p, kind="deterministic")
+        engine.register_workflow(workflow)
+        return engine
+
+    tight = make(RuntimeLimits(max_steps=3, max_estimated_usd=0.10))
+    loose = make(RuntimeLimits(max_steps=50, max_estimated_usd=5.0))
+
+    assert tight._plan_for(workflow).limits.max_steps == 3
+    assert tight._plan_for(workflow).limits.max_estimated_usd == 0.10
+    assert loose._plan_for(workflow).limits.max_steps == 50
+    assert loose._plan_for(workflow).limits.max_estimated_usd == 5.0
+
+
+def _router_engine() -> WorkflowEngine:
+    builder = WorkflowEngineBuilder()
+    builder.register_capability(
+        "route",
+        lambda ctx, p: BranchDecision(label="big" if p["n"] > 10 else "small"),
+        kind="deterministic",
+    )
+    builder.register_capability("big", lambda ctx, p: f"BIG:{p['n']}", kind="deterministic")
+    builder.register_capability("small", lambda ctx, p: f"SMALL:{p['n']}", kind="deterministic")
+    workflow = (
+        WorkflowBuilder("router")
+        .branch("route", {"big": "big_step", "small": "small_step"})
+        .step("big_step", capability="big")
+        .step("small_step", capability="small")
+        .build()
+    )
+    builder.register_workflow(workflow)
+    return builder.build()
+
+
+async def test_executor_branch_routes_two_inputs_two_ways():
+    engine = _router_engine()
+
+    big = await engine.run("router", {"n": 20})
+    assert big.status == "completed"
+    assert big.output == "BIG:20"
+    assert big.node("route").branch_label == "big"
+    # Branch decision is traced.
+    assert any(e.node == "route" and e.decision == "branch" for e in big.trace)
+
+    small = await engine.run("router", {"n": 5})
+    assert small.output == "SMALL:5"
+    assert small.node("route").branch_label == "small"
+
+
+async def test_executor_branch_invalid_label_fails_loudly():
+    engine = (
+        WorkflowEngineBuilder()
+        .register_capability("route", lambda ctx, p: BranchDecision(label="nonsense"), kind="deterministic")
+        .register_capability("ok", lambda ctx, p: "ok", kind="deterministic")
+        .register_workflow(
+            WorkflowBuilder("bad_router").branch("route", {"good": "ok_step"}).step("ok_step", capability="ok").build()
+        )
+        .build()
+    )
+    result = await engine.run("bad_router", {})
+
+    assert result.status == "failed"
+    assert "invalid label" in (result.error or "")
+    assert any(e.node == "route" and e.metadata.get("valid") is False for e in result.trace)
+
+
+# ======================================================================================
+# Executable workflow engine — P3: evaluate (retry/retrace/fallback) + fanout (AC-5, AC-6)
+# ======================================================================================
+
+from ai_workflow_engine.models import CapabilityResult as _CapabilityResult  # noqa: E402
+
+
+def _count(result, node_id) -> int:
+    return sum(1 for r in result.node_results if r.node_id == node_id)
+
+
+async def test_evaluate_retry_with_criticism_then_accepts():
+    # draft returns "bad" until the engine re-feeds it with evaluator criticism, then "good".
+    def draft(ctx, payload):
+        return {"value": "good"} if isinstance(payload, dict) and payload.get("_criticism") else {"value": "bad"}
+
+    def gate(ctx, payload):
+        if payload.get("value") == "good":
+            return _CapabilityResult(status="accepted", output=payload)
+        return _CapabilityResult(status="rejected", output=payload, error="bad value",
+                                 metadata={"criticism": "make it good"})
+
+    engine = (
+        WorkflowEngineBuilder()
+        .register_capability("draft", draft, kind="deterministic")
+        .register_capability("gate", gate, kind="deterministic")
+        .register_workflow(WorkflowBuilder("retry_demo").step("draft").evaluate("gate", on_reject=Retry()).build())
+        .build()
+    )
+    result = await engine.run("retry_demo", {"value": "seed"})
+
+    assert result.status == "completed"
+    assert result.output == {"value": "good"}
+    assert _count(result, "draft") == 2  # engine re-ran the upstream step (no product loop)
+
+
+async def test_evaluate_retrace_to_earlier_node_then_accepts():
+    def ingest(ctx, payload):
+        return {"seed": "rich"} if isinstance(payload, dict) and payload.get("_criticism") else {"seed": "poor"}
+
+    def transform(ctx, payload):
+        return {"result": f"{payload['seed']}-T"}
+
+    def gate(ctx, payload):
+        if "rich" in payload.get("result", ""):
+            return _CapabilityResult(status="accepted", output=payload)
+        return _CapabilityResult(status="rejected", output=payload, metadata={"criticism": "need richer seed"})
+
+    workflow = (
+        WorkflowBuilder("retrace_demo")
+        .step("ingest")
+        .step("transform")
+        .evaluate("gate", on_reject=Retrace("ingest"))
+        .build()
+    )
+    engine = (
+        WorkflowEngineBuilder()
+        .register_capability("ingest", ingest, kind="deterministic")
+        .register_capability("transform", transform, kind="deterministic")
+        .register_capability("gate", gate, kind="deterministic")
+        .register_workflow(workflow)
+        .build()
+    )
+    result = await engine.run("retrace_demo", {})
+
+    assert result.status == "completed"
+    assert result.output == {"result": "rich-T"}
+    assert _count(result, "ingest") == 2  # retraced to the earlier node and re-ran forward
+
+
+async def test_evaluate_fallback_capability_on_reject():
+    engine = (
+        WorkflowEngineBuilder()
+        .register_capability("draft", lambda ctx, p: {"value": "bad"}, kind="deterministic")
+        .register_capability(
+            "gate",
+            lambda ctx, p: _CapabilityResult(status="rejected", output=p, metadata={"criticism": "fix"}),
+            kind="deterministic",
+        )
+        .register_capability("repair", lambda ctx, p: {"value": "repaired"}, kind="deterministic")
+        .register_workflow(
+            WorkflowBuilder("fallback_demo").step("draft").evaluate("gate", on_reject=Fallback("repair")).build()
+        )
+        .build()
+    )
+    result = await engine.run("fallback_demo", {})
+
+    assert result.status == "completed"
+    assert result.output == {"value": "repaired"}
+    assert result.node("gate").fallback_reason is not None
+
+
+async def test_evaluate_exhaustion_fails_without_infinite_loop():
+    calls = {"draft": 0}
+
+    def draft(ctx, payload):
+        calls["draft"] += 1
+        return {"value": "bad"}  # never good -> evaluator always rejects
+
+    engine = (
+        WorkflowEngineBuilder()
+        .register_capability("draft", draft, kind="deterministic")
+        .register_capability(
+            "gate",
+            lambda ctx, p: _CapabilityResult(status="rejected", output=p, metadata={"criticism": "nope"}),
+            kind="deterministic",
+        )
+        .register_workflow(WorkflowBuilder("exhaust_demo").step("draft").evaluate("gate", on_reject=Retry()).build())
+        .build()
+    )
+    result = await engine.run("exhaust_demo", {})
+
+    assert result.status == "failed"
+    assert "exhausted" in (result.error or "")
+    # Bounded by limits (default max_retries=1 -> initial + 2 retries), never an infinite loop.
+    assert calls["draft"] == 3
+
+
+async def test_fanout_gather_isolates_partial_failure():
+    def plan(ctx, payload):
+        return [1, 2, 3]
+
+    async def worker(ctx, item):
+        if item == 2:
+            await asyncio.sleep(0.2)  # exceeds the capability timeout -> isolated failure
+        return item * 10
+
+    workflow = (
+        WorkflowBuilder("fanout_demo")
+        .step("plan")
+        .fanout("process", capability="worker", items_key="plan")
+        .build()
+    )
+    engine = (
+        WorkflowEngineBuilder()
+        .register_capability("plan", plan, kind="deterministic")
+        .register_capability("worker", worker, kind="tool", timeout_s=0.05)
+        .register_workflow(workflow)
+        .build()
+    )
+    result = await engine.run("fanout_demo", None)
+
+    # Parent receives partial results; the timed-out child is isolated.
+    assert result.status == "partial"
+    assert sorted(result.output) == [10, 30]
+    fan_event = next(e for e in result.trace if e.decision == "fanout")
+    assert fan_event.metadata["succeeded"] == 2
+    assert fan_event.metadata["failed"] == 1
+    # Per-child trace: each worker invocation recorded a start event.
+    assert sum(1 for e in result.trace if e.node == "worker" and e.decision == "start") == 3
+
+
+# ======================================================================================
+# Executable workflow engine — P4: subworkflow-as-capability + human clarification (AC-7, AC-8)
+# ======================================================================================
+
+from ai_workflow_engine import (  # noqa: E402
+    HumanClarificationCapability,
+    InMemoryHumanClarificationChannel,
+)
+
+
+def _enrichment_engine() -> WorkflowEngine:
+    child = WorkflowBuilder("enrich").step("enrich_step").build()
+    parent = (
+        WorkflowBuilder("main")
+        .step("prep")
+        .subworkflow("call_enrich", workflow=child)
+        .step("finish")
+        .build()
+    )
+    return (
+        WorkflowEngineBuilder()
+        .register_capability("prep", lambda ctx, p: {"x": p["x"] + 1}, kind="deterministic")
+        .register_capability("enrich_step", lambda ctx, p: {"x": p["x"] * 10}, kind="deterministic")
+        .register_capability("finish", lambda ctx, p: {"x": p["x"] + 100}, kind="deterministic")
+        .register_workflow(child)
+        .register_workflow(parent)
+        .build()
+    )
+
+
+async def test_subworkflow_runs_as_capability_on_same_executor():
+    engine = _enrichment_engine()
+    result = await engine.run("main", {"x": 1})
+
+    assert result.status == "completed"
+    assert result.output == {"x": 120}  # prep(+1) -> enrich(*10) -> finish(+100)
+    assert result.node("call_enrich").output == {"x": 20}
+    # Trace shows the parent/child relationship and the child's own nodes.
+    sub_event = next(e for e in result.trace if e.decision == "subworkflow")
+    assert sub_event.metadata["parent_workflow"] == "main"
+    assert sub_event.metadata["child_workflow"] == "enrich"
+    assert any(e.node == "enrich_step" for e in result.trace)
+
+
+async def test_subworkflow_failure_boundary_halts_parent():
+    def boom(ctx, payload):
+        raise ValueError("child exploded")
+
+    child = WorkflowBuilder("enrich").step("enrich_step", capability="boom").build()
+    parent = WorkflowBuilder("main").step("prep").subworkflow("call_enrich", workflow=child).step("finish").build()
+    engine = (
+        WorkflowEngineBuilder()
+        .register_capability("prep", lambda ctx, p: p, kind="deterministic")
+        .register_capability("boom", boom, kind="deterministic")
+        .register_capability("finish", lambda ctx, p: {"reached": True}, kind="deterministic")
+        .register_workflow(child)
+        .register_workflow(parent)
+        .build()
+    )
+    result = await engine.run("main", {"x": 1})
+
+    assert result.status == "failed"
+    assert result.node("finish") is None  # parent halted at the failed child boundary
+    sub_event = next(e for e in result.trace if e.decision == "subworkflow")
+    assert sub_event.metadata["child_status"] == "failed"
+
+
+def _clarify_engine(channel: InMemoryHumanClarificationChannel) -> WorkflowEngine:
+    human_cap = HumanClarificationCapability(channel, name="ask")
+    workflow = WorkflowBuilder("clarify").human("ask").step("use_answer").build()
+    builder = WorkflowEngineBuilder()
+    builder.register_capability("ask", human_cap)
+    builder.register_capability(
+        "use_answer", lambda ctx, p: {"answer": getattr(p, "value", None)}, kind="deterministic"
+    )
+    builder.register_workflow(
+        workflow,
+        profile=WorkflowProfile(
+            workflow_type="clarify",
+            safety=SafetyPolicy(allowed_side_effects=["notification"]),
+        ),
+    )
+    return builder.build()
+
+
+async def test_human_clarification_pauses_when_no_answer():
+    channel = InMemoryHumanClarificationChannel()
+    engine = _clarify_engine(channel)
+    result = await engine.run(
+        "clarify",
+        HumanClarificationRequest(question="Which room?", continue_without_answer=False),
+    )
+
+    assert result.status == "requires_user_input"
+    assert result.node("use_answer") is None  # paused before downstream work
+    assert any(e.decision == "pending" for e in result.trace)
+
+
+async def test_human_clarification_resumes_from_submitted_answer():
+    channel = InMemoryHumanClarificationChannel()
+    engine = _clarify_engine(channel)
+    request = HumanClarificationRequest(question="Which room?", continue_without_answer=False)
+    channel.submit_answer(request.clarification_id, "living room")
+
+    result = await engine.run("clarify", request)
+
+    assert result.status == "completed"
+    assert result.output == {"answer": "living room"}
+    assert any(e.decision == "answered" for e in result.trace)
+
+
+async def test_human_clarification_provisional_value_continues():
+    channel = InMemoryHumanClarificationChannel()
+    engine = _clarify_engine(channel)
+    result = await engine.run(
+        "clarify",
+        HumanClarificationRequest(
+            question="Which room?",
+            continue_without_answer=True,
+            default_value="unknown room",
+        ),
+    )
+
+    assert result.status in ("completed", "partial")
+    assert result.output == {"answer": "unknown room"}
+    assert any(e.decision == "provisional" for e in result.trace)
+
+
+# ======================================================================================
+# Executable workflow engine — P5: scheduling + side-effect/privacy/budget gates (AC-9, AC-10)
+# ======================================================================================
+
+
+async def test_forbidden_side_effect_denied_before_handler_runs():
+    called = {"n": 0}
+
+    def writer(ctx, p):
+        called["n"] += 1
+        return "wrote"
+
+    engine = (
+        WorkflowEngineBuilder()
+        .register_capability("writer", writer, kind="external", side_effects=["external_write"])
+        .register_workflow(
+            WorkflowBuilder("wf").step("writer").build(),
+            profile=WorkflowProfile(workflow_type="wf", safety=SafetyPolicy(allowed_side_effects=[])),
+        )
+        .build()
+    )
+    result = await engine.run("wf", {})
+
+    assert result.status == "failed"
+    assert called["n"] == 0  # handler never invoked
+    assert "external_write" in (result.error or "")
+    assert any(e.decision == "denied" for e in result.trace)
+
+
+async def test_raw_media_export_denied_then_allowed_by_node_flag():
+    called = {"n": 0}
+
+    def export_bytes(ctx, p):
+        called["n"] += 1
+        return "exported"
+
+    # Denied: profile forbids raw media (the node flag can never override the deployment ceiling).
+    denied_engine = (
+        WorkflowEngineBuilder()
+        .register_capability("export", export_bytes, kind="media", side_effects=["raw_media_export"])
+        .register_workflow(
+            WorkflowBuilder("noexp").step("export", allow_raw_media_export=True).build(),
+            profile=WorkflowProfile(workflow_type="noexp", safety=SafetyPolicy(allowed_side_effects=[])),
+        )
+        .build()
+    )
+    denied = await denied_engine.run("noexp", {})
+    assert denied.status == "failed"
+    assert called["n"] == 0
+
+    # Denied: profile permits raw media but the node did not opt in (double consent required).
+    no_optin_engine = (
+        WorkflowEngineBuilder()
+        .register_capability("export", export_bytes, kind="media", side_effects=["raw_media_export"])
+        .register_workflow(
+            WorkflowBuilder("exp").step("export").build(),
+            profile=WorkflowProfile(workflow_type="exp", safety=SafetyPolicy(allowed_side_effects=["raw_media_export"])),
+        )
+        .build()
+    )
+    no_optin = await no_optin_engine.run("exp", {})
+    assert no_optin.status == "failed"
+    assert called["n"] == 0
+
+    # Allowed: profile permits raw media AND the node explicitly opts in.
+    allowed_engine = (
+        WorkflowEngineBuilder()
+        .register_capability("export", export_bytes, kind="media", side_effects=["raw_media_export"])
+        .register_workflow(
+            WorkflowBuilder("exp2").step("export", allow_raw_media_export=True).build(),
+            profile=WorkflowProfile(workflow_type="exp2", safety=SafetyPolicy(allowed_side_effects=["raw_media_export"])),
+        )
+        .build()
+    )
+    allowed = await allowed_engine.run("exp2", {})
+    assert allowed.status == "completed"
+    assert allowed.output == "exported"
+    assert called["n"] == 1
+
+
+async def test_budget_exhaustion_denies_metered_capability():
+    called = {"n": 0}
+
+    def paid(ctx, p):
+        called["n"] += 1
+        return "paid-result"
+
+    engine = (
+        WorkflowEngineBuilder()
+        .register_capability("paid", paid, kind="llm", metered=True)
+        .register_workflow(
+            WorkflowBuilder("budget").step("paid").build(),
+            profile=WorkflowProfile(workflow_type="budget", limits=RuntimeLimits(max_estimated_usd=0.0)),
+        )
+        .build()
+    )
+    result = await engine.run("budget", {})
+
+    assert result.status == "failed"
+    assert called["n"] == 0  # no paid call once the budget is exhausted
+    assert "budget" in (result.error or "")
+
+
+async def test_backend_slot_held_until_worker_completes_blocks_concurrent_call():
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def long_worker(ctx, p):
+        started.set()
+        await release.wait()
+        return "A-done"
+
+    async def quick_worker(ctx, p):
+        return "B-done"
+
+    lane = SchedulingPolicy(mode="drop_not_queue", backend_key="local_model", max_backend_concurrency=1)
+    engine = (
+        WorkflowEngineBuilder()
+        .register_capability("long_worker", long_worker, kind="llm")
+        .register_capability("quick_worker", quick_worker, kind="llm")
+        .register_workflow(WorkflowBuilder("flowA").step("slow", capability="long_worker", scheduling=lane).build())
+        .register_workflow(WorkflowBuilder("flowB").step("fast", capability="quick_worker", scheduling=lane).build())
+        .build()
+    )
+
+    task_a = asyncio.create_task(engine.run("flowA", {}))
+    await started.wait()  # A is inside the worker, holding the single backend slot
+
+    # Second backend call cannot start concurrently — it is dropped while the slot is locked.
+    res_b = await engine.run("flowB", {})
+    assert res_b.status == "failed"
+    assert any((e.decision or "").startswith("schedule:drop") for e in res_b.trace)
+
+    # The slot is released only when the worker actually completes (not on request).
+    release.set()
+    res_a = await task_a
+    assert res_a.status == "completed"
+    assert res_a.output == "A-done"
+
+    res_b2 = await engine.run("flowB", {})
+    assert res_b2.status == "completed"
+    assert res_b2.output == "B-done"
+
+
+# ======================================================================================
+# Executable workflow engine — P6: same-executor proof + guards (AC-11, AC-12, AC-13)
+# ======================================================================================
+
+import ast as _ast  # noqa: E402
+import inspect as _inspect  # noqa: E402
+
+from ai_workflow_engine.examples import (  # noqa: E402
+    ToySummaryInput,
+    build_demo_engine,
+    run_toy_card_generation,
+)
+
+
+async def test_same_executor_runs_all_example_workflows():
+    # ONE engine -> ONE WorkflowExecutor runs every example workflow (no per-workflow engine).
+    engine = build_demo_engine()
+    executor = engine.executor
+
+    summary = await engine.run("toy_summary", ToySummaryInput(text="one two three"))
+    calendar = await engine.run(
+        "calendar_builder",
+        CalendarBuilderInput(
+            available_hours=4,
+            energy_level="medium",
+            tasks=[
+                CalendarTask(name="A", hours=2, priority=5),
+                CalendarTask(name="B", hours=3, priority=4),
+            ],
+        ),
+        constraints={"available_hours": 4, "energy_level": "medium", "focus_projects": []},
+    )
+    audit = await engine.run("site_audit", SiteAuditInput(url="https://x.test", scenarios=["checkout form"]))
+    inventory = await engine.run(
+        "inventory_observation",
+        InventoryPilotInput(location_hint="shelf", evidence_refs=[EvidenceRef(role="contents", uri="frame://x")]),
+    )
+    card = await engine.run("card_generation", "make an image card")
+
+    assert summary.status == "completed"
+    assert calendar.status == "completed"
+    assert audit.status == "completed"
+    assert inventory.status == "completed"
+    assert card.status == "completed"
+    # Proof: the SAME executor compiled and ran all of them.
+    assert engine.executor is executor
+    assert {
+        "toy_summary",
+        "calendar_builder",
+        "site_audit",
+        "inventory_observation",
+        "card_generation",
+    } <= set(engine.executor._compiled)
+
+
+_FORBIDDEN_PRODUCT_ORCHESTRATION = [
+    "runtime.invoke",
+    "StateGraph",
+    "add_conditional_edges",
+    "gather_capabilities(",
+    "WorkflowScheduler(",
+    "EvaluationController(",
+    ".submit(",
+]
+
+
+def test_examples_contain_no_product_orchestration_loops():
+    # AC-12: package examples must run through the engine, never hand-roll orchestration.
+    import ai_workflow_engine.examples as examples_module
+
+    source = _inspect.getsource(examples_module)
+    offenders = [pattern for pattern in _FORBIDDEN_PRODUCT_ORCHESTRATION if pattern in source]
+    assert not offenders, f"examples.py hand-rolls engine mechanics: {offenders}"
+    # Positive: examples DO go through the engine.
+    assert "engine.run(" in source
+    # No manual loops around capability calls in example functions.
+    tree = _ast.parse(source)
+    for node in _ast.walk(tree):
+        if isinstance(node, (_ast.While,)):
+            raise AssertionError("examples.py must not contain manual while-loops over capabilities")
+
+
+def test_manual_loop_guard_would_flag_a_product_mini_engine():
+    # A hand-written runtime.invoke retry/branch loop must trip the guard.
+    bad_source = """
+async def bad_flow(runtime, ctx):
+    result = await runtime.invoke("draft", {}, ctx)
+    while result.status == "failed":
+        result = await runtime.invoke("draft", {}, ctx)
+    return result
+"""
+    offenders = [pattern for pattern in _FORBIDDEN_PRODUCT_ORCHESTRATION if pattern in bad_source]
+    assert offenders, "guard failed to detect a hand-written product mini-engine"
+
+
+def test_engine_public_api_is_product_neutral():
+    # AC-13: engine public names may not leak product concepts (only examples/docs/workflow ids may).
+    import ai_workflow_engine as engine_pkg
+
+    product_terms = ["anki", "gopro", "mageqa", "telegram", "cloze", "browser", "flashcard"]
+    offenders = [
+        name
+        for name in engine_pkg.__all__
+        for term in product_terms
+        if term in name.lower()
+    ]
+    assert not offenders, f"product-specific names in engine public API: {offenders}"
+    # Public workflow models also stay neutral in their field names.
+    for model in (WorkflowNode, WorkflowDefinition, WorkflowEdge, NodeResult, WorkflowRunResult):
+        fields = getattr(model, "model_fields", {})
+        leaked = [f for f in fields for term in product_terms if term in f.lower()]
+        assert not leaked, f"{model.__name__} leaks product field names: {leaked}"
+
+
+def test_format_trace_events_renders_flow_decisions_and_usage():
+    from ai_workflow_engine import format_trace_events
+    from ai_workflow_engine.models import WorkflowTraceEvent
+
+    events = [
+        WorkflowTraceEvent(
+            node="plan_card_type", decision="basic", elapsed_ms=1700,
+            metadata={"card_kind": "basic", "study_goal": "recall the Bernoulli relationship"},
+        ),
+        WorkflowTraceEvent(node="render", decision="accepted", elapsed_ms=900),
+        WorkflowTraceEvent(node="evaluate", decision="rejected", attempt=2, error="overload"),
+    ]
+    usage = WorkflowUsageSummary(
+        events=[WorkflowUsageEvent(node="x", operation="chat", total_tokens=100, estimated_usd=0.01)]
+    )
+
+    text = format_trace_events(events, usage=usage, title="Trace")
+
+    assert "Trace" in text
+    assert "plan_card_type → basic" in text
+    assert "card_kind: basic" in text  # key info / LLM output surfaced from metadata
+    assert "study_goal: recall the Bernoulli relationship" in text
+    assert "(attempt 2)" in text
+    assert "overload" in text
+    assert "$0.0100" in text  # usage/cost footer
+
+
+async def test_executor_runs_external_process_step():
+    # §4 node type: external process/script/tool — a step bound to ExternalProcessCapability,
+    # executed by the engine (side-effect gated by the profile).
+    from ai_workflow_engine import ExternalProcessCapability
+    from ai_workflow_engine.engine.external import ExternalProcessRequest
+
+    engine = (
+        WorkflowEngineBuilder()
+        .register_capability("run_process", ExternalProcessCapability(), kind="external", side_effects=["external_call"])
+        .register_workflow(
+            WorkflowBuilder("proc_demo").step("run_process").build(),
+            profile=WorkflowProfile(
+                workflow_type="proc_demo", safety=SafetyPolicy(allowed_side_effects=["external_call"])
+            ),
+        )
+        .build()
+    )
+    result = await engine.run(
+        "proc_demo",
+        ExternalProcessRequest(command=["python", "-c", "print('engine-process-ok')"]),
+    )
+
+    assert result.status == "completed"
+    assert result.output["returncode"] == 0
+    assert "engine-process-ok" in result.output["stdout"]
+
+
+async def test_executor_external_process_step_denied_without_side_effect_allowance():
+    # Same external-process step is blocked before invocation when the profile forbids external_call.
+    from ai_workflow_engine import ExternalProcessCapability
+    from ai_workflow_engine.engine.external import ExternalProcessRequest
+
+    engine = (
+        WorkflowEngineBuilder()
+        .register_capability("run_process", ExternalProcessCapability(), kind="external", side_effects=["external_call"])
+        .register_workflow(WorkflowBuilder("proc_denied").step("run_process").build())  # default profile forbids it
+        .build()
+    )
+    result = await engine.run("proc_denied", ExternalProcessRequest(command=["python", "-c", "print('should-not-run')"]))
+
+    assert result.status == "failed"
+    assert "external_call" in (result.error or "")

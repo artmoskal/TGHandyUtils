@@ -37,6 +37,7 @@ from ai_workflow_engine.engine import (
     artifact_result,
     assert_checkpoint_payload_safe,
     capability_context_for_goal,
+    format_trace_events,
     gather_capabilities,
     cleanup_artifacts,
 )
@@ -71,8 +72,54 @@ from ai_workflow_engine.config_loader import (
     load_workflow_config,
 )
 from ai_workflow_engine.prompt_loader import PromptTemplateLoader, load_prompt_template
+from ai_workflow_engine.workflow import (
+    END,
+    BranchDecision,
+    Fallback,
+    Retrace,
+    Retry,
+    SubworkflowRef,
+    WorkflowBuilder,
+    WorkflowDefinition,
+    WorkflowEdge,
+    WorkflowNode,
+    WorkflowValidationError,
+)
+from ai_workflow_engine.executor import (
+    CapabilityBindingError,
+    NodeExecutionState,
+    NodeResult,
+    UnsupportedNodeError,
+    WorkflowExecutor,
+    WorkflowRunResult,
+)
+from ai_workflow_engine.builder import (
+    WorkflowEngine,
+    WorkflowEngineBuilder,
+    WorkflowPack,
+)
 
 __all__ = [
+    "END",
+    "BranchDecision",
+    "Fallback",
+    "Retrace",
+    "Retry",
+    "SubworkflowRef",
+    "WorkflowBuilder",
+    "WorkflowDefinition",
+    "WorkflowEdge",
+    "WorkflowNode",
+    "WorkflowValidationError",
+    "CapabilityBindingError",
+    "NodeExecutionState",
+    "NodeResult",
+    "UnsupportedNodeError",
+    "WorkflowExecutor",
+    "WorkflowRunResult",
+    "WorkflowEngine",
+    "WorkflowEngineBuilder",
+    "WorkflowPack",
     "AgentCapability",
     "AgentEpisodePlanner",
     "AgentRunRequest",
@@ -134,6 +181,7 @@ __all__ = [
     "artifact_result",
     "assert_checkpoint_payload_safe",
     "capability_context_for_goal",
+    "format_trace_events",
     "gather_capabilities",
     "cleanup_artifacts",
     "assert_no_config_secrets",

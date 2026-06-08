@@ -1,37 +1,38 @@
-"""Small runnable product-neutral workflows for package consumers and tests."""
+"""Runnable, product-neutral example workflows for the executable engine.
+
+Every example runs through ``WorkflowEngine.run``. There are NO product-owned orchestration loops
+here: branching, retries, fan-out, scheduling, and fallback are all engine-owned. Each product
+packages its domain capabilities + workflow shape as a :class:`WorkflowPack`; the engine owns
+execution. One shared ``WorkflowExecutor`` runs all of them (see :func:`build_demo_engine`).
+"""
 
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from ai_workflow_engine.engine import (
-    CapabilityCall,
-    CapabilityRegistry,
-    CapabilityRuntime,
+from ai_workflow_engine import (
+    BranchDecision,
     ExternalAdapterCapability,
-    HumanClarificationCapability,
+    Fallback,
     InMemoryExternalWriteSink,
-    InMemoryHumanClarificationChannel,
-    InMemoryTraceSink,
-    RuntimePlanCompiler,
-    WorkflowScheduler,
-    capability_context_for_goal,
-    gather_capabilities,
+    WorkflowBuilder,
+    WorkflowEngine,
+    WorkflowEngineBuilder,
 )
 from ai_workflow_engine.models import (
-    ClarificationOption,
     CapabilityResult,
-    CapabilitySpec,
     EvidenceRef,
     ExternalWriteRequest,
     ExternalWriteResult,
-    HumanClarificationRequest,
-    RuntimePlan,
     SafetyPolicy,
-    SchedulingPolicy,
     WorkflowGoal,
     WorkflowProfile,
 )
+
+
+# ======================================================================================
+# Toy 1 — text summary (single deterministic step)
+# ======================================================================================
 
 
 class ToySummaryInput(BaseModel):
@@ -41,6 +42,31 @@ class ToySummaryInput(BaseModel):
 class ToySummaryOutput(BaseModel):
     summary: str
     word_count: int
+
+
+def _summarize(_context, payload: ToySummaryInput) -> ToySummaryOutput:
+    words = payload.text.split()
+    return ToySummaryOutput(summary=words[0] if words else "", word_count=len(words))
+
+
+class SummaryPack:
+    def register(self, builder) -> None:
+        builder.register_capability(
+            "toy_summary", _summarize, kind="deterministic",
+            input_model=ToySummaryInput, output_model=ToySummaryOutput,
+        )
+        builder.register_workflow(WorkflowBuilder("toy_summary").step("toy_summary").build())
+
+
+async def run_toy_summary(text: str):
+    engine = WorkflowEngineBuilder().register_pack(SummaryPack()).build()
+    result = await engine.run("toy_summary", ToySummaryInput(text=text))
+    return result.output, engine.trace_sink
+
+
+# ======================================================================================
+# Toy 2 — calendar builder (step -> evaluator gate -> fallback repair)
+# ======================================================================================
 
 
 class CalendarTask(BaseModel):
@@ -72,177 +98,104 @@ class CalendarPlan(BaseModel):
     rationale: str = ""
 
 
-def build_toy_summary_registry() -> CapabilityRegistry:
-    registry = CapabilityRegistry()
+class CalendarWork(BaseModel):
+    """Carries the original request alongside the plan so the engine can repair from source."""
 
-    def summarize(_context, payload: ToySummaryInput) -> ToySummaryOutput:
-        words = payload.text.split()
-        return ToySummaryOutput(summary=words[0] if words else "", word_count=len(words))
+    request: CalendarBuilderInput
+    plan: CalendarPlan
 
-    registry.register(
-        CapabilitySpec(
-            name="toy_summary",
-            kind="deterministic",
-            description="Summarize text with a deterministic first-word toy implementation.",
-            input_model=ToySummaryInput,
-            output_model=ToySummaryOutput,
-        ),
-        summarize,
+
+def _draft_calendar(_context, request: CalendarBuilderInput) -> CalendarWork:
+    ordered = sorted(request.tasks, key=lambda task: (-task.priority, task.name))
+    scheduled = [
+        ScheduledTask(name=t.name, hours=t.hours, priority=t.priority, focus_project=t.focus_project)
+        for t in ordered
+    ]
+    plan = CalendarPlan(
+        scheduled=scheduled,
+        total_hours=sum(t.hours for t in scheduled),
+        rationale="First pass schedules all candidate tasks by priority.",
     )
-    return registry
+    return CalendarWork(request=request, plan=plan)
 
 
-async def run_toy_summary(text: str) -> tuple[ToySummaryOutput, InMemoryTraceSink]:
-    registry = build_toy_summary_registry()
-    trace = InMemoryTraceSink()
-    runtime = CapabilityRuntime(registry, trace)
-    goal = WorkflowGoal(workflow_type="toy_summary", objective="summarize arbitrary text")
-    result = await runtime.invoke(
-        "toy_summary",
-        {"text": text},
-        capability_context_for_goal(goal, workflow_id="toy-summary"),
+def _evaluate_calendar(context, work: CalendarWork) -> CapabilityResult:
+    available = float(context.plan.constraints["available_hours"])
+    if work.plan.total_hours <= available:
+        return CapabilityResult(status="accepted", output=work)
+    return CapabilityResult(
+        status="rejected",
+        output=work,
+        error="calendar overload",
+        metadata={"criticism": "Plan is overbooked; repair within available hours, keep high priority."},
     )
-    return result.output, trace
 
 
-def build_toy_calendar_registry() -> CapabilityRegistry:
-    registry = CapabilityRegistry()
-
-    def draft_calendar(_context, payload: CalendarBuilderInput) -> CalendarPlan:
-        # Deliberately optimistic first pass: schedules all priority work so the evaluator can reject
-        # overload and exercise retrace/repair in a product-neutral workload.
-        ordered = sorted(payload.tasks, key=lambda task: (-task.priority, task.name))
-        scheduled = [
-            ScheduledTask(
-                name=task.name,
-                hours=task.hours,
-                priority=task.priority,
-                focus_project=task.focus_project,
+def _repair_calendar(context, work: CalendarWork) -> CalendarWork:
+    available = float(context.plan.constraints["available_hours"])
+    scheduled: list[ScheduledTask] = []
+    deferred: list[str] = []
+    used = 0.0
+    for task in sorted(work.request.tasks, key=lambda t: (-t.priority, t.hours, t.name)):
+        if used + task.hours <= available:
+            scheduled.append(
+                ScheduledTask(name=task.name, hours=task.hours, priority=task.priority, focus_project=task.focus_project)
             )
-            for task in ordered
-        ]
-        return CalendarPlan(
-            scheduled=scheduled,
-            total_hours=sum(task.hours for task in scheduled),
-            rationale="First pass schedules all candidate tasks by priority.",
+            used += task.hours
+        else:
+            deferred.append(task.name)
+    plan = CalendarPlan(
+        scheduled=scheduled, deferred=deferred, total_hours=used,
+        rationale="Repaired plan preserves highest priority work within available hours.",
+    )
+    return CalendarWork(request=work.request, plan=plan)
+
+
+class CalendarPack:
+    def register(self, builder) -> None:
+        builder.register_capability(
+            "draft_calendar", _draft_calendar, kind="deterministic",
+            input_model=CalendarBuilderInput, output_model=CalendarWork,
+        )
+        builder.register_capability("evaluate_calendar", _evaluate_calendar, kind="deterministic")
+        builder.register_capability(
+            "repair_calendar", _repair_calendar, kind="deterministic",
+            input_model=CalendarWork, output_model=CalendarWork,
+        )
+        builder.register_workflow(
+            WorkflowBuilder("calendar_builder")
+            .step("draft_calendar")
+            .evaluate("evaluate_calendar", on_reject=Fallback("repair_calendar"))
+            .build()
         )
 
-    def evaluate_calendar(_context, payload: CalendarPlan) -> CapabilityResult:
-        available_hours = float(_context.plan.constraints["available_hours"])
-        if payload.total_hours <= available_hours:
-            return CapabilityResult(status="accepted", output=payload)
-        return CapabilityResult(
-            status="rejected",
-            output=payload,
-            error="calendar overload",
-            metadata={
-                "observed_hours": payload.total_hours,
-                "available_hours": available_hours,
-                "criticism": "Plan is overbooked; retrace to calendar repair and preserve high priority coverage.",
-            },
-        )
 
-    def repair_calendar(context, payload: CalendarBuilderInput) -> CalendarPlan:
-        available_hours = float(context.plan.constraints["available_hours"])
-        scheduled: list[ScheduledTask] = []
-        deferred: list[str] = []
-        used = 0.0
-        ordered = sorted(payload.tasks, key=lambda task: (-task.priority, task.hours, task.name))
-        for task in ordered:
-            if used + task.hours <= available_hours:
-                scheduled.append(
-                    ScheduledTask(
-                        name=task.name,
-                        hours=task.hours,
-                        priority=task.priority,
-                        focus_project=task.focus_project,
-                    )
-                )
-                used += task.hours
-            else:
-                deferred.append(task.name)
-        return CalendarPlan(
-            scheduled=scheduled,
-            deferred=deferred,
-            total_hours=used,
-            rationale="Repaired plan preserves highest priority work within available hours.",
-        )
-
-    registry.register(
-        CapabilitySpec(
-            name="draft_calendar",
-            kind="deterministic",
-            description="Create an initial schedule from tasks and availability.",
-            input_model=CalendarBuilderInput,
-            output_model=CalendarPlan,
-        ),
-        draft_calendar,
-    )
-    registry.register(
-        CapabilitySpec(
-            name="evaluate_calendar",
-            kind="deterministic",
-            description="Reject schedules that exceed available time.",
-            input_model=CalendarPlan,
-        ),
-        evaluate_calendar,
-    )
-    registry.register(
-        CapabilitySpec(
-            name="repair_calendar",
-            kind="deterministic",
-            description="Retrace/replan an overloaded calendar while preserving priority coverage.",
-            input_model=CalendarBuilderInput,
-            output_model=CalendarPlan,
-        ),
-        repair_calendar,
-    )
-    return registry
-
-
-async def run_toy_calendar_builder(payload: CalendarBuilderInput) -> tuple[CalendarPlan, InMemoryTraceSink, bool]:
-    registry = build_toy_calendar_registry()
-    trace = InMemoryTraceSink()
-    runtime = CapabilityRuntime(registry, trace)
-    profile = WorkflowProfile(
-        workflow_type="calendar_builder",
-        profile_id="toy-calendar",
+async def run_toy_calendar_builder(payload: CalendarBuilderInput):
+    engine = WorkflowEngineBuilder().register_pack(CalendarPack()).build()
+    result = await engine.run(
+        "calendar_builder",
+        payload,
         constraints={
             "available_hours": payload.available_hours,
             "energy_level": payload.energy_level,
             "focus_projects": payload.focus_projects,
         },
-        requested_capabilities=["draft_calendar", "evaluate_calendar", "repair_calendar"],
     )
-    plan: RuntimePlan = RuntimePlanCompiler(
-        supported_constraint_keys={"available_hours", "energy_level", "focus_projects"}
-    ).compile(profile, registry)
-    goal = WorkflowGoal(
-        workflow_type="calendar_builder",
-        objective="build a realistic calendar from availability, energy, priorities, tasks, and focus projects",
-    )
-    context = capability_context_for_goal(goal, plan=plan, workflow_id="toy-calendar")
+    work: CalendarWork = result.output
+    gate = result.node("evaluate_calendar")
+    retraced = bool(gate and gate.fallback_reason)
+    return work.plan, engine.trace_sink, retraced
 
-    draft = await runtime.invoke("draft_calendar", payload, context)
-    evaluation = await runtime.invoke("evaluate_calendar", draft.output, context)
-    if evaluation.status == "accepted":
-        return evaluation.output, trace, False
-    repaired = await runtime.invoke("repair_calendar", payload, context)
-    final_evaluation = await runtime.invoke("evaluate_calendar", repaired.output, context, attempt=2)
-    if final_evaluation.status != "accepted":
-        raise RuntimeError("toy calendar repair failed validation")
-    return final_evaluation.output, trace, True
+
+# ======================================================================================
+# Toy 3 — site audit (plan -> fan-out scenarios -> adjudicate + external write)
+# ======================================================================================
 
 
 class SiteAuditInput(BaseModel):
     url: str
     rubric: list[str] = Field(default_factory=list)
     scenarios: list[str] = Field(default_factory=list)
-
-
-class SiteAuditPlan(BaseModel):
-    scenarios: list[str]
-    rationale: str = ""
 
 
 class SiteScenarioInput(BaseModel):
@@ -258,18 +211,9 @@ class SiteFinding(BaseModel):
 
 
 class SiteScenarioResult(BaseModel):
+    url: str
     scenario: str
     findings: list[SiteFinding] = Field(default_factory=list)
-    evidence_refs: list[EvidenceRef] = Field(default_factory=list)
-
-
-class SiteAuditEvidence(BaseModel):
-    results: list[SiteScenarioResult] = Field(default_factory=list)
-
-
-class AdjudicatedFindings(BaseModel):
-    accepted_findings: list[SiteFinding] = Field(default_factory=list)
-    rejected_titles: list[str] = Field(default_factory=list)
     evidence_refs: list[EvidenceRef] = Field(default_factory=list)
 
 
@@ -281,217 +225,88 @@ class SiteAuditReport(BaseModel):
     summary: str = ""
 
 
-def build_toy_site_audit_registry() -> CapabilityRegistry:
-    """Build a fake-backed site QA pilot without product-specific engine APIs."""
+def _plan_site_audit(_context, payload: SiteAuditInput) -> list:
+    scenarios = payload.scenarios or ["navigation smoke", "critical form"]
+    inputs = [SiteScenarioInput(url=payload.url, scenario=s) for s in scenarios]
+    inputs.append(SiteScenarioInput(url=payload.url, scenario="catalog checks"))
+    return inputs
 
-    registry = CapabilityRegistry()
 
-    def plan_site_audit(_context, payload: SiteAuditInput) -> SiteAuditPlan:
-        scenarios = payload.scenarios or ["navigation smoke", "critical form"]
-        return SiteAuditPlan(
-            scenarios=scenarios,
-            rationale="Use supplied scenarios, otherwise a small smoke + form coverage set.",
-        )
-
-    def run_site_scenario(_context, payload: SiteScenarioInput) -> SiteScenarioResult:
+def _run_site_scenario(_context, payload: SiteScenarioInput) -> SiteScenarioResult:
+    if payload.scenario == "catalog checks":
         evidence = EvidenceRef(
-            role="dom_snapshot",
-            uri=f"fake-browser://{payload.url}/{payload.scenario.replace(' ', '-')}",
-            media_type="text/html",
-            summary=f"Snapshot for {payload.scenario}",
-        )
-        findings: list[SiteFinding] = []
-        if "form" in payload.scenario or "checkout" in payload.scenario:
-            findings.append(
-                SiteFinding(
-                    title="Primary form lacks visible error state",
-                    severity="high",
-                    evidence_ref_id=evidence.ref_id,
-                    confidence=0.91,
-                )
-            )
-        return SiteScenarioResult(
-            scenario=payload.scenario,
-            findings=findings,
-            evidence_refs=[evidence],
-        )
-
-    def run_catalog_checks(_context, payload: SiteAuditInput) -> SiteScenarioResult:
-        evidence = EvidenceRef(
-            role="accessibility_snapshot",
-            uri=f"fake-a11y://{payload.url}",
-            media_type="application/json",
-            summary="Accessibility rule output",
+            role="accessibility_snapshot", uri=f"fake-a11y://{payload.url}",
+            media_type="application/json", summary="Accessibility rule output",
         )
         return SiteScenarioResult(
-            scenario="catalog checks",
-            findings=[
-                SiteFinding(
-                    title="Hero image has empty alt text",
-                    severity="medium",
-                    evidence_ref_id=evidence.ref_id,
-                    confidence=0.84,
-                )
-            ],
+            url=payload.url, scenario=payload.scenario,
+            findings=[SiteFinding(title="Hero image has empty alt text", severity="medium",
+                                  evidence_ref_id=evidence.ref_id, confidence=0.84)],
             evidence_refs=[evidence],
         )
+    evidence = EvidenceRef(
+        role="dom_snapshot", uri=f"fake-browser://{payload.url}/{payload.scenario.replace(' ', '-')}",
+        media_type="text/html", summary=f"Snapshot for {payload.scenario}",
+    )
+    findings: list[SiteFinding] = []
+    if "form" in payload.scenario or "checkout" in payload.scenario:
+        findings.append(SiteFinding(title="Primary form lacks visible error state", severity="high",
+                                    evidence_ref_id=evidence.ref_id, confidence=0.91))
+    return SiteScenarioResult(url=payload.url, scenario=payload.scenario, findings=findings, evidence_refs=[evidence])
 
-    def adjudicate_findings(_context, payload: SiteAuditEvidence) -> AdjudicatedFindings:
-        evidence_by_id = {
-            evidence.ref_id: evidence
-            for result in payload.results
-            for evidence in result.evidence_refs
-        }
-        accepted: list[SiteFinding] = []
-        rejected: list[str] = []
-        for result in payload.results:
-            for finding in result.findings:
-                if finding.confidence >= 0.75 and finding.evidence_ref_id in evidence_by_id:
-                    accepted.append(finding)
-                else:
-                    rejected.append(finding.title)
-        return AdjudicatedFindings(
-            accepted_findings=accepted,
-            rejected_titles=rejected,
-            evidence_refs=list(evidence_by_id.values()),
+
+def _write_audit_report(_context, results: list) -> SiteAuditReport:
+    # Adjudicate grounded findings, then perform the external write (engine-gated side effect).
+    url = results[0].url if results else ""
+    evidence_ids = {ev.ref_id for r in results for ev in r.evidence_refs}
+    accepted: list[SiteFinding] = []
+    rejected: list[str] = []
+    for r in results:
+        for f in r.findings:
+            if f.confidence >= 0.75 and f.evidence_ref_id in evidence_ids:
+                accepted.append(f)
+            else:
+                rejected.append(f.title)
+    sink = InMemoryExternalWriteSink()
+    write = sink.write(ExternalWriteRequest(
+        target="site_audit_report_store", operation="upsert_report", idempotency_key=url,
+        payload={"url": url, "finding_count": len(accepted)},
+        evidence_refs=[ev for r in results for ev in r.evidence_refs], privacy_level="confidential",
+    ))
+    return SiteAuditReport(
+        url=url, accepted_findings=accepted, rejected_titles=rejected,
+        write_status=write.status, summary=f"{len(accepted)} grounded finding(s)",
+    )
+
+
+class SiteAuditPack:
+    def register(self, builder) -> None:
+        builder.register_capability("plan_site_audit", _plan_site_audit, kind="deterministic", input_model=SiteAuditInput)
+        builder.register_capability("run_site_scenario", _run_site_scenario, kind="agent", input_model=SiteScenarioInput, output_model=SiteScenarioResult)
+        builder.register_capability("write_audit_report", _write_audit_report, kind="external", side_effects=["external_write"], output_model=SiteAuditReport)
+        builder.register_workflow(
+            WorkflowBuilder("site_audit")
+            .step("plan_site_audit")
+            .fanout("run_scenarios", capability="run_site_scenario", items_key="plan_site_audit", max_parallel=2)
+            .step("write_audit_report")
+            .build(),
+            profile=WorkflowProfile(workflow_type="site_audit", safety=SafetyPolicy(allowed_side_effects=["external_write"])),
         )
 
-    registry.register(
-        CapabilitySpec(
-            name="plan_site_audit",
-            kind="deterministic",
-            input_model=SiteAuditInput,
-            output_model=SiteAuditPlan,
-        ),
-        plan_site_audit,
-    )
-    registry.register(
-        CapabilitySpec(
-            name="run_site_scenario",
-            kind="agent",
-            input_model=SiteScenarioInput,
-            output_model=SiteScenarioResult,
-        ),
-        run_site_scenario,
-    )
-    registry.register(
-        CapabilitySpec(
-            name="run_catalog_checks",
-            kind="deterministic",
-            input_model=SiteAuditInput,
-            output_model=SiteScenarioResult,
-        ),
-        run_catalog_checks,
-    )
-    registry.register(
-        CapabilitySpec(
-            name="adjudicate_findings",
-            kind="deterministic",
-            input_model=SiteAuditEvidence,
-            output_model=AdjudicatedFindings,
-        ),
-        adjudicate_findings,
-    )
-    registry.register(
-        CapabilitySpec(
-            name="write_audit_report",
-            kind="external",
-            input_model=ExternalWriteRequest,
-            output_model=ExternalWriteResult,
-            side_effects=["external_write"],
-        ),
-        ExternalAdapterCapability(InMemoryExternalWriteSink()),
-    )
-    return registry
+
+async def run_toy_site_audit_pilot(payload: SiteAuditInput):
+    engine = WorkflowEngineBuilder().register_pack(SiteAuditPack()).build()
+    result = await engine.run("site_audit", payload)
+    return result.output, engine.trace_sink
 
 
-async def run_toy_site_audit_pilot(payload: SiteAuditInput) -> tuple[SiteAuditReport, InMemoryTraceSink]:
-    registry = build_toy_site_audit_registry()
-    trace = InMemoryTraceSink()
-    runtime = CapabilityRuntime(registry, trace)
-    profile = WorkflowProfile(
-        workflow_type="site_audit",
-        profile_id="toy-site-audit",
-        constraints={"rubric": payload.rubric, "max_parallel": 2},
-        requested_capabilities=[
-            "plan_site_audit",
-            "run_site_scenario",
-            "run_catalog_checks",
-            "adjudicate_findings",
-            "write_audit_report",
-        ],
-        safety=SafetyPolicy(allowed_side_effects=["external_write"]),
-    )
-    plan = RuntimePlanCompiler(
-        supported_constraint_keys={"rubric", "max_parallel"}
-    ).compile(profile, registry)
-    goal = WorkflowGoal(
-        workflow_type="site_audit",
-        objective="QA this website against a compact rubric and grounded evidence.",
-        delivery_target="report",
-    )
-    context = capability_context_for_goal(goal, plan=plan, workflow_id="toy-site-audit")
-
-    audit_plan = await runtime.invoke("plan_site_audit", payload, context)
-    scenario_results = await gather_capabilities(
-        runtime,
-        [
-            CapabilityCall(
-                "run_site_scenario",
-                SiteScenarioInput(url=payload.url, scenario=scenario),
-            )
-            for scenario in audit_plan.output.scenarios
-        ],
-        context,
-        max_parallel=2,
-    )
-    catalog_result = await runtime.invoke("run_catalog_checks", payload, context)
-    evidence = SiteAuditEvidence(
-        results=[
-            result.output
-            for result in [*scenario_results, catalog_result]
-            if result.status == "accepted" and result.output is not None
-        ]
-    )
-    adjudicated = await runtime.invoke("adjudicate_findings", evidence, context)
-    write = await runtime.invoke(
-        "write_audit_report",
-        ExternalWriteRequest(
-            target="site_audit_report_store",
-            operation="upsert_report",
-            idempotency_key=payload.url,
-            payload={
-                "url": payload.url,
-                "finding_count": len(adjudicated.output.accepted_findings),
-            },
-            evidence_refs=adjudicated.output.evidence_refs,
-            privacy_level="confidential",
-        ),
-        context,
-    )
-    return (
-        SiteAuditReport(
-            url=payload.url,
-            accepted_findings=adjudicated.output.accepted_findings,
-            rejected_titles=adjudicated.output.rejected_titles,
-            write_status=write.output.status,
-            summary=f"{len(adjudicated.output.accepted_findings)} grounded finding(s)",
-        ),
-        trace,
-    )
+# ======================================================================================
+# Toy 4 — inventory (evidence refs -> extract -> dedupe -> external write)
+# ======================================================================================
 
 
 class InventoryPilotInput(BaseModel):
     location_hint: str | None = None
-    evidence_refs: list[EvidenceRef] = Field(default_factory=list)
-
-
-class InventoryEvidenceBundle(BaseModel):
-    evidence_refs: list[EvidenceRef] = Field(default_factory=list)
-
-
-class InventoryExtractionInput(BaseModel):
-    location: str
     evidence_refs: list[EvidenceRef] = Field(default_factory=list)
 
 
@@ -502,203 +317,150 @@ class InventoryObservation(BaseModel):
     evidence_ref_ids: list[str] = Field(default_factory=list)
 
 
-class InventoryObservationSet(BaseModel):
-    observations: list[InventoryObservation] = Field(default_factory=list)
+class InventoryWork(BaseModel):
+    location: str
     evidence_refs: list[EvidenceRef] = Field(default_factory=list)
+    observations: list[InventoryObservation] = Field(default_factory=list)
 
 
 class InventoryPilotResult(BaseModel):
     observations: list[InventoryObservation] = Field(default_factory=list)
     write_status: str
-    scheduling_actions: list[str] = Field(default_factory=list)
     used_provisional_location: bool = False
 
 
-def build_toy_inventory_registry() -> tuple[CapabilityRegistry, InMemoryHumanClarificationChannel]:
-    """Build a fake-backed inventory pilot for evidence/session pressure testing."""
+def _select_inventory_evidence(_context, payload: InventoryPilotInput) -> InventoryWork:
+    return InventoryWork(location=payload.location_hint or "unknown location", evidence_refs=payload.evidence_refs)
 
-    registry = CapabilityRegistry()
-    clarification_channel = InMemoryHumanClarificationChannel()
 
-    def select_inventory_evidence(_context, payload: InventoryPilotInput) -> InventoryEvidenceBundle:
-        return InventoryEvidenceBundle(evidence_refs=payload.evidence_refs)
+def _extract_inventory_items(_context, work: InventoryWork) -> InventoryWork:
+    observations: list[InventoryObservation] = []
+    for ev in work.evidence_refs:
+        if ev.role == "contents":
+            observations.append(InventoryObservation(item="glue", location=work.location, confidence=0.88, evidence_ref_ids=[ev.ref_id]))
+            observations.append(InventoryObservation(item="USB-C cable", location=work.location, confidence=0.81, evidence_ref_ids=[ev.ref_id]))
+    return work.model_copy(update={"observations": observations})
 
-    def extract_inventory_items(_context, payload: InventoryExtractionInput) -> InventoryObservationSet:
-        observations: list[InventoryObservation] = []
-        for evidence in payload.evidence_refs:
-            if evidence.role == "contents":
-                observations.append(
-                    InventoryObservation(
-                        item="glue",
-                        location=payload.location,
-                        confidence=0.88,
-                        evidence_ref_ids=[evidence.ref_id],
-                    )
-                )
-                observations.append(
-                    InventoryObservation(
-                        item="USB-C cable",
-                        location=payload.location,
-                        confidence=0.81,
-                        evidence_ref_ids=[evidence.ref_id],
-                    )
-                )
-        return InventoryObservationSet(
-            observations=observations,
-            evidence_refs=payload.evidence_refs,
+
+def _dedupe_inventory_observations(_context, work: InventoryWork) -> InventoryWork:
+    by_key: dict[tuple[str, str], InventoryObservation] = {}
+    for obs in work.observations:
+        key = (obs.item.lower(), obs.location.lower())
+        if key not in by_key or obs.confidence > by_key[key].confidence:
+            by_key[key] = obs
+    return work.model_copy(update={"observations": list(by_key.values())})
+
+
+def _build_inventory_write(_context, work: InventoryWork) -> ExternalWriteRequest:
+    return ExternalWriteRequest(
+        target="inventory_index", operation="upsert_observations", idempotency_key=f"inventory:{work.location}",
+        payload={"location": work.location, "items": [o.item for o in work.observations]},
+        evidence_refs=work.evidence_refs, privacy_level="confidential",
+    )
+
+
+class InventoryPack:
+    def register(self, builder) -> None:
+        builder.register_capability("select_inventory_evidence", _select_inventory_evidence, kind="deterministic", input_model=InventoryPilotInput, output_model=InventoryWork)
+        builder.register_capability("extract_inventory_items", _extract_inventory_items, kind="llm", input_model=InventoryWork, output_model=InventoryWork)
+        builder.register_capability("dedupe_inventory_observations", _dedupe_inventory_observations, kind="deterministic", input_model=InventoryWork, output_model=InventoryWork)
+        builder.register_capability("build_inventory_write", _build_inventory_write, kind="deterministic", input_model=InventoryWork, output_model=ExternalWriteRequest)
+        builder.register_capability("write_inventory_observations", ExternalAdapterCapability(InMemoryExternalWriteSink()), spec=None, kind="external", input_model=ExternalWriteRequest, output_model=ExternalWriteResult, side_effects=["external_write"])
+        builder.register_workflow(
+            WorkflowBuilder("inventory_observation")
+            .step("select_inventory_evidence")
+            .step("extract_inventory_items")
+            .step("dedupe_inventory_observations")
+            .step("build_inventory_write")
+            .step("write_inventory_observations")
+            .build(),
+            profile=WorkflowProfile(workflow_type="inventory_observation", safety=SafetyPolicy(allowed_side_effects=["external_write"])),
         )
 
-    def dedupe_inventory_observations(_context, payload: InventoryObservationSet) -> InventoryObservationSet:
-        by_key: dict[tuple[str, str], InventoryObservation] = {}
-        for observation in payload.observations:
-            key = (observation.item.lower(), observation.location.lower())
-            existing = by_key.get(key)
-            if not existing or observation.confidence > existing.confidence:
-                by_key[key] = observation
-        return InventoryObservationSet(
-            observations=list(by_key.values()),
-            evidence_refs=payload.evidence_refs,
-        )
 
-    registry.register(
-        CapabilitySpec(
-            name="select_inventory_evidence",
-            kind="deterministic",
-            input_model=InventoryPilotInput,
-            output_model=InventoryEvidenceBundle,
-        ),
-        select_inventory_evidence,
-    )
-    ask_location = HumanClarificationCapability(
-        clarification_channel,
-        name="ask_location_clarification",
-    )
-    registry.register(ask_location.spec, ask_location)
-    registry.register(
-        CapabilitySpec(
-            name="extract_inventory_items",
-            kind="llm",
-            input_model=InventoryExtractionInput,
-            output_model=InventoryObservationSet,
-        ),
-        extract_inventory_items,
-    )
-    registry.register(
-        CapabilitySpec(
-            name="dedupe_inventory_observations",
-            kind="deterministic",
-            input_model=InventoryObservationSet,
-            output_model=InventoryObservationSet,
-        ),
-        dedupe_inventory_observations,
-    )
-    registry.register(
-        CapabilitySpec(
-            name="write_inventory_observations",
-            kind="external",
-            input_model=ExternalWriteRequest,
-            output_model=ExternalWriteResult,
-            side_effects=["external_write"],
-        ),
-        ExternalAdapterCapability(InMemoryExternalWriteSink()),
-    )
-    return registry, clarification_channel
-
-
-async def run_toy_inventory_pilot(payload: InventoryPilotInput) -> tuple[InventoryPilotResult, InMemoryTraceSink]:
-    registry, _clarification_channel = build_toy_inventory_registry()
-    trace = InMemoryTraceSink()
-    runtime = CapabilityRuntime(registry, trace)
-    profile = WorkflowProfile(
-        workflow_type="inventory_observation",
-        profile_id="toy-inventory",
-        constraints={"evidence_strategy": "refs_only"},
-        requested_capabilities=[
-            "select_inventory_evidence",
-            "ask_location_clarification",
-            "extract_inventory_items",
-            "dedupe_inventory_observations",
-            "write_inventory_observations",
-        ],
-        safety=SafetyPolicy(allowed_side_effects=["notification", "external_write"]),
-        scheduling=SchedulingPolicy(mode="run_latest", stale_after_s=5),
-    )
-    plan = RuntimePlanCompiler(
-        supported_constraint_keys={"evidence_strategy"}
-    ).compile(profile, registry)
-    goal = WorkflowGoal(
-        workflow_type="inventory_observation",
-        objective="Extract compact item/location observations from frame evidence.",
-        delivery_target="inventory_index",
-    )
-    context = capability_context_for_goal(goal, plan=plan, workflow_id="toy-inventory")
-
-    scheduler = WorkflowScheduler(clock=lambda: 100.0)
-    stale = scheduler.submit(
-        key="camera-1",
-        run_id="old-frame",
-        payload={},
-        policy=SchedulingPolicy(mode="drop_stale", stale_after_s=5),
-        created_at=90.0,
-    )
-    accepted = scheduler.submit(
-        key="camera-1",
-        run_id="latest-frame",
-        payload={},
-        policy=SchedulingPolicy(mode="run_latest"),
-    )
-
-    evidence = await runtime.invoke("select_inventory_evidence", payload, context)
-    used_provisional_location = False
-    location = payload.location_hint
-    if not location:
-        clarification = await runtime.invoke(
-            "ask_location_clarification",
-            HumanClarificationRequest(
-                question="Where is this cabinet or drawer?",
-                options=[
-                    ClarificationOption(
-                        label="Living room closet",
-                        value="living room closet near table",
-                    )
-                ],
-                allow_free_text=True,
-                default_value="unknown location",
-                continue_without_answer=True,
-                timeout_s=0,
-            ),
-            context,
-        )
-        location = clarification.output.value or "unknown location"
-        used_provisional_location = clarification.output.provisional
-
-    extracted = await runtime.invoke(
-        "extract_inventory_items",
-        InventoryExtractionInput(location=location, evidence_refs=evidence.output.evidence_refs),
-        context,
-    )
-    deduped = await runtime.invoke("dedupe_inventory_observations", extracted.output, context)
-    write = await runtime.invoke(
-        "write_inventory_observations",
-        ExternalWriteRequest(
-            target="inventory_index",
-            operation="upsert_observations",
-            idempotency_key=f"inventory:{location}",
-            payload={
-                "location": location,
-                "items": [observation.item for observation in deduped.output.observations],
-            },
-            evidence_refs=deduped.output.evidence_refs,
-            privacy_level="confidential",
-        ),
-        context,
-    )
+async def run_toy_inventory_pilot(payload: InventoryPilotInput):
+    engine = WorkflowEngineBuilder().register_pack(InventoryPack()).build()
+    result = await engine.run("inventory_observation", payload)
+    work: InventoryWork = result.node("dedupe_inventory_observations").output
+    write: ExternalWriteResult = result.output
     return (
         InventoryPilotResult(
-            observations=deduped.output.observations,
-            write_status=write.output.status,
-            scheduling_actions=[stale.action, accepted.action],
-            used_provisional_location=used_provisional_location,
+            observations=work.observations,
+            write_status=write.status,
+            used_provisional_location=(payload.location_hint is None),
         ),
-        trace,
+        engine.trace_sink,
+    )
+
+
+# ======================================================================================
+# Toy 5 — card generation (anki-shaped, product-neutral: plan -> branch -> render)
+# ======================================================================================
+
+
+class CardPlan(BaseModel):
+    kind: str
+    content: str
+
+
+class GeneratedCard(BaseModel):
+    front: str
+    back: str
+    kind: str
+
+
+def _plan_card(_context, text: str) -> CardPlan:
+    return CardPlan(kind="visual" if "image" in text.lower() else "text", content=text)
+
+
+def _route_card_kind(_context, plan: CardPlan) -> BranchDecision:
+    return BranchDecision(label=plan.kind)
+
+
+def _render_text_card(_context, plan: CardPlan) -> GeneratedCard:
+    return GeneratedCard(front=f"Q: {plan.content}", back="A", kind="text")
+
+
+def _render_visual_card(_context, plan: CardPlan) -> GeneratedCard:
+    return GeneratedCard(front="[image]", back=plan.content, kind="visual")
+
+
+class CardGenerationPack:
+    def register(self, builder) -> None:
+        builder.register_capability("plan_card", _plan_card, kind="llm", output_model=CardPlan)
+        builder.register_capability("route_card_kind", _route_card_kind, kind="deterministic", output_model=BranchDecision)
+        builder.register_capability("render_text_card", _render_text_card, kind="llm", input_model=CardPlan, output_model=GeneratedCard)
+        builder.register_capability("render_visual_card", _render_visual_card, kind="media", input_model=CardPlan, output_model=GeneratedCard)
+        builder.register_workflow(
+            WorkflowBuilder("card_generation")
+            .step("plan_card")
+            .branch("route_card_kind", {"text": "render_text_card", "visual": "render_visual_card"})
+            .step("render_text_card")
+            .step("render_visual_card")
+            .build()
+        )
+
+
+async def run_toy_card_generation(text: str):
+    engine = WorkflowEngineBuilder().register_pack(CardGenerationPack()).build()
+    result = await engine.run("card_generation", text)
+    return result.output, engine.trace_sink
+
+
+# ======================================================================================
+# Same-executor demo — one engine (one WorkflowExecutor) runs all example workflows
+# ======================================================================================
+
+
+def build_demo_engine() -> WorkflowEngine:
+    """One DI-wired engine registering every example pack — proves a single executor runs them all."""
+
+    return (
+        WorkflowEngineBuilder()
+        .register_pack(SummaryPack())
+        .register_pack(CalendarPack())
+        .register_pack(SiteAuditPack())
+        .register_pack(InventoryPack())
+        .register_pack(CardGenerationPack())
+        .build()
     )

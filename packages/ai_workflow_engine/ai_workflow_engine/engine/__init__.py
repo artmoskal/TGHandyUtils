@@ -12,6 +12,7 @@ from ai_workflow_engine.engine.capabilities import (
     TraceSink,
     artifact_result,
     capability_context_for_goal,
+    format_trace_events,
     gather_capabilities,
 )
 from ai_workflow_engine.engine.checkpoints import (
@@ -77,6 +78,7 @@ __all__ = [
     "WorkflowSupervisor",
     "artifact_result",
     "capability_context_for_goal",
+    "format_trace_events",
     "gather_capabilities",
     "cleanup_artifacts",
 ]

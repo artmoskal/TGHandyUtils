@@ -9,6 +9,9 @@ description = "Small reusable AI workflow orchestration primitives."
 requires-python = ">=3.10"
 dependencies = [
     "langchain-core>=1.4.0",
+    # LangGraph is the WorkflowExecutor's internal execution backend: a WorkflowDefinition is compiled
+    # to a StateGraph in executor.py. Declared here so the engine is installable standalone.
+    "langgraph>=1.2.4",
     "pydantic>=2.13.0",
     "PyYAML>=6.0.2",
 ]

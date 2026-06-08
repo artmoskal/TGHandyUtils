@@ -21,6 +21,7 @@ from ai_workflow_engine.models import (
     WorkflowProfile,
     WorkflowRunContext,
     WorkflowTraceEvent,
+    WorkflowUsageSummary,
 )
 
 CapabilityHandler = Callable[[CapabilityContext, Any], Any]
@@ -282,3 +283,50 @@ async def gather_capabilities(
             return await runtime.invoke(call.name, call.payload, context, attempt=call.attempt)
 
     return await asyncio.gather(*(invoke(call) for call in calls))
+
+
+def format_trace_events(
+    events: Iterable[WorkflowTraceEvent],
+    *,
+    usage: WorkflowUsageSummary | None = None,
+    title: str = "Workflow trace",
+    max_value_len: int = 280,
+    max_total_len: int = 3500,
+) -> str:
+    """Render workflow trace events into a compact, human-readable run summary.
+
+    Reusable engine traceability: a product can forward this (e.g. to a chat transport) as a debug
+    message showing the key flow — nodes visited, branch decisions, per-node key info / LLM outputs
+    (from event metadata), timings, and a usage/cost footer. The renderer is product-neutral; the
+    domain detail comes from whatever each node records in ``WorkflowTraceEvent.metadata``.
+    """
+
+    lines: list[str] = [title]
+    for index, event in enumerate(events, start=1):
+        head = f"{index}. {event.node}"
+        if event.decision:
+            head += f" → {event.decision}"
+        if event.attempt and event.attempt > 1:
+            head += f" (attempt {event.attempt})"
+        if event.elapsed_ms:
+            head += f" [{event.elapsed_ms}ms]"
+        lines.append(head)
+        if event.error:
+            lines.append(f"   ⚠ {event.error}")
+        for key, value in (event.metadata or {}).items():
+            if value in (None, "", [], {}):
+                continue
+            rendered = str(value).replace("\n", " ")
+            if len(rendered) > max_value_len:
+                rendered = rendered[: max_value_len] + "…"
+            lines.append(f"   • {key}: {rendered}")
+    if usage is not None:
+        cost = usage.estimated_usd or 0.0
+        lines.append(
+            f"— {usage.text_call_count} text / {usage.image_call_count} image / "
+            f"{usage.tool_call_count} tool calls, {usage.total_tokens} tokens, ${cost:.4f}"
+        )
+    text = "\n".join(lines)
+    if len(text) > max_total_len:
+        text = text[: max_total_len] + "\n…(trace truncated)"
+    return text
