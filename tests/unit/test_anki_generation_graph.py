@@ -120,15 +120,19 @@ class CapturingRunner:
         self.goal = None
         self.recursion_fallback = None
 
-    async def run(self, _graph, _state, *, goal, graph_config=None, recursion_fallback=None):
+    async def run(self, _graph, _state, *, workflow_type=None, goal, graph_config=None, recursion_fallback=None):
         self.graph_config = graph_config
         self.goal = goal
         self.recursion_fallback = recursion_fallback
+        # The engine executor reads the final workflow state from the runner result; the running
+        # workflow payload (the merged Anki state) lives under the "payload" key.
         return {
-            "rendered": RenderedCardSet(
-                cards=[AnkiCard(type="basic", question="Q", answer="A")],
-                image_asset_plan=ImageAssetPlan(image_role="ignore_media"),
-            )
+            "payload": {
+                "rendered": RenderedCardSet(
+                    cards=[AnkiCard(type="basic", question="Q", answer="A")],
+                    image_asset_plan=ImageAssetPlan(image_role="ignore_media"),
+                )
+            }
         }
 
 

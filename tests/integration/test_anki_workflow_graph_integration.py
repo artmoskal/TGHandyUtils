@@ -454,3 +454,80 @@ async def test_anki_workflow_auto_generated_image_countercurrent_graph_integrati
         media_files=[media.path],
     )
     _preserve_manual_review_artifacts("auto_generated_image_countercurrent", source, rendered, package_path)
+
+
+# --------------------------------------------------------------------------------------
+# Whole-flow processor check: real migrated graph -> AnkiProcessor -> Telegram delivery
+# (Telegram transport mocked at the boundary; the engine + graph + packaging are real.)
+# --------------------------------------------------------------------------------------
+
+from core.interfaces import ProcessingContext  # noqa: E402
+from services.content import anki_buffer  # noqa: E402
+from services.content.anki_processor import AnkiProcessor  # noqa: E402
+
+
+class _FakeStatusMessage:
+    def __init__(self):
+        self.deleted = False
+        self.edits = []
+
+    async def delete(self):
+        self.deleted = True
+
+    async def edit_text(self, text):
+        self.edits.append(text)
+
+
+class _FakeTelegramMessage:
+    def __init__(self):
+        self.chat = type("Chat", (), {"id": 999})()
+        self.message_id = 4242
+        self.replies = []
+        self.documents = []
+        self.photos = []
+        self.audios = []
+        self.status = _FakeStatusMessage()
+
+    async def reply(self, text, **kwargs):
+        self.replies.append((text, kwargs))
+        return self.status
+
+    async def reply_document(self, document, **kwargs):
+        self.documents.append(
+            {"filename": getattr(document, "filename", None), "caption": kwargs.get("caption", "")}
+        )
+
+    async def reply_photo(self, photo, **kwargs):
+        self.photos.append({"caption": kwargs.get("caption", "")})
+
+    async def reply_audio(self, audio, **kwargs):
+        self.audios.append({"caption": kwargs.get("caption", "")})
+
+
+@pytest.mark.api
+@pytest.mark.asyncio
+async def test_anki_processor_whole_flow_real_graph_delivers_apkg(tmp_path):
+    config = _configure_graph_models()
+    service = AnkiCardService(config)
+    graph = _production_graph(service, config, tmp_path, enable_image_generation=False)
+    user_id = 778899
+    anki_buffer.clear(user_id)
+    processor = AnkiProcessor(service, anki_graph=graph)
+    message = _FakeTelegramMessage()
+
+    result = await processor.process(
+        ProcessingContext(
+            message=message,
+            thread_content=[("User", "In REST APIs, CRUD stands for Create, Read, Update, and Delete.")],
+            user_id=user_id,
+            owner_name="User",
+        )
+    )
+
+    assert result.success is True
+    assert len(graph.last_run_state["trace"]) > 0  # ran through the migrated engine
+    assert len(message.documents) == 1
+    assert message.documents[0]["filename"] == "flashcards.apkg"
+    caption = message.documents[0]["caption"]
+    assert "CRUD" in caption or "Create" in caption
+    assert message.status.deleted is True

@@ -167,7 +167,9 @@ class AnkiGenerationGraph:
         self.capability_registry = CapabilityRegistry()
         self.capability_runtime = CapabilityRuntime(self.capability_registry, self.capability_trace_sink)
         self.last_run_state: Optional[AnkiGraphState] = None
-        self._compiled_graph = None
+        # The Anki workflow now runs on the reusable executable engine (no product-owned graph).
+        self._workflow_engine = None
+        self._capabilities_registered = False
 
     @staticmethod
     def _normalize_style_reference_images(style_reference_images: Sequence[Any]) -> list[str]:
@@ -184,7 +186,7 @@ class AnkiGenerationGraph:
         return normalized
 
     async def run(self, source: ContentSource, message: Any = None) -> RenderedCardSet:
-        graph = self._graph()
+        engine = self._engine()
         runtime_plan = self._runtime_plan_for_source(source)
         goal = WorkflowGoal(
             workflow_type="anki_generation",
@@ -205,28 +207,51 @@ class AnkiGenerationGraph:
                 "telegram_message_id": self._optional_int(getattr(message, "message_id", None)),
             },
         )
-        result = await self.runner.run(
-            graph,
-            {
-                "source": source,
-                "trace": [],
-                "retry_counts": {},
-                "generated_media": [],
-                "voice_generated_media": [],
-                "runtime_plan": runtime_plan,
-            },
-            goal=goal,
-            graph_config={"recursion_limit": self._graph_recursion_limit()},
-            recursion_fallback=self._recursion_fallback,
+        run_context = WorkflowRunContext(
+            workflow_id=str(uuid.uuid4()),
+            workflow_type=goal.workflow_type,
+            goal_id=goal.goal_id,
+            delivery_target=goal.delivery_target,
+            user_id=goal.user_id,
+            metadata=dict(goal.metadata),
         )
-        self.last_run_state = result
-        rendered = result.get("rendered")
+        initial_state: AnkiGraphState = {
+            "source": source,
+            "trace": [],
+            "retry_counts": {},
+            "generated_media": [],
+            "voice_generated_media": [],
+            "runtime_plan": runtime_plan,
+            "workflow_goal": goal,
+            "workflow_context": run_context,
+        }
+        result = await engine.run(
+            "anki_generation",
+            initial_state,
+            goal=goal,
+            recursion_fallback=self._engine_recursion_fallback,
+            recursion_limit=self._graph_recursion_limit(),
+        )
+        final_state = result.output if isinstance(result.output, dict) else {}
+        self.last_run_state = final_state
+        rendered = final_state.get("rendered")
         if not rendered:
             raise ParsingError("Anki graph produced no rendered cards")
-        usage_summary = result.get("usage_summary")
+        usage_summary = result.usage or final_state.get("usage_summary")
         if usage_summary:
             rendered = rendered.model_copy(update={"usage_summary": usage_summary})
         return rendered
+
+    def _engine_recursion_fallback(self, wrapper_state: Dict[str, Any], exc: Exception) -> Dict[str, Any]:
+        """Adapt the product recursion fallback to the engine's wrapper state shape.
+
+        The engine carries the Anki state under the ``payload`` key, so unwrap it, run the existing
+        text fallback, and return an engine-level update that re-wraps the merged Anki state.
+        """
+
+        anki_state = wrapper_state.get("payload", {}) or {}
+        fallback_update = self._recursion_fallback(anki_state, exc)
+        return {"payload": {**anki_state, **fallback_update}}
 
     def _recursion_fallback(self, state: Dict[str, Any], exc: Exception) -> Dict[str, Any]:
         fallback_state: AnkiGraphState = dict(state)
@@ -290,84 +315,168 @@ class AnkiGenerationGraph:
             + (4 * self.max_voice_generations_per_run)
         )
 
-    def _graph(self):
-        if self._compiled_graph is not None:
-            return self._compiled_graph
+    def _engine(self):
+        """Build (once) the executable workflow engine that runs the Anki workflow.
 
-        from langgraph.graph import END, START, StateGraph
+        Orchestration (node dispatch, branching, retry/retrace cycles, fallback, side-effect/budget
+        policy, trace) is owned by the reusable engine. This class contributes only the domain
+        capabilities, the routing decisions, and the declarative workflow shape — no graph wiring.
+        """
 
-        graph = StateGraph(AnkiGraphState)
-        graph.add_node("parse_directives", self._node("parse_directives", self._parse_directives))
-        graph.add_node("plan_image_assets", self._node("plan_image_assets", self._plan_image_assets))
-        graph.add_node("plan_card_type", self._node("plan_card_type", self._plan_card_type))
-        graph.add_node("prepare_text_scenario", self._node("prepare_text_scenario", self._prepare_text_scenario))
-        graph.add_node("prepare_cloze_scenario", self._node("prepare_cloze_scenario", self._prepare_cloze_scenario))
-        graph.add_node("prepare_visual_scenario", self._node("prepare_visual_scenario", self._prepare_visual_scenario))
-        graph.add_node("validate_text_scenario", self._node("validate_text_scenario", self._validate_text_scenario))
-        graph.add_node("validate_cloze_scenario", self._node("validate_cloze_scenario", self._validate_cloze_scenario))
-        graph.add_node("validate_visual_scenario", self._node("validate_visual_scenario", self._validate_visual_scenario))
-        graph.add_node("generate_image", self._node("generate_image", self._generate_image))
-        graph.add_node("generate_voice", self._node("generate_voice", self._generate_voice))
-        graph.add_node("render_text_or_cloze", self._node("render_text_or_cloze", self._render_text_or_cloze))
-        graph.add_node("render_visual", self._node("render_visual", self._render_visual))
-        graph.add_node("validate_rendered_cards", self._node("validate_rendered_cards", self._validate_rendered_cards))
-        graph.add_node("evaluate_rendered_cards", self._node("evaluate_rendered_cards", self._evaluate_rendered_cards))
-        graph.add_node("repair_rendered_cards", self._node("repair_rendered_cards", self._repair_rendered_cards))
-        graph.add_node("fallback_to_text", self._node("fallback_to_text", self._fallback_to_text))
-        graph.add_node("package_cards", self._node("package_cards", self._package_cards))
+        if self._workflow_engine is not None:
+            return self._workflow_engine
 
-        graph.add_edge(START, "parse_directives")
-        graph.add_edge("parse_directives", "plan_image_assets")
-        graph.add_edge("plan_image_assets", "plan_card_type")
-        graph.add_conditional_edges(
-            "plan_card_type",
-            self._route_card_kind,
-            {
+        from ai_workflow_engine import WorkflowEngine
+
+        self._register_workflow_capabilities()
+        engine = WorkflowEngine(
+            registry=self.capability_registry,
+            trace_sink=self.capability_trace_sink,
+        )
+        # Reuse the product runner so usage budget + recursion handling track app config.
+        engine.executor.runner = self.runner
+        engine.register_workflow(self._anki_workflow_definition(), profile=self._workflow_profile())
+        self._workflow_engine = engine
+        return engine
+
+    def _workflow_profile(self) -> WorkflowProfile:
+        config = getattr(self.anki_card_service, "config", None)
+        return WorkflowProfile(
+            workflow_type="anki_generation",
+            requested_capabilities=self.capability_registry.names(),
+            limits=RuntimeLimits(
+                max_steps=32,
+                max_retries=self.max_quality_repairs_per_run,
+                max_parallel_children=1,
+                max_estimated_usd=self._optional_float_config(config, "WORKFLOW_MAX_ESTIMATED_USD_PER_RUN"),
+            ),
+            safety=SafetyPolicy(
+                allowed_side_effects=["read_only", "local_write", "external_call", "notification"]
+            ),
+        )
+
+    def _register_workflow_capabilities(self) -> None:
+        if self._capabilities_registered:
+            return
+        node_fns = [
+            ("parse_directives", self._parse_directives),
+            ("plan_image_assets", self._plan_image_assets),
+            ("plan_card_type", self._plan_card_type),
+            ("prepare_text_scenario", self._prepare_text_scenario),
+            ("prepare_cloze_scenario", self._prepare_cloze_scenario),
+            ("prepare_visual_scenario", self._prepare_visual_scenario),
+            ("validate_text_scenario", self._validate_text_scenario),
+            ("validate_cloze_scenario", self._validate_cloze_scenario),
+            ("validate_visual_scenario", self._validate_visual_scenario),
+            ("generate_image", self._generate_image),
+            ("generate_voice", self._generate_voice),
+            ("render_text_or_cloze", self._render_text_or_cloze),
+            ("render_visual", self._render_visual),
+            ("validate_rendered_cards", self._validate_rendered_cards),
+            ("evaluate_rendered_cards", self._evaluate_rendered_cards),
+            ("repair_rendered_cards", self._repair_rendered_cards),
+            ("fallback_to_text", self._fallback_to_text),
+            ("package_cards", self._package_cards),
+        ]
+        for name, fn in node_fns:
+            if name in self.capability_registry.names():
+                continue
+            self.capability_registry.register(
+                CapabilitySpec(
+                    name=name,
+                    kind=self._capability_kind(name),
+                    description=f"Anki workflow node: {name}",
+                    side_effects=self._capability_side_effects(name),
+                ),
+                self._node_handler(name, fn),
+            )
+        route_fns = [
+            ("route_card_kind", self._route_card_kind),
+            ("route_text_validation", self._route_scenario_validation),
+            ("route_cloze_validation", self._route_scenario_validation),
+            ("route_visual_validation", self._route_visual_validation),
+            ("route_image_generation", self._route_image_generation),
+            ("route_rendered_validation", self._route_rendered_validation),
+            ("route_quality_evaluation", self._route_quality_evaluation),
+            ("route_render_repair", self._route_render_repair),
+        ]
+        for name, route_fn in route_fns:
+            if name in self.capability_registry.names():
+                continue
+            self.capability_registry.register(
+                CapabilitySpec(name=name, kind="deterministic", description=f"Anki routing decision: {name}"),
+                self._route_decider(route_fn),
+            )
+        self._capabilities_registered = True
+
+    def _node_handler(self, name: str, fn):
+        """Wrap a node function as a full-state-merging capability executed by the engine.
+
+        Preserves prior node behavior: run the function, record the Anki trace + decision, and on
+        error (except the terminal text fallback) capture validation_error so the engine's routing
+        layer recovers instead of crashing.
+        """
+
+        async def handler(_context: CapabilityContext, state: AnkiGraphState) -> Dict[str, Any]:
+            start = time.monotonic()
+            try:
+                update = fn(state)
+                if inspect.isawaitable(update):
+                    update = await update
+                update = update or {}
+                elapsed_ms = int((time.monotonic() - start) * 1000)
+                decision = self._decision_for_node(name, update)
+                merged = self._merge_trace(state, update, name, decision=decision, elapsed_ms=elapsed_ms)
+                return {**state, **merged}
+            except Exception as exc:
+                elapsed_ms = int((time.monotonic() - start) * 1000)
+                logger.error("Anki workflow node failed %s: %s", name, exc)
+                if name == "fallback_to_text":
+                    raise
+                merged = self._merge_trace(
+                    state, {"validation_error": str(exc)}, name, error=str(exc), elapsed_ms=elapsed_ms
+                )
+                return {**state, **merged}
+
+        return handler
+
+    @staticmethod
+    def _route_decider(route_fn):
+        def decider(_context: CapabilityContext, state: AnkiGraphState) -> str:
+            return route_fn(state)
+
+        return decider
+
+    def _anki_workflow_definition(self):
+        from ai_workflow_engine.workflow import END, WorkflowDefinition, WorkflowEdge, WorkflowNode
+
+        steps = [
+            "parse_directives", "plan_image_assets", "plan_card_type",
+            "prepare_text_scenario", "prepare_cloze_scenario", "prepare_visual_scenario",
+            "validate_text_scenario", "validate_cloze_scenario", "validate_visual_scenario",
+            "generate_image", "generate_voice", "render_text_or_cloze", "render_visual",
+            "validate_rendered_cards", "evaluate_rendered_cards", "repair_rendered_cards",
+            "fallback_to_text", "package_cards",
+        ]
+        branches = {
+            "route_card_kind": {
                 "basic": "prepare_text_scenario",
                 "cloze": "prepare_cloze_scenario",
                 "visual_basic": "prepare_visual_scenario",
             },
-        )
-        graph.add_edge("prepare_text_scenario", "validate_text_scenario")
-        graph.add_edge("prepare_cloze_scenario", "validate_cloze_scenario")
-        graph.add_edge("prepare_visual_scenario", "validate_visual_scenario")
-        graph.add_conditional_edges(
-            "validate_text_scenario",
-            self._route_scenario_validation,
-            {"valid": "render_text_or_cloze", "retry": "prepare_text_scenario", "fallback": "fallback_to_text"},
-        )
-        graph.add_conditional_edges(
-            "validate_cloze_scenario",
-            self._route_scenario_validation,
-            {"valid": "render_text_or_cloze", "retry": "prepare_cloze_scenario", "fallback": "fallback_to_text"},
-        )
-        graph.add_conditional_edges(
-            "validate_visual_scenario",
-            self._route_visual_validation,
-            {
-                "render": "render_visual",
-                "generate": "generate_image",
-                "retry": "prepare_visual_scenario",
-                "fallback": "fallback_to_text",
+            "route_text_validation": {
+                "valid": "render_text_or_cloze", "retry": "prepare_text_scenario", "fallback": "fallback_to_text",
             },
-        )
-        graph.add_conditional_edges(
-            "generate_image",
-            self._route_image_generation,
-            {"valid": "render_visual", "fallback": "fallback_to_text"},
-        )
-        graph.add_edge("render_text_or_cloze", "validate_rendered_cards")
-        graph.add_edge("render_visual", "generate_voice")
-        graph.add_edge("generate_voice", "validate_rendered_cards")
-        graph.add_conditional_edges(
-            "validate_rendered_cards",
-            self._route_rendered_validation,
-            {"valid": "evaluate_rendered_cards", "fallback": "fallback_to_text"},
-        )
-        graph.add_conditional_edges(
-            "evaluate_rendered_cards",
-            self._route_quality_evaluation,
-            {
+            "route_cloze_validation": {
+                "valid": "render_text_or_cloze", "retry": "prepare_cloze_scenario", "fallback": "fallback_to_text",
+            },
+            "route_visual_validation": {
+                "render": "render_visual", "generate": "generate_image",
+                "retry": "prepare_visual_scenario", "fallback": "fallback_to_text",
+            },
+            "route_image_generation": {"valid": "render_visual", "fallback": "fallback_to_text"},
+            "route_rendered_validation": {"valid": "evaluate_rendered_cards", "fallback": "fallback_to_text"},
+            "route_quality_evaluation": {
                 "valid": "package_cards",
                 "retry_card_plan": "plan_card_type",
                 "repair_render": "repair_rendered_cards",
@@ -376,73 +485,43 @@ class AnkiGenerationGraph:
                 "retry_visual_scenario": "prepare_visual_scenario",
                 "fallback": "fallback_to_text",
             },
-        )
-        graph.add_conditional_edges(
-            "repair_rendered_cards",
-            self._route_render_repair,
-            {
-                "render_text_or_cloze": "render_text_or_cloze",
-                "render_visual": "render_visual",
+            "route_render_repair": {
+                "render_text_or_cloze": "render_text_or_cloze", "render_visual": "render_visual",
             },
-        )
-        graph.add_edge("fallback_to_text", "validate_rendered_cards")
-        graph.add_edge("package_cards", END)
-
-        self._compiled_graph = graph.compile()
-        return self._compiled_graph
-
-    def _node(self, name: str, fn):
-        self._ensure_capability_registered(name, fn)
-
-        async def wrapped(state: AnkiGraphState) -> Dict[str, Any]:
-            start = time.monotonic()
-            try:
-                result = await self.capability_runtime.invoke(
-                    name,
-                    state,
-                    self._capability_context_for_state(state),
-                    attempt=state.get("retry_counts", {}).get(name, 0) + 1,
-                )
-                if result.status == "failed":
-                    raise ParsingError(result.error or f"{name} capability failed")
-                update = result.output or {}
-                elapsed_ms = int((time.monotonic() - start) * 1000)
-                decision = self._decision_for_node(name, update)
-                return self._merge_trace(state, update, name, decision=decision, elapsed_ms=elapsed_ms)
-            except Exception as exc:
-                elapsed_ms = int((time.monotonic() - start) * 1000)
-                logger.error("Anki graph node failed %s: %s", name, exc)
-                if name == "fallback_to_text":
-                    raise
-                return self._merge_trace(
-                    state,
-                    {"validation_error": str(exc)},
-                    name,
-                    error=str(exc),
-                    elapsed_ms=elapsed_ms,
-                )
-
-        return wrapped
-
-    def _ensure_capability_registered(self, name: str, fn) -> None:
-        if name in self.capability_registry.names():
-            return
-
-        async def handler(_context: CapabilityContext, payload: AnkiGraphState):
-            update = fn(payload)
-            if inspect.isawaitable(update):
-                update = await update
-            return update
-
-        self.capability_registry.register(
-            CapabilitySpec(
-                name=name,
-                kind=self._capability_kind(name),
-                description=f"Anki workflow node: {name}",
-                side_effects=self._capability_side_effects(name),
-                timeout_s=None,
-            ),
-            handler,
+        }
+        sequential = [
+            ("parse_directives", "plan_image_assets"),
+            ("plan_image_assets", "plan_card_type"),
+            ("plan_card_type", "route_card_kind"),
+            ("prepare_text_scenario", "validate_text_scenario"),
+            ("prepare_cloze_scenario", "validate_cloze_scenario"),
+            ("prepare_visual_scenario", "validate_visual_scenario"),
+            ("validate_text_scenario", "route_text_validation"),
+            ("validate_cloze_scenario", "route_cloze_validation"),
+            ("validate_visual_scenario", "route_visual_validation"),
+            ("generate_image", "route_image_generation"),
+            ("render_text_or_cloze", "validate_rendered_cards"),
+            ("render_visual", "generate_voice"),
+            ("generate_voice", "validate_rendered_cards"),
+            ("validate_rendered_cards", "route_rendered_validation"),
+            ("evaluate_rendered_cards", "route_quality_evaluation"),
+            ("repair_rendered_cards", "route_render_repair"),
+            ("fallback_to_text", "validate_rendered_cards"),
+            ("package_cards", END),
+        ]
+        nodes = [WorkflowNode(id=name, kind="step", capability=name) for name in steps]
+        for bid, bmap in branches.items():
+            nodes.append(WorkflowNode(id=bid, kind="branch", decider=bid, branches=dict(bmap)))
+        edges = [WorkflowEdge(source=src, target=tgt) for src, tgt in sequential]
+        for bid, bmap in branches.items():
+            for label, tgt in bmap.items():
+                edges.append(WorkflowEdge(source=bid, target=tgt, label=label, conditional=True))
+        return WorkflowDefinition(
+            workflow_id="anki_generation",
+            nodes=nodes,
+            edges=edges,
+            entry="parse_directives",
+            description="Anki flashcard generation",
         )
 
     @staticmethod
@@ -501,33 +580,6 @@ class AnkiGenerationGraph:
             return float(value)
         except (TypeError, ValueError):
             return None
-
-    @staticmethod
-    def _capability_context_for_state(state: AnkiGraphState) -> CapabilityContext:
-        goal = state.get("workflow_goal")
-        if not isinstance(goal, WorkflowGoal):
-            source = state.get("source")
-            goal = WorkflowGoal(
-                workflow_type="anki_generation",
-                objective="Generate focused Anki flashcards",
-                user_id=getattr(source, "user_id", None),
-            )
-        run_context = state.get("workflow_context")
-        if not isinstance(run_context, WorkflowRunContext):
-            run_context = WorkflowRunContext(
-                workflow_id=str(uuid.uuid4()),
-                workflow_type=goal.workflow_type,
-                goal_id=goal.goal_id,
-                delivery_target=goal.delivery_target,
-                user_id=goal.user_id,
-                metadata=dict(goal.metadata),
-            )
-        return CapabilityContext(
-            goal=goal,
-            run_context=run_context,
-            plan=state.get("runtime_plan") if isinstance(state.get("runtime_plan"), RuntimePlan) else None,
-            usage_summary=state.get("usage_summary") or WorkflowUsageSummary(),
-        )
 
     @staticmethod
     def _merge_trace(
