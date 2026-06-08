@@ -1,117 +1,190 @@
-# GoPro Handoff - AI Workflow Engine
+# GoPro — AI Workflow Engine Usage Guide
 
-Status: package-level handoff for GoPro pilot adoption
-Source docs checked:
-`/Users/artemm/PycharmProjects/gopro-streaming/docs/architecture/workflow-execution-engine-requirements.md`,
-`/Users/artemm/PycharmProjects/gopro-streaming/docs/universal_event_descriptor/HOME_INVENTORY_CASE.md`
+Status: **engine implemented and ready for adoption** (2026-06-08). The `WorkflowDefinition` /
+`WorkflowExecutor` / DI layer this doc previously waited on is live and proven (Anki migrated +
+live-tested; one `WorkflowExecutor` runs four example workloads).
+Source needs: `/Users/artemm/PycharmProjects/gopro-streaming/docs/architecture/workflow-execution-engine-requirements.md`,
+`/Users/artemm/PycharmProjects/gopro-streaming/docs/universal_event_descriptor/HOME_INVENTORY_CASE.md`.
 
-## Fit
+This is a **how-to**: declare your flow, register your capabilities, run it. The engine owns every
+orchestration mechanic (branch, retry, retrace, fallback, fan-out, scheduling, side-effect/privacy/
+budget gates, trace, subworkflows). You own the domain: goal, graph shape, prompts, schemas, tools,
+adapters, delivery. **You write no orchestration loops** (a static guard enforces this).
 
-GoPro needs a reusable task engine, not a video-specific proof:
+---
 
-```text
-task/profile
-  -> evidence strategy
-  -> agent/tool plan
-  -> structured observations
-  -> external/domain system
-  -> feedback/search/notification
-```
-
-The workflow engine covers the reusable runtime layer:
-
-- `WorkflowProfile` compiles task goal, evidence strategy, allowed tools, model/backend policy,
-  budgets, fail mode, and scheduling into an inspectable `RuntimePlan`.
-- `WorkflowRunner` forwards explicit graph runtime config and lets GoPro-owned fallback/fail policy
-  handle bounded graph recursion exhaustion without leaking framework exceptions to users.
-- `WorkflowConfigLoader` / `WorkflowConfigBundle` load GoPro YAML profiles and model/backend
-  settings with app-supplied env override prefixes and secret-file rejection.
-- `EvidenceRef` carries frame/file/URI references and evidence roles without storing raw bytes in
-  shared workflow state.
-- `SessionState` models task-scoped state without owning durable domain CRUD.
-- `CapabilityRuntime` runs typed tools for frame selection, OCR/VLM inspection, object extraction,
-  search, user clarification, and domain handoff.
-- `AgentCapability` runs bounded reasoning/tool episodes with scoped registered tools, step caps,
-  tool-call history, and subscription-mode metadata when a profile needs agentic selection or
-  inspection instead of a fixed graph edge.
-- `WorkflowScheduler` supports live drop-stale, run-latest, queue, and single-flight-cancel policy.
-- `ExternalProcessCapability` can wrap CLI workers or local tools with timeout and partial-output
-  salvage.
-- `ExternalAdapterCapability` / `ExternalWriteRequest` can hand compact observations to a
-  product-owned inventory/index system with idempotency and privacy checks.
-- `gather_capabilities` supports bounded parallel evidence/tool calls.
-- `JsonlCheckpointStore` and `InMemoryCheckpointStore` can persist engine loop progress without
-  storing raw frame bytes.
-
-## Home Inventory Mapping
-
-Home inventory stresses the universal pieces:
-
-```text
-location_context evidence
-  -> transition evidence
-  -> contents evidence
-  -> object/location extractor
-  -> dedupe/merge
-  -> inventory/index adapter
-```
-
-Register product capabilities like:
+## 1. The whole adoption in three steps
 
 ```python
-registry.register(CapabilitySpec(name="select_inventory_evidence", kind="deterministic"), evidence_builder)
-registry.register(CapabilitySpec(name="extract_visible_items", kind="llm"), item_extractor)
-registry.register(CapabilitySpec(name="dedupe_inventory_observations", kind="deterministic"), deduper)
-registry.register(CapabilitySpec(name="ask_location_clarification", kind="human"), ask_user)
-registry.register(CapabilitySpec(name="write_inventory_observations", kind="external"), inventory_adapter)
+from ai_workflow_engine import (
+    WorkflowBuilder, WorkflowEngine, Retrace, BranchDecision, EvidenceRef, SchedulingPolicy,
+)
+
+LOCAL_VLM_LANE = SchedulingPolicy(mode="drop_not_queue", backend_key="local_vlm", max_backend_concurrency=1)
+
+# (1) DECLARE the flow — composable, typed, no orchestration code.
+home_inventory = (
+    WorkflowBuilder("home_inventory")
+    .step("select_evidence")                        # frame/clip refs in, evidence bundle out
+    .branch("evidence_quality_gate", {              # AI/deterministic decision -> route
+        "enough":    "extract_items",
+        "ambiguous": "ask_location",
+        "bad":       "fallback_or_fail",
+    })
+    .step("extract_items", scheduling=LOCAL_VLM_LANE)               # single-flight local-model lane (§5)
+    .evaluate("quality_gate", on_reject=Retrace("select_evidence"))  # re-run upstream w/ criticism
+    .subworkflow("enrich", workflow=ENRICH_FLOW)    # a workflow used AS a capability (recursive)
+    .step("write_inventory", required_side_effects=["external_write"])
+    .human("ask_location")                          # clarification landing pad (branch target)
+    .step("fallback_or_fail")
+    .build()
+)
+
+# (2) WIRE dependencies via DI — products inject; the engine enforces the contract.
+engine = WorkflowEngine.from_config("config/gopro.inventory.yaml")   # profile/limits/policies
+engine.register_pack(InventoryPack())               # registers capabilities + the workflow
+
+# (3) RUN — engine owns everything from here.
+result = await engine.run("home_inventory", video_segment, constraints={"camera_id": "kitchen-1"})
+# result.status / .output / .node("extract_items").output / .artifacts / .usage / .trace
 ```
 
-The inventory/index system remains outside the engine. It owns rooms, drawers, shelves, items,
-corrections, moved/removed lifecycle, search, and UI. The engine owns task/session orchestration,
-evidence roles, capability selection, trace, budget, and handoff.
+You never write `runtime.invoke(...)` + `if bad: retry/retrace` loops. The guard
+`test_examples_contain_no_product_orchestration_loops` fails the build if a pack does.
 
-## Minimal Pilot
+---
 
-The package already contains a fake-backed inventory proof that uses the reusable runtime shape
-GoPro needs: `run_toy_inventory_pilot(InventoryPilotInput(...))` in
-`ai_workflow_engine.examples`. It uses `EvidenceRef` instead of raw bytes, `WorkflowScheduler`
-drop/latest decisions, `HumanClarificationCapability` for ambiguous location, deterministic dedupe,
-and `ExternalAdapterCapability` for the inventory write. The proof is covered by
-`tests/unit/test_workflow_engine.py::test_toy_inventory_pilot_uses_evidence_refs_scheduler_and_clarification`.
+## 2. Building the workflow (`WorkflowBuilder`)
 
-Pilot flow:
+Every node kind is **executed by the engine**. `step` dispatches by the bound capability's `kind`
+(deterministic / tool / llm / media / voice / external), so most domain work is a `step`.
 
-```text
-WorkflowGoal("inventory this cabinet/drawer")
-  -> load YAML profile/model registry with WorkflowConfigLoader
-  -> compile RuntimePlan from inventory profile
-  -> select location_context + transition + contents EvidenceRef set
-  -> extract_visible_items
-  -> evaluate coverage/readability
-  -> ask_location_clarification through HumanClarificationCapability if location is ambiguous
-  -> dedupe_inventory_observations
-  -> write_inventory_observations through adapter
+| Builder call | Node | GoPro use |
+|---|---|---|
+| `.step(id, capability=…, input_key=…, output_key=…, retry=Retry(n), scheduling=…, required_side_effects=[…], allow_raw_media_export=False)` | step | frame selection, VLM/OCR inspect, extraction, dedupe, domain write |
+| `.branch(id, {label: target}, decider=…)` | branch | evidence-quality gate, location-known gate |
+| `.fanout(id, capability=…, items_key="prev.list", max_parallel=N)` | fanout | inspect N frames/regions concurrently, partial-failure isolated |
+| `.evaluate(id, target=…, evaluator=…, on_reject=Retry()/Retrace("node")/Fallback("cap"))` | evaluate | grounding/coverage gate that re-runs upstream with criticism, bounded |
+| `.subworkflow(id, workflow=child, budget_usd=…)` | subworkflow | visual-inspection / clarification / inventory-write sub-flows |
+| `.human(id, capability=…)` | human | ask-location clarification (pause / provisional / resume) |
+
+`input_key` reads any prior node's output (or `"__input__"` for the original payload). Sequential
+edges auto-wire between consecutive non-branch nodes; branches route only via labels.
+
+---
+
+## 3. Registering capabilities (a `WorkflowPack`)
+
+A pack bundles your domain registrations — domain specifics, **not** execution mechanics.
+
+```python
+class InventoryPack:
+    def register(self, builder) -> None:               # builder: WorkflowEngineBuilder | WorkflowEngine
+        builder.register_capability("select_evidence", SelectEvidenceTool(...),
+                                    kind="tool", input_model=VideoSegment, output_model=EvidenceBundle)
+        builder.register_capability("extract_items", VlmItemExtractor(...),
+                                    kind="llm", metered=True, timeout_s=30,        # cost + timeout enforced
+                                    input_model=ExtractionInput, output_model=ObservationSet)
+        builder.register_capability("evidence_quality_gate", QualityDecider(...), kind="deterministic")
+        builder.register_capability("quality_gate", GroundingEvaluator(...), kind="deterministic")
+        builder.register_capability("ask_location", HumanClarification(channel), kind="human")
+        builder.register_capability("write_inventory", InventoryAdapter(sink),
+                                    kind="external", side_effects=["external_write"],
+                                    input_model=ExternalWriteRequest, output_model=ExternalWriteResult)
+        builder.register_workflow(home_inventory, profile=inventory_profile)
 ```
 
-## Acceptance Gate
+Handler signature: `def handler(context, payload) -> output | CapabilityResult` (sync or async). A
+handler object exposing `.spec` (e.g. `HumanClarificationCapability`, `ExternalAdapterCapability`) is
+accepted directly. The `CapabilitySpec` carries input/output schema, `kind`, `side_effects`, `metered`
+(cost class), `timeout_s`, `max_attempts` — all engine-enforced.
 
-The GoPro pilot is acceptable only if:
+**Decisions are domain data, not loops:** a branch decider returns `BranchDecision(label="ambiguous")`
+(or a label string); an evaluator returns `CapabilityResult(status="accepted")` or
+`status="rejected", metadata={"criticism": "..."}`. The engine applies `on_reject`
+(retry/retrace/fallback) bounded by `RuntimeLimits` and threads the criticism into the re-run.
 
-- task state stores `EvidenceRef` and compact observations, not raw frame bytes;
-- unknown strategy/tool/profile names warn or fail according to strictness, never silently no-op;
-- live scheduling uses `WorkflowScheduler` policy rather than ad hoc timer drops;
-- every external/domain write is a registered capability with side-effect metadata;
-- compiled `RuntimePlan.safety.allowed_side_effects` allows the side-effect classes each capability
-  declares, or `CapabilityRuntime` will deny the capability before the handler executes;
-- location and item observations include evidence roles and confidence;
-- ambiguous location can route to human clarification instead of inventing a stable location;
-- background work can be dropped/coalesced without releasing single-flight locks incorrectly.
+---
 
-## Known Limit
+## 4. Config & profile (`from_config`, secrets-vs-yaml)
 
-The package-level inventory pilot is fake-backed. GoPro still has to bind real camera/frame
-selection, VLM/OCR/object extraction, location/domain state, and inventory search/index adapters.
-The current engine has checkpoint stores and loop checkpoint writes, but GoPro still owns durable
-home-inventory/domain state. Before promising restart-safe long-running sessions, wire latest
-engine checkpoints to the product's task state and verify resume semantics with camera/profile
-scheduling enabled.
+Non-secret config lives in YAML (`WorkflowProfile` / `ModelProfile`); secrets stay in env. Swap the
+profile to change models/limits/policy **without touching workflow code** (proven by
+`test_engine_from_config_swaps_profile`).
+
+```python
+profile = WorkflowProfile(
+    workflow_type="home_inventory",
+    safety=SafetyPolicy(fail_mode="fail_closed",
+                        allowed_side_effects=["external_write", "notification"]),  # raw_media_export absent
+    limits=RuntimeLimits(max_retries=1, max_retrace=1, max_parallel_children=4, max_estimated_usd=0.50),
+    scheduling=SchedulingPolicy(mode="live_latest_only"),
+)
+engine.register_workflow(home_inventory, profile=profile)
+```
+
+Per-run inputs (camera id, location hint) go via `engine.run(..., constraints={...})` or
+`goal=WorkflowGoal(..., constraints={...})`; they merge into `plan.constraints` for that run.
+
+---
+
+## 5. GoPro-specific engine features (do NOT reimplement these)
+
+- **Scheduling / backpressure (live streams).** Put `scheduling=SchedulingPolicy(...)` on the
+  backend-bound node. The engine holds the backend slot **until the worker actually completes** and
+  drops/queues concurrent calls; **cancellation does not release the slot early** (proven by
+  `test_backend_slot_held_until_worker_completes_blocks_concurrent_call`). Modes:
+  `single_flight_cancel`, `live_latest_only`, `run_latest`, `drop_stale` (`stale_after_s`),
+  `coalesce`, `queue`, `drop_not_queue`. Lane = `backend_key` + `max_backend_concurrency`.
+- **Evidence refs, never raw bytes in state.** `EvidenceRef(role="contents", uri="frame://cam-1/…",
+  media_type="image/jpeg", summary=…)`. Raw pixels stay out of state / trace / checkpoints.
+- **Raw-media export = double consent.** A capability exporting raw media declares
+  `side_effects=["raw_media_export"]`; the engine permits it only if the **profile** allows it **and**
+  the **node** sets `allow_raw_media_export=True` (profile is the ceiling, node opts in). Forbidden
+  export is **blocked before the handler runs** and traced (`test_raw_media_export_denied_then_allowed_by_node_flag`).
+- **Fail-closed.** `SafetyPolicy(fail_mode="fail_closed")`: a denied side effect / missing capability /
+  unsupported node / budget exhaustion **fails loudly + traces**, never silently downgrades.
+- **External adapters / processes.** `ExternalAdapterCapability(sink)` for domain writes (idempotency
+  key + privacy level on `ExternalWriteRequest`); `ExternalProcessCapability` wraps a CLI/local worker
+  with timeout + partial-output salvage. Both run as side-effect-gated `step` nodes.
+- **Resumable human clarification.** `.human("ask_location")` pauses (`status="requires_user_input"`)
+  or returns a provisional value (`continue_without_answer` + `default_value`); resume by re-running
+  once the answer is submitted. Product transport is just an adapter.
+- **Uncertainty output.** `WorkflowRunResult.status` includes `requires_user_input` / `partial`;
+  fanout returns partial results when some children fail.
+- **Subworkflows (recursive).** `.subworkflow("enrich", workflow=enrich_flow)` runs another workflow
+  as a capability on the **same executor**, in the parent's usage/budget scope (narrow with
+  `budget_usd=`); parent/child appear in the trace.
+- **Trace / sidecar.** `format_trace_events(result.trace, usage=result.usage)` renders nodes,
+  decisions, key info, timings, and cost — forward to your sidecar/observability. The hot capture path
+  stays in your app; engine reasoning runs in the sidecar. Your code never imports LangGraph (the
+  executor's internal backend); the engine never imports your transport.
+
+---
+
+## 6. Migration recipe
+
+1. Keep your domain functions (frame select, VLM inspect, extract, dedupe, write) — register each as a
+   capability with a `CapabilitySpec` (schema + side-effect class + timeout + cost).
+2. Turn each routing `if` into a **branch decider** returning a label; each quality check into an
+   **evaluator** returning accept/reject + criticism.
+3. Express the graph with `WorkflowBuilder` (one `WorkflowDefinition`); delete your orchestration loop,
+   your `StateGraph`/`add_conditional_edges`, and manual scheduler calls.
+4. Move models/limits/scheduling/side-effects into a YAML profile; load via `from_config`.
+5. Replace your run entrypoint with `await engine.run("home_inventory", segment)`.
+
+**Done when** you can delete product orchestration loops and still run from
+`WorkflowDefinition + registered capabilities` through `engine.run`. Verify with a `format_trace_events`
+dump + the no-product-loop guard.
+
+---
+
+## 7. Reference (import from `ai_workflow_engine`)
+
+`WorkflowBuilder, WorkflowDefinition, WorkflowNode, WorkflowEdge, WorkflowEngine, WorkflowEngineBuilder,
+WorkflowPack, WorkflowExecutor, WorkflowRunResult, NodeResult, BranchDecision, Retry, Retrace, Fallback,
+SubworkflowRef, EvidenceRef, ExternalWriteRequest, ExternalWriteResult, ExternalAdapterCapability,
+ExternalProcessCapability, HumanClarificationCapability, InMemoryHumanClarificationChannel,
+AgentCapability, SchedulingPolicy, SafetyPolicy, RuntimeLimits, WorkflowProfile, ModelProfile,
+WorkflowGoal, format_trace_events`. Runnable example: `ai_workflow_engine/examples.py` (`build_demo_engine`,
+`InventoryPack`, `run_toy_inventory_pilot`).

@@ -1,11 +1,15 @@
 # Workflow Engine — Implementation Plan
 
-Status: **implementation in progress** (Claude-authored 2026-06-07; Codex-expanded phase/task split
-and AC gates; PF1 fixed; first reusable runtime primitives and YAML/profile config loading
-implemented and tested 2026-06-08)
+Status: **implementation in progress, rebaselined 2026-06-08** (Claude-authored 2026-06-07;
+Codex-expanded phase/task split and AC gates; PF1 fixed; reusable runtime primitives and
+YAML/profile config loading implemented and tested; executable workflow harness still missing)
 Owner: Artem
 Parent architecture: `docs/workflow-engine-architecture.md`
 Rationale + fit analysis: `docs/_discussion/2026-06-07-workflow-engine-extraction.md`
+Executable engine contract:
+`/Users/artemm/PycharmProjects/gopro-streaming/docs/_discussion/2026-06-08-executable-workflow-engine-contract.md`
+Claude implementation handoff:
+`docs/workflow-engine-claude-implementation-handoff.md`
 (this doc supersedes that discussion's "Extraction Strategy" section once accepted)
 
 ## Governing decisions (settled 2026-06-07)
@@ -17,6 +21,37 @@ Rationale + fit analysis: `docs/_discussion/2026-06-07-workflow-engine-extractio
 - **D3 (trace):** a strong `TraceSink` abstraction with swappable concrete impls (in-memory +
   file/JSONL shipped; SQLite optional); products select/swap or supply their own. No single
   hard-owned store. Quality bar: good enough that MageQA could replace `ProcessingTrace` with it.
+
+## Rebaseline — executable workflow engine contract (settled 2026-06-08)
+
+The committed package is a strong runtime-primitives base, not the finished engine. The finished
+product is an executable, LLM-oriented workflow builder/runtime:
+
+```text
+WorkflowDefinition + WorkflowGoal + RuntimeProfile + registered capabilities/adapters
+  -> WorkflowEngine.run(...)
+  -> complete workflow execution with nodes, branches, gates, retries, retrace, fallback, fan-out,
+     subflows, human clarification, scheduler, side-effect/privacy gates, trace, checkpoints,
+     usage/cost, and result.
+```
+
+Products own workflow definitions, prompts, schemas, rubrics, adapters, domain state, and delivery.
+The engine owns execution mechanics. If GoPro, MageQA, Anki, or a calendar workflow must manually
+sequence `runtime.invoke(...)` calls or implement branch/retry/retrace/fallback/scheduler loops, the
+engine is not finished.
+
+Blocking polish milestone before calling the package handoff-ready:
+
+- add first-class `WorkflowDefinition`/`WorkflowBuilder`;
+- add executable node types for step, branch, structured LLM, AI decision/gate, fan-out/gather,
+  evaluator gate, retry/retrace/fallback, subworkflow, human clarification, external tool/script,
+  adapter, media/image, and voice nodes;
+- add `WorkflowExecutor`/`WorkflowEngine.run(...)` that runs the definition end-to-end;
+- prove subworkflow-as-capability with parent/child trace;
+- move GoPro inventory, MageQA site audit, calendar builder, and Anki migration target onto the same
+  executor;
+- add guards/tests that examples do not implement manual orchestration loops;
+- add worker-integrated scheduling/cancellation proof for GoPro-style long-running backends.
 
 ## Verified current state (grep-confirmed 2026-06-08)
 
@@ -280,34 +315,61 @@ Goal: support MageQA-style autonomous workers without baking MageQA into the eng
 Phase 4 AC gate: MageQA-shaped agent/subprocess behavior is toy-tested with failure, salvage,
 side-effect, and trace semantics.
 
-### Phase 5 - Fan-out, scheduling, sessions, and framework completion bar
+### Phase 5 - Executable workflow definition, fan-out, scheduling, sessions, and completion bar
 
-Goal: finish the generic primitives before Anki becomes the full validation milestone.
+Goal: finish the executable workflow harness before Anki becomes the full validation milestone.
 
-- **P5.1 Fan-out/gather:** add bounded `gather_capabilities`, shared budget guard, per-child trace
+- **P5.0 Workflow definition model:** add `WorkflowDefinition`, `WorkflowNode`, edge/branch models,
+  and a `WorkflowBuilder` or equivalent class DSL. AC: a product workflow can declare steps,
+  branches, evaluator gates, fan-out, subflows, fallback, and terminal nodes without manually calling
+  capabilities.
+- **P5.1 Node harness:** implement engine-owned executable node types: deterministic step, typed
+  capability/tool step, structured LLM step, AI decision/gate, branch, fan-out/gather, evaluator/QA
+  gate, retry, retrace, fallback, subworkflow, workflow-as-capability, human clarification, external
+  process/script/tool, adapter call, media/image, and voice node. AC: unsupported node type fails
+  loudly and traces the failure; no documentation-only node labels.
+- **P5.2 Workflow executor:** add `WorkflowExecutor`/`WorkflowEngine.run(...)` that executes
+  `WorkflowDefinition + WorkflowGoal + RuntimePlan + registered capabilities`, owns state passing,
+  branch selection, limits, trace, checkpoints, budget/side-effect/privacy checks, and final result.
+  AC: a workflow runs end-to-end without product-side orchestration glue.
+- **P5.3 No manual loop guard:** add tests/static guards for package examples and product skeletons
+  proving they do not manually implement retry loops, branch loops, fan-out loops, scheduler loops,
+  side-effect enforcement, or evaluator/retrace loops. AC: the guard fails on a hand-written
+  `runtime.invoke` branch/retry loop fixture.
+- **P5.4 Same-executor proof:** run Anki migration target, GoPro inventory toy, MageQA site-audit toy,
+  and calendar-builder toy through the same `WorkflowExecutor`. AC: products provide definitions,
+  capabilities, prompts/schemas/rubrics/adapters only.
+- **P5.5 Subworkflow-as-capability:** register one workflow as a capability and call it from a parent
+  workflow. AC: trace shows parent workflow, child workflow, inputs, outputs, artifacts, cost, and
+  failure boundary.
+- **P5.6 Worker-integrated scheduler proof:** use a long-running fake model/capability worker with
+  single-flight/cancel/manual-priority pressure. AC: cancellation does not release the backend slot
+  until the underlying call completes; a second local-model call cannot start concurrently; trace
+  shows queued/preempted/dropped/cancelled decisions.
+- **P5.7 Fan-out/gather:** add bounded `gather_capabilities`, shared budget guard, per-child trace
   IDs, and failure isolation. AC: 3 children run, 1 times out, 2 return, parent result exposes
   partials.
-- **P5.2 Scheduling policy:** add drop-stale, single-flight cancel, queue, and run-latest policies.
+- **P5.8 Scheduling policy:** add drop-stale, single-flight cancel, queue, and run-latest policies.
   AC: toy scheduler drops stale inputs and records why.
-- **P5.3 Evidence strategy:** carry `EvidenceRef` roles for uploaded images, video frames, OCR,
+- **P5.9 Evidence strategy:** carry `EvidenceRef` roles for uploaded images, video frames, OCR,
   summaries, and source documents without raw bytes in shared state. AC: toy source has refs only;
   artifact store owns bytes.
-- **P5.4 Session lifecycle:** define in-memory `SessionState` plus checkpoint-store seams.
+- **P5.10 Session lifecycle:** define in-memory `SessionState` plus checkpoint-store seams.
   AC: short session resumes after `ask_user`; checkpoints are written/reloadable; no product-level
   restart-recovery claim is made until a product maps checkpoints back to domain state.
-- **P5.5 Calendar-builder toy:** create a non-media, non-browser toy workflow:
+- **P5.11 Calendar-builder toy:** create a non-media, non-browser toy workflow:
   availability + task pool + energy + priorities + focus projects -> proposed calendar -> overload
   evaluator -> retrace/replan -> accepted plan. AC: evaluator rejects an overbooked plan and the
   repaired plan preserves priority coverage.
-- **P5.6 Required toy suite:** run `toy_llm_retry`, `toy_retrace`, `toy_subworkflow`,
+- **P5.12 Required toy suite:** run `toy_llm_retry`, `toy_retrace`, `toy_subworkflow`,
   `toy_external_agent_timeout`, `toy_fanout_partial`, `toy_media`, `toy_profile_compile`,
   `toy_evidence_strategy`, `toy_clarification`, `toy_fail_closed`, `toy_scheduler_drop`, and
   `toy_calendar_builder`. AC: no Anki/MageQA/GoPro imports.
-- **P5.7 Clean-project proof:** import package and run toy suite from a clean temp project. AC:
+- **P5.13 Clean-project proof:** import package and run toy suite from a clean temp project. AC:
   package does not require TGHandyUtils files.
 
-Phase 5 AC gate: all generic primitives are implemented with reusable runtime behavior, not just
-interfaces. Toy suite passes from a clean project.
+Phase 5 AC gate: the executable workflow harness exists and runs the generic toy suite from a clean
+project with reusable runtime behavior, not just interfaces or product-side loops.
 
 ### Phase 6 - Product migration: Anki validation milestone
 
@@ -431,7 +493,8 @@ describe checkpoint stores as implemented but restart recovery as product-specif
   clarification, supervisor loop, agent/subprocess wrappers, external adapter, fan-out, scheduler
   modes, uncertainty result envelope, and evaluator retry/retrace/fallback controller.
 - Current package/Anki milestone is validated by the evidence above and is ready for MageQA/GoPro
-  handoff as an internal package.
+  review as an internal package, but it is not yet ready for deep MageQA/GoPro adoption under the
+  executable-engine contract because `WorkflowDefinition`/`WorkflowExecutor` is still missing.
 - Downstream adoption work: optional external `[media]` packaging cleanup, product restart/replay
   policy wiring, and real MageQA/GoPro repo adoption with production adapters. These should be
   driven by the receiving project rather than hidden inside TGHandyUtils.

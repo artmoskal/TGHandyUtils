@@ -18,11 +18,14 @@ Related project documents:
 - [GoPro workflow execution engine requirements](/Users/artemm/PycharmProjects/gopro-streaming/docs/architecture/workflow-execution-engine-requirements.md)
 - [GoPro universal profile sheet](/Users/artemm/PycharmProjects/gopro-streaming/docs/universal_event_descriptor/UNIVERSAL_PROFILE_SHEET.md)
 - [GoPro home inventory case](/Users/artemm/PycharmProjects/gopro-streaming/docs/universal_event_descriptor/HOME_INVENTORY_CASE.md)
+- [Executable workflow engine contract](/Users/artemm/PycharmProjects/gopro-streaming/docs/_discussion/2026-06-08-executable-workflow-engine-contract.md)
+- [Claude implementation handoff](/Users/artemm/PycharmProjects/TGHandyUtils/docs/workflow-engine-claude-implementation-handoff.md)
 
 ## Goal
 
-Build a small reusable workflow engine that can run goal-oriented AI pipelines in this project and
-can later be extracted into another project if it proves useful.
+Build a reusable, executable, LLM-oriented workflow application builder/runtime. Product implementers
+define goals, workflow definitions, gates, tools, prompts, schemas, adapters, limits, and policies;
+the engine executes the full workflow and owns orchestration mechanics.
 
 The engine is not an Anki engine. Anki is the first product workflow using it.
 
@@ -40,14 +43,18 @@ but only as typed capabilities driven by a higher-level goal and evaluator.
 ## Core Concept
 
 ```text
-WorkflowGoal / WorkflowProfile
-  -> Supervisor
-       -> chooses instruments
-       -> runs typed workflow nodes or subgraphs
-       -> evaluates output against the goal
-       -> loops, retries, retraces, or falls back within policy
-  -> product delivery
+WorkflowDefinition + WorkflowGoal + WorkflowProfile + registered capabilities/adapters
+  -> WorkflowEngine.run(...)
+       -> executes nodes, gates, branches, fan-out, subflows, and evaluators
+       -> validates structured outputs and repairs JSON where configured
+       -> retries, retraces, falls back, fails, or asks the user within policy
+       -> enforces budget, side effects, privacy/raw-media policy, scheduling, and checkpoints
+       -> emits trace, usage, cost, cache, artifact, and decision records
+  -> product-owned delivery/storage
 ```
+
+The target developer experience is closer to a typed, LLM-focused n8n/LangGraph/DI runtime than to
+a helper library. Product code fills contracts; it must not build a mini-engine around primitives.
 
 ## Engine Soul
 
@@ -56,10 +63,88 @@ The engine is a goal-driven capability runtime.
 It is not:
 
 - an Anki-specific graph with reusable-looking names;
-- a no-code workflow builder;
+- a general-purpose visual no-code product;
 - a menu of scripts;
 - an interface-only package where each product has to reimplement the real runtime;
 - an unrestricted autonomous agent that can invent tools, side effects, and retry loops at runtime.
+
+It is an executable workflow builder/runtime: product workflow definitions are authored by project
+implementers, but the engine owns execution.
+
+## Executable Workflow Contract
+
+Product owns:
+
+- domain goal and workflow definition;
+- node names, graph shape, and domain-specific branch labels;
+- prompts, schemas, rubrics, validators, tools, adapters, storage, delivery, and UI transport;
+- domain policy such as what counts as a good flashcard, grounded QA finding, or valid inventory
+  observation.
+
+Engine owns:
+
+- workflow execution and node dispatch;
+- branching, conditional gates, supervisor loops, fan-out/gather, and subworkflow execution;
+- retries, retrace, fallback, fail-open/fail-closed behavior, and evaluator mechanics;
+- structured LLM parsing and repair;
+- scheduling, backpressure, cancellation semantics, and concurrency lanes;
+- side-effect enforcement, privacy/raw-media export policy, budget/cost limits, trace,
+  checkpointing, pause/resume, and human clarification mechanics.
+
+If product code must manually implement these mechanics, the engine is unfinished.
+
+Required finished-state API shape:
+
+```python
+workflow = (
+    WorkflowBuilder("home_inventory")
+    .step("select_evidence")
+    .branch("evidence_quality_gate", branches={
+        "enough": "extract_items",
+        "ambiguous": "ask_location",
+        "bad": "fallback_or_fail",
+    })
+    .step("extract_items")
+    .evaluate("quality_gate", on_reject=Retrace("select_evidence"))
+    .step("write_inventory")
+    .build()
+)
+
+engine = WorkflowEngine.from_config("gopro.inventory.yaml")
+engine.register_capability("select_evidence", SelectEvidenceTool(...))
+engine.register_capability("extract_items", VlmItemExtractor(...))
+engine.register_capability("ask_location", HumanClarification(...))
+engine.register_capability("write_inventory", InventoryAdapter(...))
+
+result = await engine.run(workflow, video_segment)
+```
+
+The product should not write a manual sequence of `runtime.invoke(...)`, `if result.bad`, retry,
+retrace, fallback, and trace calls. That is the exact drift this architecture forbids.
+
+## Anti-Drift Rule
+
+Do not declare the engine complete because individual primitives exist.
+
+This is not sufficient:
+
+```text
+CapabilityRuntime exists.
+TraceSink exists.
+Evaluator exists.
+Scheduler exists.
+Agent wrapper exists.
+Product code manually wires them in a custom loop.
+```
+
+The completion bar is:
+
+```text
+WorkflowDefinition + registered capabilities + profile/config
+  -> engine.run(...)
+  -> fully executed workflow with trace, scheduling, retries, gates, side-effect/privacy policy,
+     checkpoints, usage/cost, and result.
+```
 
 It should feel like a small framework for agentic product workflows:
 
@@ -130,7 +215,8 @@ Product workflows own:
 - product-specific state models;
 - product-specific prompts and schemas;
 - product-specific validators;
-- product-specific branch, retry, retrace, and fallback decisions;
+- product-specific policy/rubric inputs that say why a branch, retry, retrace, or fallback is
+  appropriate in the domain;
 - product-specific rendering and side effects;
 - product-specific delivery.
 
@@ -138,16 +224,13 @@ This boundary is not an excuse to keep 90% of implementation client-side. Produc
 what a capability means in their domain; the engine runs, traces, limits, retries, evaluates, and
 connects capabilities under a shared control model.
 
-Current implementation note: Anki still owns its domain quality rules and concrete graph topology
-inside `AnkiGenerationGraph`; those rules should stay product-specific. The shared engine now
-provides the generic execution pieces around that domain graph: `WorkflowRunner`,
-`WorkflowSupervisor`, `WorkflowInstrumentRegistry`, `StructuredLLMNode`, workflow trace/usage/artifact
-models, `CapabilitySpec`/`CapabilityRuntime`, `WorkflowProfile`/`RuntimePlanCompiler`,
-`EvidenceRef`, `EvaluationDecision`, retry/retrace policy models, `TraceSink` implementations,
-`ExternalProcessCapability`, bounded fan-out, `WorkflowScheduler`, and a bounded
-`WorkflowLoopController`. Fake-backed site-audit and inventory pilots now exercise MageQA/GoPro-
-shaped runtime pressure, but real MageQA/GoPro adapters still need to wire in before open-ended
-agency and streaming/durable lifetime can be called production-ready.
+Current implementation note: the committed package has real reusable primitives and the Anki flow
+uses several of them, but the engine is not finished by this contract. The missing central piece is
+a first-class `WorkflowDefinition`/`WorkflowBuilder` plus `WorkflowExecutor`/`WorkflowEngine.run`
+that executes workflow blocks end-to-end. Anki still owns its concrete graph topology inside
+`AnkiGenerationGraph`; the toy GoPro/MageQA/calendar examples still contain product-side sequencing
+glue. Those are acceptable as the current base only if the polish milestone moves that sequencing
+into the executable workflow harness.
 
 ## Library Boundary
 

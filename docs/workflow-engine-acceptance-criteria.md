@@ -11,7 +11,9 @@ Verified against real repos: MageQA
 `/Users/artemm/PycharmProjects/MageQA/docs/02-architecture.md`); GoPro
 (`/Users/artemm/PycharmProjects/gopro-streaming/docs/architecture/workflow-execution-engine-requirements.md`
 = `req:`, `…/universal_event_descriptor/UNIVERSAL_PROFILE_SHEET.md` = `sheet:`,
-`HOME_INVENTORY_CASE.md` = `inv:`).
+`HOME_INVENTORY_CASE.md` = `inv:`,
+`/Users/artemm/PycharmProjects/gopro-streaming/docs/_discussion/2026-06-08-executable-workflow-engine-contract.md`
+= `exec-contract:`).
 
 ## How to use this doc
 - AC IDs: `DOD-*` enforcement, `UNI/CMP/WL-*` universality, `A-*` architecture, `B-*` implementation,
@@ -71,6 +73,12 @@ one item, retrace→fake) and declaring done. Forbidden.
   be product-local, documented with an explicit approval/sunset decision, and absent from
   `packages/ai_workflow_engine`. Current open bridge: TGHandyUtils `ANKI_*` env aliases during
   config migration.
+- **DOD-14 Executable workflow harness or not done.** Individual primitives are not enough. The
+  framework is not complete until a first-class `WorkflowDefinition`/`WorkflowBuilder` plus
+  `WorkflowExecutor`/`WorkflowEngine.run(...)` can execute product-authored nodes, branches,
+  evaluator gates, retry/retrace/fallback, fan-out, subflows, human clarification, side-effect/
+  privacy gates, scheduling, trace, checkpoints, and result production. Proof: B6 same-executor
+  tests. (`exec-contract:`)
 
 ## 0.2 Universality & completeness — ALL workloads (Anki, MageQA, GoPro, calendar)
 - **UNI-1 Product-neutral public API.** No `anki/cloze/telegram/mageqa/browser/scenario/gopro/frame/
@@ -88,9 +96,10 @@ one item, retrace→fake) and declaring done. Forbidden.
   ownership, trace sink, fan-out/gather, scheduling, external-agent wrappers). Packs contain ONLY
   domain schemas/prompts/capabilities/adapters/delivery. Copying engine runtime = framework gap to fix.
 - **CMP-2 No interface-only primitives** = DOD-10.
-- **UNI-3 Same-runtime proof.** Anki + calendar toy + MageQA/GoPro skeletons run on the SAME
-  `WorkflowRunner`/`CapabilityRuntime`; no runner subclassing or per-workload fork. Proof: each
-  registers a pack and runs.
+- **UNI-3 Same-executor proof.** Anki + calendar toy + MageQA/GoPro skeletons run on the SAME
+  `WorkflowExecutor`/`WorkflowEngine.run(...)` over product-authored `WorkflowDefinition`s; no runner
+  subclassing, per-workload fork, or product-owned mini-engine. Proof: each registers a pack and
+  runs. (`exec-contract:`)
 - **WL-Anki:** full migration (Phase 6) + Part B parity + AC-01..AC-24.
 - **WL-MageQA:** handoff (Phase 7) + verified mappings against the real repo + a runnable skeleton for
   ≥1 scenario (see B10). No "assumed" mappings.
@@ -321,6 +330,25 @@ A5.* implemented + DOD-5 toys; Anki quality eval routed through generic `Evaluat
 A6.* (DOD-3) and A7.1 (DOD-4) + A3.2 subscription mode + A11.1 tool side-effect gate, all toy-proven.
 
 ## B6 — Phase 5 gate (framework completeness bar — the universality proof)
+- One `WorkflowExecutor`/`WorkflowEngine.run(...)` executes `WorkflowDefinition + RuntimePlan +
+  registered capabilities/adapters` for Anki migration target, calendar toy, MageQA site-audit toy,
+  and GoPro inventory toy.
+- Product examples may define workflows, schemas, prompts, rubrics, capabilities, and adapters. They
+  may not manually implement execution loops, retry/retrace loops, branch loops, fan-out loops,
+  scheduler/backpressure loops, side-effect enforcement, evaluator loops, or trace/checkpoint
+  consistency. A guard/static test fails on a product example that does.
+- Built-in executable node types cover deterministic step, typed capability/tool step, structured
+  LLM step, AI decision/gate, branch, fan-out/gather, evaluator/QA gate, retry, retrace, fallback,
+  subworkflow, workflow-as-capability, human clarification, external process/script/tool, adapter
+  call, media/image, and voice node.
+- A workflow can be registered as a capability and called by another workflow. Trace shows parent
+  workflow, child workflow, inputs, outputs, artifacts, cost, and failure boundary.
+- Unsupported node type, missing capability, missing model, forbidden side effect, forbidden
+  raw-media export, and budget exhaustion fail loudly according to profile; none silently degrade to
+  a simpler path.
+- Worker-integrated scheduling/cancellation is proven with a long-running fake backend: cancellation
+  does not release the backend slot until the worker actually finishes, a second local-model call
+  cannot start concurrently, and queued/preempted/dropped/cancelled decisions are traceable.
 - All 11 toy scenarios pass with **no anki/mageqa imports**: `toy_llm_retry`, `toy_retrace`,
   `toy_subworkflow`, `toy_external_agent_timeout`, `toy_fanout_partial`, `toy_media`,
   `toy_profile_compile`, `toy_evidence_strategy`, `toy_clarification`, `toy_fail_closed`,

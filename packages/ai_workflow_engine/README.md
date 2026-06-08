@@ -1,17 +1,34 @@
 # AI Workflow Engine
 
-Internal package for reusable AI workflow orchestration primitives.
+Internal package being evolved into a reusable, executable AI workflow builder/runtime.
 
-It is the reusable substrate for multi-step AI workflows. Per the 2026-06-07 decision we are
-building toward the full framework (see the architecture doc); the lists below separate what exists
-today from what is planned, so this README never overstates the current package.
+> **Status (2026-06-08): the executable engine layer is implemented.** `WorkflowDefinition` +
+> `WorkflowBuilder` (declare), `WorkflowEngineBuilder` / `WorkflowEngine.from_config` (DI/IoC wiring),
+> and `WorkflowExecutor` / `await engine.run(...)` (execution) are live, with branch, fan-out/gather,
+> evaluator retry/retrace/fallback, subworkflow-as-capability, human clarification, scheduling, and
+> side-effect/privacy/budget gates all engine-owned. **LangGraph is the executor's internal backend**
+> (a `WorkflowDefinition` is compiled to a `StateGraph` inside `executor.py`); products never import
+> LangGraph. Anki is migrated onto this engine (its product LangGraph graph was deleted), and one
+> single `WorkflowExecutor` runs the calendar / site-audit / inventory / card-generation example packs
+> (see `examples.py`). The "still missing" notes further down predate this and are superseded.
+
+It is the reusable substrate for multi-step AI workflows. Per the 2026-06-07 and 2026-06-08
+decisions we are building toward the full framework (see the architecture doc and executable
+workflow contract); the lists below separate what exists today from what is still missing, so this
+README never overstates the current package.
 
 Design promise: this package is not Anki-specific and not an interface-only shell. The engine should
 own reusable runtime behavior: capability registration/invocation, supervisor decisions, structured
 LLM parsing and repair, model/profile selection, evaluator decisions, retry/retrace/fallback/fail
 policy, trace, usage/budget/cost/cache reporting, artifact ownership, media/voice seams,
 external-agent wrappers, fan-out/gather, scheduling, and human clarification hooks. Product projects
-add domain capability packs, prompts, schemas, adapters, rubrics, and delivery.
+add domain workflow definitions, capability packs, prompts, schemas, adapters, rubrics, and
+delivery.
+
+Finished-product contract: a project should be able to define `WorkflowDefinition` blocks, register
+capabilities/adapters, load a profile/config, and call `engine.run(...)`. If product code has to
+manually sequence `runtime.invoke(...)` calls and implement branch/retry/retrace/fallback/scheduler
+loops, this package is not finished.
 
 Low-level scripts are valid engine instruments only when registered as typed capabilities with
 schemas, side-effect policy, timeouts, budget, trace, and failure semantics. This lets the same
@@ -64,10 +81,23 @@ Implemented today (verified against the package source):
   Telegram-owned channel, `RuntimePlan` side-effect policy, and traceable pending/answered/provisional
   responses.
 
+Missing before this is a finished workflow engine:
+
+- first-class `WorkflowDefinition` / `WorkflowBuilder` models;
+- first-class executable node types for step, branch, structured LLM, AI decision/gate,
+  fan-out/gather, evaluator gate, retry/retrace/fallback, subworkflow, human clarification, external
+  process/tool, media/image, voice, and adapter calls;
+- `WorkflowExecutor` / `WorkflowEngine.run(...)` that executes those nodes end-to-end from
+  definition + profile + registered capabilities;
+- subworkflow-as-capability support with parent/child trace boundaries;
+- worker-integrated scheduling/cancellation tests, not only policy-state tests;
+- same-executor proof for Anki, GoPro inventory, MageQA site audit, and calendar builder with no
+  product-owned mini-engine loops.
+
 Boundary / downstream adoption work:
 
-- recursive subworkflows are supported by registering graphs/callables as capabilities; a separate
-  packaging layer should wait for a second product that needs it;
+- recursive subworkflows need first-class `WorkflowDefinition`/`WorkflowExecutor` support, not only
+  registered graph/callable wrappers;
 - production browser/MCP adapter packs for external agents; the package runtime has bounded agent
   episodes, but project adapters still need to bind real browser/CLI tools;
 - automatic product restart/replay wiring; checkpoint stores exist, but each product still has to
@@ -76,11 +106,13 @@ Boundary / downstream adoption work:
   fake-backed site-audit and inventory pilots, but open-ended agency and live/long-running scheduling
   are not battle-tested until those projects bind real adapters and domain state.
 
-Product apps own their own state, schemas, prompts, validators, graph topology, and delivery.
-TGHandyUtils Anki is the first consumer and the validation workload for every framework phase. Its
-generation graph registers nodes as `CapabilitySpec`s and invokes them through `CapabilityRuntime`
-with a compiled `RuntimePlan`; the auto-mode correction window now also uses the package
-`HumanClarificationCapability`, while Telegram still owns the concrete button/timer UI.
+Product apps own their own state, schemas, prompts, validators, workflow definitions/topology, and
+delivery. The engine must execute that topology. TGHandyUtils Anki is the first consumer and the
+validation workload for every framework phase. Its generation graph currently registers nodes as
+`CapabilitySpec`s and invokes them through `CapabilityRuntime` with a compiled `RuntimePlan`; this is
+a transitional integration until Anki can run through the first-class workflow executor. The
+auto-mode correction window now also uses the package `HumanClarificationCapability`, while Telegram
+still owns the concrete button/timer UI.
 If a later product must copy supervisor, trace, budget, retry, retrace, artifact, scheduler, or
 capability-runtime logic, that is a package gap to fix rather than expected product work.
 
@@ -96,6 +128,7 @@ Related architecture and workload docs:
 - [GoPro workflow execution engine requirements](/Users/artemm/PycharmProjects/gopro-streaming/docs/architecture/workflow-execution-engine-requirements.md)
 - [GoPro universal profile sheet](/Users/artemm/PycharmProjects/gopro-streaming/docs/universal_event_descriptor/UNIVERSAL_PROFILE_SHEET.md)
 - [GoPro home inventory case](/Users/artemm/PycharmProjects/gopro-streaming/docs/universal_event_descriptor/HOME_INVENTORY_CASE.md)
+- [Executable workflow engine contract](/Users/artemm/PycharmProjects/gopro-streaming/docs/_discussion/2026-06-08-executable-workflow-engine-contract.md)
 - [GoPro package handoff](docs/gopro-handoff.md)
 
 Prompt templates default to `./prompts` from the current working directory. Set
