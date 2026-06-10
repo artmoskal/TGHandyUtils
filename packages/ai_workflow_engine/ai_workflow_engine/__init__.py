@@ -79,6 +79,7 @@ from ai_workflow_engine.parsing import (
     extract_first_json_object,
     strip_think_tags,
 )
+from ai_workflow_engine.vision import ImageInput, StructuredVisionLLMNode
 from ai_workflow_engine.workflow import (
     END,
     BranchDecision,
@@ -199,4 +200,6 @@ __all__ = [
     "extract_fenced_json",
     "extract_first_json_object",
     "strip_think_tags",
+    "ImageInput",
+    "StructuredVisionLLMNode",
 ]

@@ -72,10 +72,16 @@ class JsonlCheckpointStore:
 
 
 def assert_checkpoint_payload_safe(value: Any) -> None:
-    """Reject raw bytes before checkpoint state is persisted."""
+    """Reject raw bytes (and image transport payloads) before checkpoint state is persisted."""
 
     if isinstance(value, (bytes, bytearray, memoryview)):
         raise ValueError("checkpoint data must store refs, not raw bytes")
+    # ImageInput is a per-call transport object that may carry base64 image bytes; persistent
+    # state must keep byte-free EvidenceRefs instead (privacy invariant: no raw media at rest).
+    if value.__class__.__name__ == "ImageInput" and hasattr(value, "fingerprint"):
+        raise ValueError(
+            "checkpoint data must not contain ImageInput transport payloads; store EvidenceRefs"
+        )
     if isinstance(value, dict):
         for item in value.values():
             assert_checkpoint_payload_safe(item)

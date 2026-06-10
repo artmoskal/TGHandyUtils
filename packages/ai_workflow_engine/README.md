@@ -12,6 +12,21 @@ Internal package being evolved into a reusable, executable AI workflow builder/r
 > single `WorkflowExecutor` runs the calendar / site-audit / inventory / card-generation example packs
 > (see `examples.py`). The "still missing" notes further down predate this and are superseded.
 
+## Weak-model & vision support (gap-closure 2026-06-10)
+
+- **`pre_parse` cleaners (G2):** `StructuredLLMNode(..., pre_parse=WEAK_MODEL_CLEANER,
+  max_repair_rounds=N)` sanitizes weak-model output (think-tags, ```json fences, chatter) before
+  every parse attempt — no repair LLM call spent on formatting noise. Stock cleaners live in
+  `ai_workflow_engine.parsing` (`strip_think_tags`, `extract_fenced_json`,
+  `extract_first_json_object`, `compose_cleaners`). Payload changes are logged with hashes/lengths.
+- **Vision node (G1):** `StructuredVisionLLMNode.run(values, images=[ImageInput(...)])` attaches
+  images (path / base64 / URL, with roles) to the call — and to every repair attempt — using the
+  provider-agnostic `image_url` content-part format (OpenAI- and Ollama-style models). Privacy
+  invariant: image bytes never enter traces, usage events, or checkpoints — only
+  `ImageInput.fingerprint()` (sha12/length/role) is recorded, and the checkpoint guard rejects
+  `ImageInput` payloads outright. Persistent state keeps byte-free `EvidenceRef`s; bridge with
+  `ImageInput.from_evidence(ref, loader)` at the call boundary. Metering/budget apply unchanged.
+
 It is the reusable substrate for multi-step AI workflows. Per the 2026-06-07 and 2026-06-08
 decisions we are building toward the full framework (see the architecture doc and executable
 workflow contract); the lists below separate what exists today from what is still missing, so this

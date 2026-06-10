@@ -137,6 +137,7 @@ Original request:
         *,
         content_hash_input: str = "",
         message_factory: Optional[MessageFactory] = None,
+        usage_metadata: Optional[dict[str, Any]] = None,
     ) -> Any:
         prompt_bundle = self._format_prompt(values)
         content_hash = hashlib.sha256(content_hash_input.encode("utf-8", errors="ignore")).hexdigest()[:12]
@@ -145,6 +146,7 @@ Original request:
             prompt_bundle,
             content_hash,
             message_factory,
+            usage_metadata,
         )
 
     def _invoke_with_retry(
@@ -152,6 +154,7 @@ Original request:
         prompt_bundle: PromptBundle,
         content_hash: str,
         message_factory: Optional[MessageFactory],
+        usage_metadata: Optional[dict[str, Any]] = None,
     ) -> Any:
         last_error = ""
         for attempt in range(1, 2 + self.max_repair_rounds):
@@ -165,7 +168,7 @@ Original request:
                     node=self.name,
                     model=self._model_name(),
                     attempt=attempt,
-                    metadata={"output_model": self.output_model.__name__},
+                    metadata={"output_model": self.output_model.__name__, **(usage_metadata or {})},
                     config=self.config,
                 )
                 raw_text = self._message_content(output)
