@@ -80,6 +80,12 @@ from ai_workflow_engine.parsing import (
     strip_think_tags,
 )
 from ai_workflow_engine.vision import ImageInput, StructuredVisionLLMNode
+from ai_workflow_engine.llm_protocol import (
+    LLMCallable,
+    LLMRequest,
+    LLMResponse,
+    is_plain_llm_callable,
+)
 from ai_workflow_engine.workflow import (
     END,
     BranchDecision,
@@ -202,4 +208,8 @@ __all__ = [
     "strip_think_tags",
     "ImageInput",
     "StructuredVisionLLMNode",
+    "LLMCallable",
+    "LLMRequest",
+    "LLMResponse",
+    "is_plain_llm_callable",
 ]

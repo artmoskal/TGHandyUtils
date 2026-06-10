@@ -138,9 +138,18 @@ Original request:
         content_hash_input: str = "",
         message_factory: Optional[MessageFactory] = None,
         usage_metadata: Optional[dict[str, Any]] = None,
+        images: Sequence[Any] = (),
     ) -> Any:
         prompt_bundle = self._format_prompt(values)
         content_hash = hashlib.sha256(content_hash_input.encode("utf-8", errors="ignore")).hexdigest()[:12]
+        from ai_workflow_engine.llm_protocol import is_plain_llm_callable
+
+        if is_plain_llm_callable(self._llm):
+            # Plain-callable client (no LangChain): async path, LLMRequest transport,
+            # uniform metering with honest cost attribution (RC2).
+            return await self._invoke_callable_with_retry(
+                prompt_bundle, content_hash, usage_metadata, list(images)
+            )
         return await asyncio.to_thread(
             self._invoke_with_retry,
             prompt_bundle,
@@ -148,6 +157,74 @@ Original request:
             message_factory,
             usage_metadata,
         )
+
+    async def _invoke_callable_with_retry(
+        self,
+        prompt_bundle: PromptBundle,
+        content_hash: str,
+        usage_metadata: Optional[dict[str, Any]],
+        images: list,
+    ) -> Any:
+        from ai_workflow_engine.llm_protocol import LLMRequest, record_callable_usage
+        from ai_workflow_engine.usage import check_budget_before_call
+
+        last_error = ""
+        for attempt in range(1, 2 + self.max_repair_rounds):
+            try:
+                if attempt == 1:
+                    request = LLMRequest(
+                        system=prompt_bundle.system, user=prompt_bundle.user, images=images
+                    )
+                else:
+                    request = LLMRequest(
+                        system=None,
+                        user=self.repair_prompt.format(
+                            error=last_error, original_prompt=prompt_bundle.full_text
+                        ),
+                        images=images,
+                    )
+                check_budget_before_call("chat", self.name)
+                response = await self.llm(request)
+                record_callable_usage(
+                    response,
+                    node=self.name,
+                    attempt=attempt,
+                    metadata={"output_model": self.output_model.__name__, **(usage_metadata or {})},
+                    config=self.config,
+                )
+                parsed = self.parser.parse(self._apply_pre_parse(response.text, attempt, content_hash))
+                if self.validator:
+                    self.validator(parsed)
+                logger.info(
+                    "structured_llm_node %s",
+                    json.dumps(
+                        {
+                            "node": self.name,
+                            "attempt": attempt,
+                            "content_hash": content_hash,
+                            "output_model": self.output_model.__name__,
+                            "client": "plain_callable",
+                        },
+                        sort_keys=True,
+                    ),
+                )
+                return parsed
+            except Exception as exc:
+                last_error = str(exc)
+                logger.warning(
+                    "structured_llm_node_failed %s",
+                    json.dumps(
+                        {
+                            "node": self.name,
+                            "attempt": attempt,
+                            "content_hash": content_hash,
+                            "error": last_error[:500],
+                            "client": "plain_callable",
+                        },
+                        sort_keys=True,
+                    ),
+                )
+        raise StructuredOutputError(f"{self.name} returned invalid structured output: {last_error}")
 
     def _invoke_with_retry(
         self,

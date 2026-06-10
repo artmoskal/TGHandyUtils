@@ -1,0 +1,104 @@
+"""Plain-callable LLM protocol — bring your own client, no LangChain costume.
+
+Any ``async def __call__(request: LLMRequest) -> LLMResponse`` object can serve as the ``llm=`` of
+a structured node (``kind="llm"`` capability). The engine applies the same parse/repair/pre_parse,
+metering, budget, and capability-timeout mechanics as for LangChain-shaped clients.
+
+Cost integrity (review requirement RC2): a callable that reports no cost never yields a phantom
+``$0.00``. Resolution order per call:
+1. ``LLMResponse.estimated_usd`` when provided (``cost_source="callable"``);
+2. the engine price table by ``LLMResponse.model`` + token counts (``cost_source="price_table"``);
+3. otherwise the usage event records ``estimated_usd=None`` with ``cost_known=False`` — visibly
+   unknown, never silently zero.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
+
+from pydantic import BaseModel, Field
+
+from ai_workflow_engine.models import WorkflowUsageEvent
+from ai_workflow_engine.usage import estimate_cost_usd, record_usage_event
+from ai_workflow_engine.vision import ImageInput
+
+
+class LLMRequest(BaseModel):
+    """One chat-style request to a product-owned LLM client."""
+
+    system: Optional[str] = None
+    user: str
+    images: List[ImageInput] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class LLMResponse(BaseModel):
+    """The client's answer plus whatever usage truth it can report."""
+
+    model_config = {"arbitrary_types_allowed": True}
+
+    text: str
+    model: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    estimated_usd: Optional[float] = None
+    raw: Any = None
+
+
+@runtime_checkable
+class LLMCallable(Protocol):
+    """Minimal contract for a non-LangChain LLM client."""
+
+    async def __call__(self, request: LLMRequest) -> LLMResponse: ...
+
+
+def is_plain_llm_callable(llm: Any) -> bool:
+    """A plain callable client: callable, but not LangChain-shaped (no ``.invoke``)."""
+
+    return llm is not None and not hasattr(llm, "invoke") and callable(llm)
+
+
+def record_callable_usage(
+    response: LLMResponse,
+    *,
+    node: str,
+    attempt: int,
+    metadata: Optional[Dict[str, Any]] = None,
+    config: Any = None,
+) -> None:
+    """Meter one plain-callable LLM call with honest cost attribution (RC2)."""
+
+    estimated = response.estimated_usd
+    cost_source = "callable"
+    if estimated is None:
+        has_tokens = bool(response.total_tokens or response.input_tokens or response.output_tokens)
+        if response.model and has_tokens:
+            estimated = estimate_cost_usd(
+                response.model,
+                "chat",
+                response.input_tokens,
+                response.output_tokens,
+                config=config,
+            )
+            cost_source = "price_table"
+        if estimated is None:
+            cost_source = "unknown"
+    record_usage_event(
+        WorkflowUsageEvent(
+            provider="custom",
+            operation="chat",
+            node=node,
+            model=response.model,
+            attempt=attempt,
+            input_tokens=response.input_tokens,
+            output_tokens=response.output_tokens,
+            total_tokens=response.total_tokens or (response.input_tokens + response.output_tokens),
+            estimated_usd=estimated,
+            metadata={
+                **(metadata or {}),
+                "cost_known": estimated is not None,
+                "cost_source": cost_source,
+            },
+        )
+    )

@@ -26,6 +26,37 @@ Internal package being evolved into a reusable, executable AI workflow builder/r
   `ImageInput.fingerprint()` (sha12/length/role) is recorded, and the checkpoint guard rejects
   `ImageInput` payloads outright. Persistent state keeps byte-free `EvidenceRef`s; bridge with
   `ImageInput.from_evidence(ref, loader)` at the call boundary. Metering/budget apply unchanged.
+- **Bring your own LLM client (G4):** any `async def __call__(request: LLMRequest) -> LLMResponse`
+  is a first-class `llm=` for the structured nodes — no LangChain wrapper needed. Example,
+  direct Ollama HTTP:
+
+  ```python
+  import httpx
+  from ai_workflow_engine import LLMRequest, LLMResponse
+
+  class OllamaClient:
+      def __init__(self, model="qwen2.5vl:3b", base="http://localhost:11434"):
+          self.model, self.base = model, base
+
+      async def __call__(self, request: LLMRequest) -> LLMResponse:
+          payload = {"model": self.model, "stream": False,
+                     "messages": [{"role": "user", "content": request.user,
+                                   "images": [i.data for i in request.images if i.source == "base64"]}]}
+          if request.system:
+              payload["messages"].insert(0, {"role": "system", "content": request.system})
+          async with httpx.AsyncClient() as client:
+              data = (await client.post(f"{self.base}/api/chat", json=payload)).json()
+          return LLMResponse(text=data["message"]["content"], model=self.model,
+                             input_tokens=data.get("prompt_eval_count", 0),
+                             output_tokens=data.get("eval_count", 0))
+
+  node = StructuredVisionLLMNode(..., llm=OllamaClient(), pre_parse=WEAK_MODEL_CLEANER)
+  ```
+
+  Metering, capability timeouts, pre_parse, and repair rounds apply uniformly. **Cost integrity:**
+  if the client reports no cost, the engine falls back to its price table by model name; when the
+  model is unknown the usage event records `estimated_usd=None` with `cost_known=false` — never a
+  phantom `$0.00`.
 
 It is the reusable substrate for multi-step AI workflows. Per the 2026-06-07 and 2026-06-08
 decisions we are building toward the full framework (see the architecture doc and executable

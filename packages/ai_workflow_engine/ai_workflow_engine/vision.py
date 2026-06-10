@@ -119,6 +119,8 @@ class StructuredVisionLLMNode(StructuredLLMNode):
                 "input_images": len(image_list),
                 "image_fingerprints": [image.fingerprint() for image in image_list],
             },
+            # Plain-callable clients receive the images on the LLMRequest instead of message parts.
+            images=image_list,
         )
 
     @staticmethod
