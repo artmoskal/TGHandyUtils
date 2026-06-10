@@ -173,12 +173,9 @@ class ToySummaryGraph:
 
 def test_engine_package_imports_without_project_prompt_root(tmp_path):
     """The reusable package must not require TGHandyUtils prompt files at import time."""
-    repo_root = Path(__file__).resolve().parents[2]
-    package_root = repo_root / "packages" / "ai_workflow_engine"
+    package_root = Path(__file__).resolve().parents[1]
     env = dict(os.environ)
-    env["PYTHONPATH"] = os.pathsep.join(
-        [str(repo_root), str(package_root), env.get("PYTHONPATH", "")]
-    )
+    env["PYTHONPATH"] = os.pathsep.join([str(package_root), env.get("PYTHONPATH", "")])
 
     result = subprocess.run(
         [
@@ -201,12 +198,9 @@ def test_engine_package_imports_without_project_prompt_root(tmp_path):
 
 def test_media_modules_import_without_optional_provider_sdks(tmp_path):
     """The reusable package must import without optional media provider dependencies installed."""
-    repo_root = Path(__file__).resolve().parents[2]
-    package_root = repo_root / "packages" / "ai_workflow_engine"
+    package_root = Path(__file__).resolve().parents[1]
     env = dict(os.environ)
-    env["PYTHONPATH"] = os.pathsep.join(
-        [str(repo_root), str(package_root), env.get("PYTHONPATH", "")]
-    )
+    env["PYTHONPATH"] = os.pathsep.join([str(package_root), env.get("PYTHONPATH", "")])
 
     script = """
 import builtins
@@ -239,8 +233,7 @@ print("ok")
 
 def test_engine_package_has_no_app_imports_or_anki_config_names():
     """The reusable package must not depend on TGHandyUtils product modules or config names."""
-    repo_root = Path(__file__).resolve().parents[2]
-    package_root = repo_root / "packages" / "ai_workflow_engine" / "ai_workflow_engine"
+    package_root = Path(__file__).resolve().parents[1] / "ai_workflow_engine"
     forbidden = [
         "from core",
         "import core",
@@ -263,8 +256,7 @@ def test_engine_package_has_no_app_imports_or_anki_config_names():
 
 def test_engine_package_has_no_shipped_stub_markers():
     """Done engine primitives must not hide unfinished behavior behind stubs."""
-    repo_root = Path(__file__).resolve().parents[2]
-    package_root = repo_root / "packages" / "ai_workflow_engine" / "ai_workflow_engine"
+    package_root = Path(__file__).resolve().parents[1] / "ai_workflow_engine"
     forbidden_substrings = [
         "NotImplementedError",
         "TODO",

@@ -21,7 +21,19 @@ media = [
     "openai>=2.41.0",
     "requests>=2.34.0",
 ]
+test = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["ai_workflow_engine*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "unit: engine unit tests",
+    "integration: integration-style tests (still hermetic/fake-backed)",
+]

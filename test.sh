@@ -291,8 +291,8 @@ else
         # User specified test files, don't add "tests/"
         TEST_TARGET=""
     else
-        # No specific files, run all tests in tests/ directory
-        TEST_TARGET="tests/"
+        # No specific files: run the product suite plus the engine package's own suite
+        TEST_TARGET="tests/ packages/ai_workflow_engine/tests/"
     fi
     
     if run_tests "$TEST_TARGET" ""; then
