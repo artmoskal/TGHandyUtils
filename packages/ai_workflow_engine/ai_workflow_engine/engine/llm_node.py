@@ -70,6 +70,8 @@ Original request:
         llm_factory: Optional[ChatLLMFactory] = None,
         validator: Optional[Validator] = None,
         repair_prompt_template: Optional[str] = None,
+        pre_parse: Optional[Callable[[str], str]] = None,
+        max_repair_rounds: int = 1,
     ):
         self.name = name
         self.config = config
@@ -81,6 +83,10 @@ Original request:
         self._llm = llm
         self._llm_factory = llm_factory
         self.validator = validator
+        # Weak-model output hygiene: optional cleaner applied to raw text before every parse
+        # attempt (first AND repairs). See ai_workflow_engine.parsing for stock cleaners.
+        self.pre_parse = pre_parse
+        self.max_repair_rounds = max(0, max_repair_rounds)
         self.parser = PydanticOutputParser(pydantic_object=output_model)
         partial_variables = {"format_instructions": self.parser.get_format_instructions()}
         self.prompt: Optional[PromptTemplate] = None
@@ -148,7 +154,7 @@ Original request:
         message_factory: Optional[MessageFactory],
     ) -> Any:
         last_error = ""
-        for attempt in (1, 2):
+        for attempt in range(1, 2 + self.max_repair_rounds):
             try:
                 messages = self._messages_for_attempt(prompt_bundle, attempt, last_error)
                 if message_factory:
@@ -162,7 +168,8 @@ Original request:
                     metadata={"output_model": self.output_model.__name__},
                     config=self.config,
                 )
-                parsed = self.parser.parse(self._message_content(output))
+                raw_text = self._message_content(output)
+                parsed = self.parser.parse(self._apply_pre_parse(raw_text, attempt, content_hash))
                 if self.validator:
                     self.validator(parsed)
                 logger.info(
@@ -208,13 +215,41 @@ Original request:
         prompt_text = self.prompt.format(**values)
         return PromptBundle(system=None, user=prompt_text, full_text=prompt_text)
 
+    def _apply_pre_parse(self, raw_text: str, attempt: int, content_hash: str) -> str:
+        """Run the optional cleaner; log only when it actually changed the payload."""
+
+        if self.pre_parse is None:
+            return raw_text
+        cleaned = self.pre_parse(raw_text)
+        if cleaned != raw_text:
+            logger.info(
+                "structured_llm_node_pre_parse %s",
+                json.dumps(
+                    {
+                        "node": self.name,
+                        "attempt": attempt,
+                        "content_hash": content_hash,
+                        "original": {
+                            "length": len(raw_text),
+                            "sha12": hashlib.sha256(raw_text.encode("utf-8", errors="ignore")).hexdigest()[:12],
+                        },
+                        "cleaned": {
+                            "length": len(cleaned),
+                            "sha12": hashlib.sha256(cleaned.encode("utf-8", errors="ignore")).hexdigest()[:12],
+                        },
+                    },
+                    sort_keys=True,
+                ),
+            )
+        return cleaned
+
     def _messages_for_attempt(
         self,
         prompt_bundle: PromptBundle,
         attempt: int,
         last_error: str,
     ) -> list[BaseMessage]:
-        if attempt == 2:
+        if attempt >= 2:
             return [
                 HumanMessage(
                     content=self.repair_prompt.format(
