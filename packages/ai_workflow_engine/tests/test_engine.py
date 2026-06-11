@@ -231,6 +231,48 @@ print("ok")
     assert result.stdout.strip() == "ok"
 
 
+def test_package_import_does_not_load_host_repo_modules(tmp_path):
+    """Standalone package import must not drag TGHandyUtils product modules into sys.modules."""
+    package_root = Path(__file__).resolve().parents[1]
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join([str(package_root), env.get("PYTHONPATH", "")])
+
+    script = """
+import sys
+
+import ai_workflow_engine
+from ai_workflow_engine import WorkflowBuilder, WorkflowEngineBuilder
+
+forbidden_roots = {
+    "config",
+    "core",
+    "database",
+    "handlers",
+    "platforms",
+    "scheduler",
+    "services",
+    "telegram_handlers",
+}
+loaded = sorted(
+    name for name in sys.modules
+    if name in forbidden_roots or name.split(".", 1)[0] in forbidden_roots
+)
+assert loaded == [], loaded
+print("ok")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "ok"
+
+
 def test_engine_package_has_no_app_imports_or_anki_config_names():
     """The reusable package must not depend on TGHandyUtils product modules or config names."""
     package_root = Path(__file__).resolve().parents[1] / "ai_workflow_engine"

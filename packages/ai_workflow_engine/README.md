@@ -76,6 +76,14 @@ capabilities/adapters, load a profile/config, and call `engine.run(...)`. If pro
 manually sequence `runtime.invoke(...)` calls and implement branch/retry/retrace/fallback/scheduler
 loops, this package is not finished.
 
+Standalone package proof: day-to-day TGHandyUtils validation still uses Docker via `./test.sh`, but
+the reusable package has an explicit release gate:
+`packages/ai_workflow_engine/scripts/standalone_test.sh`. The script creates a fresh virtual
+environment, installs `ai-workflow-engine[test]` editable from this package directory, and runs the
+package-owned tests from inside `packages/ai_workflow_engine`. Those tests include a subprocess
+guard that importing the package does not load host app modules such as `services`, `config`,
+`handlers`, or `platforms`.
+
 Low-level scripts are valid engine instruments only when registered as typed capabilities with
 schemas, side-effect policy, timeouts, budget, trace, and failure semantics. This lets the same
 runtime handle Anki flashcards, MageQA website QA, GoPro/home-inventory processing, and a future
