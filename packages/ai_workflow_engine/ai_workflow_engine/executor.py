@@ -17,6 +17,7 @@ Public concepts: ``WorkflowExecutor``, ``NodeExecutionState``, ``NodeResult``,
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import Any, Awaitable, Callable, Dict, List, Optional, TypedDict
 
@@ -158,6 +159,8 @@ class WorkflowExecutor:
         # Shared across all runs on this executor so concurrent runs contend for the same backend
         # slots (single-flight / backpressure are engine-owned, not per-run policy state).
         self.scheduler = WorkflowScheduler()
+        self._scheduled_tasks: Dict[str, tuple[str, asyncio.Task[Any]]] = {}
+        self._scheduled_cancellations: Dict[tuple[str, str], str] = {}
         # ModelProfile registry for declarative per-node model binding (set by WorkflowEngine).
         self.model_profiles: Dict[str, Any] = {}
         self._compiled: Dict[str, Any] = {}
@@ -426,11 +429,17 @@ class WorkflowExecutor:
                 lane = sched.backend_key
                 run_id = uuid.uuid4().hex
                 decision = self.scheduler.submit(key=lane, run_id=run_id, payload=payload, policy=sched)
+                schedule_metadata = {
+                    "lane": lane,
+                    "reason": decision.reason,
+                    "run_id": run_id,
+                    "previous_run_id": decision.previous_run_id,
+                }
                 self.runtime.trace_sink.record(
                     WorkflowTraceEvent(
                         node=node.id,
                         decision=f"schedule:{decision.action}",
-                        metadata={"lane": lane, "reason": decision.reason, "run_id": run_id},
+                        metadata={k: v for k, v in schedule_metadata.items() if v is not None},
                     )
                 )
                 if decision.action in ("drop", "coalesce"):
@@ -443,10 +452,50 @@ class WorkflowExecutor:
                         state, node, denied, attempts=1, input_payload=payload,
                         force_status="failed", error=denied.error,
                     )
-                try:
-                    result = await self._invoke_bound(node, capability, payload, context, state, attempt=1)
-                finally:
-                    self.scheduler.complete(key=lane, run_id=run_id)
+                if decision.action == "cancel_previous":
+                    cancel_error = await self._cancel_previous_scheduled_run(
+                        lane=lane,
+                        previous_run_id=decision.previous_run_id,
+                        superseding_run_id=run_id,
+                        node=node,
+                    )
+                    if cancel_error is not None:
+                        denied = CapabilityResult(
+                            status="failed",
+                            error=cancel_error,
+                            metadata={"scheduling": "cancel_previous", "lane": lane},
+                        )
+                        return self._record(
+                            state, node, denied, attempts=1, input_payload=payload,
+                            force_status="failed", error=cancel_error,
+                        )
+                    if self.scheduler.active_run_id(lane) != run_id:
+                        superseded = CapabilityResult(
+                            status="failed",
+                            error=f"scheduling superseded: run {run_id} was not promoted",
+                            metadata={"scheduling": "superseded", "lane": lane, "run_id": run_id},
+                        )
+                        return self._record(
+                            state, node, superseded, attempts=1, input_payload=payload,
+                            force_status="failed", error=superseded.error,
+                        )
+                    self.runtime.trace_sink.record(
+                        WorkflowTraceEvent(
+                            node=node.id,
+                            decision="schedule:promote",
+                            metadata={"lane": lane, "run_id": run_id, "after_run_id": decision.previous_run_id},
+                        )
+                    )
+                result = await self._invoke_scheduled_bound(
+                    node=node,
+                    capability=capability,
+                    payload=payload,
+                    context=context,
+                    state=state,
+                    lane=lane,
+                    run_id=run_id,
+                    attempt=1,
+                )
                 if result.status == "rejected":
                     return self._record(
                         state, node, result, attempts=1, input_payload=payload,
@@ -472,6 +521,105 @@ class WorkflowExecutor:
             return self._record(state, node, result, attempts=attempts, input_payload=payload)
 
         return step_fn
+
+    async def _invoke_scheduled_bound(
+        self,
+        *,
+        node: WorkflowNode,
+        capability: str,
+        payload: Any,
+        context: CapabilityContext,
+        state: Dict[str, Any],
+        lane: str,
+        run_id: str,
+        attempt: int,
+    ) -> CapabilityResult:
+        current_task = asyncio.current_task()
+        if current_task is not None:
+            self._scheduled_tasks[lane] = (run_id, current_task)
+        try:
+            result = await self._invoke_bound(node, capability, payload, context, state, attempt=attempt)
+            superseded_by = self._scheduled_cancellations.pop((lane, run_id), None)
+            if superseded_by:
+                return self._cancelled_scheduled_result(
+                    node=node, lane=lane, run_id=run_id, superseded_by=superseded_by
+                )
+            return result
+        except asyncio.CancelledError:
+            superseded_by = self._scheduled_cancellations.pop((lane, run_id), None)
+            if not superseded_by:
+                raise
+            return self._cancelled_scheduled_result(
+                node=node, lane=lane, run_id=run_id, superseded_by=superseded_by
+            )
+        finally:
+            registered = self._scheduled_tasks.get(lane)
+            if registered is not None and registered[0] == run_id:
+                self._scheduled_tasks.pop(lane, None)
+            self.scheduler.complete(key=lane, run_id=run_id)
+
+    async def _cancel_previous_scheduled_run(
+        self,
+        *,
+        lane: str,
+        previous_run_id: Optional[str],
+        superseding_run_id: str,
+        node: WorkflowNode,
+    ) -> Optional[str]:
+        if not previous_run_id:
+            return f"scheduling cancel_previous had no previous run for lane {lane}"
+        registered = self._scheduled_tasks.get(lane)
+        if registered is None or registered[0] != previous_run_id:
+            return f"scheduling cancel_previous could not find active task {previous_run_id} for lane {lane}"
+        _run_id, task = registered
+        self._scheduled_cancellations[(lane, previous_run_id)] = superseding_run_id
+        self.runtime.trace_sink.record(
+            WorkflowTraceEvent(
+                node=node.id,
+                decision="schedule:cancel_request",
+                metadata={
+                    "lane": lane,
+                    "previous_run_id": previous_run_id,
+                    "superseding_run_id": superseding_run_id,
+                },
+            )
+        )
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            # Defensive: scheduled step nodes normally convert engine-owned cancellations into a
+            # failed node record, but still wait for the previous task's real exit before promotion.
+            return None
+        return None
+
+    def _cancelled_scheduled_result(
+        self,
+        *,
+        node: WorkflowNode,
+        lane: str,
+        run_id: str,
+        superseded_by: str,
+    ) -> CapabilityResult:
+        error = f"cancelled: superseded by {superseded_by}"
+        self.runtime.trace_sink.record(
+            WorkflowTraceEvent(
+                node=node.id,
+                decision="schedule:cancelled",
+                error=error,
+                metadata={"lane": lane, "run_id": run_id, "superseded_by": superseded_by},
+            )
+        )
+        return CapabilityResult(
+            status="failed",
+            error=error,
+            metadata={
+                "scheduling": "cancelled",
+                "lane": lane,
+                "run_id": run_id,
+                "superseded_by": superseded_by,
+            },
+        )
 
     def _policy_denial(
         self,

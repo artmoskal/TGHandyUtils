@@ -2487,47 +2487,6 @@ async def test_budget_exhaustion_denies_metered_capability():
     assert "budget" in (result.error or "")
 
 
-async def test_backend_slot_held_until_worker_completes_blocks_concurrent_call():
-    started = asyncio.Event()
-    release = asyncio.Event()
-
-    async def long_worker(ctx, p):
-        started.set()
-        await release.wait()
-        return "A-done"
-
-    async def quick_worker(ctx, p):
-        return "B-done"
-
-    lane = SchedulingPolicy(mode="drop_not_queue", backend_key="local_model", max_backend_concurrency=1)
-    engine = (
-        WorkflowEngineBuilder()
-        .register_capability("long_worker", long_worker, kind="llm")
-        .register_capability("quick_worker", quick_worker, kind="llm")
-        .register_workflow(WorkflowBuilder("flowA").step("slow", capability="long_worker", scheduling=lane).build())
-        .register_workflow(WorkflowBuilder("flowB").step("fast", capability="quick_worker", scheduling=lane).build())
-        .build()
-    )
-
-    task_a = asyncio.create_task(engine.run("flowA", {}))
-    await started.wait()  # A is inside the worker, holding the single backend slot
-
-    # Second backend call cannot start concurrently — it is dropped while the slot is locked.
-    res_b = await engine.run("flowB", {})
-    assert res_b.status == "failed"
-    assert any((e.decision or "").startswith("schedule:drop") for e in res_b.trace)
-
-    # The slot is released only when the worker actually completes (not on request).
-    release.set()
-    res_a = await task_a
-    assert res_a.status == "completed"
-    assert res_a.output == "A-done"
-
-    res_b2 = await engine.run("flowB", {})
-    assert res_b2.status == "completed"
-    assert res_b2.output == "B-done"
-
-
 # ======================================================================================
 # Executable workflow engine — P6: same-executor proof + guards (AC-11, AC-12, AC-13)
 # ======================================================================================

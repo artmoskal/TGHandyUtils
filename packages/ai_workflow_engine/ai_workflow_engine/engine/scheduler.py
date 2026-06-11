@@ -15,6 +15,7 @@ class SchedulingDecision:
     run_id: str
     reason: str = ""
     payload: Any = None
+    previous_run_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -67,7 +68,9 @@ class WorkflowScheduler:
             previous = self._active.get(key)
             self._mark_active(key, run_id, policy)
             if previous:
-                return SchedulingDecision("accept_latest", run_id, f"replaced stale run {previous}", payload)
+                return SchedulingDecision(
+                    "accept_latest", run_id, f"replaced stale run {previous}", payload, previous
+                )
             return SchedulingDecision("accept", run_id, "first run", payload)
 
         if policy.mode in {"run_latest", "live_latest_only"}:
@@ -78,7 +81,9 @@ class WorkflowScheduler:
             previous = self._active.get(key)
             if previous:
                 self._queued[key] = [_QueuedRun(run_id, payload, created, policy.priority)]
-                return SchedulingDecision("cancel_previous", run_id, f"cancel previous run {previous}", payload)
+                return SchedulingDecision(
+                    "cancel_previous", run_id, f"cancel previous run {previous}", payload, previous
+                )
             self._mark_active(key, run_id, policy)
             return SchedulingDecision("accept", run_id, "first run", payload)
 
@@ -142,7 +147,14 @@ class WorkflowScheduler:
         active_count = len(self._backend_active.get(policy.backend_key, set()))
         if active_count < policy.max_backend_concurrency:
             return None
-        if policy.mode in {"queue", "replay_process_all", "run_latest", "live_latest_only", "coalesce"}:
+        if policy.mode in {
+            "queue",
+            "replay_process_all",
+            "run_latest",
+            "live_latest_only",
+            "coalesce",
+            "single_flight_cancel",
+        }:
             return None
         return SchedulingDecision(
             "drop",
