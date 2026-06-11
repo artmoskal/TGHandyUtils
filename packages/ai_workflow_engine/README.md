@@ -2,17 +2,17 @@
 
 Internal package being evolved into a reusable, executable AI workflow builder/runtime.
 
-> **Status (2026-06-08): the executable engine layer is implemented.** `WorkflowDefinition` +
+> **Status (2026-06-11): the executable engine layer is implemented.** `WorkflowDefinition` +
 > `WorkflowBuilder` (declare), `WorkflowEngineBuilder` / `WorkflowEngine.from_config` (DI/IoC wiring),
 > and `WorkflowExecutor` / `await engine.run(...)` (execution) are live, with branch, fan-out/gather,
-> evaluator retry/retrace/fallback, subworkflow-as-capability, human clarification, scheduling, and
-> side-effect/privacy/budget gates all engine-owned. **LangGraph is the executor's internal backend**
-> (a `WorkflowDefinition` is compiled to a `StateGraph` inside `executor.py`); products never import
-> LangGraph. Anki is migrated onto this engine (its product LangGraph graph was deleted), and one
-> single `WorkflowExecutor` runs the calendar / site-audit / inventory / card-generation example packs
-> (see `examples.py`). The "still missing" notes further down predate this and are superseded.
+> planner-plan execution, evaluator retry/retrace/replan/fallback, subworkflow-as-capability, human
+> clarification, scheduling/cancellation, per-node model binding, and side-effect/privacy/budget gates
+> all engine-owned. **LangGraph is the executor's internal backend** (a `WorkflowDefinition` is
+> compiled to a `StateGraph` inside `executor.py`); products never import LangGraph. Anki is migrated
+> onto this engine (its product LangGraph graph was deleted), and one single `WorkflowExecutor` runs
+> the calendar / site-audit / inventory / card-generation example packs (see `examples.py`).
 
-## Weak-model & vision support (gap-closure 2026-06-10)
+## Gap-Closure Notes (2026-06-10/11)
 
 - **`pre_parse` cleaners (G2):** `StructuredLLMNode(..., pre_parse=WEAK_MODEL_CLEANER,
   max_repair_rounds=N)` sanitizes weak-model output (think-tags, ```json fences, chatter) before
@@ -57,6 +57,20 @@ Internal package being evolved into a reusable, executable AI workflow builder/r
   if the client reports no cost, the engine falls back to its price table by model name; when the
   model is unknown the usage event records `estimated_usd=None` with `cost_known=false` — never a
   phantom `$0.00`.
+- **Per-node model binding (G3):** `WorkflowBuilder.step/branch/evaluate/plan(...,
+  model_profile="name")` resolves a registered `ModelProfile` before invocation, injects it into
+  `CapabilityContext.model_profile`, and records `model_binding` trace events. Fixed-client LLM
+  handlers that cannot honor the binding fail loudly at registration/preflight or first call.
+- **Single-flight cancellation (G7):** `SchedulingPolicy(strategy="single_flight_cancel")` is wired
+  through the executor: a superseding run cancels the active worker, waits for real exit, promotes the
+  latest run, and emits schedule trace decisions.
+- **Planner node (G6):** `WorkflowBuilder.plan(...)` invokes a planner capability that emits a
+  `PlanArtifact`. The executor validates all declared tasks before execution (registered capability,
+  side-effect allow-list, max task count, no recursive planner task), executes sequentially or
+  bounded fan-out, stores task status in `plan_artifact` + `node_outputs`, emits
+  `plan:task_started/done/failed`, and supports bounded `Replan("planner_node")`. Plan context
+  injection is opt-in per node with `inject_plan=True`, which exposes `render_plan(plan)` as
+  `context.metadata["plan"]` only for that node call.
 
 It is the reusable substrate for multi-step AI workflows. Per the 2026-06-07 and 2026-06-08
 decisions we are building toward the full framework (see the architecture doc and executable
@@ -91,6 +105,8 @@ calendar builder driven by availability, energy, priorities, task pool, and focu
 
 Implemented today (verified against the package source):
 
+- `WorkflowDefinition`, `WorkflowBuilder`, `WorkflowEngineBuilder`, `WorkflowEngine.run(...)`, and
+  `WorkflowExecutor` for product-neutral executable workflows;
 - workflow goal + run context, trace events, artifacts, and usage summaries;
 - workflow runner with explicit graph runtime config and policy-owned recursion fallback, plus
   instrument registry;
@@ -118,6 +134,11 @@ Implemented today (verified against the package source):
 - scheduler policy helper for run-immediately, queue, replay-process-all, run-latest,
   live-latest-only, drop-stale, drop-not-queue, coalesce, fan-out-gather, backend concurrency caps,
   and single-flight-cancel decisions that hold the active lock until completion;
+- first-class executable node types for step, branch, fan-out/gather, evaluate, planner,
+  subworkflow, and human clarification;
+- planner-as-artifact execution with `PlanTask`, `PlanArtifact`, `render_plan`, task-level trace,
+  bounded `Replan`, immutable completed/failed task history on replan, plan resume from serialized
+  artifact payloads, shared budget caps, and opt-in plan context injection;
 - generic `EvaluationController` for product-owned quality evaluators: retry the failed capability
   with criticism, retrace to an earlier capability, route to fallback/repair, ask the user, or fail
   under explicit caps;
@@ -135,27 +156,14 @@ Implemented today (verified against the package source):
   Telegram-owned channel, `RuntimePlan` side-effect policy, and traceable pending/answered/provisional
   responses.
 
-Missing before this is a finished workflow engine:
-
-- first-class `WorkflowDefinition` / `WorkflowBuilder` models;
-- first-class executable node types for step, branch, structured LLM, AI decision/gate,
-  fan-out/gather, evaluator gate, retry/retrace/fallback, subworkflow, human clarification, external
-  process/tool, media/image, voice, and adapter calls;
-- `WorkflowExecutor` / `WorkflowEngine.run(...)` that executes those nodes end-to-end from
-  definition + profile + registered capabilities;
-- subworkflow-as-capability support with parent/child trace boundaries;
-- worker-integrated scheduling/cancellation tests, not only policy-state tests;
-- same-executor proof for Anki, GoPro inventory, MageQA site audit, and calendar builder with no
-  product-owned mini-engine loops.
-
 Boundary / downstream adoption work:
 
-- recursive subworkflows need first-class `WorkflowDefinition`/`WorkflowExecutor` support, not only
-  registered graph/callable wrappers;
 - production browser/MCP adapter packs for external agents; the package runtime has bounded agent
   episodes, but project adapters still need to bind real browser/CLI tools;
 - automatic product restart/replay wiring; checkpoint stores exist, but each product still has to
-  decide when to resume from latest engine checkpoints versus domain state;
+  decide when to resume from latest engine checkpoints versus domain state. Planner artifacts are
+  checkpoint-safe and can resume pending tasks when supplied back as planner input, but product
+  restart policy is intentionally product-owned;
 - real MageQA/GoPro repo adoption with browser/camera/domain adapters. The package now has
   fake-backed site-audit and inventory pilots, but open-ended agency and live/long-running scheduling
   are not battle-tested until those projects bind real adapters and domain state.

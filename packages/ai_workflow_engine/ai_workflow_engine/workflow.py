@@ -9,7 +9,7 @@ mechanics are expressed declaratively here and *executed* by the engine (``execu
 
 Public concepts (kept product-neutral):
     WorkflowDefinition, WorkflowNode, WorkflowEdge, WorkflowBuilder, BranchDecision,
-    Retry, Retrace, Fallback, SubworkflowRef, NodeKind.
+    Retry, Retrace, Replan, Fallback, SubworkflowRef, NodeKind.
 """
 
 from __future__ import annotations
@@ -26,8 +26,10 @@ END = "__end__"
 # Node kinds the executor knows how to run. An authored node with any other kind
 # fails validation at build time and (defensively) fails loudly at execution time —
 # never silently downgraded to a simpler path.
-NodeKind = Literal["step", "branch", "fanout", "evaluate", "subworkflow", "human"]
-KNOWN_NODE_KINDS = frozenset({"step", "branch", "fanout", "evaluate", "subworkflow", "human"})
+NodeKind = Literal["step", "branch", "fanout", "evaluate", "subworkflow", "human", "planner"]
+KNOWN_NODE_KINDS = frozenset(
+    {"step", "branch", "fanout", "evaluate", "subworkflow", "human", "planner"}
+)
 
 
 class WorkflowValidationError(ValueError):
@@ -68,6 +70,19 @@ class Retrace(BaseModel):
         super().__init__(**data)
 
 
+class Replan(BaseModel):
+    """Go back to a planner node and revise only pending tasks, bounded by ``max_replans``."""
+
+    kind: Literal["replan"] = "replan"
+    target: str
+    max_replans: int = 1
+
+    def __init__(self, target: str | None = None, /, **data):
+        if target is not None:
+            data["target"] = target
+        super().__init__(**data)
+
+
 class Fallback(BaseModel):
     """Hand off to a fallback capability when the primary output is rejected."""
 
@@ -80,7 +95,7 @@ class Fallback(BaseModel):
         super().__init__(**data)
 
 
-ControlDirective = Union[Retry, Retrace, Fallback]
+ControlDirective = Union[Retry, Retrace, Replan, Fallback]
 
 
 class BranchDecision(BaseModel):
@@ -156,6 +171,12 @@ class WorkflowNode(BaseModel):
     # kind="subworkflow": run another registered workflow as a capability.
     subworkflow: Optional[SubworkflowRef] = None
 
+    # kind="planner": run a planner capability that emits PlanArtifact, validate its declared
+    # tasks, and execute those tasks under engine-owned policy/trace/replan mechanics.
+    max_tasks: int = 8
+    execution: Literal["sequential", "fanout"] = "sequential"
+    max_replans: int = 1
+
     # policy (apply to step/evaluate nodes)
     retry: Optional[Retry] = None
     required_side_effects: List[str] = Field(default_factory=list)
@@ -167,6 +188,9 @@ class WorkflowNode(BaseModel):
     # declarative per-node model binding: name into the engine's ModelProfile registry, resolved at
     # run time and validated loudly at registration/preflight (unknown name never fails mid-run).
     model_profile: Optional[str] = None
+    # Opt-in plan context injection. When true and a PlanArtifact exists, the executor adds a
+    # rendered plan string to context.metadata["plan"] for this node's capability call only.
+    inject_plan: bool = False
 
     def effective_capability(self) -> Optional[str]:
         """Capability bound to this node (falls back to the node id for ergonomic builders)."""
@@ -176,9 +200,11 @@ class WorkflowNode(BaseModel):
         if self.kind == "fanout":
             return self.item_capability or self.capability or self.id
         if self.kind == "evaluate":
-            return self.target_capability
+            return self.evaluator or self.id
         if self.kind == "subworkflow":
             return None
+        if self.kind == "planner":
+            return self.capability or self.id
         return self.capability or self.id
 
 
@@ -260,9 +286,28 @@ class WorkflowDefinition(BaseModel):
                     errors.append(
                         f"evaluate node '{node.id}' retrace target unknown: {node.on_reject.target}"
                     )
+                if isinstance(node.on_reject, Replan) and node.on_reject.target not in known:
+                    errors.append(
+                        f"evaluate node '{node.id}' replan target unknown: {node.on_reject.target}"
+                    )
+                if (
+                    isinstance(node.on_reject, Replan)
+                    and node.on_reject.target in known
+                    and self.node(node.on_reject.target).kind != "planner"
+                ):
+                    errors.append(
+                        f"evaluate node '{node.id}' replan target is not a planner: {node.on_reject.target}"
+                    )
             elif node.kind == "subworkflow":
                 if not node.subworkflow:
                     errors.append(f"subworkflow node '{node.id}' missing subworkflow ref")
+            elif node.kind == "planner":
+                if not (node.capability or node.id):
+                    errors.append(f"planner node '{node.id}' missing capability")
+                if node.max_tasks < 1:
+                    errors.append(f"planner node '{node.id}' max_tasks must be >= 1")
+                if node.max_replans < 0:
+                    errors.append(f"planner node '{node.id}' max_replans must be >= 0")
 
         for edge in self.edges:
             if edge.source not in known:
@@ -337,6 +382,7 @@ class WorkflowBuilder:
         allow_raw_media_export: bool = False,
         scheduling: Optional[SchedulingPolicy] = None,
         model_profile: Optional[str] = None,
+        inject_plan: bool = False,
         description: str = "",
     ) -> "WorkflowBuilder":
         self._append(
@@ -351,6 +397,7 @@ class WorkflowBuilder:
                 allow_raw_media_export=allow_raw_media_export,
                 scheduling=scheduling,
                 model_profile=model_profile,
+                inject_plan=inject_plan,
                 description=description,
             )
         )
@@ -363,6 +410,7 @@ class WorkflowBuilder:
         *,
         decider: Optional[str] = None,
         model_profile: Optional[str] = None,
+        inject_plan: bool = False,
         description: str = "",
     ) -> "WorkflowBuilder":
         node = WorkflowNode(
@@ -371,6 +419,7 @@ class WorkflowBuilder:
             decider=decider or node_id,
             branches=dict(branches),
             model_profile=model_profile,
+            inject_plan=inject_plan,
             description=description,
         )
         self._append(node)
@@ -388,6 +437,7 @@ class WorkflowBuilder:
         items_key: str,
         max_parallel: Optional[int] = None,
         output_key: Optional[str] = None,
+        inject_plan: bool = False,
         description: str = "",
     ) -> "WorkflowBuilder":
         self._append(
@@ -398,6 +448,7 @@ class WorkflowBuilder:
                 fan_items_key=items_key,
                 max_parallel=max_parallel,
                 output_key=output_key,
+                inject_plan=inject_plan,
                 description=description,
             )
         )
@@ -412,6 +463,7 @@ class WorkflowBuilder:
         on_reject: Optional[ControlDirective] = None,
         fallback: Optional[str] = None,
         model_profile: Optional[str] = None,
+        inject_plan: bool = False,
         description: str = "",
     ) -> "WorkflowBuilder":
         # Default the evaluated target to the most recent step's capability.
@@ -429,6 +481,38 @@ class WorkflowBuilder:
                 on_reject=on_reject,
                 fallback_capability=fallback or (on_reject.capability if isinstance(on_reject, Fallback) else None),
                 model_profile=model_profile,
+                inject_plan=inject_plan,
+                description=description,
+            )
+        )
+        return self
+
+    def plan(
+        self,
+        node_id: str,
+        *,
+        capability: Optional[str] = None,
+        input_key: Optional[str] = None,
+        output_key: Optional[str] = None,
+        max_tasks: int = 8,
+        execution: Literal["sequential", "fanout"] = "sequential",
+        max_replans: int = 1,
+        model_profile: Optional[str] = None,
+        inject_plan: bool = False,
+        description: str = "",
+    ) -> "WorkflowBuilder":
+        self._append(
+            WorkflowNode(
+                id=node_id,
+                kind="planner",
+                capability=capability or node_id,
+                input_key=input_key,
+                output_key=output_key,
+                max_tasks=max_tasks,
+                execution=execution,
+                max_replans=max_replans,
+                model_profile=model_profile,
+                inject_plan=inject_plan,
                 description=description,
             )
         )
@@ -441,6 +525,7 @@ class WorkflowBuilder:
         workflow: Union["WorkflowDefinition", str],
         budget_usd: Optional[float] = None,
         max_steps: Optional[int] = None,
+        inject_plan: bool = False,
         description: str = "",
     ) -> "WorkflowBuilder":
         workflow_id = workflow if isinstance(workflow, str) else workflow.workflow_id
@@ -451,6 +536,7 @@ class WorkflowBuilder:
                 subworkflow=SubworkflowRef(
                     workflow_id=workflow_id, budget_usd=budget_usd, max_steps=max_steps
                 ),
+                inject_plan=inject_plan,
                 description=description,
             )
         )
@@ -461,6 +547,7 @@ class WorkflowBuilder:
         node_id: str,
         *,
         capability: Optional[str] = None,
+        inject_plan: bool = False,
         description: str = "",
     ) -> "WorkflowBuilder":
         self._append(
@@ -468,6 +555,7 @@ class WorkflowBuilder:
                 id=node_id,
                 kind="human",
                 capability=capability or node_id,
+                inject_plan=inject_plan,
                 description=description,
             )
         )

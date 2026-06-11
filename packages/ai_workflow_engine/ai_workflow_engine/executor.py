@@ -41,6 +41,7 @@ from ai_workflow_engine.models import (
     WorkflowTraceEvent,
     WorkflowUsageSummary,
 )
+from ai_workflow_engine.planning import PlanArtifact, PlanTask, render_plan
 from ai_workflow_engine.workflow import (
     END,
     KNOWN_NODE_KINDS,
@@ -77,6 +78,7 @@ class WorkflowState(TypedDict, total=False):
     workflow_context: Any
     workflow_goal: Any
     usage_summary: Any
+    plan_artifact: Any
 
 
 class UnsupportedNodeError(ValueError):
@@ -173,6 +175,7 @@ class WorkflowExecutor:
             "evaluate": WorkflowExecutor._build_evaluate_node,
             "subworkflow": WorkflowExecutor._build_subworkflow_node,
             "human": WorkflowExecutor._build_human_node,
+            "planner": WorkflowExecutor._build_planner_node,
         }
 
     # ---------------------------------------------------------------- public API
@@ -250,6 +253,7 @@ class WorkflowExecutor:
             "status": "running",
             "error": None,
             "fallback_reason": None,
+            "plan_artifact": None,
         }
 
     def compile(self, definition: WorkflowDefinition) -> Any:
@@ -290,9 +294,12 @@ class WorkflowExecutor:
             return
 
         if node.kind == "evaluate":
+            from ai_workflow_engine.workflow import Replan, Retrace
+
             successor = self._sequential_successor(definition, node.id)
             predecessor = self._sequential_predecessor(definition, node.id)
-            retrace_target = node.on_reject.target if hasattr(node.on_reject, "target") else None
+            retrace_target = node.on_reject.target if isinstance(node.on_reject, Retrace) else None
+            replan_target = node.on_reject.target if isinstance(node.on_reject, Replan) else None
             graph.add_conditional_edges(
                 node.id,
                 self._evaluate_router(node),
@@ -300,6 +307,7 @@ class WorkflowExecutor:
                     "accept": lg_end if (successor is None or successor == END) else successor,
                     "retry": predecessor or lg_end,
                     "retrace": retrace_target or lg_end,
+                    "replan": replan_target or lg_end,
                     "halt": lg_end,
                 },
             )
@@ -369,6 +377,7 @@ class WorkflowExecutor:
     ) -> CapabilityResult:
         """Invoke a capability under the node's declared model profile (if any), traced."""
 
+        context = self._context_for_node(node, context, state)
         if not node.model_profile:
             return await self.runtime.invoke(capability, payload, context, attempt=attempt)
         profile = self.model_profiles.get(node.model_profile)
@@ -396,6 +405,24 @@ class WorkflowExecutor:
             )
         )
         return result
+
+    @staticmethod
+    def _context_for_node(
+        node: WorkflowNode,
+        context: CapabilityContext,
+        state: Dict[str, Any],
+        *,
+        plan: Optional[PlanArtifact] = None,
+    ) -> CapabilityContext:
+        if not node.inject_plan:
+            return context
+        current_plan = plan or state.get("plan_artifact")
+        if current_plan is None:
+            return context
+        if not isinstance(current_plan, PlanArtifact):
+            current_plan = PlanArtifact.model_validate(current_plan)
+        metadata = {**context.metadata, "plan": render_plan(current_plan)}
+        return context.model_copy(update={"metadata": metadata})
 
     # ---------------------------------------------------------------- node handlers
     def _build_step_node(self, definition: WorkflowDefinition, node: WorkflowNode):
@@ -744,6 +771,328 @@ class WorkflowExecutor:
 
         return fanout_fn
 
+    def _build_planner_node(self, definition: WorkflowDefinition, node: WorkflowNode):
+        planner_capability = node.capability or node.id
+
+        async def planner_fn(state: Dict[str, Any]) -> Dict[str, Any]:
+            context: CapabilityContext = state[_CONTEXT]
+            payload = self._node_input(state, node)
+            attempt = state.get("attempts", {}).get(node.id, 0) + 1
+
+            resume_plan = self._coerce_plan_artifact(payload)
+            if resume_plan is None:
+                planner_result = await self._invoke_bound(
+                    node, planner_capability, payload, context, state, attempt=attempt
+                )
+                if planner_result.status in ("failed", "rejected"):
+                    return self._record(
+                        state,
+                        node,
+                        planner_result,
+                        attempts=attempt,
+                        input_payload=payload,
+                        force_status="failed",
+                        error=planner_result.error or "planner failed",
+                    )
+                plan = self._coerce_plan_artifact(planner_result.output)
+                if plan is None:
+                    failed = CapabilityResult(
+                        status="failed",
+                        error=f"planner '{node.id}' did not emit a PlanArtifact-compatible output",
+                    )
+                    return self._record(
+                        state, node, failed, attempts=attempt, input_payload=payload
+                    )
+                prior_plan = self._coerce_plan_artifact(state.get("plan_artifact"))
+                if prior_plan is not None:
+                    plan = self._merge_replanned_plan(prior_plan, plan)
+            else:
+                plan = resume_plan
+                planner_result = CapabilityResult(status="accepted", output=plan)
+
+            validation_errors = self._validate_plan(node, plan, context)
+            if validation_errors:
+                error = "planner validation failed: " + "; ".join(validation_errors)
+                self.runtime.trace_sink.record(
+                    WorkflowTraceEvent(
+                        node=node.id,
+                        attempt=attempt,
+                        decision="plan:validation_failed",
+                        error=error,
+                        metadata={"errors": validation_errors},
+                    )
+                )
+                failed = CapabilityResult(status="failed", output=plan, error=error)
+                update = self._record(
+                    state, node, failed, attempts=attempt, input_payload=payload
+                )
+                update["plan_artifact"] = plan
+                return update
+
+            executed_plan, task_outputs, task_artifacts, task_failures = await self._execute_plan(
+                node=node,
+                plan=plan,
+                context=context,
+                state=state,
+            )
+            status = "partial" if task_failures else "accepted"
+            if executed_plan.tasks and all(task.status in ("failed", "skipped") for task in executed_plan.tasks):
+                status = "failed"
+            result = CapabilityResult(
+                status=status,
+                output=executed_plan,
+                artifacts=task_artifacts,
+                error="; ".join(task_failures) or planner_result.error,
+                metadata={"tasks": len(executed_plan.tasks), "failed": len(task_failures)},
+            )
+            update = self._record(
+                state,
+                node,
+                result,
+                attempts=attempt,
+                input_payload=payload,
+                force_status="failed" if status == "failed" else status,
+                error=result.error if status == "failed" else None,
+            )
+            node_outputs = {**update.get("node_outputs", {})}
+            node_outputs.update(task_outputs)
+            update["node_outputs"] = node_outputs
+            update["plan_artifact"] = executed_plan
+            update[_RUNNING_PAYLOAD] = executed_plan
+            return update
+
+        return planner_fn
+
+    @staticmethod
+    def _coerce_plan_artifact(value: Any) -> Optional[PlanArtifact]:
+        if value is None:
+            return None
+        if isinstance(value, PlanArtifact):
+            return value
+        if isinstance(value, dict):
+            try:
+                return PlanArtifact.model_validate(value)
+            except Exception:
+                return None
+        return None
+
+    @staticmethod
+    def _merge_replanned_plan(prior: PlanArtifact, proposed: PlanArtifact) -> PlanArtifact:
+        immutable = {
+            task.task_id: task
+            for task in prior.tasks
+            if task.status in ("done", "failed", "skipped")
+        }
+        merged: list[PlanTask] = []
+        seen: set[str] = set()
+        for old_task in prior.tasks:
+            if old_task.task_id in immutable:
+                merged.append(old_task)
+                seen.add(old_task.task_id)
+        for task in proposed.tasks:
+            if task.task_id in immutable:
+                continue
+            status = task.status if task.status in ("pending", "in_progress") else "pending"
+            merged.append(task.model_copy(update={"status": status, "error": None, "output_ref": None}))
+            seen.add(task.task_id)
+        return proposed.model_copy(update={"tasks": merged, "revision": prior.revision + 1})
+
+    def _validate_plan(
+        self,
+        node: WorkflowNode,
+        plan: PlanArtifact,
+        context: CapabilityContext,
+    ) -> list[str]:
+        errors: list[str] = []
+        if len(plan.tasks) > node.max_tasks:
+            errors.append(f"plan has {len(plan.tasks)} tasks, exceeds max_tasks={node.max_tasks}")
+        seen: set[str] = set()
+        allowed = set(context.plan.safety.allowed_side_effects) if context.plan is not None else set()
+        for index, task in enumerate(plan.tasks):
+            label = task.task_id or f"#{index + 1}"
+            if not task.task_id:
+                errors.append(f"task {index + 1} has empty task_id")
+            elif task.task_id in seen:
+                errors.append(f"task '{task.task_id}' has duplicate task_id")
+            seen.add(task.task_id)
+            try:
+                spec, handler = self.runtime.registry.get(task.capability)
+            except KeyError:
+                errors.append(f"task '{label}' capability '{task.capability}' is not registered")
+                continue
+            if task.capability == (node.capability or node.id):
+                errors.append(f"task '{label}' cannot call its planner capability '{task.capability}'")
+            if spec.metadata.get("planner") is True or getattr(handler, "is_planner", False):
+                errors.append(f"task '{label}' cannot call planner capability '{task.capability}'")
+            denied = sorted(effect for effect in spec.side_effects if effect not in allowed)
+            if denied:
+                errors.append(
+                    f"task '{label}' capability '{task.capability}' side effects denied: "
+                    f"{', '.join(denied)}"
+                )
+        return errors
+
+    async def _execute_plan(
+        self,
+        *,
+        node: WorkflowNode,
+        plan: PlanArtifact,
+        context: CapabilityContext,
+        state: Dict[str, Any],
+    ) -> tuple[PlanArtifact, Dict[str, Any], list[WorkflowArtifact], list[str]]:
+        task_outputs: Dict[str, Any] = {}
+        artifacts: list[WorkflowArtifact] = []
+        failures: list[str] = []
+        tasks = list(plan.tasks)
+        if node.execution == "fanout":
+            return await self._execute_plan_fanout(node, plan, context, state)
+
+        current_plan = plan
+        for index, task in enumerate(tasks):
+            if task.status in ("done", "failed", "skipped"):
+                continue
+            started = task.model_copy(update={"status": "in_progress", "error": None})
+            tasks[index] = started
+            current_plan = current_plan.model_copy(update={"tasks": list(tasks)})
+            self._trace_plan_task(node, started, "plan:task_started")
+            result = await self._invoke_plan_task(node, started, context, state, current_plan)
+            finished, output_key = self._finish_plan_task(node, started, result)
+            tasks[index] = finished
+            current_plan = current_plan.model_copy(update={"tasks": list(tasks)})
+            if output_key and result.output is not None:
+                task_outputs[output_key] = result.output
+            artifacts.extend(result.artifacts)
+            if finished.status == "failed":
+                failures.append(f"{finished.task_id}: {finished.error or 'failed'}")
+                self._trace_plan_task(node, finished, "plan:task_failed", error=finished.error)
+            else:
+                self._trace_plan_task(node, finished, "plan:task_done")
+        return current_plan, task_outputs, artifacts, failures
+
+    async def _execute_plan_fanout(
+        self,
+        node: WorkflowNode,
+        plan: PlanArtifact,
+        context: CapabilityContext,
+        state: Dict[str, Any],
+    ) -> tuple[PlanArtifact, Dict[str, Any], list[WorkflowArtifact], list[str]]:
+        pending_indexes = [
+            index for index, task in enumerate(plan.tasks)
+            if task.status not in ("done", "failed", "skipped")
+        ]
+        tasks = list(plan.tasks)
+        for index in pending_indexes:
+            tasks[index] = tasks[index].model_copy(update={"status": "in_progress", "error": None})
+            self._trace_plan_task(node, tasks[index], "plan:task_started")
+        started_plan = plan.model_copy(update={"tasks": list(tasks)})
+        limit = node.max_parallel or (context.limits.max_parallel_children if context.limits else 4) or 4
+        semaphore = asyncio.Semaphore(max(1, limit))
+
+        async def invoke(index: int) -> tuple[int, CapabilityResult]:
+            async with semaphore:
+                result = await self._invoke_plan_task(node, tasks[index], context, state, started_plan)
+                return index, result
+
+        results = await asyncio.gather(*(invoke(index) for index in pending_indexes))
+        task_outputs: Dict[str, Any] = {}
+        artifacts: list[WorkflowArtifact] = []
+        failures: list[str] = []
+        for index, result in results:
+            finished, output_key = self._finish_plan_task(node, tasks[index], result)
+            tasks[index] = finished
+            if output_key and result.output is not None:
+                task_outputs[output_key] = result.output
+            artifacts.extend(result.artifacts)
+            if finished.status == "failed":
+                failures.append(f"{finished.task_id}: {finished.error or 'failed'}")
+                self._trace_plan_task(node, finished, "plan:task_failed", error=finished.error)
+            else:
+                self._trace_plan_task(node, finished, "plan:task_done")
+        return plan.model_copy(update={"tasks": tasks}), task_outputs, artifacts, failures
+
+    async def _invoke_plan_task(
+        self,
+        node: WorkflowNode,
+        task: PlanTask,
+        context: CapabilityContext,
+        state: Dict[str, Any],
+        plan: PlanArtifact,
+    ) -> CapabilityResult:
+        denial = self._planned_task_denial(task, state, context)
+        if denial:
+            return CapabilityResult(
+                status="rejected",
+                error=f"denied by policy: {', '.join(denial)}",
+                metadata={"denied": denial},
+            )
+        task_context = self._context_for_node(node, context, state, plan=plan)
+        return await self.runtime.invoke(task.capability, task.payload, task_context, attempt=1)
+
+    def _planned_task_denial(
+        self,
+        task: PlanTask,
+        state: Dict[str, Any],
+        context: CapabilityContext,
+    ) -> list[str]:
+        plan = context.plan
+        if plan is None:
+            return []
+        try:
+            spec, _handler = self.runtime.registry.get(task.capability)
+        except KeyError:
+            return []
+        if spec.metered and plan.limits and plan.limits.max_estimated_usd is not None:
+            usage = state.get("usage_summary")
+            spent = (getattr(usage, "estimated_usd", None) or 0.0) if usage is not None else 0.0
+            if spent >= plan.limits.max_estimated_usd:
+                return ["budget_exhausted"]
+        return []
+
+    @staticmethod
+    def _finish_plan_task(
+        node: WorkflowNode,
+        task: PlanTask,
+        result: CapabilityResult,
+    ) -> tuple[PlanTask, Optional[str]]:
+        if result.status in ("accepted", "partial"):
+            output_key = f"{node.id}.{task.task_id}"
+            return (
+                task.model_copy(update={"status": "done", "error": None, "output_ref": output_key}),
+                output_key,
+            )
+        return (
+            task.model_copy(
+                update={
+                    "status": "failed",
+                    "error": result.error or f"task capability returned {result.status}",
+                    "output_ref": None,
+                }
+            ),
+            None,
+        )
+
+    def _trace_plan_task(
+        self,
+        node: WorkflowNode,
+        task: PlanTask,
+        decision: str,
+        *,
+        error: Optional[str] = None,
+    ) -> None:
+        self.runtime.trace_sink.record(
+            WorkflowTraceEvent(
+                node=node.id,
+                decision=decision,
+                error=error,
+                metadata={
+                    "task_id": task.task_id,
+                    "capability": task.capability,
+                    "status": task.status,
+                    "output_ref": task.output_ref,
+                },
+            )
+        )
+
     def _build_evaluate_node(self, definition: WorkflowDefinition, node: WorkflowNode):
         evaluator = node.evaluator or node.id
 
@@ -753,7 +1102,14 @@ class WorkflowExecutor:
             attempt = state.get("attempts", {}).get(node.id, 0) + 1
             eval_result = await self._invoke_bound(node, evaluator, evaluated_payload, context, state, attempt=attempt)
             decision = self._eval_decision(node, eval_result)
-            counters = dict(state.get("eval_counters", {}).get(node.id, {"retry": 0, "retrace": 0}))
+            counters = dict(
+                state.get("eval_counters", {}).get(
+                    node.id, {"retry": 0, "retrace": 0, "replan": 0}
+                )
+            )
+            counters.setdefault("retry", 0)
+            counters.setdefault("retrace", 0)
+            counters.setdefault("replan", 0)
             effect = await self._apply_eval(node, decision, counters, context, definition, state, evaluated_payload)
 
             cap_status = (
@@ -792,6 +1148,7 @@ class WorkflowExecutor:
                         "action": decision.action,
                         "retry": counters["retry"],
                         "retrace": counters["retrace"],
+                        "replan": counters["replan"],
                         "fallback_reason": effect.get("fallback_reason"),
                     },
                 )
@@ -907,7 +1264,7 @@ class WorkflowExecutor:
 
     # -- evaluate helpers ---------------------------------------------------------
     def _eval_decision(self, node: WorkflowNode, eval_result: CapabilityResult) -> EvaluationDecision:
-        from ai_workflow_engine.workflow import Fallback, Retrace, Retry
+        from ai_workflow_engine.workflow import Fallback, Replan, Retrace, Retry
 
         output = eval_result.output
         if isinstance(output, EvaluationDecision):
@@ -923,6 +1280,8 @@ class WorkflowExecutor:
             return EvaluationDecision(action="retry_capability", criticism=criticism, rationale=eval_result.error or "")
         if isinstance(on, Retrace):
             return EvaluationDecision(action="retrace_to", retrace_to=on.target, criticism=criticism, rationale=eval_result.error or "")
+        if isinstance(on, Replan):
+            return EvaluationDecision(action="replan", retrace_to=on.target, criticism=criticism, rationale=eval_result.error or "")
         if isinstance(on, Fallback):
             return EvaluationDecision(action="fallback", target_capability=on.capability, criticism=criticism)
         if node.fallback_capability:
@@ -953,7 +1312,7 @@ class WorkflowExecutor:
         state: Dict[str, Any],
         evaluated_payload: Any,
     ) -> Dict[str, Any]:
-        from ai_workflow_engine.workflow import Retrace, Retry
+        from ai_workflow_engine.workflow import Replan, Retrace, Retry
 
         limits = context.limits
         action = decision.action
@@ -966,6 +1325,10 @@ class WorkflowExecutor:
         elif action == "retrace_to":
             max_retrace = node.on_reject.max_retrace if isinstance(node.on_reject, Retrace) else (limits.max_retrace if limits else 1)
             if counters["retrace"] + 1 > max_retrace:
+                action = "exhausted"
+        elif action == "replan":
+            max_replans = node.on_reject.max_replans if isinstance(node.on_reject, Replan) else 1
+            if counters["replan"] + 1 > max_replans:
                 action = "exhausted"
 
         if action == "exhausted":
@@ -992,6 +1355,20 @@ class WorkflowExecutor:
             target = decision.retrace_to or (node.on_reject.target if isinstance(node.on_reject, Retrace) else None)
             base = state.get("node_inputs", {}).get(target, evaluated_payload)
             return {"route": "retrace", "status": "rejected", "output": self._with_criticism(base, decision.criticism), "error": decision.rationale}
+        if action == "replan":
+            counters["replan"] += 1
+            target = decision.retrace_to or (node.on_reject.target if isinstance(node.on_reject, Replan) else None)
+            base = state.get("node_inputs", {}).get(target, evaluated_payload)
+            payload = {
+                "input": base,
+                "plan_artifact": self._dump_plan_for_payload(state.get("plan_artifact")),
+            }
+            return {
+                "route": "replan",
+                "status": "rejected",
+                "output": self._with_criticism(payload, decision.criticism),
+                "error": decision.rationale,
+            }
         if action == "fallback":
             target = decision.target_capability or node.fallback_capability
             fb = await self.runtime.invoke(target, self._with_criticism(evaluated_payload, decision.criticism), context)
@@ -1020,6 +1397,14 @@ class WorkflowExecutor:
         if isinstance(payload, dict):
             return {**payload, "_criticism": crit}
         return {"value": payload, "_criticism": crit}
+
+    @staticmethod
+    def _dump_plan_for_payload(plan: Any) -> Any:
+        if isinstance(plan, PlanArtifact):
+            return plan.model_dump()
+        if isinstance(plan, dict):
+            return plan
+        return None
 
     @staticmethod
     def _resolve_items(state: Dict[str, Any], node: WorkflowNode) -> Any:
@@ -1157,15 +1542,13 @@ class WorkflowExecutor:
     @staticmethod
     def _required_capabilities(node: WorkflowNode) -> List[str]:
         caps: List[str] = []
-        if node.kind == "step" or node.kind == "human":
+        if node.kind in ("step", "human", "planner"):
             caps.append(node.capability or node.id)
         elif node.kind == "branch":
             caps.append(node.decider or node.capability or node.id)
         elif node.kind == "fanout":
             caps.append(node.item_capability or node.capability or node.id)
         elif node.kind == "evaluate":
-            if node.target_capability:
-                caps.append(node.target_capability)
             if node.evaluator:
                 caps.append(node.evaluator)
             if node.fallback_capability:

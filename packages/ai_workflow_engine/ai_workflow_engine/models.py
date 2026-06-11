@@ -41,6 +41,7 @@ EvaluationAction = Literal[
     "repair",
     "retry_capability",
     "retrace_to",
+    "replan",
     "fallback",
     "fail",
     "ask_user",

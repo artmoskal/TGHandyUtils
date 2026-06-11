@@ -87,10 +87,12 @@ from ai_workflow_engine.llm_protocol import (
     is_plain_llm_callable,
 )
 from ai_workflow_engine.model_binding import current_model_profile, model_profile_scope
+from ai_workflow_engine.planning import PlanArtifact, PlanTask, render_plan
 from ai_workflow_engine.workflow import (
     END,
     BranchDecision,
     Fallback,
+    Replan,
     Retrace,
     Retry,
     SubworkflowRef,
@@ -118,6 +120,7 @@ __all__ = [
     "END",
     "BranchDecision",
     "Fallback",
+    "Replan",
     "Retrace",
     "Retry",
     "SubworkflowRef",
@@ -135,6 +138,8 @@ __all__ = [
     "WorkflowEngine",
     "WorkflowEngineBuilder",
     "WorkflowPack",
+    "PlanArtifact",
+    "PlanTask",
     "AgentCapability",
     "AgentEpisodePlanner",
     "AgentRunRequest",
@@ -215,4 +220,5 @@ __all__ = [
     "is_plain_llm_callable",
     "current_model_profile",
     "model_profile_scope",
+    "render_plan",
 ]
