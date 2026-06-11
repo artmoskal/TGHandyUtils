@@ -504,6 +504,8 @@ class CapabilityContext(BaseModel):
     plan: Optional[RuntimePlan] = None
     usage_summary: WorkflowUsageSummary = Field(default_factory=WorkflowUsageSummary)
     limits: RuntimeLimits = Field(default_factory=RuntimeLimits)
+    # Per-node declarative model binding, resolved by the executor for this invocation.
+    model_profile: Optional[ModelProfile] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 

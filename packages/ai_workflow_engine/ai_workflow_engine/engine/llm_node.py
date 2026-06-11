@@ -127,6 +127,40 @@ Original request:
             self._llm = self._llm_factory(self.config, model, self.temperature)
         return self._llm
 
+    @property
+    def accepts_model_profile(self) -> bool:
+        """Whether a per-node model profile can be honored.
+
+        True for factory-built clients (the factory is re-invoked with the profile's model) and
+        plain callables (the profile rides on the request metadata). False for a fixed LangChain
+        ``llm=`` client — declaring a model_profile on such a node is a loud configuration error
+        (RC1), never a silent preference.
+        """
+
+        if self._llm is None:
+            return self._llm_factory is not None
+        from ai_workflow_engine.llm_protocol import is_plain_llm_callable
+
+        return is_plain_llm_callable(self._llm)
+
+    def _llm_for_profile(self, profile):
+        """Resolve the chat client for the active model profile (cached per model name)."""
+
+        if profile is None:
+            return self.llm
+        if not self.accepts_model_profile:
+            raise ValueError(
+                f"{self.name}: model_profile '{profile.name}' requested but this node has a fixed "
+                "llm client; construct it with llm_factory or remove the node's model_profile"
+            )
+        if not hasattr(self, "_llm_by_model"):
+            self._llm_by_model = {}
+        if profile.model not in self._llm_by_model:
+            self._llm_by_model[profile.model] = self._llm_factory(
+                self.config, profile.model, profile.temperature
+            )
+        return self._llm_by_model[profile.model]
+
     def _model_name(self) -> str:
         fallback = getattr(self.config, self.default_model_attr, self.default_model)
         return getattr(self.config, self.model_attr, fallback)
@@ -143,12 +177,20 @@ Original request:
         prompt_bundle = self._format_prompt(values)
         content_hash = hashlib.sha256(content_hash_input.encode("utf-8", errors="ignore")).hexdigest()[:12]
         from ai_workflow_engine.llm_protocol import is_plain_llm_callable
+        from ai_workflow_engine.model_binding import current_model_profile
 
+        profile = current_model_profile()
+        if profile is not None and not self.accepts_model_profile:
+            # RC1: a fixed llm client + a declared model_profile is a configuration conflict.
+            raise ValueError(
+                f"{self.name}: model_profile '{profile.name}' requested but this node has a fixed "
+                "llm client; construct it with llm_factory or remove the node's model_profile"
+            )
         if is_plain_llm_callable(self._llm):
             # Plain-callable client (no LangChain): async path, LLMRequest transport,
             # uniform metering with honest cost attribution (RC2).
             return await self._invoke_callable_with_retry(
-                prompt_bundle, content_hash, usage_metadata, list(images)
+                prompt_bundle, content_hash, usage_metadata, list(images), profile
             )
         return await asyncio.to_thread(
             self._invoke_with_retry,
@@ -156,6 +198,7 @@ Original request:
             content_hash,
             message_factory,
             usage_metadata,
+            profile,
         )
 
     async def _invoke_callable_with_retry(
@@ -164,16 +207,21 @@ Original request:
         content_hash: str,
         usage_metadata: Optional[dict[str, Any]],
         images: list,
+        profile: Any = None,
     ) -> Any:
         from ai_workflow_engine.llm_protocol import LLMRequest, record_callable_usage
         from ai_workflow_engine.usage import check_budget_before_call
 
+        request_metadata = {"model_profile": profile.model_dump()} if profile is not None else {}
         last_error = ""
         for attempt in range(1, 2 + self.max_repair_rounds):
             try:
                 if attempt == 1:
                     request = LLMRequest(
-                        system=prompt_bundle.system, user=prompt_bundle.user, images=images
+                        system=prompt_bundle.system,
+                        user=prompt_bundle.user,
+                        images=images,
+                        metadata=dict(request_metadata),
                     )
                 else:
                     request = LLMRequest(
@@ -182,6 +230,7 @@ Original request:
                             error=last_error, original_prompt=prompt_bundle.full_text
                         ),
                         images=images,
+                        metadata=dict(request_metadata),
                     )
                 check_budget_before_call("chat", self.name)
                 response = await self.llm(request)
@@ -232,6 +281,7 @@ Original request:
         content_hash: str,
         message_factory: Optional[MessageFactory],
         usage_metadata: Optional[dict[str, Any]] = None,
+        profile: Any = None,
     ) -> Any:
         last_error = ""
         for attempt in range(1, 2 + self.max_repair_rounds):
@@ -240,10 +290,10 @@ Original request:
                 if message_factory:
                     messages = list(message_factory(messages, attempt))
                 output = invoke_metered_chat(
-                    self.llm,
+                    self._llm_for_profile(profile),
                     messages,
                     node=self.name,
-                    model=self._model_name(),
+                    model=profile.model if profile is not None else self._model_name(),
                     attempt=attempt,
                     metadata={"output_model": self.output_model.__name__, **(usage_metadata or {})},
                     config=self.config,

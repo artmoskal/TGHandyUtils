@@ -29,6 +29,7 @@ from ai_workflow_engine.engine.capabilities import (
 )
 from ai_workflow_engine.engine.runner import WorkflowRunner
 from ai_workflow_engine.engine.scheduler import WorkflowScheduler
+from ai_workflow_engine.model_binding import model_profile_scope
 from ai_workflow_engine.models import (
     CapabilityContext,
     CapabilityResult,
@@ -157,6 +158,8 @@ class WorkflowExecutor:
         # Shared across all runs on this executor so concurrent runs contend for the same backend
         # slots (single-flight / backpressure are engine-owned, not per-run policy state).
         self.scheduler = WorkflowScheduler()
+        # ModelProfile registry for declarative per-node model binding (set by WorkflowEngine).
+        self.model_profiles: Dict[str, Any] = {}
         self._compiled: Dict[str, Any] = {}
         # Node-kind handler table. Kinds present here are *implemented*; any valid-but-absent
         # kind fails loudly (never silently downgraded). Phases register more kinds.
@@ -350,6 +353,47 @@ class WorkflowExecutor:
 
         return route
 
+    # ---------------------------------------------------------------- model binding
+    async def _invoke_bound(
+        self,
+        node: WorkflowNode,
+        capability: str,
+        payload: Any,
+        context: CapabilityContext,
+        state: Dict[str, Any],
+        *,
+        attempt: int = 1,
+    ) -> CapabilityResult:
+        """Invoke a capability under the node's declared model profile (if any), traced."""
+
+        if not node.model_profile:
+            return await self.runtime.invoke(capability, payload, context, attempt=attempt)
+        profile = self.model_profiles.get(node.model_profile)
+        if profile is None:  # defensive: preflight already rejects this
+            raise CapabilityBindingError(
+                f"node '{node.id}' references unknown model profile: {node.model_profile}"
+            )
+        usage = state.get("usage_summary")
+        events_before = len(usage.events) if usage is not None else 0
+        bound_context = context.model_copy(update={"model_profile": profile})
+        with model_profile_scope(profile):
+            result = await self.runtime.invoke(capability, payload, bound_context, attempt=attempt)
+        new_events = usage.events[events_before:] if usage is not None else []
+        model_used = next((event.model for event in reversed(new_events) if event.model), None)
+        self.runtime.trace_sink.record(
+            WorkflowTraceEvent(
+                node=node.id,
+                attempt=attempt,
+                decision="model_binding",
+                metadata={
+                    "model_profile_requested": node.model_profile,
+                    "model_profile_model": profile.model,
+                    "model_used": model_used,
+                },
+            )
+        )
+        return result
+
     # ---------------------------------------------------------------- node handlers
     def _build_step_node(self, definition: WorkflowDefinition, node: WorkflowNode):
         capability = node.capability or node.id
@@ -400,7 +444,7 @@ class WorkflowExecutor:
                         force_status="failed", error=denied.error,
                     )
                 try:
-                    result = await self.runtime.invoke(capability, payload, context, attempt=1)
+                    result = await self._invoke_bound(node, capability, payload, context, state, attempt=1)
                 finally:
                     self.scheduler.complete(key=lane, run_id=run_id)
                 if result.status == "rejected":
@@ -416,7 +460,7 @@ class WorkflowExecutor:
             attempts = 0
             for offset in range(max_attempts):
                 attempts = attempt_base + offset + 1
-                result = await self.runtime.invoke(capability, payload, context, attempt=attempts)
+                result = await self._invoke_bound(node, capability, payload, context, state, attempt=attempts)
                 if result.status != "failed":
                     break
             if result.status == "rejected":
@@ -472,7 +516,7 @@ class WorkflowExecutor:
             context: CapabilityContext = state[_CONTEXT]
             payload = self._node_input(state, node)
             attempt = state.get("attempts", {}).get(node.id, 0) + 1
-            result = await self.runtime.invoke(decider, payload, context, attempt=attempt)
+            result = await self._invoke_bound(node, decider, payload, context, state, attempt=attempt)
             label = self._extract_label(result)
             valid = label in node.branches
             update = self._record(
@@ -559,7 +603,7 @@ class WorkflowExecutor:
             context: CapabilityContext = state[_CONTEXT]
             evaluated_payload = self._node_input(state, node)
             attempt = state.get("attempts", {}).get(node.id, 0) + 1
-            eval_result = await self.runtime.invoke(evaluator, evaluated_payload, context, attempt=attempt)
+            eval_result = await self._invoke_bound(node, evaluator, evaluated_payload, context, state, attempt=attempt)
             decision = self._eval_decision(node, eval_result)
             counters = dict(state.get("eval_counters", {}).get(node.id, {"retry": 0, "retrace": 0}))
             effect = await self._apply_eval(node, decision, counters, context, definition, state, evaluated_payload)
@@ -931,6 +975,35 @@ class WorkflowExecutor:
             for cap in self._required_capabilities(node):
                 if cap not in known_caps:
                     return f"node '{node.id}' binds to unregistered capability: {cap}"
+            profile_error = self._model_profile_error(node)
+            if profile_error:
+                return profile_error
+        return None
+
+    def _model_profile_error(self, node: WorkflowNode) -> Optional[str]:
+        """Validate declarative model binding before any execution (loud, never mid-run)."""
+
+        if not node.model_profile:
+            return None
+        if node.model_profile not in self.model_profiles:
+            return (
+                f"node '{node.id}' references unknown model profile: {node.model_profile} "
+                f"(registered: {sorted(self.model_profiles) or 'none'})"
+            )
+        # RC1 (where statically visible): a capability whose handler advertises a fixed LLM client
+        # cannot honor a model profile — declaring both is a configuration conflict, not a
+        # preference. Handlers that don't expose the attribute are checked loudly at call time.
+        capability = node.effective_capability()
+        if capability:
+            try:
+                _spec, handler = self.runtime.registry.get(capability)
+            except KeyError:
+                return None
+            if getattr(handler, "accepts_model_profile", None) is False:
+                return (
+                    f"node '{node.id}' declares model_profile={node.model_profile!r} but capability "
+                    f"'{capability}' has a fixed llm client; use llm_factory or drop the binding"
+                )
         return None
 
     @staticmethod

@@ -106,10 +106,12 @@ class WorkflowEngine:
         self.trace_sink = trace_sink or InMemoryTraceSink()
         self.runtime = CapabilityRuntime(self.registry, self.trace_sink)
         self.executor = WorkflowExecutor(self.runtime, config=config)
+        self.model_profiles = dict(model_profiles or {})
+        # Executor shares the live registry so per-node model bindings resolve + validate there.
+        self.executor.model_profiles = self.model_profiles
         self.checkpoint_store = checkpoint_store
         self.config = config
         self.default_profile = default_profile
-        self.model_profiles = dict(model_profiles or {})
         self.prompt_root = prompt_root
         self.workflows: Dict[str, WorkflowDefinition] = {}
         self._profiles: Dict[str, WorkflowProfile] = {}
@@ -165,6 +167,17 @@ class WorkflowEngine:
         *,
         profile: Optional[WorkflowProfile] = None,
     ) -> "WorkflowEngine":
+        # Declarative model bindings fail loudly at registration, never mid-run (AC-G3).
+        unknown_profiles = [
+            f"node '{node.id}' -> {node.model_profile!r}"
+            for node in definition.nodes
+            if node.model_profile and node.model_profile not in self.model_profiles
+        ]
+        if unknown_profiles:
+            raise ValueError(
+                f"workflow '{definition.workflow_id}' references unknown model profile(s): "
+                f"{', '.join(unknown_profiles)} (registered: {sorted(self.model_profiles) or 'none'})"
+            )
         self.workflows[definition.workflow_id] = definition
         self.executor.register_subworkflow(definition)
         if profile is not None:

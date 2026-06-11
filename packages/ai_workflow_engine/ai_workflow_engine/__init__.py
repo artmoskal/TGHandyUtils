@@ -86,6 +86,7 @@ from ai_workflow_engine.llm_protocol import (
     LLMResponse,
     is_plain_llm_callable,
 )
+from ai_workflow_engine.model_binding import current_model_profile, model_profile_scope
 from ai_workflow_engine.workflow import (
     END,
     BranchDecision,
@@ -212,4 +213,6 @@ __all__ = [
     "LLMRequest",
     "LLMResponse",
     "is_plain_llm_callable",
+    "current_model_profile",
+    "model_profile_scope",
 ]

@@ -164,6 +164,9 @@ class WorkflowNode(BaseModel):
     # lane). When ``scheduling.backend_key`` is set, the engine gates invocation through its
     # scheduler and holds the backend slot until the worker actually completes.
     scheduling: Optional[SchedulingPolicy] = None
+    # declarative per-node model binding: name into the engine's ModelProfile registry, resolved at
+    # run time and validated loudly at registration/preflight (unknown name never fails mid-run).
+    model_profile: Optional[str] = None
 
     def effective_capability(self) -> Optional[str]:
         """Capability bound to this node (falls back to the node id for ergonomic builders)."""
@@ -333,6 +336,7 @@ class WorkflowBuilder:
         required_side_effects: Optional[List[str]] = None,
         allow_raw_media_export: bool = False,
         scheduling: Optional[SchedulingPolicy] = None,
+        model_profile: Optional[str] = None,
         description: str = "",
     ) -> "WorkflowBuilder":
         self._append(
@@ -346,6 +350,7 @@ class WorkflowBuilder:
                 required_side_effects=required_side_effects or [],
                 allow_raw_media_export=allow_raw_media_export,
                 scheduling=scheduling,
+                model_profile=model_profile,
                 description=description,
             )
         )
@@ -357,6 +362,7 @@ class WorkflowBuilder:
         branches: Dict[str, str],
         *,
         decider: Optional[str] = None,
+        model_profile: Optional[str] = None,
         description: str = "",
     ) -> "WorkflowBuilder":
         node = WorkflowNode(
@@ -364,6 +370,7 @@ class WorkflowBuilder:
             kind="branch",
             decider=decider or node_id,
             branches=dict(branches),
+            model_profile=model_profile,
             description=description,
         )
         self._append(node)
@@ -404,6 +411,7 @@ class WorkflowBuilder:
         evaluator: Optional[str] = None,
         on_reject: Optional[ControlDirective] = None,
         fallback: Optional[str] = None,
+        model_profile: Optional[str] = None,
         description: str = "",
     ) -> "WorkflowBuilder":
         # Default the evaluated target to the most recent step's capability.
@@ -420,6 +428,7 @@ class WorkflowBuilder:
                 target_capability=target,
                 on_reject=on_reject,
                 fallback_capability=fallback or (on_reject.capability if isinstance(on_reject, Fallback) else None),
+                model_profile=model_profile,
                 description=description,
             )
         )
