@@ -100,6 +100,8 @@ from ai_workflow_engine.llm_protocol import (
 )
 from ai_workflow_engine.model_binding import current_model_profile, model_profile_scope
 from ai_workflow_engine.planning import PlanArtifact, PlanTask, render_plan
+from ai_workflow_engine.flow_authoring import FlowArtifact, FlowNodeSpec, build_definition_from_artifact
+from ai_workflow_engine.viz import save_workflow_html, workflow_to_html, workflow_to_mermaid
 from ai_workflow_engine.workflow import (
     END,
     BranchDecision,
@@ -240,4 +242,10 @@ __all__ = [
     "current_model_profile",
     "model_profile_scope",
     "render_plan",
+    "FlowArtifact",
+    "FlowNodeSpec",
+    "build_definition_from_artifact",
+    "workflow_to_mermaid",
+    "workflow_to_html",
+    "save_workflow_html",
 ]

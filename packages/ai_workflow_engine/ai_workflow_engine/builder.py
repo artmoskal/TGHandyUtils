@@ -37,6 +37,8 @@ from ai_workflow_engine.models import (
     WorkflowProfile,
     WorkflowRunContext,
 )
+from ai_workflow_engine.flow_authoring import FlowArtifact, build_definition_from_artifact
+from ai_workflow_engine.models import CapabilityResult, WorkflowTraceEvent
 from ai_workflow_engine.workflow import WorkflowDefinition
 
 # A capability handler is ``callable(context, payload) -> result`` (sync or async). Capability
@@ -188,6 +190,96 @@ class WorkflowEngine:
     def register_pack(self, pack: WorkflowPack) -> "WorkflowEngine":
         pack.register(self)  # type: ignore[arg-type]
         return self
+
+    def register_workflow_capability(
+        self,
+        name: str,
+        workflow_id: str,
+        *,
+        side_effects: List[str] | tuple = (),
+        description: str = "",
+    ) -> "WorkflowEngine":
+        """Expose a registered workflow as an ordinary capability (kind="workflow").
+
+        This is what makes PARALLEL sub-workflows possible: fan out over the capability with
+        ``.fanout(..., capability=name)`` — each item runs the child workflow in the parent's
+        usage/budget scope with partial-failure isolation, like any other fanout child.
+        """
+
+        if workflow_id not in self.workflows:
+            raise ValueError(
+                f"register_workflow_capability: unknown workflow '{workflow_id}' "
+                f"(registered: {sorted(self.workflows) or 'none'})"
+            )
+
+        async def run_child(context: CapabilityContext, payload: Any) -> CapabilityResult:
+            child = self.workflows[workflow_id]
+            child_context = self.executor._child_context(context, child, None)
+            run_result = await self.executor._run_inner(child, payload, child_context)
+            if run_result.status == "completed":
+                status = "accepted"
+            elif run_result.status in ("partial", "requires_user_input"):
+                status = "partial"
+            else:
+                status = "failed"
+            return CapabilityResult(
+                status=status,
+                output=run_result.output,
+                error=run_result.error,
+                artifacts=run_result.artifacts,
+                metadata={"child_workflow": workflow_id, "child_status": run_result.status},
+            )
+
+        self.registry.register(
+            CapabilitySpec(
+                name=name,
+                kind="workflow",
+                description=description or f"Run workflow '{workflow_id}' as a capability",
+                side_effects=list(side_effects),
+            ),
+            run_child,
+        )
+        return self
+
+    async def run_authored_flow(
+        self,
+        artifact: Union[FlowArtifact, Dict[str, Any]],
+        payload: Any,
+        *,
+        max_nodes: int = 12,
+        **run_kwargs: Any,
+    ) -> WorkflowRunResult:
+        """Validate-then-run an AI-authored flow (flow-as-data, engine spec §2e).
+
+        The artifact is validated exhaustively BEFORE compilation (registered capabilities,
+        allow-listed side effects, bounded back-edges, resolvable model profiles, no AI-writers
+        inside) and then executed by the same executor as any hand-written workflow — identical
+        budgets, preflight, trace, and policy. Loud ValueError on any violation; no partial build.
+        """
+
+        flow = artifact if isinstance(artifact, FlowArtifact) else FlowArtifact.model_validate(artifact)
+        allowed: List[str] = []
+        if self.default_profile is not None:
+            allowed = list(self.default_profile.safety.allowed_side_effects)
+        definition = build_definition_from_artifact(
+            flow,
+            registry=self.registry,
+            model_profiles=self.model_profiles,
+            allowed_side_effects=allowed,
+            max_nodes=max_nodes,
+        )
+        self.trace_sink.record(
+            WorkflowTraceEvent(
+                node=definition.workflow_id,
+                decision="flow:authored",
+                metadata={
+                    "flow_id": flow.flow_id,
+                    "goal": flow.goal,
+                    "nodes": [f"{n.kind}:{n.id}" for n in flow.nodes],
+                },
+            )
+        )
+        return await self.run(definition, payload, **run_kwargs)
 
     # ---------------------------------------------------------------- execution
     async def run(

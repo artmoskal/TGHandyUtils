@@ -176,6 +176,12 @@ class WorkflowNode(BaseModel):
     max_tasks: int = 8
     execution: Literal["sequential", "fanout"] = "sequential"
     max_replans: int = 1
+    # Bounded recursive planning (pre-set OFF): a planned task may itself be a planner ONLY while
+    # the current plan depth is below max_plan_depth (1 = flat plans, today's default). Each level
+    # multiplies AI-authored work, so depth is opt-in per node and the cumulative task budget
+    # across ALL levels is capped by max_total_planned_tasks — multiplication can never run away.
+    max_plan_depth: int = 1
+    max_total_planned_tasks: int = 32
 
     # policy (apply to step/evaluate nodes)
     retry: Optional[Retry] = None
@@ -308,6 +314,14 @@ class WorkflowDefinition(BaseModel):
                     errors.append(f"planner node '{node.id}' max_tasks must be >= 1")
                 if node.max_replans < 0:
                     errors.append(f"planner node '{node.id}' max_replans must be >= 0")
+                if node.max_plan_depth < 1:
+                    errors.append(f"planner node '{node.id}' max_plan_depth must be >= 1")
+                if node.max_total_planned_tasks < 1:
+                    errors.append(f"planner node '{node.id}' max_total_planned_tasks must be >= 1")
+                if node.max_plan_depth > 1 and node.execution == "fanout":
+                    errors.append(
+                        f"planner node '{node.id}' recursive planning requires execution='sequential'"
+                    )
 
         for edge in self.edges:
             if edge.source not in known:
@@ -497,6 +511,8 @@ class WorkflowBuilder:
         max_tasks: int = 8,
         execution: Literal["sequential", "fanout"] = "sequential",
         max_replans: int = 1,
+        max_plan_depth: int = 1,
+        max_total_planned_tasks: int = 32,
         model_profile: Optional[str] = None,
         inject_plan: bool = False,
         description: str = "",
@@ -511,6 +527,8 @@ class WorkflowBuilder:
                 max_tasks=max_tasks,
                 execution=execution,
                 max_replans=max_replans,
+                max_plan_depth=max_plan_depth,
+                max_total_planned_tasks=max_total_planned_tasks,
                 model_profile=model_profile,
                 inject_plan=inject_plan,
                 description=description,

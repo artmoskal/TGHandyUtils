@@ -950,6 +950,7 @@ class WorkflowExecutor:
         node: WorkflowNode,
         plan: PlanArtifact,
         context: CapabilityContext,
+        plan_depth: int = 1,
     ) -> list[str]:
         errors: list[str] = []
         if len(plan.tasks) > node.max_tasks:
@@ -970,8 +971,14 @@ class WorkflowExecutor:
                 continue
             if task.capability == (node.capability or node.id):
                 errors.append(f"task '{label}' cannot call its planner capability '{task.capability}'")
-            if spec.metadata.get("planner") is True or getattr(handler, "is_planner", False):
-                errors.append(f"task '{label}' cannot call planner capability '{task.capability}'")
+            elif spec.metadata.get("planner") is True or getattr(handler, "is_planner", False):
+                # Bounded recursion: planner-bound tasks are legal ONLY while depth budget remains
+                # (pre-set max_plan_depth=1 keeps plans flat unless a node opts in explicitly).
+                if plan_depth >= node.max_plan_depth:
+                    errors.append(
+                        f"task '{label}' is a planner capability at plan depth {plan_depth} — "
+                        f"exceeds max_plan_depth={node.max_plan_depth} (recursion is opt-in and bounded)"
+                    )
             denied = sorted(effect for effect in spec.side_effects if effect not in allowed)
             if denied:
                 errors.append(
@@ -987,11 +994,16 @@ class WorkflowExecutor:
         plan: PlanArtifact,
         context: CapabilityContext,
         state: Dict[str, Any],
+        plan_depth: int = 1,
+        task_budget: Optional[Dict[str, int]] = None,
     ) -> tuple[PlanArtifact, Dict[str, Any], list[WorkflowArtifact], list[str]]:
         task_outputs: Dict[str, Any] = {}
         artifacts: list[WorkflowArtifact] = []
         failures: list[str] = []
         tasks = list(plan.tasks)
+        # Cumulative cap across ALL plan levels: depth can multiply work, the budget cannot.
+        if task_budget is None:
+            task_budget = {"remaining": node.max_total_planned_tasks}
         if node.execution == "fanout":
             return await self._execute_plan_fanout(node, plan, context, state)
 
@@ -999,11 +1011,26 @@ class WorkflowExecutor:
         for index, task in enumerate(tasks):
             if task.status in ("done", "failed", "skipped"):
                 continue
+            if task_budget["remaining"] <= 0:
+                exhausted = task.model_copy(update={
+                    "status": "failed",
+                    "error": f"cumulative plan-task budget exhausted (max_total_planned_tasks={node.max_total_planned_tasks})",
+                })
+                tasks[index] = exhausted
+                current_plan = current_plan.model_copy(update={"tasks": list(tasks)})
+                failures.append(f"{exhausted.task_id}: {exhausted.error}")
+                self._trace_plan_task(node, exhausted, "plan:task_failed", error=exhausted.error)
+                continue
+            task_budget["remaining"] -= 1
             started = task.model_copy(update={"status": "in_progress", "error": None})
             tasks[index] = started
             current_plan = current_plan.model_copy(update={"tasks": list(tasks)})
             self._trace_plan_task(node, started, "plan:task_started")
             result = await self._invoke_plan_task(node, started, context, state, current_plan)
+            result = await self._maybe_execute_child_plan(
+                node, started, result, context, state, plan_depth, task_budget,
+                task_outputs, artifacts, failures,
+            )
             finished, output_key = self._finish_plan_task(node, started, result)
             tasks[index] = finished
             current_plan = current_plan.model_copy(update={"tasks": list(tasks)})
@@ -1016,6 +1043,84 @@ class WorkflowExecutor:
             else:
                 self._trace_plan_task(node, finished, "plan:task_done")
         return current_plan, task_outputs, artifacts, failures
+
+    async def _maybe_execute_child_plan(
+        self,
+        node: WorkflowNode,
+        task: PlanTask,
+        result: CapabilityResult,
+        context: CapabilityContext,
+        state: Dict[str, Any],
+        plan_depth: int,
+        task_budget: Dict[str, int],
+        task_outputs: Dict[str, Any],
+        artifacts: list[WorkflowArtifact],
+        failures: list[str],
+    ) -> CapabilityResult:
+        """Bounded recursive planning: when a planned task IS a planner, its emitted child plan
+        is validated at depth+1 (same allow-lists, loud abort) and executed inline, sharing the
+        run budget and the cumulative task budget. Child results ride under the parent task."""
+
+        if result.status not in ("accepted", "partial"):
+            return result
+        child_plan = self._coerce_plan_artifact(result.output)
+        if child_plan is None:
+            return result
+        try:
+            spec, handler = self.runtime.registry.get(task.capability)
+        except KeyError:
+            return result
+        if not (spec.metadata.get("planner") is True or getattr(handler, "is_planner", False)):
+            return result
+
+        child_depth = plan_depth + 1
+        validation_errors = self._validate_plan(node, child_plan, context, plan_depth=child_depth)
+        if validation_errors:
+            error = (
+                f"child plan (depth {child_depth}) validation failed: " + "; ".join(validation_errors)
+            )
+            self.runtime.trace_sink.record(
+                WorkflowTraceEvent(
+                    node=node.id,
+                    decision="plan:subplan_validation_failed",
+                    error=error,
+                    metadata={"parent_task": task.task_id, "depth": child_depth, "errors": validation_errors},
+                )
+            )
+            return CapabilityResult(status="failed", output=child_plan, error=error)
+        self.runtime.trace_sink.record(
+            WorkflowTraceEvent(
+                node=node.id,
+                decision="plan:subplan_started",
+                metadata={"parent_task": task.task_id, "depth": child_depth, "tasks": len(child_plan.tasks)},
+            )
+        )
+        executed_child, child_outputs, child_artifacts, child_failures = await self._execute_plan(
+            node=node,
+            plan=child_plan,
+            context=context,
+            state=state,
+            plan_depth=child_depth,
+            task_budget=task_budget,
+        )
+        for key, value in child_outputs.items():
+            task_outputs[f"{task.task_id}.{key}"] = value
+        artifacts.extend(child_artifacts)
+        if child_failures:
+            failures.extend(f"{task.task_id}>{item}" for item in child_failures)
+        self.runtime.trace_sink.record(
+            WorkflowTraceEvent(
+                node=node.id,
+                decision="plan:subplan_done" if not child_failures else "plan:subplan_partial",
+                metadata={
+                    "parent_task": task.task_id,
+                    "depth": child_depth,
+                    "failed": len(child_failures),
+                },
+            )
+        )
+        status = "accepted" if not child_failures else "partial"
+        return CapabilityResult(status=status, output=executed_child, artifacts=child_artifacts)
 
     async def _execute_plan_fanout(
         self,
