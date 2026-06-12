@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 import pytest
-from ai_workflow_engine.examples import (
+from ai_workflow_tools.pilots import (
     ThreeAxisSiteAuditInput,
     run_toy_three_axis_site_audit_pilot,
 )

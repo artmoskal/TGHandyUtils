@@ -135,7 +135,7 @@ weak local model on extraction, browser-bridged on a zero-budget step) via `mode
 - **Live trace sinks:** `CallbackTraceSink`, `AsyncQueueTraceSink`, and `TeeTraceSink` implement the
   existing trace protocol for UI/sidecar progress streams. Callback exceptions are swallowed and
   logged; async queues drop oldest events and expose a `.dropped` count.
-- **Three-axis pilot:** `run_toy_three_axis_site_audit_pilot(...)` proves the combined contract:
+- **Three-axis pilot:** `ai_workflow_tools.pilots.run_toy_three_axis_site_audit_pilot(...)` (lives in the tools package — it composes L1/L2 members, and L2 may depend on L0, never the reverse) proves the combined contract:
   fake coordinator LLM set-composition, rigid/semi/flexible fanout, CLI input staging and salvage,
   retrace adjudication on `new_artifact_count`, console-report generation, live trace ordering, and
   replay with zero LLM usage events.
@@ -225,7 +225,7 @@ Implemented today (verified against the package source):
 - fake-backed site-audit and inventory pilots (`run_toy_site_audit_pilot`,
   `run_toy_inventory_pilot`) that exercise MageQA/GoPro-shaped runtime pressure without importing
   those products;
-- fake-backed three-axis pilot (`run_toy_three_axis_site_audit_pilot`) that exercises semi-rigid
+- fake-backed three-axis pilot (`ai_workflow_tools.pilots`) that exercises semi-rigid
   set composition, rigid/semi/flexible execution, CLI input/output provenance, retrace, console
   reporting, live trace sinks, and replay;
 - sibling tools package `ai_workflow_tools` for CLI-agent episodes (`CliAgentCapability`) and
