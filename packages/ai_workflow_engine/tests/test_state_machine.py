@@ -9,7 +9,14 @@ from pydantic import BaseModel
 pytestmark = pytest.mark.unit
 
 from ai_workflow_engine import FlowArtifact, FlowNodeSpec, WorkflowEngineBuilder
-from ai_workflow_engine.workflow import WorkflowBuilder, WorkflowDefinition, WorkflowValidationError
+from ai_workflow_engine.workflow import (
+    BranchDecision,
+    Retrace,
+    WorkflowBuilder,
+    WorkflowDefinition,
+    WorkflowValidationError,
+    render_machine_card,
+)
 
 
 class ClarificationOut(BaseModel):
@@ -284,8 +291,6 @@ async def test_definition_is_canonical_machine_as_data():
     """JSON round-trip preserves the machine (incl. materialized control transitions,
     idempotently) and the round-tripped machine runs identically."""
 
-    from ai_workflow_engine.workflow import Retrace
-
     evaluated = (
         WorkflowBuilder("eval_machine")
         .step("extract")
@@ -320,3 +325,139 @@ async def test_tampered_roundtrip_fails_preflight_loudly():
     result = await engine.run(tampered, "seed")
     assert result.status == "failed"
     assert "ghost_cap" in (result.error or "")
+
+
+# ======================================================================================
+# V3 — self-describing machine: machine card, inject_machine, authoring catalog
+# ======================================================================================
+
+
+def _card_machine() -> WorkflowDefinition:
+    return (
+        WorkflowBuilder("card_machine")
+        .step("draft")
+        .branch(
+            "polish_gate",
+            {"again": "draft", "done": "finish"},
+            bounds={"again": 2},
+            exhausted={"again": "done"},
+            describe={"again": "output needs another polish pass", "done": "quality sufficient"},
+        )
+        .step("finish")
+        .build()
+    )
+
+
+def test_machine_card_lists_moves_descriptions_and_live_gates():
+    wf = _card_machine()
+    card = render_machine_card(wf, "polish_gate")
+    assert "state: polish_gate (branch)" in card
+    assert "- again -> draft — output needs another polish pass [gate: 2 of 2 remaining]" in card
+    assert "- done -> finish — quality sufficient" in card
+
+    live = render_machine_card(wf, "polish_gate", {"transition_counts": {"polish_gate|again": 1}})
+    assert "[gate: 1 of 2 remaining]" in live
+
+    spent = render_machine_card(wf, "polish_gate", {"transition_counts": {"polish_gate|again": 2}})
+    assert "gate EXHAUSTED (2/2 used); exhausted -> done" in spent
+
+
+def test_evaluator_routes_self_describe():
+    wf = (
+        WorkflowBuilder("eval_card")
+        .step("extract")
+        .evaluate("check", on_reject=Retrace("extract"))
+        .step("write")
+        .build()
+    )
+    card = render_machine_card(wf, "check")
+    assert "[on_accept:accept] -> write — evaluator accepted — continue forward" in card
+    assert "[on_reject:retrace] -> extract — evaluator rejected — go back to 'extract'" in card
+    assert "[bounded <= 1]" in card
+
+
+async def test_inject_machine_gives_decider_the_live_card():
+    seen = []
+    script = ["again", "done"]
+    builder = WorkflowEngineBuilder()
+    builder.register_capability("draft", lambda _c, p: "d", kind="deterministic")
+    builder.register_capability("finish", lambda _c, p: "f", kind="deterministic")
+
+    def decider(context, _payload):
+        seen.append(context.metadata.get("machine"))
+        return BranchDecision(label=script.pop(0))
+
+    builder.register_capability("polish_gate", decider, kind="deterministic")
+    builder.register_workflow(
+        WorkflowBuilder("inject_machine_wf")
+        .step("draft")
+        .branch(
+            "polish_gate",
+            {"again": "draft", "done": "finish"},
+            bounds={"again": 2},
+            describe={"again": "polish more"},
+            inject_machine=True,
+        )
+        .step("finish")
+        .build()
+    )
+    result = await builder.build().run("inject_machine_wf", "seed")
+
+    assert result.status == "completed"
+    assert len(seen) == 2 and all(seen)
+    assert "polish more" in seen[0] and "[gate: 2 of 2 remaining]" in seen[0]
+    assert "[gate: 1 of 2 remaining]" in seen[1]  # second visit sees the DECREMENTED budget
+
+
+async def test_inject_machine_off_keeps_decider_metadata_clean():
+    seen = []
+    builder = WorkflowEngineBuilder()
+    builder.register_capability("finish", lambda _c, p: "f", kind="deterministic")
+
+    def decider(context, _payload):
+        seen.append("machine" in context.metadata)
+        return BranchDecision(label="done")
+
+    builder.register_capability("gate", decider, kind="deterministic")
+    builder.register_workflow(
+        WorkflowBuilder("plain_wf").branch("gate", {"done": "finish"}).step("finish").build()
+    )
+    result = await builder.build().run("plain_wf", "seed")
+    assert result.status == "completed"
+    assert seen == [False]  # default flag: zero metadata change
+
+
+def test_capability_catalog_self_describes_with_firewall():
+    from ai_workflow_engine import render_capability_catalog
+    from ai_workflow_engine.models import CapabilitySpec
+
+    builder = WorkflowEngineBuilder()
+    builder.register_capability("extract", lambda _c, p: p, kind="deterministic")
+    builder.register_capability_spec(
+        CapabilitySpec(
+            name="write_notes", kind="tool", description="persist notes",
+            side_effects=["filesystem_write"],
+        ),
+        lambda _c, p: p,
+    )
+    builder.register_capability_spec(
+        CapabilitySpec(name="make_plan", kind="llm", metadata={"planner": True}),
+        lambda _c, p: p,
+    )
+    engine = builder.build()
+
+    catalog = render_capability_catalog(engine.registry, allowed_side_effects=[])
+    assert "- extract (deterministic)" in catalog
+    assert "persist notes" in catalog and "filesystem_write (DENIED)" in catalog
+    assert "make_plan" in catalog and "NOT-AUTHORABLE" in catalog
+
+
+async def test_authored_flow_descriptions_flow_to_machine_card():
+    engine, _calls = _loop_engine({"again": 2}, {"again": "done"})
+    artifact = _authored_loop_artifact(with_bounds=True)
+    artifact.nodes[1].describe = {"again": "needs more polish"}
+    result = await engine.run_authored_flow(artifact, "seed")
+    assert result.status == "completed"
+
+    card = render_machine_card(engine.workflows["authored:polish_loop"], "polish_gate")
+    assert "needs more polish" in card

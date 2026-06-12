@@ -197,6 +197,9 @@ class WorkflowNode(BaseModel):
     # Opt-in plan context injection. When true and a PlanArtifact exists, the executor adds a
     # rendered plan string to context.metadata["plan"] for this node's capability call only.
     inject_plan: bool = False
+    # Opt-in machine self-description: inject this state's legal moves (labels, declared
+    # semantics, LIVE gate budgets) as context.metadata["machine"] for this node's capability.
+    inject_machine: bool = False
 
     def effective_capability(self) -> Optional[str]:
         """Capability bound to this node (falls back to the node id for ergonomic builders)."""
@@ -234,6 +237,9 @@ class Transition(BaseModel):
     target: str  # node id or END
     label: Optional[str] = None
     policy: Literal["always", "decision", "on_accept", "on_reject"] = "always"
+    # Self-description (the MCP analogy applied to control flow): WHEN this transition should be
+    # taken, in words an AI decider can navigate by. Rendered into the machine card.
+    description: str = ""
     max_traversals: Optional[int] = None
     on_exhausted: str = "fail"
 
@@ -273,7 +279,8 @@ class WorkflowDefinition(BaseModel):
             )
             if (node.id, "accept", "on_accept") not in existing:
                 additions.append(
-                    Transition(source=node.id, target=successor, label="accept", policy="on_accept")
+                    Transition(source=node.id, target=successor, label="accept", policy="on_accept",
+                               description="evaluator accepted — continue forward")
                 )
             directive = node.on_reject
             kind = getattr(directive, "kind", None)
@@ -285,6 +292,7 @@ class WorkflowDefinition(BaseModel):
                 additions.append(
                     Transition(
                         source=node.id, target=predecessor, label="retry", policy="on_reject",
+                        description="evaluator rejected — re-run the evaluated capability with criticism",
                         max_traversals=directive.max_attempts,
                     )
                 )
@@ -292,6 +300,7 @@ class WorkflowDefinition(BaseModel):
                 additions.append(
                     Transition(
                         source=node.id, target=directive.target, label="retrace", policy="on_reject",
+                        description=f"evaluator rejected — go back to '{directive.target}' and re-run forward",
                         max_traversals=directive.max_retrace,
                     )
                 )
@@ -299,6 +308,7 @@ class WorkflowDefinition(BaseModel):
                 additions.append(
                     Transition(
                         source=node.id, target=directive.target, label="replan", policy="on_reject",
+                        description=f"evaluator rejected — revise pending tasks at planner '{directive.target}'",
                         max_traversals=directive.max_replans,
                     )
                 )
@@ -531,6 +541,7 @@ class WorkflowBuilder:
         scheduling: Optional[SchedulingPolicy] = None,
         model_profile: Optional[str] = None,
         inject_plan: bool = False,
+        inject_machine: bool = False,
         description: str = "",
     ) -> "WorkflowBuilder":
         self._append(
@@ -546,6 +557,7 @@ class WorkflowBuilder:
                 scheduling=scheduling,
                 model_profile=model_profile,
                 inject_plan=inject_plan,
+                inject_machine=inject_machine,
                 description=description,
             )
         )
@@ -559,8 +571,10 @@ class WorkflowBuilder:
         decider: Optional[str] = None,
         bounds: Optional[Dict[str, int]] = None,
         exhausted: Optional[Dict[str, str]] = None,
+        describe: Optional[Dict[str, str]] = None,
         model_profile: Optional[str] = None,
         inject_plan: bool = False,
+        inject_machine: bool = False,
         description: str = "",
     ) -> "WorkflowBuilder":
         """Declare a decision state. ``bounds`` sets the pre-set gate (max traversals) per label —
@@ -574,6 +588,7 @@ class WorkflowBuilder:
             branches=dict(branches),
             model_profile=model_profile,
             inject_plan=inject_plan,
+            inject_machine=inject_machine,
             description=description,
         )
         self._append(node)
@@ -584,6 +599,7 @@ class WorkflowBuilder:
                     target=target,
                     label=label,
                     policy="decision",
+                    description=(describe or {}).get(label, ""),
                     max_traversals=(bounds or {}).get(label),
                     on_exhausted=(exhausted or {}).get(label, "fail"),
                 )
@@ -599,6 +615,7 @@ class WorkflowBuilder:
         max_parallel: Optional[int] = None,
         output_key: Optional[str] = None,
         inject_plan: bool = False,
+        inject_machine: bool = False,
         description: str = "",
     ) -> "WorkflowBuilder":
         self._append(
@@ -610,6 +627,7 @@ class WorkflowBuilder:
                 max_parallel=max_parallel,
                 output_key=output_key,
                 inject_plan=inject_plan,
+                inject_machine=inject_machine,
                 description=description,
             )
         )
@@ -625,6 +643,7 @@ class WorkflowBuilder:
         fallback: Optional[str] = None,
         model_profile: Optional[str] = None,
         inject_plan: bool = False,
+        inject_machine: bool = False,
         description: str = "",
     ) -> "WorkflowBuilder":
         # Default the evaluated target to the most recent step's capability.
@@ -643,6 +662,7 @@ class WorkflowBuilder:
                 fallback_capability=fallback or (on_reject.capability if isinstance(on_reject, Fallback) else None),
                 model_profile=model_profile,
                 inject_plan=inject_plan,
+                inject_machine=inject_machine,
                 description=description,
             )
         )
@@ -662,6 +682,7 @@ class WorkflowBuilder:
         max_total_planned_tasks: int = 32,
         model_profile: Optional[str] = None,
         inject_plan: bool = False,
+        inject_machine: bool = False,
         description: str = "",
     ) -> "WorkflowBuilder":
         self._append(
@@ -678,6 +699,7 @@ class WorkflowBuilder:
                 max_total_planned_tasks=max_total_planned_tasks,
                 model_profile=model_profile,
                 inject_plan=inject_plan,
+                inject_machine=inject_machine,
                 description=description,
             )
         )
@@ -691,6 +713,7 @@ class WorkflowBuilder:
         budget_usd: Optional[float] = None,
         max_steps: Optional[int] = None,
         inject_plan: bool = False,
+        inject_machine: bool = False,
         description: str = "",
     ) -> "WorkflowBuilder":
         workflow_id = workflow if isinstance(workflow, str) else workflow.workflow_id
@@ -702,6 +725,7 @@ class WorkflowBuilder:
                     workflow_id=workflow_id, budget_usd=budget_usd, max_steps=max_steps
                 ),
                 inject_plan=inject_plan,
+                inject_machine=inject_machine,
                 description=description,
             )
         )
@@ -713,6 +737,7 @@ class WorkflowBuilder:
         *,
         capability: Optional[str] = None,
         inject_plan: bool = False,
+        inject_machine: bool = False,
         description: str = "",
     ) -> "WorkflowBuilder":
         self._append(
@@ -721,6 +746,7 @@ class WorkflowBuilder:
                 kind="human",
                 capability=capability or node_id,
                 inject_plan=inject_plan,
+                inject_machine=inject_machine,
                 description=description,
             )
         )
@@ -762,3 +788,55 @@ class WorkflowBuilder:
         if errors:
             raise WorkflowValidationError(errors)
         return definition
+
+
+def render_machine_card(
+    definition: WorkflowDefinition,
+    node_id: str,
+    state: Optional[dict] = None,
+) -> str:
+    """Render one state's legal moves as text an AI decider can navigate by.
+
+    The MCP analogy applied to control flow: like a tool card describes a callable tool, the
+    machine card describes a state — its outgoing transitions with their declared semantics and
+    the LIVE pre-set gate budgets (consumed traversals come from ``state["transition_counts"]``).
+    Pure function of its inputs; deterministic, declaration-ordered.
+    """
+
+    node = definition.node(node_id)
+    counts = (state or {}).get("transition_counts", {}) or {}
+    lines = [f"state: {node.id} ({node.kind})"]
+    if node.description:
+        lines.append(f"about: {node.description}")
+    outs = definition.outgoing(node_id)
+    if not outs:
+        lines.append("transitions: none (terminal state)")
+        return "\n".join(lines)
+    lines.append("transitions:")
+    for t in outs:
+        target = "END" if t.target == END else t.target
+        if t.policy == "decision":
+            entry = f"- {t.label} -> {target}"
+        elif t.policy == "always":
+            entry = f"- (continue) -> {target}"
+        else:
+            entry = f"- [{t.policy}:{t.label}] -> {target}"
+        if t.description:
+            entry += f" — {t.description}"
+        if t.max_traversals is not None:
+            if t.policy == "decision":
+                used = counts.get(f"{t.source}|{t.label}", 0)
+                remaining = max(t.max_traversals - used, 0)
+                if remaining == 0:
+                    escape = (
+                        f"exhausted -> {t.on_exhausted}"
+                        if t.on_exhausted != "fail"
+                        else "selecting it now FAILS"
+                    )
+                    entry += f" [gate EXHAUSTED ({t.max_traversals}/{t.max_traversals} used); {escape}]"
+                else:
+                    entry += f" [gate: {remaining} of {t.max_traversals} remaining]"
+            else:
+                entry += f" [bounded <= {t.max_traversals}]"
+        lines.append(entry)
+    return "\n".join(lines)

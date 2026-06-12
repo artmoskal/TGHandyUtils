@@ -109,6 +109,7 @@ def build_step_node(executor, definition: WorkflowDefinition, node: WorkflowNode
                 lane=lane,
                 run_id=run_id,
                 attempt=1,
+                definition=definition,
             )
             if result.status == "rejected":
                 return executor._record(
@@ -123,7 +124,7 @@ def build_step_node(executor, definition: WorkflowDefinition, node: WorkflowNode
         attempts = 0
         for offset in range(max_attempts):
             attempts = attempt_base + offset + 1
-            result = await executor._invoke_bound(node, capability, payload, context, state, attempt=attempts)
+            result = await executor._invoke_bound(node, capability, payload, context, state, attempt=attempts, definition=definition)
             if result.status != "failed":
                 break
         if result.status == "rejected":
@@ -147,12 +148,13 @@ async def _invoke_scheduled_bound(
     lane: str,
     run_id: str,
     attempt: int,
+    definition: WorkflowDefinition,
 ) -> CapabilityResult:
     current_task = asyncio.current_task()
     if current_task is not None:
         executor._scheduled_tasks[lane] = (run_id, current_task)
     try:
-        result = await executor._invoke_bound(node, capability, payload, context, state, attempt=attempt)
+        result = await executor._invoke_bound(node, capability, payload, context, state, attempt=attempt, definition=definition)
         superseded_by = executor._scheduled_cancellations.pop((lane, run_id), None)
         if superseded_by:
             return _cancelled_scheduled_result(executor, 

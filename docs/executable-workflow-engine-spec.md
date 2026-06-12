@@ -204,6 +204,27 @@ node shapes by kind, labeled transitions, dashed bounded back-edges — and over
    JSON-round-trips and runs identically. Viz renders gates (`⟲≤N`), policies, and suspended
    states distinctly.
 
+**ROUND 3 (2026-06-12, implemented — the SELF-DESCRIBING machine; Artem's MCP analogy: "we
+should have description of nodes entry and exit gates so AI could navigate states"):**
+
+1. **Transitions self-describe.** `Transition.description` ("take this when …") declared once in
+   the machine via `.branch(..., describe={label: text})` — label semantics stop being smeared
+   across per-product decider prompts. Evaluator routes auto-describe at materialization.
+2. **Machine card.** `render_machine_card(definition, node_id, state)` — one state's legal moves
+   as text: labels, declared semantics, targets, and LIVE pre-set gate budgets ("again ⟲ 1 of 2
+   remaining" / "EXHAUSTED → done"). Pure, deterministic, render_plan's sibling.
+3. **Navigation injection (pre-set OFF).** `inject_machine=True` on any builder verb injects the
+   card as `context.metadata["machine"]` for that node's capability call only — deciders see
+   their legal moves with live budgets (proven: second loop pass sees the decremented count).
+   Default off = bit-identical behavior.
+4. **Authoring self-description.** `render_capability_catalog(registry, allowed_side_effects)`
+   — MCP-style catalog for flow-author prompts (kind, description, side effects with DENIED
+   marks, recursion firewall stated inline as NOT-AUTHORABLE). `FlowNodeSpec.describe` flows
+   into authored transitions, so authored machines are card-navigable like hand-written ones.
+5. **§2c#5 CLOSED.** Executor god-file split landed first (the fence's condition): handlers +
+   exclusive helper clusters live in `nodes/` (one module per kind, functions over the
+   executor); executor.py 1956 → 762 lines, zero behavior change, zero test edits.
+
 ## 2d. DEFERRED / OUT-OF-SCOPE REGISTER (single source; update when items land or die)
 | Item | Context | Trigger to do it |
 |---|---|---|
@@ -217,7 +238,7 @@ node shapes by kind, labeled transitions, dashed bounded back-edges — and over
 | ~~Planner depth ≥2~~ | **DONE 2026-06-12 via §2e**: bounded recursion, pre-set `max_plan_depth=1`, cumulative task budget | — |
 | `ANKI_*` env alias bridge sunset | config-architecture CFG-8: transition bridge, must not leak into engine | Pi `.env` migrated by aws_deploy |
 | `test.sh` `-k "a or b"` word-split bug | Workaround = paths/single tokens, documented everywhere | Next time someone touches test.sh |
-| Executor god-file split (handlers per module) | §2c #5: cosmetic, sanctioned. **2026-06-12: fence triggered by the SM round but deliberately deferred again (round already maximal); the NEXT executor touch MUST split first, no further deferrals** | Next executor change |
+| ~~Executor god-file split~~ | **DONE 2026-06-12 (v0.3.0 round, honored the fence: split FIRST, then features)**: `nodes/` package, executor.py 1956→762 | — |
 
 ## 2c. RISK WATCHLIST — where this becomes a mess if discipline slips (reviewed 2026-06-12)
 The architecture's real threats are **discipline threats**, not design flaws. Each has a named

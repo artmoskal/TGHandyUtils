@@ -22,7 +22,7 @@ def build_branch_node(executor, definition: WorkflowDefinition, node: WorkflowNo
         context: CapabilityContext = state[_CONTEXT]
         payload = executor._node_input(state, node)
         attempt = state.get("attempts", {}).get(node.id, 0) + 1
-        result = await executor._invoke_bound(node, decider, payload, context, state, attempt=attempt)
+        result = await executor._invoke_bound(node, decider, payload, context, state, attempt=attempt, definition=definition)
         label = _extract_label(result)
         valid = label in node.branches
         try:

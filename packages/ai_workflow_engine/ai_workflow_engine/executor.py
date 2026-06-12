@@ -49,6 +49,7 @@ from ai_workflow_engine.workflow import (
     BranchDecision,
     WorkflowDefinition,
     WorkflowNode,
+    render_machine_card,
 )
 
 # Internal state keys reserved by the executor (kept out of product state space).
@@ -483,10 +484,11 @@ class WorkflowExecutor:
         state: Dict[str, Any],
         *,
         attempt: int = 1,
+        definition: Optional[WorkflowDefinition] = None,
     ) -> CapabilityResult:
         """Invoke a capability under the node's declared model profile (if any), traced."""
 
-        context = self._context_for_node(node, context, state)
+        context = self._context_for_node(node, context, state, definition=definition)
         if not node.model_profile:
             return await self.runtime.invoke(capability, payload, context, attempt=attempt)
         profile = self.model_profiles.get(node.model_profile)
@@ -522,16 +524,21 @@ class WorkflowExecutor:
         state: Dict[str, Any],
         *,
         plan: Optional[PlanArtifact] = None,
+        definition: Optional[WorkflowDefinition] = None,
     ) -> CapabilityContext:
-        if not node.inject_plan:
+        extra: Dict[str, Any] = {}
+        if node.inject_plan:
+            current_plan = plan or state.get("plan_artifact")
+            if current_plan is not None:
+                if not isinstance(current_plan, PlanArtifact):
+                    current_plan = PlanArtifact.model_validate(current_plan)
+                extra["plan"] = render_plan(current_plan)
+        if node.inject_machine and definition is not None:
+            # The machine describes itself to its navigator: legal moves + LIVE gate budgets.
+            extra["machine"] = render_machine_card(definition, node.id, state)
+        if not extra:
             return context
-        current_plan = plan or state.get("plan_artifact")
-        if current_plan is None:
-            return context
-        if not isinstance(current_plan, PlanArtifact):
-            current_plan = PlanArtifact.model_validate(current_plan)
-        metadata = {**context.metadata, "plan": render_plan(current_plan)}
-        return context.model_copy(update={"metadata": metadata})
+        return context.model_copy(update={"metadata": {**context.metadata, **extra}})
 
     # ---------------------------------------------------------------- node handlers
     def _child_context(

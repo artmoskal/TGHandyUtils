@@ -24,7 +24,7 @@ def build_planner_node(executor, definition: WorkflowDefinition, node: WorkflowN
         if resume_plan is None:
             planner_result = await executor._invoke_bound(
                 node, planner_capability, payload, context, state, attempt=attempt
-            )
+            , definition=definition)
             if planner_result.status in ("failed", "rejected"):
                 return executor._record(
                     state,

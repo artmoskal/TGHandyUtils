@@ -40,6 +40,9 @@ class FlowNodeSpec(BaseModel):
     # to the escape label taken once the gate is exhausted.
     branch_bounds: Dict[str, int] = Field(default_factory=dict)
     branch_exhausted: Dict[str, str] = Field(default_factory=dict)
+    # Self-description per label ("take when ..."): flows into Transition.description so authored
+    # machines are navigable by machine card exactly like hand-written ones.
+    describe: Dict[str, str] = Field(default_factory=dict)
     on_reject: Optional[Literal["retry", "retrace", "fallback"]] = None
     retrace_to: Optional[str] = None
     fallback: Optional[str] = None
@@ -152,6 +155,7 @@ def build_definition_from_artifact(
             builder.branch(spec.id, dict(spec.branches), decider=spec.capability,
                            bounds=dict(spec.branch_bounds) or None,
                            exhausted=dict(spec.branch_exhausted) or None,
+                           describe=dict(spec.describe) or None,
                            model_profile=spec.model_profile)
         else:
             on_reject = None
@@ -165,3 +169,35 @@ def build_definition_from_artifact(
                              on_reject=on_reject, fallback=spec.fallback,
                              model_profile=spec.model_profile)
     return builder.build()
+
+
+def render_capability_catalog(registry: Any, allowed_side_effects: Optional[List[str]] = None) -> str:
+    """Render registered capabilities as text a flow-authoring LLM chooses from.
+
+    MCP-style self-description for the authoring side: name, kind, declared description, side
+    effects (marked DENIED when outside the allow-list), and the recursion firewall stated
+    inline — planner / flow-author capabilities are marked NOT-AUTHORABLE.
+    """
+
+    allowed = set(allowed_side_effects) if allowed_side_effects is not None else None
+    lines = ["capabilities:"]
+    for name in sorted(registry.names()):
+        spec, handler = registry.get(name)
+        entry = f"- {name} ({spec.kind})"
+        if spec.description:
+            entry += f": {spec.description}"
+        if spec.side_effects:
+            marks = [
+                effect + (" (DENIED)" if allowed is not None and effect not in allowed else "")
+                for effect in spec.side_effects
+            ]
+            entry += f" [side effects: {', '.join(marks)}]"
+        if (
+            spec.metadata.get("planner") is True
+            or getattr(handler, "is_planner", False)
+            or spec.metadata.get("flow_author") is True
+            or getattr(handler, "is_flow_author", False)
+        ):
+            entry += " [NOT-AUTHORABLE: AI-writers may not appear in authored flows]"
+        lines.append(entry)
+    return "\n".join(lines)

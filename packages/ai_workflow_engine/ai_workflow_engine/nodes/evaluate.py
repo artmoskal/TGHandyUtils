@@ -20,7 +20,7 @@ def build_evaluate_node(executor, definition: WorkflowDefinition, node: Workflow
         context: CapabilityContext = state[_CONTEXT]
         evaluated_payload = executor._node_input(state, node)
         attempt = state.get("attempts", {}).get(node.id, 0) + 1
-        eval_result = await executor._invoke_bound(node, evaluator, evaluated_payload, context, state, attempt=attempt)
+        eval_result = await executor._invoke_bound(node, evaluator, evaluated_payload, context, state, attempt=attempt, definition=definition)
         decision = _eval_decision(executor, node, eval_result)
         counters = dict(
             state.get("eval_counters", {}).get(

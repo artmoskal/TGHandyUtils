@@ -273,3 +273,11 @@ Earmarked for GoPro (your ACK list, all landed): `engine.resume(snapshot, event)
 ask-location clarification across processes (payloads must be JSON-serializable for the
 cross-process path); `register_guard` for deterministic zero-LLM gates;
 `model_dump_json()` round-trip for goal-compiler machine storage.
+
+## v0.3.0 delta (additive — upgrading from v0.2.0 needs NO code changes)
+
+Self-describing machine: declare label semantics once (`.branch(..., describe={...})`), let
+deciders receive their legal moves + live gate budgets via `inject_machine=True`
+(`context.metadata["machine"]`), and feed your flow-author prompts with
+`render_capability_catalog(engine.registry, allowed)` instead of hand-maintained tool lists.
+`render_machine_card(definition, node_id, state)` is available standalone for debugging and UIs.

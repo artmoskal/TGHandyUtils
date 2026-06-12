@@ -315,3 +315,11 @@ Most relevant for MageQA packs: durable suspend/resume for long audits
 (`result.snapshot` + `engine.resume`, budgets cumulative across halves); `register_guard`
 for deterministic routing in QC gates (zero LLM cost, `decision_policy` traced); authored
 bounded loops in flow-as-data (`FlowNodeSpec.branch_bounds`/`branch_exhausted`).
+
+## v0.3.0 delta (additive — upgrading from v0.2.0 needs NO code changes)
+
+Self-describing machine: declare label semantics once (`.branch(..., describe={...})`), let
+deciders receive their legal moves + live gate budgets via `inject_machine=True`
+(`context.metadata["machine"]`), and feed your flow-author prompts with
+`render_capability_catalog(engine.registry, allowed)` instead of hand-maintained tool lists.
+`render_machine_card(definition, node_id, state)` is available standalone for debugging and UIs.
