@@ -10,6 +10,7 @@ from ai_workflow_engine import (
     ToolCallRequest,
     ToolSpec,
     WEAK_MODEL_CLEANER,
+    build_llm_agent_capability,
 )
 from ai_workflow_engine.engine.capabilities import CapabilityRegistry, CapabilityRuntime
 from ai_workflow_engine.models import (
@@ -19,6 +20,7 @@ from ai_workflow_engine.models import (
     CapabilityContext,
     CapabilityResult,
     CapabilitySpec,
+    EvidenceRef,
     RuntimeLimits,
     WorkflowGoal,
     WorkflowRunContext,
@@ -33,6 +35,10 @@ pytestmark = pytest.mark.unit
 
 class Caption(BaseModel):
     caption: str
+
+
+class NavigateInput(BaseModel):
+    url: str
 
 
 class ScriptedLLM:
@@ -284,6 +290,96 @@ async def test_llm_agent_planner_enforces_image_cap_on_tool_result_images_before
             )
 
     assert client.requests == []
+
+
+async def test_llm_agent_planner_loads_image_evidence_refs_at_call_boundary():
+    evidence = EvidenceRef(
+        ref_id="shot-1",
+        role="screenshot",
+        uri="memory://shot-1",
+        media_type="image/png",
+    )
+    history = [
+        AgentToolStep(
+            call=AgentToolCall(tool_name="screenshot", payload={}, rationale="capture"),
+            status="accepted",
+            output={"artifact": evidence},
+        )
+    ]
+    loaded: list[EvidenceRef] = []
+
+    def load_image(ref: EvidenceRef) -> bytes:
+        loaded.append(ref)
+        return b"shot-bytes"
+
+    client = ScriptedLLM(LLMResponse(text='{"caption": "loaded"}'))
+    planner = _planner(client, image_loader=load_image)
+    context = _context()
+
+    with workflow_usage_scope(WorkflowUsageContext(context.run_context, context.usage_summary, WorkflowBudget())):
+        decision = await planner.next_step(
+            context,
+            AgentRunRequest(prompt="Inspect screenshot evidence.", allowed_tools=["screenshot"]),
+            history,
+        )
+
+    assert decision.action == "finish"
+    assert decision.output.caption == "loaded"
+    assert loaded == [evidence]
+    image = client.requests[0].messages[-1].tool_results[0].images[0]
+    assert image.source == "base64"
+    assert image.data == "c2hvdC1ieXRlcw=="
+    assert image.media_type == "image/png"
+    assert image.role == "screenshot"
+    assert image.metadata == {"evidence_ref_id": "shot-1"}
+
+
+async def test_build_llm_agent_capability_derives_tool_specs_and_runs_episode():
+    client = ScriptedLLM(
+        LLMResponse(tool_calls=[ToolCallRequest(call_id="nav-1", name="navigate", arguments={"url": "x"})]),
+        LLMResponse(text='{"caption": "built"}'),
+    )
+    registry = CapabilityRegistry()
+    calls: list[NavigateInput] = []
+
+    async def navigate(_context, payload: NavigateInput):
+        calls.append(payload)
+        return CapabilityResult(status="accepted", output={"url": payload.url, "loaded": True})
+
+    registry.register(
+        CapabilitySpec(
+            name="navigate",
+            kind="tool",
+            description="Open a typed URL",
+            input_model=NavigateInput,
+        ),
+        navigate,
+    )
+    capability = build_llm_agent_capability(
+        client,
+        registry,
+        allowed_tools=["navigate"],
+        name="browser_agent",
+        system_prompt="Use typed tools.",
+        output_model=Caption,
+        node_name="builder_agent",
+    )
+    context = _context()
+
+    with workflow_usage_scope(WorkflowUsageContext(context.run_context, context.usage_summary, WorkflowBudget())):
+        result = await capability(
+            context,
+            AgentRunRequest(prompt="Open x.", allowed_tools=["navigate"], max_steps=3),
+        )
+
+    assert capability.spec.name == "browser_agent"
+    assert result.status == "accepted"
+    assert result.output.output.caption == "built"
+    assert calls == [NavigateInput(url="x")]
+    tool_spec = client.requests[0].tools[0]
+    assert tool_spec.name == "navigate"
+    assert tool_spec.description == "Open a typed URL"
+    assert tool_spec.input_schema["properties"]["url"]["type"] == "string"
 
 
 def _compare_step_output(expected: AgentToolStep, live: AgentToolStep) -> str | None:
