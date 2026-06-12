@@ -325,12 +325,21 @@ def format_trace_events(
                 rendered = rendered[: max_value_len] + "…"
             lines.append(f"   • {key}: {rendered}")
     if usage is not None:
-        cost = usage.estimated_usd or 0.0
         lines.append(
             f"— {usage.text_call_count} text / {usage.image_call_count} image / "
-            f"{usage.tool_call_count} tool calls, {usage.total_tokens} tokens, ${cost:.4f}"
+            f"{usage.tool_call_count} tool calls, {usage.total_tokens} tokens, "
+            f"metered {_format_trace_cost(usage.metered_usd)} / notional {_format_trace_cost(usage.notional_usd)}"
         )
     text = "\n".join(lines)
     if len(text) > max_total_len:
         text = text[: max_total_len] + "\n…(trace truncated)"
     return text
+
+
+def _format_trace_cost(value: Any) -> str:
+    if value is None:
+        return "?"
+    try:
+        return f"${float(value):.4f}"
+    except (TypeError, ValueError):
+        return "?"

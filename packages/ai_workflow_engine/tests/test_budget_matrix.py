@@ -1,4 +1,7 @@
+from types import SimpleNamespace
+
 import pytest
+from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
 
 from ai_workflow_engine import (
@@ -11,12 +14,14 @@ from ai_workflow_engine import (
     WorkflowEngineBuilder,
 )
 from ai_workflow_engine.config_loader import load_workflow_config
+from ai_workflow_engine.llm_protocol import record_callable_usage
 from ai_workflow_engine.models import RuntimeLimits, WorkflowProfile, WorkflowRunContext, WorkflowUsageSummary
 from ai_workflow_engine.usage import (
     WorkflowBudget,
     WorkflowBudgetExceeded,
     WorkflowUsageContext,
     check_budget_before_call,
+    invoke_metered_chat,
     workflow_usage_scope,
 )
 
@@ -50,6 +55,19 @@ class FakeStructuredClient:
             output_tokens=self.output_tokens,
             total_tokens=self.input_tokens + self.output_tokens,
             estimated_usd=self.estimated_usd,
+        )
+
+
+class FakeLangChainUsageLLM:
+    def __init__(self):
+        self.messages = []
+
+    def invoke(self, messages):
+        self.messages.append(messages)
+        return SimpleNamespace(
+            content="ok",
+            usage_metadata={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+            response_metadata={"model_name": "unit-model", "id": "req-unit"},
         )
 
 
@@ -110,6 +128,67 @@ def test_none_worker_call_cap_changes_nothing_for_budget_checker():
             check_budget_before_call("external", f"external_{index}")
 
     assert usage_context.worker_call_count == 0
+
+
+def test_subscription_notional_callable_usage_does_not_debit_metered_budget():
+    usage_context = WorkflowUsageContext(
+        WorkflowRunContext(workflow_id="wf", workflow_type="budget"),
+        WorkflowUsageSummary(),
+        WorkflowBudget(max_estimated_usd=0, max_estimated_usd_per_call=0),
+    )
+
+    with workflow_usage_scope(usage_context):
+        record_callable_usage(
+            LLMResponse(model="unit-model", input_tokens=10, output_tokens=5, total_tokens=15, estimated_usd=99.0),
+            node="subscription_worker",
+            attempt=1,
+            cost_class="subscription_notional",
+            notional_usd=0.42,
+        )
+
+    assert usage_context.summary.metered_usd is None
+    assert usage_context.summary.estimated_usd is None
+    assert usage_context.summary.notional_usd == 0.42
+    event = usage_context.summary.events[0]
+    assert event.cost_class == "subscription_notional"
+    assert event.estimated_usd is None
+    assert event.notional_usd == 0.42
+    assert event.metadata["cost_known"] is True
+    assert event.metadata["cost_source"] == "subscription_notional"
+
+
+def test_subscription_notional_metered_chat_does_not_debit_metered_budget():
+    usage_context = WorkflowUsageContext(
+        WorkflowRunContext(workflow_id="wf", workflow_type="budget"),
+        WorkflowUsageSummary(),
+        WorkflowBudget(max_estimated_usd=0, max_estimated_usd_per_call=0),
+    )
+    llm = FakeLangChainUsageLLM()
+    config = SimpleNamespace(
+        WORKFLOW_USAGE_TRACKING_ENABLED=True,
+        WORKFLOW_MODEL_PRICE_OVERRIDES_JSON=(
+            '{"unit-model": {"input_per_1m": 1000000, "output_per_1m": 1000000}}'
+        ),
+    )
+
+    with workflow_usage_scope(usage_context):
+        invoke_metered_chat(
+            llm,
+            [HumanMessage(content="hello")],
+            node="subscription_chat",
+            model="unit-model",
+            config=config,
+            cost_class="subscription_notional",
+            notional_usd=0.42,
+        )
+
+    assert len(llm.messages) == 1
+    assert usage_context.summary.metered_usd is None
+    assert usage_context.summary.notional_usd == 0.42
+    event = usage_context.summary.events[0]
+    assert event.cost_class == "subscription_notional"
+    assert event.estimated_usd is None
+    assert event.notional_usd == 0.42
 
 
 async def test_profile_max_worker_calls_blocks_external_after_chat_before_handler():

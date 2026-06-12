@@ -231,6 +231,7 @@ class WorkflowUsageEvent(BaseModel):
 
     provider: str = "openai"
     operation: Literal["chat", "image", "tool"] = "chat"
+    cost_class: Literal["metered", "subscription_notional"] = "metered"
     node: str
     model: str = ""
     attempt: int = 1
@@ -240,6 +241,7 @@ class WorkflowUsageEvent(BaseModel):
     input_token_details: Dict[str, Any] = Field(default_factory=dict)
     output_token_details: Dict[str, Any] = Field(default_factory=dict)
     estimated_usd: Optional[float] = None
+    notional_usd: Optional[float] = None
     request_id: Optional[str] = None
     elapsed_ms: Optional[int] = None
     success: bool = True
@@ -303,9 +305,22 @@ class WorkflowUsageSummary(BaseModel):
         return total
 
     @property
-    def estimated_usd(self) -> Optional[float]:
-        costs = [event.estimated_usd for event in self.events if event.estimated_usd is not None]
+    def metered_usd(self) -> Optional[float]:
+        costs = [
+            event.estimated_usd
+            for event in self.events
+            if event.cost_class == "metered" and event.estimated_usd is not None
+        ]
         return round(sum(costs), 6) if costs else None
+
+    @property
+    def notional_usd(self) -> Optional[float]:
+        costs = [event.notional_usd for event in self.events if event.notional_usd is not None]
+        return round(sum(costs), 6) if costs else None
+
+    @property
+    def estimated_usd(self) -> Optional[float]:
+        return self.metered_usd
 
 
 class WorkflowRunContext(BaseModel):

@@ -115,12 +115,15 @@ def record_callable_usage(
     attempt: int,
     metadata: Optional[Dict[str, Any]] = None,
     config: Any = None,
+    cost_class: Literal["metered", "subscription_notional"] = "metered",
+    notional_usd: Optional[float] = None,
 ) -> None:
     """Meter one plain-callable LLM call with honest cost attribution (RC2)."""
 
-    estimated = response.estimated_usd
-    cost_source = "callable"
-    if estimated is None:
+    estimated = response.estimated_usd if cost_class == "metered" else None
+    cost_source = "subscription_notional" if cost_class == "subscription_notional" else "callable"
+    cost_known = estimated is not None or notional_usd is not None
+    if cost_class == "metered" and estimated is None:
         has_tokens = bool(response.total_tokens or response.input_tokens or response.output_tokens)
         if response.model and has_tokens:
             estimated = estimate_cost_usd(
@@ -133,10 +136,14 @@ def record_callable_usage(
             cost_source = "price_table"
         if estimated is None:
             cost_source = "unknown"
+        cost_known = estimated is not None
+    elif cost_class == "subscription_notional" and notional_usd is None:
+        cost_source = "unknown"
     record_usage_event(
         WorkflowUsageEvent(
             provider="custom",
             operation="chat",
+            cost_class=cost_class,
             node=node,
             model=response.model,
             attempt=attempt,
@@ -144,9 +151,10 @@ def record_callable_usage(
             output_tokens=response.output_tokens,
             total_tokens=response.total_tokens or (response.input_tokens + response.output_tokens),
             estimated_usd=estimated,
+            notional_usd=notional_usd,
             metadata={
                 **(metadata or {}),
-                "cost_known": estimated is not None,
+                "cost_known": cost_known,
                 "cost_source": cost_source,
             },
         )

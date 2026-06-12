@@ -8,7 +8,7 @@ import time
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Literal, Optional
 
 from langchain_core.messages import BaseMessage
 
@@ -256,6 +256,8 @@ def invoke_metered_chat(
     attempt: int = 1,
     metadata: Optional[dict[str, Any]] = None,
     config: Any = None,
+    cost_class: Literal["metered", "subscription_notional"] = "metered",
+    notional_usd: Optional[float] = None,
 ) -> Any:
     """Invoke a LangChain chat model and record usage metadata when the provider returns it."""
     if config is not None and not getattr(config, "WORKFLOW_USAGE_TRACKING_ENABLED", True):
@@ -276,6 +278,8 @@ def invoke_metered_chat(
                 elapsed_ms=elapsed_ms,
                 metadata=metadata,
                 config=config,
+                cost_class=cost_class,
+                notional_usd=notional_usd,
             )
         )
         return output
@@ -291,6 +295,8 @@ def invoke_metered_chat(
                 success=False,
                 error=str(exc)[:500],
                 metadata=metadata or {},
+                cost_class=cost_class,
+                notional_usd=notional_usd,
             )
         )
         raise
@@ -394,7 +400,7 @@ def format_usage_summary(summary: Optional[WorkflowUsageSummary]) -> str:
     char_total = f"{_compact_character_total(summary.tool_character_count)} chars, " if summary.tool_call_count else ""
     rows = [
         "AI usage:",
-        "node/provider        op       in   cache     out       est",
+        "node/provider        op       in   cache     out      cost",
     ]
     rows.extend(_format_usage_event_row(event) for event in summary.events)
     rows.append(
@@ -405,7 +411,8 @@ def format_usage_summary(summary: Optional[WorkflowUsageSummary]) -> str:
         f"{_compact_token_count(summary.cached_input_tokens)} cached, "
         f"{_compact_token_count(summary.output_tokens)} out, "
         f"{char_total}"
-        f"est {_format_usage_cost(summary.estimated_usd)}"
+        f"metered {_format_usage_cost(summary.metered_usd)} / "
+        f"notional {_format_usage_cost(summary.notional_usd)}"
     )
     return "\n".join(rows)
 
@@ -423,7 +430,7 @@ def _format_usage_event_row(event: WorkflowUsageEvent) -> str:
         f"{input_value:>7} "
         f"{_compact_token_count(cached_tokens):>7} "
         f"{_compact_token_count(output_tokens):>7} "
-        f"{_format_usage_cost(getattr(event, 'estimated_usd', None)):>9}"
+        f"{_format_usage_cost(_event_display_cost(event)):>9}"
     )
 
 
@@ -507,6 +514,12 @@ def _format_usage_cost(value: Any) -> str:
     return f"${amount:.4f}"
 
 
+def _event_display_cost(event: WorkflowUsageEvent) -> Optional[float]:
+    if getattr(event, "cost_class", "metered") == "subscription_notional":
+        return getattr(event, "notional_usd", None)
+    return getattr(event, "estimated_usd", None)
+
+
 def _usage_event_from_chat_output(
     output: Any,
     *,
@@ -516,6 +529,8 @@ def _usage_event_from_chat_output(
     elapsed_ms: int,
     metadata: Optional[dict[str, Any]],
     config: Any = None,
+    cost_class: Literal["metered", "subscription_notional"] = "metered",
+    notional_usd: Optional[float] = None,
 ) -> WorkflowUsageEvent:
     usage = _model_or_dict(getattr(output, "usage_metadata", None))
     response_metadata = _model_or_dict(getattr(output, "response_metadata", None))
@@ -532,8 +547,20 @@ def _usage_event_from_chat_output(
     input_details = _details(usage.get("input_token_details") or usage.get("input_tokens_details"))
     output_details = _details(usage.get("output_token_details") or usage.get("output_tokens_details"))
     effective_model = response_metadata.get("model_name") or model
+    estimated_usd = None
+    if cost_class == "metered":
+        estimated_usd = estimate_cost_usd(
+            effective_model,
+            "chat",
+            input_tokens,
+            output_tokens,
+            input_details,
+            output_details,
+            config=config,
+        )
     return WorkflowUsageEvent(
         operation="chat",
+        cost_class=cost_class,
         node=node,
         model=effective_model,
         attempt=attempt,
@@ -542,15 +569,8 @@ def _usage_event_from_chat_output(
         total_tokens=total_tokens,
         input_token_details=input_details,
         output_token_details=output_details,
-        estimated_usd=estimate_cost_usd(
-            effective_model,
-            "chat",
-            input_tokens,
-            output_tokens,
-            input_details,
-            output_details,
-            config=config,
-        ),
+        estimated_usd=estimated_usd,
+        notional_usd=notional_usd,
         request_id=response_metadata.get("id") or response_metadata.get("request_id"),
         elapsed_ms=elapsed_ms,
         metadata=metadata or {},
@@ -559,7 +579,7 @@ def _usage_event_from_chat_output(
 
 def _enforce_usd_budget(context: WorkflowUsageContext) -> None:
     max_usd = context.budget.max_estimated_usd
-    total = context.summary.estimated_usd
+    total = context.summary.metered_usd
     if max_usd is not None and total is not None and total > max_usd:
         raise WorkflowBudgetExceeded(f"Workflow estimated cost exceeded: ${total:.6f} > ${max_usd:.6f}")
 
@@ -573,7 +593,12 @@ def _enforce_per_call_budget(event: WorkflowUsageEvent, context: WorkflowUsageCo
             decision="truncated_by_budget",
         )
     max_usd = context.budget.max_estimated_usd_per_call
-    if max_usd is not None and event.estimated_usd is not None and event.estimated_usd > max_usd:
+    if (
+        max_usd is not None
+        and event.cost_class == "metered"
+        and event.estimated_usd is not None
+        and event.estimated_usd > max_usd
+    ):
         raise WorkflowBudgetExceeded(
             f"Workflow max_estimated_usd_per_call budget exceeded after node {event.node}: "
             f"${event.estimated_usd:.6f} > ${max_usd:.6f}"

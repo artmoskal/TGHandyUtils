@@ -1649,7 +1649,40 @@ def test_usage_summary_displays_cached_input_tokens():
     assert "700" in text
     assert "$0.0007" in text
     assert "$0.0141" in text
-    assert "total: 1 text, 1 image, 3k in, 1.5k cached, 400 out, est $0.0148" in text
+    assert "total: 1 text, 1 image, 3k in, 1.5k cached, 400 out, metered $0.0148 / notional ?" in text
+
+
+def test_usage_summary_separates_metered_and_subscription_notional_costs():
+    summary = WorkflowUsageSummary(
+        events=[
+            WorkflowUsageEvent(
+                node="metered_call",
+                operation="chat",
+                input_tokens=10,
+                output_tokens=5,
+                total_tokens=15,
+                estimated_usd=0.25,
+            ),
+            WorkflowUsageEvent(
+                node="subscription_call",
+                operation="chat",
+                cost_class="subscription_notional",
+                input_tokens=20,
+                output_tokens=10,
+                total_tokens=30,
+                estimated_usd=99.0,
+                notional_usd=0.42,
+            ),
+        ]
+    )
+
+    text = format_usage_summary(summary)
+
+    assert summary.metered_usd == 0.25
+    assert summary.estimated_usd == 0.25
+    assert summary.notional_usd == 0.42
+    assert "metered $0.2500 / notional $0.4200" in text
+    assert "$99.0000" not in text
 
 
 def test_usage_summary_displays_tool_character_count_when_present():
@@ -1670,7 +1703,7 @@ def test_usage_summary_displays_tool_character_count_when_present():
     assert "generate_voice" in text
     assert "tool" in text
     assert "42ch" in text
-    assert "total: 0 text, 0 image, 1 tool, 0 in, 0 cached, 0 out, 42 chars, est ?" in text
+    assert "total: 0 text, 0 image, 1 tool, 0 in, 0 cached, 0 out, 42 chars, metered ? / notional ?" in text
 
 
 async def test_structured_llm_node_splits_static_prefix_and_dynamic_tail():
@@ -2667,7 +2700,7 @@ def test_format_trace_events_renders_flow_decisions_and_usage():
     assert "study_goal: recall the Bernoulli relationship" in text
     assert "(attempt 2)" in text
     assert "overload" in text
-    assert "$0.0100" in text  # usage/cost footer
+    assert "metered $0.0100 / notional ?" in text  # usage/cost footer
 
 
 async def test_executor_runs_external_process_step():
