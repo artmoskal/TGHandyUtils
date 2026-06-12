@@ -127,6 +127,34 @@ episode), validation (`PlanArtifact` + allow-lists), salvage — while per-domai
 (video jobs, screenshot suites, finding schemas) stay role-tagged refs + product schemas at
 prompt level, graduating to an L2 pack only when TWO products share the shape.
 
+## 2b-bis. FRAMEWORK ADOPTION DECISIONS (Artem + claude, 2026-06-12)
+Lens: a framework earns a mandatory seat only by adding real functionality (per Artem). Decisions:
+- **LangChain-core: KEEP as mandatory dep.** It earns it: parsers, prompt templates, message
+  types, model ecosystem. (The earlier "[langchain] extra" backlog item is WON'T-DO.)
+- **LangGraph: KEEP** — it IS our state-machine/graph framework, hidden in the executor.
+- **Dedicated state-machine framework (transitions, python-statemachine…): NO.** It would
+  duplicate LangGraph's slot — two execution semantics for one engine is §2c risk #1 in disguise.
+- **Dedicated DI framework (dependency-injector, punq…): NO for now.** Our container binds by
+  capability NAME and enforces domain policy (side-effect classes, budgets, schemas, model
+  profiles) at resolution — generic DI binds by type and knows none of that; we would wrap it and
+  keep all our code. Explicit registration is also load-bearing for traceability. Revisit only if
+  we ever need lifecycle scopes/interception that the bespoke ~300-line container can't express.
+
+## 2d. DEFERRED / OUT-OF-SCOPE REGISTER (single source; update when items land or die)
+| Item | Context | Trigger to do it |
+|---|---|---|
+| Media/voice seams → tools lib | Spec §12: stays in core, Anki imports them; needs BC re-export shims | When a 2nd consumer wants media without core, or next majorish version |
+| Browser-bridge no-API executor | L1 member, protocol-ready; §2c #3: highest-maintenance member | A concrete paying use case (build LAST) |
+| `workflow_capability` adapter (parallel sub-workflow join / fanout over workflows) | Subworkflow nodes run sequentially; planner-fanout covers heterogeneous parallelism today | A consumer needs parallel sub-audit join (~30 lines) |
+| Durable mid-run resume (resume any workflow at node N) | Checkpoints + mid-plan resume exist; clarification-resume re-runs; long-job resume is product-side design (both consumer guides say so) | First multi-hour resumable workload |
+| Token-level output streaming | Event-level live sinks exist (WP6); token streaming would extend `LLMCallable` | A UI that needs it |
+| Image+reference+QC promotion to an L2 pack | Production-proven inside Anki product code | 2nd consumer of the pattern (§2c #4 bar) |
+| Presentation-builder pack, MCP tool-suite packs | Named in the L2 vision | When the project materializes |
+| Planner depth ≥2 / recursive planners | FORBIDDEN by §2c #2, not merely deferred | Explicit spec change only |
+| `ANKI_*` env alias bridge sunset | config-architecture CFG-8: transition bridge, must not leak into engine | Pi `.env` migrated by aws_deploy |
+| `test.sh` `-k "a or b"` word-split bug | Workaround = paths/single tokens, documented everywhere | Next time someone touches test.sh |
+| Executor god-file split (handlers per module) | §2c #5: cosmetic, sanctioned | Next feature touching executor.py |
+
 ## 2c. RISK WATCHLIST — where this becomes a mess if discipline slips (reviewed 2026-06-12)
 The architecture's real threats are **discipline threats**, not design flaws. Each has a named
 fence; violating a fence requires a deliberate, user-approved decision — never drift:

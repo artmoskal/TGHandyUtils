@@ -253,3 +253,31 @@ Tools import from `ai_workflow_tools.cli_agents`: `CliAgentCapability`, `CliAgen
 `CliAgentResult`, `ConsoleLLMClient`, `McpServerConfig`, `claude_p`, `codex_exec`. Runnable
 examples: `ai_workflow_engine/examples.py` (`build_demo_engine`, `SiteAuditPack`,
 `run_toy_site_audit_pilot`, `run_toy_three_axis_site_audit_pilot`).
+
+
+---
+
+## What's new since this guide's examples were written (engine-completion delta, 2026-06-12)
+
+Implemented and gate-verified (commits up to `b014268`+):
+- **Multi-turn + tool-calling LLM protocol** (`ChatMessage`/`ToolSpec`/`ToolCallRequest`/`ToolResult`
+  on `LLMRequest/LLMResponse`) and a **shipped agent brain**: `LLMAgentPlanner` (screenshot→vision
+  loop, budget per turn, structured finish with repair) + `ReplayPlanner` (freeze a recorded episode
+  into a rigid, zero-LLM regression). Wire one line: `build_llm_agent_capability(llm, engine.registry,
+  allowed_tools=[...], runtime=engine.runtime)` — pass the engine runtime so episode traces join the
+  same sink.
+- **CLI worker economics** (`ai_workflow_tools`): `CliAgentCapability` (claude_p / codex_exec flavors,
+  MCP config incl. `env`, workspace salvage→`EvidenceRef`s, `new_artifact_count`,
+  `input_assets` staged + fingerprinted into the episode record) and `ConsoleLLMClient` (plain
+  text→JSON over a subscription CLI behind structured nodes).
+- **Budget matrix** (`max_worker_calls`, per-call input/output token, image, and USD caps — all
+  Optional) and **honest cost classes**: `metered` vs `subscription_notional`; `cost_known=false`
+  instead of phantom $0; the notional total renders only when subscription events exist.
+- **Per-call output-token overflow records `truncated_by_budget` on the usage event and the run
+  CONTINUES** (the output is already paid for); hard stops remain `max_worker_calls` + USD caps.
+- **Live trace sinks**: `CallbackTraceSink`, `AsyncQueueTraceSink` (drop-oldest, never blocks the
+  run), `TeeTraceSink` (live + JSONL together).
+- **The three-axis pilot** (rigid/semi-rigid/flexible execution × set-composition × freeze-to-replay)
+  lives at `ai_workflow_tools.pilots.run_toy_three_axis_site_audit_pilot` — read it as the canonical
+  end-to-end recipe; its test proves the replay run makes ZERO LLM calls.
+- Your completion spec (engine-completion-spec.md) is fully implemented — WP1–WP7 plus review items AC-R3…R6; adoption can start at the pilot + the §7.5 console quickstart in the tools README.
