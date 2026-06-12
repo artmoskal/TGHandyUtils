@@ -1,7 +1,15 @@
 import pytest
 from pydantic import BaseModel
 
-from ai_workflow_engine import LLMRequest, LLMResponse, StructuredLLMNode, WorkflowBuilder, WorkflowEngineBuilder
+from ai_workflow_engine import (
+    ImageInput,
+    LLMRequest,
+    LLMResponse,
+    StructuredLLMNode,
+    StructuredVisionLLMNode,
+    WorkflowBuilder,
+    WorkflowEngineBuilder,
+)
 from ai_workflow_engine.config_loader import load_workflow_config
 from ai_workflow_engine.models import RuntimeLimits, WorkflowProfile, WorkflowRunContext, WorkflowUsageSummary
 from ai_workflow_engine.usage import (
@@ -20,12 +28,55 @@ class Label(BaseModel):
 
 
 class FakeStructuredClient:
-    def __init__(self):
+    def __init__(
+        self,
+        text: str = '{"label": "ok"}',
+        *,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        estimated_usd: float | None = None,
+    ):
+        self.text = text
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+        self.estimated_usd = estimated_usd
         self.requests: list[LLMRequest] = []
 
     async def __call__(self, request: LLMRequest) -> LLMResponse:
         self.requests.append(request)
-        return LLMResponse(text='{"label": "ok"}')
+        return LLMResponse(
+            text=self.text,
+            input_tokens=self.input_tokens,
+            output_tokens=self.output_tokens,
+            total_tokens=self.input_tokens + self.output_tokens,
+            estimated_usd=self.estimated_usd,
+        )
+
+
+def _structured_node(client: FakeStructuredClient, *, prompt_template: str = "Classify {item}.") -> StructuredLLMNode:
+    return StructuredLLMNode(
+        name="classify",
+        config=object(),
+        output_model=Label,
+        prompt_template=prompt_template,
+        input_variables=["item"],
+        llm=client,
+    )
+
+
+def _engine_for_node(node: StructuredLLMNode, limits: RuntimeLimits):
+    async def classify(_ctx, payload):
+        return await node.run({"item": payload.get("item", "budget")})
+
+    return (
+        WorkflowEngineBuilder()
+        .register_capability("classify", classify, kind="llm", metered=True)
+        .register_workflow(
+            WorkflowBuilder("per_call_budget").step("classify").build(),
+            profile=WorkflowProfile(workflow_type="per_call_budget", limits=limits),
+        )
+        .build()
+    )
 
 
 def test_max_worker_calls_counts_chat_agent_external_operations_with_cap_name():
@@ -64,14 +115,7 @@ def test_none_worker_call_cap_changes_nothing_for_budget_checker():
 async def test_profile_max_worker_calls_blocks_external_after_chat_before_handler():
     external_calls = {"count": 0}
     client = FakeStructuredClient()
-    node = StructuredLLMNode(
-        name="classify",
-        config=object(),
-        output_model=Label,
-        prompt_template="Classify {item}.",
-        input_variables=["item"],
-        llm=client,
-    )
+    node = _structured_node(client)
 
     async def classify(_ctx, _payload):
         return await node.run({"item": "budget"})
@@ -158,3 +202,80 @@ def test_budget_matrix_limits_load_from_yaml_profile_and_env_overrides():
     assert bundle.profile.limits.max_output_tokens_per_call == 4_000
     assert bundle.profile.limits.max_images_per_call == 3
     assert bundle.profile.limits.max_estimated_usd_per_call == 0.10
+
+
+async def test_input_token_cap_denies_structured_node_before_llm_call():
+    client = FakeStructuredClient()
+    node = _structured_node(client, prompt_template="Classify this long item: {item}.")
+    engine = _engine_for_node(node, RuntimeLimits(max_input_tokens_per_call=2))
+
+    result = await engine.run("per_call_budget", {"item": "this prompt is intentionally too long"})
+
+    assert result.status == "failed"
+    assert len(client.requests) == 0
+    assert "max_input_tokens_per_call" in (result.error or "")
+
+
+async def test_output_token_cap_records_truncated_trace_after_response():
+    client = FakeStructuredClient(output_tokens=5)
+    node = _structured_node(client)
+    engine = _engine_for_node(node, RuntimeLimits(max_output_tokens_per_call=4))
+
+    result = await engine.run("per_call_budget", {"item": "budget"})
+
+    assert result.status == "failed"
+    assert len(client.requests) == 1
+    assert result.usage.events[0].output_tokens == 5
+    assert "max_output_tokens_per_call" in (result.error or "")
+    assert any(event.node == "classify" and event.decision == "truncated_by_budget" for event in result.trace)
+
+
+async def test_image_cap_denies_vision_node_before_llm_call():
+    client = FakeStructuredClient()
+    node = StructuredVisionLLMNode(
+        name="inspect",
+        config=object(),
+        output_model=Label,
+        prompt_template="Inspect {item}.",
+        input_variables=["item"],
+        llm=client,
+    )
+    images = [
+        ImageInput(source="base64", data="aW1hZ2UtMQ==", media_type="image/png", role="one"),
+        ImageInput(source="base64", data="aW1hZ2UtMg==", media_type="image/png", role="two"),
+    ]
+
+    async def inspect(_ctx, _payload):
+        return await node.run({"item": "frame"}, images=images)
+
+    engine = (
+        WorkflowEngineBuilder()
+        .register_capability("inspect", inspect, kind="llm", metered=True)
+        .register_workflow(
+            WorkflowBuilder("image_budget").step("inspect").build(),
+            profile=WorkflowProfile(
+                workflow_type="image_budget",
+                limits=RuntimeLimits(max_images_per_call=1),
+            ),
+        )
+        .build()
+    )
+
+    result = await engine.run("image_budget", {})
+
+    assert result.status == "failed"
+    assert len(client.requests) == 0
+    assert "max_images_per_call" in (result.error or "")
+
+
+async def test_per_call_usd_cap_denies_after_usage_event_is_recorded():
+    client = FakeStructuredClient(estimated_usd=0.11)
+    node = _structured_node(client)
+    engine = _engine_for_node(node, RuntimeLimits(max_estimated_usd_per_call=0.10))
+
+    result = await engine.run("per_call_budget", {"item": "budget"})
+
+    assert result.status == "failed"
+    assert len(client.requests) == 1
+    assert result.usage.events[0].estimated_usd == 0.11
+    assert "max_estimated_usd_per_call" in (result.error or "")

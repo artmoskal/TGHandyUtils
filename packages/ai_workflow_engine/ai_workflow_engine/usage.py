@@ -20,6 +20,10 @@ logger = logging.getLogger(__name__)
 class WorkflowBudgetExceeded(Exception):
     """Raised before/after a provider call would exceed a workflow budget."""
 
+    def __init__(self, message: str, *, decision: Optional[str] = None):
+        super().__init__(message)
+        self.decision = decision
+
 
 @dataclass(frozen=True)
 class WorkflowBudget:
@@ -179,6 +183,56 @@ def check_budget_before_call(operation: str, node: str) -> None:
         context.worker_call_count += 1
 
 
+def estimate_text_tokens(value: Any) -> int:
+    """Cheap pre-call input-token heuristic for budget gates.
+
+    This is intentionally conservative and provider-neutral. Authoritative token counts still come
+    from provider usage events after the call.
+    """
+
+    if value is None:
+        return 0
+    if isinstance(value, BaseMessage):
+        return estimate_text_tokens(value.content)
+    if isinstance(value, str):
+        if not value:
+            return 0
+        return max(1, (len(value) + 3) // 4)
+    if isinstance(value, dict):
+        if value.get("type") == "image_url":
+            return 0
+        if "text" in value:
+            return estimate_text_tokens(value["text"])
+        if "content" in value:
+            return estimate_text_tokens(value["content"])
+        return estimate_text_tokens(json.dumps(value, sort_keys=True, default=str))
+    if isinstance(value, Iterable) and not isinstance(value, (bytes, bytearray)):
+        return sum(estimate_text_tokens(item) for item in value)
+    return estimate_text_tokens(str(value))
+
+
+def check_input_tokens_per_call(input_tokens: int, node: str) -> None:
+    context = current_usage_context()
+    if not context or context.budget.max_input_tokens_per_call is None:
+        return
+    if input_tokens > context.budget.max_input_tokens_per_call:
+        raise WorkflowBudgetExceeded(
+            f"Workflow max_input_tokens_per_call budget exceeded before node {node}: "
+            f"{input_tokens}/{context.budget.max_input_tokens_per_call}"
+        )
+
+
+def check_images_per_call(image_count: int, node: str) -> None:
+    context = current_usage_context()
+    if not context or context.budget.max_images_per_call is None:
+        return
+    if image_count > context.budget.max_images_per_call:
+        raise WorkflowBudgetExceeded(
+            f"Workflow max_images_per_call budget exceeded before node {node}: "
+            f"{image_count}/{context.budget.max_images_per_call}"
+        )
+
+
 def record_usage_event(event: WorkflowUsageEvent) -> None:
     context = current_usage_context()
     if context:
@@ -186,7 +240,10 @@ def record_usage_event(event: WorkflowUsageEvent) -> None:
         event.metadata.setdefault("workflow_type", context.run_context.workflow_type)
         event.metadata.setdefault("user_id", context.run_context.user_id)
         context.summary.add_event(event)
+        logger.info("workflow_usage %s", json.dumps(event.model_dump(), sort_keys=True, default=str))
+        _enforce_per_call_budget(event, context)
         _enforce_usd_budget(context)
+        return
     logger.info("workflow_usage %s", json.dumps(event.model_dump(), sort_keys=True, default=str))
 
 
@@ -203,10 +260,12 @@ def invoke_metered_chat(
     """Invoke a LangChain chat model and record usage metadata when the provider returns it."""
     if config is not None and not getattr(config, "WORKFLOW_USAGE_TRACKING_ENABLED", True):
         return llm.invoke(list(messages))
+    message_list = list(messages)
+    check_input_tokens_per_call(estimate_text_tokens(message_list), node)
     check_budget_before_call("chat", node)
     start = time.monotonic()
     try:
-        output = llm.invoke(list(messages))
+        output = llm.invoke(message_list)
         elapsed_ms = int((time.monotonic() - start) * 1000)
         record_usage_event(
             _usage_event_from_chat_output(
@@ -503,6 +562,22 @@ def _enforce_usd_budget(context: WorkflowUsageContext) -> None:
     total = context.summary.estimated_usd
     if max_usd is not None and total is not None and total > max_usd:
         raise WorkflowBudgetExceeded(f"Workflow estimated cost exceeded: ${total:.6f} > ${max_usd:.6f}")
+
+
+def _enforce_per_call_budget(event: WorkflowUsageEvent, context: WorkflowUsageContext) -> None:
+    max_output = context.budget.max_output_tokens_per_call
+    if max_output is not None and event.output_tokens > max_output:
+        raise WorkflowBudgetExceeded(
+            f"Workflow max_output_tokens_per_call budget exceeded after node {event.node}: "
+            f"{event.output_tokens}/{max_output}",
+            decision="truncated_by_budget",
+        )
+    max_usd = context.budget.max_estimated_usd_per_call
+    if max_usd is not None and event.estimated_usd is not None and event.estimated_usd > max_usd:
+        raise WorkflowBudgetExceeded(
+            f"Workflow max_estimated_usd_per_call budget exceeded after node {event.node}: "
+            f"${event.estimated_usd:.6f} > ${max_usd:.6f}"
+        )
 
 
 def _price_for_model(model: str, config: Any = None) -> Optional[dict[str, float]]:

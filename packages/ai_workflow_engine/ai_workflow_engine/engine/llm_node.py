@@ -11,7 +11,7 @@ from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 
-from ai_workflow_engine.usage import invoke_metered_chat
+from ai_workflow_engine.usage import WorkflowBudgetExceeded, invoke_metered_chat
 
 logger = logging.getLogger(__name__)
 
@@ -243,7 +243,8 @@ Original request:
         profile: Any = None,
     ) -> Any:
         from ai_workflow_engine.llm_protocol import LLMRequest, record_callable_usage
-        from ai_workflow_engine.usage import check_budget_before_call
+        from ai_workflow_engine.usage import check_budget_before_call, check_images_per_call
+        from ai_workflow_engine.usage import check_input_tokens_per_call, estimate_text_tokens
 
         request_metadata = {"model_profile": profile.model_dump()} if profile is not None else {}
         last_error = ""
@@ -265,6 +266,11 @@ Original request:
                         images=images,
                         metadata=dict(request_metadata),
                     )
+                check_input_tokens_per_call(
+                    estimate_text_tokens([request.system, request.user, request.messages]),
+                    self.name,
+                )
+                check_images_per_call(len(request.images), self.name)
                 check_budget_before_call("chat", self.name)
                 response = await self.llm(request)
                 record_callable_usage(
@@ -291,6 +297,8 @@ Original request:
                     ),
                 )
                 return parsed
+            except WorkflowBudgetExceeded:
+                raise
             except Exception as exc:
                 last_error = str(exc)
                 logger.warning(
@@ -348,6 +356,8 @@ Original request:
                     ),
                 )
                 return parsed
+            except WorkflowBudgetExceeded:
+                raise
             except Exception as exc:
                 last_error = str(exc)
                 logger.warning(

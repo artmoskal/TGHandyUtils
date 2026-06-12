@@ -193,11 +193,12 @@ class CapabilityRuntime:
         except Exception as exc:
             error = str(exc) or exc.__class__.__name__
             elapsed_ms = int((time.monotonic() - start) * 1000)
+            decision = getattr(exc, "decision", None) or "failed"
             self._record(
                 WorkflowTraceEvent(
                     node=name,
                     attempt=attempt,
-                    decision="failed",
+                    decision=decision,
                     error=error,
                     elapsed_ms=elapsed_ms,
                 )

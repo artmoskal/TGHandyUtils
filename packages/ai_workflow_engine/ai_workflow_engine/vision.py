@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 
 from ai_workflow_engine.engine.llm_node import MessageFactory, StructuredLLMNode
 from ai_workflow_engine.models import EvidenceRef
+from ai_workflow_engine.usage import check_images_per_call
 
 
 class ImageInput(BaseModel):
@@ -103,6 +104,7 @@ class StructuredVisionLLMNode(StructuredLLMNode):
         message_factory: Optional[MessageFactory] = None,
     ) -> Any:
         image_list: List[ImageInput] = list(images)
+        check_images_per_call(len(image_list), self.name)
 
         def with_images(messages, attempt):
             if message_factory:
