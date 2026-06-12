@@ -1,8 +1,10 @@
 # MageQA — AI Workflow Engine Usage Guide
 
-Status: **engine implemented and ready for adoption** (2026-06-08). The `WorkflowDefinition` /
+Status: **engine implemented and ready for adoption** (2026-06-12). The `WorkflowDefinition` /
 `WorkflowExecutor` / DI layer this doc previously waited on is live and proven (Anki migrated +
-live-tested; one `WorkflowExecutor` runs four example workloads — including the site-audit fan-out).
+live-tested; one `WorkflowExecutor` runs the product-neutral examples, including site-audit fan-out
+and the fake-backed three-axis pilot). The first sibling tools package, `ai_workflow_tools`, now
+ships CLI-agent and console-LLM support for `claude -p` / `codex exec`.
 Source needs: `/Users/artemm/PycharmProjects/MageQA/docs/17-qa-orchestrator-architecture.md`,
 `/Users/artemm/PycharmProjects/MageQA/docs/14-agentic-tester-architecture.md`.
 
@@ -61,9 +63,12 @@ No MageQA-owned supervisor loop, fan-out loop, retry/deepen loop, or trace/budge
 
 Browser/CLI workers are **capabilities**, not raw subprocess calls in flow code:
 - an in-engine **bounded agent**: `AgentCapability` over scoped registered browser/MCP tools (step
-  caps, tool-call caps, scoped tool names, salvage/partial, subscription-mode metadata); or
-- a product adapter wrapping `ExternalProcessCapability` (e.g. `claude -p` / `codex exec`) with
-  timeout + partial-output salvage.
+  caps, tool-call caps, scoped tool names, recorded steps, replay, and subscription-mode metadata);
+- a shipped tools-library **CLI agent**: `ai_workflow_tools.cli_agents.CliAgentCapability` over
+  `claude_p` or `codex_exec`, with MCP config/env assembly, timeout, input-asset staging,
+  salvage-always artifact provenance, `new_artifact_count`, and subscription-notional usage; or
+- a shipped tools-library **console client**: `ConsoleLLMClient` for simple text-to-JSON planner or
+  report nodes that do not need MCP/tools/workspace assets.
 
 ---
 
@@ -95,6 +100,58 @@ are not in the profile's `allowed_side_effects` — before the handler runs**.
 `CapabilityResult(status="rejected", metadata={"criticism": "thin coverage on checkout"})` and the
 engine deepens via `Retrace`, bounded by `RuntimeLimits.max_retrace`.
 
+### CLI and console worker recipe
+
+```python
+from ai_workflow_engine import EvidenceRef, StructuredLLMNode, WEAK_MODEL_CLEANER
+from ai_workflow_tools.cli_agents import (
+    CliAgentCapability,
+    CliAgentRequest,
+    ConsoleLLMClient,
+    McpServerConfig,
+    claude_p,
+)
+
+browser_worker = CliAgentCapability(
+    claude_p,
+    name="run_browser_scenario",
+    side_effects=["workspace_write"],
+    asset_loader=load_evidence_bytes,    # product-owned EvidenceRef -> bytes
+    trace_sink=live_trace_sink,           # optional Callback/AsyncQueue/Tee sink
+)
+
+report_node = StructuredLLMNode(..., llm=ConsoleLLMClient(claude_p), pre_parse=WEAK_MODEL_CLEANER)
+
+async def write_report(_context, payload):
+    return await report_node.run(payload)
+
+builder.register_capability_spec(browser_worker.spec, browser_worker)
+builder.register_capability("write_report", write_report, kind="llm")
+
+request = CliAgentRequest(
+    prompt="Inspect checkout with the supplied seed screenshot and return JSON findings.",
+    workspace_dir="/tmp/mageqa/session-123",
+    mcp_servers=[
+        McpServerConfig(
+            name="browser",
+            command="npx",
+            args=["@modelcontextprotocol/server-puppeteer"],
+            env={"BROWSER_CHANNEL": "chrome"},
+        )
+    ],
+    allowed_tools=["mcp__browser__navigate", "mcp__browser__screenshot"],
+    input_assets=[EvidenceRef(role="seed", uri="artifact://seed-checkout.png", media_type="image/png")],
+    salvage_globs=["*.png", "session*.md", "page-*.yml"],
+    subscription_mode=True,
+)
+```
+
+Prompt convention: staged `input_assets` appear under `inputs/` in the worker workspace. Do not copy
+bytes into workflow state; the capability records `input_fingerprints` and emits `inputs_staged`
+trace metadata. Salvaged outputs return `EvidenceRef`s plus `new_artifact_count`, and the trace gets
+an `artifacts_salvaged` event. Adjudicators should gate on `new_artifact_count` or referenced
+evidence, not on ungrounded agent prose.
+
 ---
 
 ## 4. Config & profile (`from_config`)
@@ -103,14 +160,25 @@ engine deepens via `Retrace`, bounded by `RuntimeLimits.max_retrace`.
 profile = WorkflowProfile(
     workflow_type="audit_site",
     safety=SafetyPolicy(fail_mode="fail_closed",
-                        allowed_side_effects=["browser_drive", "external_write"]),
-    limits=RuntimeLimits(max_parallel_children=4, max_retrace=2, max_estimated_usd=2.00),
+                        allowed_side_effects=["browser_drive", "workspace_write", "external_write"]),
+    limits=RuntimeLimits(
+        max_parallel_children=4,
+        max_retrace=2,
+        max_estimated_usd=2.00,
+        max_worker_calls=24,
+        max_input_tokens_per_call=120_000,
+        max_output_tokens_per_call=8_000,
+        max_images_per_call=12,
+    ),
 )
 ```
 
 Per-role models go in the YAML model registry (`ModelProfile` per capability/role); rubric/budget come
 in via `engine.run(..., constraints={...})` or the goal. Swap the profile to change models/budget/
 safety without touching the workflow (proven by `test_engine_from_config_swaps_profile`).
+Metered API calls debit `WorkflowUsageSummary.metered_usd`; CLI subscription workers record
+`WorkflowUsageEvent.cost_class="subscription_notional"` and `notional_usd` when the CLI reports it.
+Unknown CLI cost stays explicit through `cost_known=false` metadata.
 
 ---
 
@@ -120,8 +188,14 @@ safety without touching the workflow (proven by `test_engine_from_config_swaps_p
   parallelism and **partial-failure isolation** (a timed-out/failed scenario doesn't sink the run;
   the parent gets the successes, status `partial`) — proven by `test_fanout_gather_isolates_partial_failure`.
 - **Bounded agents.** `AgentCapability` runs a scoped tool/reasoning episode with step + tool-call
-  caps, allowed-tool scoping, salvage/partial output, and subscription-mode metadata — so a runaway
-  agent can't blow the budget. MCP/browser tools are reachable as registered capabilities.
+  caps, allowed-tool scoping, recorded steps, structured finish parsing, replay, and
+  subscription-mode metadata — so a runaway agent can't blow the budget. MCP/browser tools are
+  reachable as registered capabilities.
+- **CLI-agent episodes.** `CliAgentCapability` runs `claude -p` / `codex exec` through the same
+  engine capability runtime, with side-effect denial before spawn, MCP config env, staged
+  `input_assets`, artifact salvage, `new_artifact_count`, and shared engine JSON cleaners.
+- **Console report/planner calls.** `ConsoleLLMClient` is an `LLMCallable` for simple CLI-backed
+  structured nodes; images/tool-calling turns are refused before process spawn.
 - **Deepen loop = evaluator retrace.** `.evaluate("coverage_gate", on_reject=Retrace("plan_qa_session"))`
   re-plans/re-runs under `max_retrace`, threading criticism — the engine owns the loop (proven by
   `test_evaluate_retrace_to_earlier_node_then_accepts`).
@@ -131,12 +205,14 @@ safety without touching the workflow (proven by `test_engine_from_config_swaps_p
 - **Cost / subscription.** Mark metered capabilities `metered=True`; the engine tracks usage/cost and
   **denies metered calls once `max_estimated_usd` is exhausted** (proven by
   `test_budget_exhaustion_denies_metered_capability`). Subscription/flat-rate workers report
-  subscription metadata via `AgentCapability`.
+  `subscription_notional` usage; this is visible in traces and summaries but does not debit the
+  metered budget.
 - **Per-role models.** Register a `ModelProfile` per role; `from_config` selects them; swapping config
   changes models without code edits.
 - **Trace.** `format_trace_events(result.trace, usage=result.usage)` renders capability name,
-  decision, key output, timings, cost, artifacts, and deepen/fallback decisions — your `ProcessingTrace`
-  maps onto the engine `TraceSink` (`InMemoryTraceSink` / `JsonlTraceSink`).
+  decision, key output, timings, cost, artifacts, and deepen/fallback decisions — your
+  `ProcessingTrace` maps onto the engine `TraceSink` (`InMemoryTraceSink`, `JsonlTraceSink`,
+  `CallbackTraceSink`, `AsyncQueueTraceSink`, or `TeeTraceSink`).
 - **Subworkflows (recursive).** `page_discovery` / `accessibility` / `performance` / `report` are
   separate `WorkflowDefinition`s registered as capabilities and composed via `.subworkflow(...)` on the
   same executor, with inherited/narrowed budget and parent/child trace.
@@ -149,7 +225,8 @@ safety without touching the workflow (proven by `test_engine_from_config_swaps_p
 
 1. Keep your coordinator/agent/check/report functions — register each as a capability with a
    `CapabilitySpec` (schema + side-effect class + timeout + cost). Wrap browser/CLI workers as
-   `AgentCapability` or `ExternalProcessCapability`.
+   `AgentCapability` or `CliAgentCapability`; use `ConsoleLLMClient` for plain text-to-JSON planner
+   or report calls.
 2. Make the coordinator emit a **structured plan** (scenario list); make review/deepen an **evaluator**
    returning accept/reject + criticism; make routing a **branch decider**.
 3. Express plan→fan-out→adjudicate→deepen→report with `WorkflowBuilder`; delete your coordinator loop,
@@ -165,10 +242,14 @@ dump + the no-product-loop guard.
 
 ## 7. Reference (import from `ai_workflow_engine`)
 
-`WorkflowBuilder, WorkflowDefinition, WorkflowNode, WorkflowEdge, WorkflowEngine, WorkflowEngineBuilder,
-WorkflowPack, WorkflowExecutor, WorkflowRunResult, NodeResult, BranchDecision, Retry, Retrace, Fallback,
-SubworkflowRef, AgentCapability, EvidenceRef, ExternalWriteRequest, ExternalWriteResult,
-ExternalAdapterCapability, ExternalProcessCapability, HumanClarificationCapability, StructuredLLMNode,
-SchedulingPolicy, SafetyPolicy, RuntimeLimits, WorkflowProfile, ModelProfile, WorkflowGoal,
-InMemoryTraceSink, JsonlTraceSink, format_trace_events`. Runnable example: `ai_workflow_engine/examples.py`
-(`build_demo_engine`, `SiteAuditPack`, `run_toy_site_audit_pilot`).
+`WorkflowBuilder, WorkflowDefinition, WorkflowNode, WorkflowEdge, WorkflowEngine,
+WorkflowEngineBuilder, WorkflowPack, WorkflowExecutor, WorkflowRunResult, NodeResult,
+BranchDecision, Retry, Retrace, Fallback, SubworkflowRef, AgentCapability, LLMAgentPlanner,
+ReplayPlanner, EvidenceRef, ExternalWriteRequest, ExternalWriteResult, ExternalAdapterCapability,
+ExternalProcessCapability, HumanClarificationCapability, StructuredLLMNode, SchedulingPolicy,
+SafetyPolicy, RuntimeLimits, WorkflowProfile, ModelProfile, WorkflowGoal, InMemoryTraceSink,
+JsonlTraceSink, CallbackTraceSink, AsyncQueueTraceSink, TeeTraceSink, format_trace_events`.
+Tools import from `ai_workflow_tools.cli_agents`: `CliAgentCapability`, `CliAgentRequest`,
+`CliAgentResult`, `ConsoleLLMClient`, `McpServerConfig`, `claude_p`, `codex_exec`. Runnable
+examples: `ai_workflow_engine/examples.py` (`build_demo_engine`, `SiteAuditPack`,
+`run_toy_site_audit_pilot`, `run_toy_three_axis_site_audit_pilot`).

@@ -1,8 +1,10 @@
 # GoPro — AI Workflow Engine Usage Guide
 
-Status: **engine implemented and ready for adoption** (2026-06-08). The `WorkflowDefinition` /
+Status: **engine implemented and ready for adoption** (2026-06-12). The `WorkflowDefinition` /
 `WorkflowExecutor` / DI layer this doc previously waited on is live and proven (Anki migrated +
-live-tested; one `WorkflowExecutor` runs four example workloads).
+live-tested; one `WorkflowExecutor` runs the product-neutral examples). The first sibling tools
+package, `ai_workflow_tools`, now ships CLI-agent and console-LLM support for `claude -p` /
+`codex exec`.
 Source needs: `/Users/artemm/PycharmProjects/gopro-streaming/docs/architecture/workflow-execution-engine-requirements.md`,
 `/Users/artemm/PycharmProjects/gopro-streaming/docs/universal_event_descriptor/HOME_INVENTORY_CASE.md`.
 
@@ -117,7 +119,16 @@ profile = WorkflowProfile(
     workflow_type="home_inventory",
     safety=SafetyPolicy(fail_mode="fail_closed",
                         allowed_side_effects=["external_write", "notification"]),  # raw_media_export absent
-    limits=RuntimeLimits(max_retries=1, max_retrace=1, max_parallel_children=4, max_estimated_usd=0.50),
+    limits=RuntimeLimits(
+        max_retries=1,
+        max_retrace=1,
+        max_parallel_children=4,
+        max_estimated_usd=0.50,
+        max_worker_calls=12,
+        max_input_tokens_per_call=80_000,
+        max_output_tokens_per_call=4_000,
+        max_images_per_call=10,
+    ),
     scheduling=SchedulingPolicy(mode="live_latest_only"),
 )
 engine.register_workflow(home_inventory, profile=profile)
@@ -150,6 +161,12 @@ Per-run inputs (camera id, location hint) go via `engine.run(..., constraints={.
 - **External adapters / processes.** `ExternalAdapterCapability(sink)` for domain writes (idempotency
   key + privacy level on `ExternalWriteRequest`); `ExternalProcessCapability` wraps a CLI/local worker
   with timeout + partial-output salvage. Both run as side-effect-gated `step` nodes.
+- **Subscription sidecar workers.** Use `ai_workflow_tools.cli_agents.CliAgentCapability` when the
+  sidecar work should run through `claude -p` / `codex exec` with a workspace. `CliAgentRequest`
+  stages product-owned `input_assets` under `inputs/`, records `input_fingerprints`, salvages output
+  files into `EvidenceRef`s, exposes `new_artifact_count`, and records
+  `cost_class="subscription_notional"` for flat-rate lanes. Use `ConsoleLLMClient` for simple
+  text-to-JSON report or planner nodes that do not need workspace artifacts.
 - **Resumable human clarification.** `.human("ask_location")` pauses (`status="requires_user_input"`)
   or returns a provisional value (`continue_without_answer` + `default_value`); resume by re-running
   once the answer is submitted. Product transport is just an adapter.
@@ -159,9 +176,10 @@ Per-run inputs (camera id, location hint) go via `engine.run(..., constraints={.
   as a capability on the **same executor**, in the parent's usage/budget scope (narrow with
   `budget_usd=`); parent/child appear in the trace.
 - **Trace / sidecar.** `format_trace_events(result.trace, usage=result.usage)` renders nodes,
-  decisions, key info, timings, and cost — forward to your sidecar/observability. The hot capture path
-  stays in your app; engine reasoning runs in the sidecar. Your code never imports LangGraph (the
-  executor's internal backend); the engine never imports your transport.
+  decisions, key info, timings, metered/notional cost, and artifacts. For live sidecar progress, wire
+  `CallbackTraceSink`, `AsyncQueueTraceSink`, or `TeeTraceSink`. The hot capture path stays in your
+  app; engine reasoning runs in the sidecar. Your code never imports LangGraph (the executor's
+  internal backend); the engine never imports your transport.
 
 ---
 
@@ -184,10 +202,13 @@ dump + the no-product-loop guard.
 
 ## 7. Reference (import from `ai_workflow_engine`)
 
-`WorkflowBuilder, WorkflowDefinition, WorkflowNode, WorkflowEdge, WorkflowEngine, WorkflowEngineBuilder,
-WorkflowPack, WorkflowExecutor, WorkflowRunResult, NodeResult, BranchDecision, Retry, Retrace, Fallback,
-SubworkflowRef, EvidenceRef, ExternalWriteRequest, ExternalWriteResult, ExternalAdapterCapability,
-ExternalProcessCapability, HumanClarificationCapability, InMemoryHumanClarificationChannel,
-AgentCapability, SchedulingPolicy, SafetyPolicy, RuntimeLimits, WorkflowProfile, ModelProfile,
-WorkflowGoal, format_trace_events`. Runnable example: `ai_workflow_engine/examples.py` (`build_demo_engine`,
-`InventoryPack`, `run_toy_inventory_pilot`).
+`WorkflowBuilder, WorkflowDefinition, WorkflowNode, WorkflowEdge, WorkflowEngine,
+WorkflowEngineBuilder, WorkflowPack, WorkflowExecutor, WorkflowRunResult, NodeResult,
+BranchDecision, Retry, Retrace, Fallback, SubworkflowRef, EvidenceRef, ExternalWriteRequest,
+ExternalWriteResult, ExternalAdapterCapability, ExternalProcessCapability,
+HumanClarificationCapability, InMemoryHumanClarificationChannel, AgentCapability, LLMAgentPlanner,
+ReplayPlanner, SchedulingPolicy, SafetyPolicy, RuntimeLimits, WorkflowProfile, ModelProfile,
+WorkflowGoal, CallbackTraceSink, AsyncQueueTraceSink, TeeTraceSink, format_trace_events`. Tools
+import from `ai_workflow_tools.cli_agents`: `CliAgentCapability`, `CliAgentRequest`,
+`CliAgentResult`, `ConsoleLLMClient`, `McpServerConfig`, `claude_p`, `codex_exec`. Runnable example:
+`ai_workflow_engine/examples.py` (`build_demo_engine`, `InventoryPack`, `run_toy_inventory_pilot`).

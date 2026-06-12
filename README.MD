@@ -16,6 +16,30 @@ Are you tired of manually creating tasks in Todoist after every chat with your f
 - 🏥 **Real-World Ready**: Handles appointment reminders, meeting scheduling, etc.
 - 🤝 **Recipient System**: Share tasks with family/colleagues across different platforms (e.g., your Todoist + wife's Trello)
 
+## AI Workflow Engine Packages
+
+This repo also contains reusable workflow packages under `packages/`:
+
+- `packages/ai_workflow_engine`: product-neutral orchestration core for typed workflow definitions,
+  fan-out, evaluator retrace, planner artifacts, bounded agents, replay, budgets, side-effect gates,
+  traces, checkpoints, scheduling, and human clarification.
+- `packages/ai_workflow_tools`: sibling tool library for CLI-agent episodes and console LLM calls over
+  `claude -p` / `codex exec`, including MCP config env, `input_assets` fingerprint provenance,
+  artifact salvage, `new_artifact_count`, and subscription-notional cost reporting.
+
+Day-to-day validation is Docker-backed:
+
+```bash
+./test.sh unit -- --cov-fail-under=0 -q
+```
+
+Package release gates:
+
+```bash
+packages/ai_workflow_engine/scripts/standalone_test.sh
+packages/ai_workflow_tools/scripts/standalone_test.sh
+```
+
 ## 🚀 How it Works
 
 ### **Text Messages** 

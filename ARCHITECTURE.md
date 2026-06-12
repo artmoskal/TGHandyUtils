@@ -41,6 +41,24 @@ TGHandyUtils/
     └── ui_helpers.py       # Telegram UI formatting
 ```
 
+## AI Workflow Packages
+
+The reusable workflow work lives under `packages/` and is intentionally split by responsibility:
+
+- `packages/ai_workflow_engine` is the implementation-agnostic core. It owns workflow declaration and
+  execution, branch/fan-out/evaluator/retrace/fallback mechanics, planner artifacts, bounded agent
+  episodes, replay, usage/budget accounting, side-effect gates, traces, checkpoints, scheduling, and
+  human clarification. Products register capabilities and workflow definitions; they do not import
+  LangGraph or hand-roll orchestration loops.
+- `packages/ai_workflow_tools` is the first sibling tool library. It owns provider/CLI-specific
+  runtime details for `claude -p` and `codex exec`: CLI-agent workspace runs, MCP config env,
+  staged `input_assets` fingerprints, artifact salvage and `new_artifact_count`, and
+  `ConsoleLLMClient` for simple text-to-JSON structured nodes.
+
+Engine core should not grow product-specific browser, camera, Telegram, Todoist, Trello, or CLI flag
+logic. Add those as tools packages, workflow packs, or product capabilities on the stable engine
+seams.
+
 ## 🔄 Request Flow
 
 Here's what happens when you send a message to create a task:

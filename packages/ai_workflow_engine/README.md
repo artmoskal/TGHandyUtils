@@ -1,16 +1,37 @@
 # AI Workflow Engine
 
-Internal package being evolved into a reusable, executable AI workflow builder/runtime.
+Reusable, executable AI workflow builder/runtime.
 
-> **Status (2026-06-11): the executable engine layer is implemented.** `WorkflowDefinition` +
-> `WorkflowBuilder` (declare), `WorkflowEngineBuilder` / `WorkflowEngine.from_config` (DI/IoC wiring),
-> and `WorkflowExecutor` / `await engine.run(...)` (execution) are live, with branch, fan-out/gather,
+> **Status (2026-06-12): the core engine and first tools library are implemented.**
+> `WorkflowDefinition` + `WorkflowBuilder` (declare), `WorkflowEngineBuilder` /
+> `WorkflowEngine.from_config` (DI/IoC wiring), and `WorkflowExecutor` /
+> `await engine.run(...)` (execution) are live, with branch, fan-out/gather,
 > planner-plan execution, evaluator retry/retrace/replan/fallback, subworkflow-as-capability, human
-> clarification, scheduling/cancellation, per-node model binding, and side-effect/privacy/budget gates
-> all engine-owned. **LangGraph is the executor's internal backend** (a `WorkflowDefinition` is
-> compiled to a `StateGraph` inside `executor.py`); products never import LangGraph. Anki is migrated
-> onto this engine (its product LangGraph graph was deleted), and one single `WorkflowExecutor` runs
-> the calendar / site-audit / inventory / card-generation example packs (see `examples.py`).
+> clarification, scheduling/cancellation, per-node model binding, bounded agent episodes, replay,
+> live trace sinks, and side-effect/privacy/budget gates all engine-owned. **LangGraph is the
+> executor's internal backend** (a `WorkflowDefinition` is compiled to a `StateGraph` inside
+> `executor.py`); products never import LangGraph. Anki is migrated onto this engine, and one single
+> `WorkflowExecutor` runs the summary / calendar / site-audit / inventory / card-generation example
+> packs plus the fake-backed three-axis pilot (see `examples.py`).
+
+## Soul
+
+The platform is an implementation-agnostic workflow engine plus a set of tool libraries:
+
+- **Core owns mechanics only.** The engine declares and runs workflows, fan-out, evaluator deepen
+  loops, budgets, side-effect gates, trace, checkpoints, human gates, and subworkflows-as-tools. It
+  does not import browser, TTS, camera, Telegram, or product schemas.
+- **Tools are swappable libraries.** Provider and CLI details live in `ai_workflow_tools`, future
+  sibling packages, or product adapters behind typed capabilities and `LLMCallable` clients.
+- **Economics is part of the architecture.** Metered calls are budgeted explicitly; subscription or
+  flat-rate workers report notional or unknown cost honestly instead of pretending to be free.
+- **Rigidity is a three-axis choice.** Work item execution, work-set composition, and replay mode can
+  each be rigid, semi-rigid, or flexible while staying inside the same workflow contracts.
+- **Evidence goes both directions.** Inputs enter agent episodes as fingerprinted `input_assets`;
+  outputs leave as salvaged `EvidenceRef`s and counts. Bytes stay out of state, trace, and
+  checkpoints.
+- **Failures are loud.** Missing capabilities, denied side effects, and exhausted budgets produce
+  explicit failures and trace events.
 
 ## Layered architecture — lightweight core, infinitely extensible edges
 
@@ -20,8 +41,8 @@ plus pluggable layers that extend it **by addition, never by editing the layer b
 | Layer | What | Extend by |
 |---|---|---|
 | **L0 Core engine** | Orchestration only: graph execution, branch/retry/retrace/replan, fan-out, scheduling + cancellation, budgets, side-effect/privacy gates, trace, checkpoints, model binding, plan-as-data. Zero domain knowledge. LangGraph is the hidden backend. | New *generic* node kinds only — never special cases |
-| **L1 Universal executors** | HOW a model/tool is reached, behind one socket: the `LLMCallable` protocol (LangChain `.invoke` clients are a peer family, not a privilege). Today: LangChain clients, plain async callables (raw HTTP / Ollama). Planned members: **console executors** (non-interactive `claude -p` / `codex exec`) and **no-API executors** (e.g. a browser extension driving a logged-in web LLM). | Implement `LLMCallable` — zero engine edits |
-| **L2 Domain node sets** | Reusable `WorkflowPack`s for project families, shipped as extras: media/image generation (reference images + QC), voice generation, presentation-building from images + scenario, future MCP tool suites. Universal within their domain, never required by L0/L1. | Ship a pack, `register_pack(...)` |
+| **L1 Universal executors** | HOW a model/tool is reached, behind one socket: the `LLMCallable` protocol (LangChain `.invoke` clients are a peer family, not a privilege). Today: LangChain clients, plain async callables (raw HTTP / Ollama), and `ConsoleLLMClient` in `ai_workflow_tools` for non-interactive `claude -p` / `codex exec` text-to-JSON calls. Future no-API executors can implement the same socket. | Implement `LLMCallable` — zero engine edits |
+| **L2 Domain/tool libraries** | Reusable packages and `WorkflowPack`s. Today: `ai_workflow_tools` ships CLI-agent capability support (`CliAgentCapability`, `CliAgentRequest.input_assets`, MCP config env, salvage provenance) plus console clients. Core media/voice seams remain in-package because current consumers import them. | Ship a package/pack, `register_pack(...)` |
 | (L3 Products) | Workflow definitions, prompts, schemas, adapters, delivery. | `WorkflowBuilder` + capabilities |
 
 Non-negotiable invariant across L1: parse/repair/`pre_parse`, metering (incl. `cost_known=false`
@@ -93,17 +114,41 @@ weak local model on extraction, browser-bridged on a zero-budget step) via `mode
   injection is opt-in per node with `inject_plan=True`, which exposes `render_plan(plan)` as
   `context.metadata["plan"]` only for that node call.
 
-It is the reusable substrate for multi-step AI workflows. Per the 2026-06-07 and 2026-06-08
-decisions we are building toward the full framework (see the architecture doc and executable
-workflow contract); the lists below separate what exists today from what is still missing, so this
-README never overstates the current package.
+## Completion Notes (2026-06-12)
+
+- **Tool-calling LLM protocol:** `LLMRequest` now supports multi-turn `messages`, `tools`, and
+  `tool_choice`; `LLMResponse` can carry `tool_calls` and `stop_reason`. Tool-result images stay
+  transport-only through `ToolResult.images` and expose fingerprints, not bytes.
+- **Shipped agent brain and replay:** `LLMAgentPlanner` runs bounded tool-calling episodes over any
+  `LLMCallable`, records tool steps in `AgentRunResult.steps`, and supports structured finish parsing
+  with the same weak-output cleaners as structured nodes. `ReplayPlanner` replays recorded steps
+  without LLM calls and can emit the recorded final output.
+- **Budget matrix and honest economics:** `RuntimeLimits` / `WorkflowBudget` include run-level
+  worker-call caps plus per-call input tokens, output tokens, image count, and estimated-USD caps.
+  `WorkflowUsageEvent.cost_class` separates `metered` from `subscription_notional`; metered budget
+  enforcement debits only metered cost, while notional subscription cost remains visible.
+- **CLI-agent tools package:** `ai_workflow_tools` is the first sibling tool library. It provides
+  `CliAgentCapability` for bounded `claude -p` / `codex exec` episodes with MCP config env support,
+  staged `input_assets` fingerprint provenance, artifact salvage, `new_artifact_count`, and shared
+  parsing via `ai_workflow_engine.parsing`. It also provides `ConsoleLLMClient` for simple
+  text-to-structured-output nodes over the same CLI flavors.
+- **Live trace sinks:** `CallbackTraceSink`, `AsyncQueueTraceSink`, and `TeeTraceSink` implement the
+  existing trace protocol for UI/sidecar progress streams. Callback exceptions are swallowed and
+  logged; async queues drop oldest events and expose a `.dropped` count.
+- **Three-axis pilot:** `run_toy_three_axis_site_audit_pilot(...)` proves the combined contract:
+  fake coordinator LLM set-composition, rigid/semi/flexible fanout, CLI input staging and salvage,
+  retrace adjudication on `new_artifact_count`, console-report generation, live trace ordering, and
+  replay with zero LLM usage events.
+
+It is the reusable substrate for multi-step AI workflows. The lists below separate implemented
+package behavior from downstream product adoption boundaries, so this README stays source-verifiable.
 
 Design promise: this package is not Anki-specific and not an interface-only shell. The engine should
 own reusable runtime behavior: capability registration/invocation, supervisor decisions, structured
 LLM parsing and repair, model/profile selection, evaluator decisions, retry/retrace/fallback/fail
 policy, trace, usage/budget/cost/cache reporting, artifact ownership, media/voice seams,
-external-agent wrappers, fan-out/gather, scheduling, and human clarification hooks. Product projects
-add domain workflow definitions, capability packs, prompts, schemas, adapters, rubrics, and
+agent/tool execution hooks, fan-out/gather, scheduling, and human clarification hooks. Product
+projects add domain workflow definitions, capability packs, prompts, schemas, adapters, rubrics, and
 delivery.
 
 Finished-product contract: a project should be able to define `WorkflowDefinition` blocks, register
@@ -112,12 +157,11 @@ manually sequence `runtime.invoke(...)` calls and implement branch/retry/retrace
 loops, this package is not finished.
 
 Standalone package proof: day-to-day TGHandyUtils validation still uses Docker via `./test.sh`, but
-the reusable package has an explicit release gate:
-`packages/ai_workflow_engine/scripts/standalone_test.sh`. The script creates a fresh virtual
-environment, installs `ai-workflow-engine[test]` editable from this package directory, and runs the
-package-owned tests from inside `packages/ai_workflow_engine`. Those tests include a subprocess
-guard that importing the package does not load host app modules such as `services`, `config`,
-`handlers`, or `platforms`.
+the reusable packages have explicit release gates:
+`packages/ai_workflow_engine/scripts/standalone_test.sh` and
+`packages/ai_workflow_tools/scripts/standalone_test.sh`. The scripts create fresh virtual
+environments, install each package editable from its package directory (the tools gate installs the
+engine from the sibling path), and run package-owned tests without importing host app modules.
 
 Low-level scripts are valid engine instruments only when registered as typed capabilities with
 schemas, side-effect policy, timeouts, budget, trace, and failure semantics. This lets the same
@@ -133,6 +177,10 @@ Implemented today (verified against the package source):
   instrument registry;
 - optional supervisor decision planner (toy-tested; production use starts when a product binds it);
 - structured LLM node with Pydantic parsing and one repair attempt;
+- additive LLM protocol support for multi-turn chat, tool specs, tool calls, tool results, and
+  plain-callable clients;
+- `LLMAgentPlanner`, `build_llm_agent_capability`, and `ReplayPlanner` for bounded agent episodes
+  and zero-LLM replay;
 - workflow profiles, runtime plans, scheduling policy, runtime limits, safety policy, session state,
   evidence references, model profiles, fail modes, `WorkflowResult` uncertainty states, and
   evaluator/retry/retrace models;
@@ -147,7 +195,8 @@ Implemented today (verified against the package source):
 - swappable trace sink contract with in-memory and JSONL sinks;
 - checkpoint stores with in-memory and JSONL implementations, raw-byte rejection, and
   `WorkflowLoopController` checkpoint writes for running/waiting/completed/failed transitions;
-- external process capability with timeout and partial stdout/stderr salvage;
+- external process capability with stdin delivery, optional result-file readback, timeout,
+  terminate/wait/kill cleanup, and partial stdout/stderr salvage;
 - bounded agent capability with injected controller, scoped registered tools, max steps/tool calls,
   per-step trace, tool-call history, and subscription-mode metadata;
 - external/domain write adapter with typed requests, idempotency, privacy rejection, and JSONL audit
@@ -155,6 +204,7 @@ Implemented today (verified against the package source):
 - scheduler policy helper for run-immediately, queue, replay-process-all, run-latest,
   live-latest-only, drop-stale, drop-not-queue, coalesce, fan-out-gather, backend concurrency caps,
   and single-flight-cancel decisions that hold the active lock until completion;
+- live trace sinks: callback, async queue with drop-oldest accounting, and tee fanout;
 - first-class executable node types for step, branch, fan-out/gather, evaluate, planner,
   subworkflow, and human clarification;
 - planner-as-artifact execution with `PlanTask`, `PlanArtifact`, `render_plan`, task-level trace,
@@ -164,6 +214,8 @@ Implemented today (verified against the package source):
   with criticism, retrace to an earlier capability, route to fallback/repair, ask the user, or fail
   under explicit caps;
 - local usage/cost metering and budget checks;
+- metered vs subscription-notional cost classes, run-level worker-call caps, per-call token/image/USD
+  caps, and dual metered/notional usage summaries;
 - prompt-template loading with an injectable prompt root;
 - switchable image-generation provider seam (`openai`, `gemini`, or bounded comparison mode);
 - provider-neutral voice-generation seam for product workflows that need audio artifacts;
@@ -173,29 +225,32 @@ Implemented today (verified against the package source):
 - fake-backed site-audit and inventory pilots (`run_toy_site_audit_pilot`,
   `run_toy_inventory_pilot`) that exercise MageQA/GoPro-shaped runtime pressure without importing
   those products;
+- fake-backed three-axis pilot (`run_toy_three_axis_site_audit_pilot`) that exercises semi-rigid
+  set composition, rigid/semi/flexible execution, CLI input/output provenance, retrace, console
+  reporting, live trace sinks, and replay;
+- sibling tools package `ai_workflow_tools` for CLI-agent episodes (`CliAgentCapability`) and
+  console LLM calls (`ConsoleLLMClient`) over `claude -p` / `codex exec` flavors;
 - TGHandyUtils auto-mode's 5s correction window now uses `HumanClarificationCapability` with a
   Telegram-owned channel, `RuntimePlan` side-effect policy, and traceable pending/answered/provisional
   responses.
 
 Boundary / downstream adoption work:
 
-- production browser/MCP adapter packs for external agents; the package runtime has bounded agent
-  episodes, but project adapters still need to bind real browser/CLI tools;
+- production browser/MCP adapter packs for external agents; the package runtime and CLI-agent tools
+  exist, but products still need to bind real browser tools, domain prompts, and state;
 - automatic product restart/replay wiring; checkpoint stores exist, but each product still has to
   decide when to resume from latest engine checkpoints versus domain state. Planner artifacts are
   checkpoint-safe and can resume pending tasks when supplied back as planner input, but product
   restart policy is intentionally product-owned;
 - real MageQA/GoPro repo adoption with browser/camera/domain adapters. The package now has
-  fake-backed site-audit and inventory pilots, but open-ended agency and live/long-running scheduling
-  are not battle-tested until those projects bind real adapters and domain state.
+  fake-backed site-audit, inventory, and three-axis pilots, but live/long-running product behavior is
+  not battle-tested until those projects bind real adapters and domain state.
 
 Product apps own their own state, schemas, prompts, validators, workflow definitions/topology, and
 delivery. The engine must execute that topology. TGHandyUtils Anki is the first consumer and the
-validation workload for every framework phase. Its generation graph currently registers nodes as
-`CapabilitySpec`s and invokes them through `CapabilityRuntime` with a compiled `RuntimePlan`; this is
-a transitional integration until Anki can run through the first-class workflow executor. The
-auto-mode correction window now also uses the package `HumanClarificationCapability`, while Telegram
-still owns the concrete button/timer UI.
+validation workload for every framework phase; its product-owned LangGraph orchestration was removed
+in favor of the engine executor. The auto-mode correction window also uses the package
+`HumanClarificationCapability`, while Telegram still owns the concrete button/timer UI.
 If a later product must copy supervisor, trace, budget, retry, retrace, artifact, scheduler, or
 capability-runtime logic, that is a package gap to fix rather than expected product work.
 
