@@ -160,3 +160,53 @@ async def test_single_flight_cancel_marks_suppressed_cancel_worker_failed_after_
     assert "cancelled: superseded by" in (res_a.error or "")
     assert res_b.status == "completed"
     assert res_b.output == "B-done"
+
+
+async def test_cancel_previous_race_previous_exits_before_lookup_does_not_wedge_lane():
+    """If the previous worker fully exits between submit() and the task-registry lookup
+    (multi-loop/threaded-driver interleaving), the superseding run must NOT hard-fail while
+    holding the promoted slot — that would wedge the lane forever. It proceeds instead."""
+
+    started = asyncio.Event()
+    release_a = asyncio.Event()
+
+    async def long_worker(ctx, p):
+        started.set()
+        await release_a.wait()
+        return "A-done"
+
+    async def quick_worker(ctx, p):
+        return "B-done"
+
+    lane = SchedulingPolicy(mode="single_flight_cancel", backend_key="local_model", max_backend_concurrency=1)
+    engine = _two_flow_engine(lane, long_worker, quick_worker)
+    scheduler = engine.executor.scheduler
+    real_submit = scheduler.submit
+
+    def racing_submit(**kwargs):
+        decision = real_submit(**kwargs)
+        if decision.action == "cancel_previous":
+            # Simulate the previous worker exiting inside the submit→lookup window:
+            # registry entry gone, slot freed, the new run already promoted to active.
+            engine.executor._scheduled_tasks.pop(kwargs["key"], None)
+            scheduler.complete(key=kwargs["key"], run_id=decision.previous_run_id)
+        return decision
+
+    scheduler.submit = racing_submit
+    task_a = asyncio.create_task(engine.run("flowA", {}))
+    await started.wait()
+
+    res_b = await asyncio.wait_for(engine.run("flowB", {}), timeout=2)
+    # Not a false "could not find active task" failure — the run proceeds on its promoted slot.
+    assert res_b.status == "completed"
+    assert res_b.output == "B-done"
+    assert any(e.decision == "schedule:cancel_skipped" for e in res_b.trace)
+
+    release_a.set()
+    res_a = await asyncio.wait_for(task_a, timeout=2)
+    assert res_a.status == "completed"
+
+    # The lane stays usable afterwards (no phantom active run wedging it).
+    scheduler.submit = real_submit
+    res_c = await asyncio.wait_for(engine.run("flowB", {}), timeout=2)
+    assert res_c.status == "completed"

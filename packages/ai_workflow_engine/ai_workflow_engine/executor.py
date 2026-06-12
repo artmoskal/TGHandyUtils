@@ -597,7 +597,23 @@ class WorkflowExecutor:
             return f"scheduling cancel_previous had no previous run for lane {lane}"
         registered = self._scheduled_tasks.get(lane)
         if registered is None or registered[0] != previous_run_id:
-            return f"scheduling cancel_previous could not find active task {previous_run_id} for lane {lane}"
+            # The previous worker already exited (its finally freed the slot and may have promoted
+            # us) — there is nothing left to cancel. This is success for our purposes; the
+            # promotion check downstream decides whether this run proceeds or is superseded.
+            # Treating it as an error here would fail a possibly-already-promoted run without
+            # ever releasing its slot, leaving the lane permanently stuck.
+            self.runtime.trace_sink.record(
+                WorkflowTraceEvent(
+                    node=node.id,
+                    decision="schedule:cancel_skipped",
+                    metadata={
+                        "lane": lane,
+                        "previous_run_id": previous_run_id,
+                        "reason": "previous run already exited",
+                    },
+                )
+            )
+            return None
         _run_id, task = registered
         self._scheduled_cancellations[(lane, previous_run_id)] = superseding_run_id
         self.runtime.trace_sink.record(
@@ -615,9 +631,20 @@ class WorkflowExecutor:
         try:
             await task
         except asyncio.CancelledError:
-            # Defensive: scheduled step nodes normally convert engine-owned cancellations into a
-            # failed node record, but still wait for the previous task's real exit before promotion.
-            return None
+            # Expected terminal state: the previous task ended cancelled. Scheduled nodes convert
+            # engine-owned cancellation into a failed node record themselves; what matters here is
+            # only that the worker has truly exited before promotion.
+            self.runtime.trace_sink.record(
+                WorkflowTraceEvent(
+                    node=node.id,
+                    decision="schedule:cancel_confirmed",
+                    metadata={"lane": lane, "previous_run_id": previous_run_id, "exit": "cancelled"},
+                )
+            )
+        finally:
+            # The cancelled run normally consumes its marker; if it exited through a path that
+            # could not (already past its pop points), clean up so the dict cannot accumulate.
+            self._scheduled_cancellations.pop((lane, previous_run_id), None)
         return None
 
     def _cancelled_scheduled_result(

@@ -61,7 +61,7 @@ Internal package being evolved into a reusable, executable AI workflow builder/r
   model_profile="name")` resolves a registered `ModelProfile` before invocation, injects it into
   `CapabilityContext.model_profile`, and records `model_binding` trace events. Fixed-client LLM
   handlers that cannot honor the binding fail loudly at registration/preflight or first call.
-- **Single-flight cancellation (G7):** `SchedulingPolicy(strategy="single_flight_cancel")` is wired
+- **Single-flight cancellation (G7):** `SchedulingPolicy(mode="single_flight_cancel")` is wired
   through the executor: a superseding run cancels the active worker, waits for real exit, promotes the
   latest run, and emits schedule trace decisions.
 - **Planner node (G6):** `WorkflowBuilder.plan(...)` invokes a planner capability that emits a
