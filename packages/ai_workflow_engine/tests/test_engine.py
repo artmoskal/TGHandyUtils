@@ -1717,7 +1717,8 @@ def test_usage_summary_displays_cached_input_tokens():
     assert "700" in text
     assert "$0.0007" in text
     assert "$0.0141" in text
-    assert "total: 1 text, 1 image, 3k in, 1.5k cached, 400 out, metered $0.0148 / notional ?" in text
+    assert "total: 1 text, 1 image, 3k in, 1.5k cached, 400 out, metered $0.0148" in text
+    assert "notional" not in text  # pure-metered run: absent is not unknown
 
 
 def test_usage_summary_separates_metered_and_subscription_notional_costs():
@@ -1771,7 +1772,8 @@ def test_usage_summary_displays_tool_character_count_when_present():
     assert "generate_voice" in text
     assert "tool" in text
     assert "42ch" in text
-    assert "total: 0 text, 0 image, 1 tool, 0 in, 0 cached, 0 out, 42 chars, metered ? / notional ?" in text
+    assert "total: 0 text, 0 image, 1 tool, 0 in, 0 cached, 0 out, 42 chars, metered ?" in text
+    assert "notional" not in text  # no subscription events -> no notional segment
 
 
 async def test_structured_llm_node_splits_static_prefix_and_dynamic_tail():
@@ -2768,7 +2770,8 @@ def test_format_trace_events_renders_flow_decisions_and_usage():
     assert "study_goal: recall the Bernoulli relationship" in text
     assert "(attempt 2)" in text
     assert "overload" in text
-    assert "metered $0.0100 / notional ?" in text  # usage/cost footer
+    assert "metered $0.0100" in text  # usage/cost footer
+    assert "notional" not in text  # pure-metered run: absent is not unknown
 
 
 async def test_executor_runs_external_process_step():

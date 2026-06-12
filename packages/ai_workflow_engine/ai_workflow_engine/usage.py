@@ -403,6 +403,15 @@ def format_usage_summary(summary: Optional[WorkflowUsageSummary]) -> str:
         "node/provider        op       in   cache     out      cost",
     ]
     rows.extend(_format_usage_event_row(event) for event in summary.events)
+    # Absent is not unknown: the notional segment appears only when subscription events exist.
+    # A pure-metered run must not render "notional ?" — that would conflate "no flat-rate usage"
+    # with "flat-rate cost unknown" (the cost-honesty axis, inverted).
+    has_subscription = any(
+        getattr(event, "cost_class", "metered") == "subscription_notional" for event in summary.events
+    )
+    notional_segment = (
+        f" / notional {_format_usage_cost(summary.notional_usd)}" if has_subscription else ""
+    )
     rows.append(
         "total: "
         f"{summary.text_call_count} text, {summary.image_call_count} image, "
@@ -411,8 +420,7 @@ def format_usage_summary(summary: Optional[WorkflowUsageSummary]) -> str:
         f"{_compact_token_count(summary.cached_input_tokens)} cached, "
         f"{_compact_token_count(summary.output_tokens)} out, "
         f"{char_total}"
-        f"metered {_format_usage_cost(summary.metered_usd)} / "
-        f"notional {_format_usage_cost(summary.notional_usd)}"
+        f"metered {_format_usage_cost(summary.metered_usd)}{notional_segment}"
     )
     return "\n".join(rows)
 

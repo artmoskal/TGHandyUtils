@@ -83,7 +83,7 @@ class CliAgentCapability:
 
         workspace = Path(request.workspace_dir)
         workspace.mkdir(parents=True, exist_ok=True)
-        self._stage_input_assets(workspace, request)
+        input_fingerprints = self._stage_input_assets(workspace, request)
         snapshot = self._snapshot_salvage(workspace, request.salvage_globs)
         invocation = build_cli_agent_invocation(self.flavor, request)
 
@@ -116,6 +116,7 @@ class CliAgentCapability:
             parsed=self._parse_lenient_json(parsed_output.text) if request.expect_json_result else None,
             artifacts=evidence_refs,
             new_artifact_count=new_count,
+            input_fingerprints=input_fingerprints,
             input_tokens=parsed_output.input_tokens,
             output_tokens=parsed_output.output_tokens,
             cache_read_tokens=parsed_output.cache_read_tokens,
@@ -136,13 +137,14 @@ class CliAgentCapability:
                 "flavor": self.flavor.name,
                 "agent_status": result.status,
                 "new_artifact_count": result.new_artifact_count,
+                "input_fingerprints": result.input_fingerprints,
                 "cost_known": result.notional_cost_usd is not None,
             },
         )
 
-    def _stage_input_assets(self, workspace: Path, request: CliAgentRequest) -> None:
+    def _stage_input_assets(self, workspace: Path, request: CliAgentRequest) -> list[dict[str, Any]]:
         if not request.input_assets:
-            return
+            return []
         if self.asset_loader is None:
             raise ValueError("CliAgentCapability requires asset_loader when input_assets are provided")
 
@@ -167,6 +169,7 @@ class CliAgentCapability:
                 }
             )
         self._trace("inputs_staged", {"inputs": fingerprints})
+        return fingerprints
 
     def _trace(self, decision: str, metadata: dict[str, Any]) -> None:
         if self.trace_sink is None:

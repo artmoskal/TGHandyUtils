@@ -294,6 +294,11 @@ async def test_input_assets_are_staged_with_fingerprint_trace_and_not_counted_as
             "path": "inputs/input-2.txt",
         },
     ]
+    # Provenance is part of the episode RECORD (freeze-to-replay covers inputs), not only the
+    # optional trace sink: same fingerprints on the result and the capability metadata.
+    assert cap_result.output.input_fingerprints == fingerprints
+    assert cap_result.metadata["input_fingerprints"] == fingerprints
+    assert "image-bytes" not in cap_result.output.model_dump_json()
 
 
 async def test_input_assets_without_loader_fail_before_spawn(

@@ -54,6 +54,9 @@ class CliAgentResult(BaseModel):
     parsed: Optional[Dict[str, Any]] = None
     artifacts: List[EvidenceRef] = Field(default_factory=list)
     new_artifact_count: int = 0
+    # Provenance of staged inputs (sha12/length/role/media_type/relative path - never bytes).
+    # Part of the episode RECORD so freeze-to-replay covers what went in, not just what came out.
+    input_fingerprints: List[Dict[str, Any]] = Field(default_factory=list)
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0

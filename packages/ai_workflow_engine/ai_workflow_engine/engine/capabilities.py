@@ -325,10 +325,18 @@ def format_trace_events(
                 rendered = rendered[: max_value_len] + "…"
             lines.append(f"   • {key}: {rendered}")
     if usage is not None:
+        # Absent is not unknown: render the notional segment only when subscription events exist.
+        has_subscription = any(
+            getattr(event, "cost_class", "metered") == "subscription_notional"
+            for event in usage.events
+        )
+        notional_segment = (
+            f" / notional {_format_trace_cost(usage.notional_usd)}" if has_subscription else ""
+        )
         lines.append(
             f"— {usage.text_call_count} text / {usage.image_call_count} image / "
             f"{usage.tool_call_count} tool calls, {usage.total_tokens} tokens, "
-            f"metered {_format_trace_cost(usage.metered_usd)} / notional {_format_trace_cost(usage.notional_usd)}"
+            f"metered {_format_trace_cost(usage.metered_usd)}{notional_segment}"
         )
     text = "\n".join(lines)
     if len(text) > max_total_len:

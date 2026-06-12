@@ -344,7 +344,8 @@ async def test_anki_processor_caption_can_show_usage_summary():
         assert "anki_card_renderer" in caption
         assert "txt" in caption
         assert "$0.0012" in caption
-        assert "total: 1 text, 0 image, 100 in, 0 cached, 20 out, metered $0.0012 / notional ?" in caption
+        assert "total: 1 text, 0 image, 100 in, 0 cached, 20 out, metered $0.0012" in caption
+        assert "notional" not in caption  # all-metered Anki run: no flat-rate segment
     finally:
         anki_buffer.clear(user_id)
 
