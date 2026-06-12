@@ -122,6 +122,36 @@ executor = implement `LLMCallable`, a new domain = ship a pack — neither touch
 (c) heterogeneous executors coexist *per node* in one workflow (strong API model on the planner
 step, local weak model on extraction, browser-bridged on a zero-budget step) via G3 model binding.
 
+## 2c. RISK WATCHLIST — where this becomes a mess if discipline slips (reviewed 2026-06-12)
+The architecture's real threats are **discipline threats**, not design flaws. Each has a named
+fence; violating a fence requires a deliberate, user-approved decision — never drift:
+
+1. **Node-kind proliferation** (the inner-platform cliff). 8 kinds exist (step/branch/fanout/
+   evaluate/subworkflow/human/planner). Domain needs become *capabilities or packs*, never kinds;
+   a new kind must be generic across products. Fence: §2b rule + product-neutrality guard test.
+2. **Planner depth creep.** Depth-1 plans + bounded replans are the FEATURE. "Planners that spawn
+   planners" is the unbounded-agent cliff — requires an explicit spec change, not an accommodation.
+   Fence: depth-1 validation + `max_replans` counters are contract, with tests.
+3. **No-API/browser executor = highest-maintenance member of L1.** Brittle (UI drift), slow,
+   ToS-gray. The protocol contains its blast radius (it is just one `LLMCallable`,
+   `cost_known=false`, aggressive timeouts), but the adapter itself will be a maintenance pet.
+   Build it LAST, only against a concrete paying use case.
+4. **Protocol fattening.** `LLMRequest/LLMResponse` stayed minimal on purpose (the anti-LangChain
+   bet). Tool-calling/multi-turn entered ONLY when a real consumer (MageQA, engine-completion
+   spec WP1) needed it — that is the bar for every future field: a named consumer, additive-only,
+   single-turn behavior bit-identical. Speculative fields are rejected.
+5. **Executor god-file.** `executor.py` (~1.5k lines) trends monolithic; a mechanical
+   handlers-per-module split is sanctioned cleanup (cosmetic, no behavior change) when it next
+   gets a feature.
+6. **Stringly-typed state paths.** `input_key`/`node_outputs` conventions are fine at ≤30-node
+   workflows (largest real: Anki, 26). If a product hits real pain, design a typed mapping —
+   do not bolt expressions into YAML (that is risk #1 wearing a costume).
+7. **Budget-knob proliferation.** Every new cap must map to a proven operational need (the WP3
+   matrix mirrors MageQA's production caps) — never speculative knobs. All caps Optional/None.
+8. **When NOT to use the engine.** A trivial one-LLM-call script with no retry/budget/trace/
+   branching/scheduling need should stay a script. Forcing everything through the engine is how
+   frameworks get bypassed and shadow paths form.
+
 ## 3. FIRST-CLASS CONCEPTS (every one is executable; none are documentation-only labels)
 1. **`WorkflowDefinition`** (+ `WorkflowBuilder` DSL): nodes, edges, branches, conditions,
    subworkflows, retry/retrace/fallback policy, evaluator gates, capability binding, scheduling
