@@ -101,7 +101,7 @@ class CliAgentCapability:
         )
 
         output = external.output if isinstance(external.output, dict) else {}
-        parsed_output = self._parse_process_output(request, output)
+        parsed_output = parse_cli_process_output(self.flavor, output)
         evidence_refs, workflow_artifacts, new_count = self._salvage_artifacts(
             workspace,
             request.salvage_globs,
@@ -172,30 +172,6 @@ class CliAgentCapability:
         if self.trace_sink is None:
             return
         self.trace_sink.record(WorkflowTraceEvent(node=self.spec.name, decision=decision, metadata=metadata))
-
-    def _parse_process_output(self, request: CliAgentRequest, output: dict[str, Any]) -> _ParsedCliOutput:
-        stdout = str(output.get("stdout") or "")
-        if self.flavor.result_source == "stdout_json_envelope":
-            try:
-                envelope = json.loads(stdout)
-            except json.JSONDecodeError:
-                return _ParsedCliOutput(text=stdout)
-            if not isinstance(envelope, dict):
-                return _ParsedCliOutput(text=stdout)
-            usage = envelope.get("usage") if isinstance(envelope.get("usage"), dict) else {}
-            return _ParsedCliOutput(
-                text=_stringify_text(envelope.get("result")),
-                input_tokens=_safe_int(usage.get("input_tokens")),
-                output_tokens=_safe_int(usage.get("output_tokens")),
-                cache_read_tokens=_safe_int(usage.get("cache_read_input_tokens")),
-                cache_creation_tokens=_safe_int(usage.get("cache_creation_input_tokens")),
-                num_turns=_safe_int_or_none(envelope.get("num_turns")),
-                duration_ms=_safe_int_or_none(envelope.get("duration_ms")),
-                notional_cost_usd=_safe_float_or_none(envelope.get("total_cost_usd")),
-            )
-        if self.flavor.result_source == "result_file":
-            return _ParsedCliOutput(text=_stringify_text(output.get("result") or stdout))
-        return _ParsedCliOutput(text=stdout)
 
     @staticmethod
     def _parse_lenient_json(text: str) -> dict[str, Any] | None:
@@ -300,6 +276,33 @@ def _input_suffix(ref: EvidenceRef) -> str:
     parsed = urlparse(ref.uri)
     suffix = Path(parsed.path).suffix
     return suffix or ".bin"
+
+
+def parse_cli_process_output(flavor: CliFlavor, output: dict[str, Any]) -> _ParsedCliOutput:
+    """Parse flavor-specific process output into shared usage/text fields."""
+
+    stdout = str(output.get("stdout") or "")
+    if flavor.result_source == "stdout_json_envelope":
+        try:
+            envelope = json.loads(stdout)
+        except json.JSONDecodeError:
+            return _ParsedCliOutput(text=stdout)
+        if not isinstance(envelope, dict):
+            return _ParsedCliOutput(text=stdout)
+        usage = envelope.get("usage") if isinstance(envelope.get("usage"), dict) else {}
+        return _ParsedCliOutput(
+            text=_stringify_text(envelope.get("result")),
+            input_tokens=_safe_int(usage.get("input_tokens")),
+            output_tokens=_safe_int(usage.get("output_tokens")),
+            cache_read_tokens=_safe_int(usage.get("cache_read_input_tokens")),
+            cache_creation_tokens=_safe_int(usage.get("cache_creation_input_tokens")),
+            num_turns=_safe_int_or_none(envelope.get("num_turns")),
+            duration_ms=_safe_int_or_none(envelope.get("duration_ms")),
+            notional_cost_usd=_safe_float_or_none(envelope.get("total_cost_usd")),
+        )
+    if flavor.result_source == "result_file":
+        return _ParsedCliOutput(text=_stringify_text(output.get("result") or stdout))
+    return _ParsedCliOutput(text=stdout)
 
 
 def _artifact_role(path: Path) -> str:

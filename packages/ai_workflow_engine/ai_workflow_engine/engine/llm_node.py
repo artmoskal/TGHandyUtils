@@ -279,6 +279,8 @@ Original request:
                     attempt=attempt,
                     metadata={"output_model": self.output_model.__name__, **(usage_metadata or {})},
                     config=self.config,
+                    cost_class=response.cost_class,
+                    notional_usd=response.notional_usd,
                 )
                 parsed = self.parser.parse(self._apply_pre_parse(response.text, attempt, content_hash))
                 if self.validator:

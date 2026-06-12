@@ -92,6 +92,8 @@ class LLMResponse(BaseModel):
     output_tokens: int = 0
     total_tokens: int = 0
     estimated_usd: Optional[float] = None
+    cost_class: Literal["metered", "subscription_notional"] = "metered"
+    notional_usd: Optional[float] = None
     raw: Any = None
 
 

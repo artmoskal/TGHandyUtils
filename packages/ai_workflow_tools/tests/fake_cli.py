@@ -25,7 +25,7 @@ def main() -> int:
     argv = sys.argv
     stdin_text = sys.stdin.read()
     mode = os.environ.get("FAKE_CLI_MODE", "envelope")
-    result_text = os.environ.get("FAKE_CLI_RESULT", '{"ok": true}')
+    result_text = _result_text()
     workspace = Path(os.environ.get("FAKE_CLI_WORKSPACE", os.getcwd()))
     workspace.mkdir(parents=True, exist_ok=True)
     _record_invocation(argv, stdin_text)
@@ -59,10 +59,32 @@ def _record_invocation(argv: list[str], stdin_text: str) -> None:
     record_path = os.environ.get("FAKE_CLI_RECORD")
     if not record_path:
         return
-    Path(record_path).write_text(
-        json.dumps({"argv": argv, "stdin": stdin_text}, sort_keys=True),
-        encoding="utf-8",
-    )
+    payload = {"argv": argv, "stdin": stdin_text}
+    path = Path(record_path)
+    if os.environ.get("FAKE_CLI_RECORD_APPEND") == "1":
+        records = []
+        if path.exists():
+            existing = json.loads(path.read_text(encoding="utf-8"))
+            records = existing if isinstance(existing, list) else [existing]
+        records.append(payload)
+        path.write_text(json.dumps(records, sort_keys=True), encoding="utf-8")
+        return
+    path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+
+
+def _result_text() -> str:
+    sequence = os.environ.get("FAKE_CLI_RESULTS_JSON")
+    if not sequence:
+        return os.environ.get("FAKE_CLI_RESULT", '{"ok": true}')
+    results = json.loads(sequence)
+    if not isinstance(results, list) or not results:
+        raise SystemExit("FAKE_CLI_RESULTS_JSON must be a non-empty JSON list")
+    counter_path = Path(os.environ.get("FAKE_CLI_COUNTER_FILE", "/tmp/fake_cli_counter.txt"))
+    index = 0
+    if counter_path.exists():
+        index = int(counter_path.read_text(encoding="utf-8") or "0")
+    counter_path.write_text(str(index + 1), encoding="utf-8")
+    return str(results[min(index, len(results) - 1)])
 
 
 def _emit_envelope(result_text: str) -> None:
