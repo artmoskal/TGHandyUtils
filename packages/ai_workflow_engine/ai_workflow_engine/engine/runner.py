@@ -31,6 +31,7 @@ class WorkflowRunner:
         recursion_fallback: Optional[
             Callable[[Dict[str, Any], Exception], Dict[str, Any] | Awaitable[Dict[str, Any]]]
         ] = None,
+        usage_summary: Optional[WorkflowUsageSummary] = None,
     ) -> Dict[str, Any]:
         effective_type = workflow_type or (goal.workflow_type if goal else None)
         if not effective_type:
@@ -46,7 +47,8 @@ class WorkflowRunner:
         )
         state = dict(initial_state)
         state["workflow_context"] = ctx
-        usage_summary = WorkflowUsageSummary()
+        # A caller-provided summary seeds the scope (resume: budgets cumulative across halves).
+        usage_summary = usage_summary if usage_summary is not None else WorkflowUsageSummary()
         state["usage_summary"] = usage_summary
         if goal:
             state["workflow_goal"] = goal

@@ -1,7 +1,8 @@
 """Flow-as-data: AI-authored workflows on engine rails.
 
 An LLM (or any capability) emits a :class:`FlowArtifact` — a constrained, declarative description
-of a workflow (steps / branches / evaluator gates only). The engine validates EVERYTHING before
+of a workflow (steps / branches / evaluator gates, including bounded loops). The engine validates
+EVERYTHING before
 compiling: every capability must be registered, side effects must be allow-listed, retrace targets
 must exist, model profiles must resolve, and planner/flow-author capabilities are forbidden inside
 authored flows (AI-written things must not contain AI-writers — recursion lives ONLY in the
@@ -34,6 +35,11 @@ class FlowNodeSpec(BaseModel):
                                               # evaluate: the evaluator capability
     target: Optional[str] = None              # evaluate: the evaluated capability
     branches: Dict[str, str] = Field(default_factory=dict)
+    # Pre-set gates for authored loops: a label that closes a cycle MUST carry a bound here
+    # (the engine's cycle-gate validation rejects it otherwise); optionally map a bounded label
+    # to the escape label taken once the gate is exhausted.
+    branch_bounds: Dict[str, int] = Field(default_factory=dict)
+    branch_exhausted: Dict[str, str] = Field(default_factory=dict)
     on_reject: Optional[Literal["retry", "retrace", "fallback"]] = None
     retrace_to: Optional[str] = None
     fallback: Optional[str] = None
@@ -144,6 +150,8 @@ def build_definition_from_artifact(
             builder.step(spec.id, capability=spec.capability, model_profile=spec.model_profile)
         elif spec.kind == "branch":
             builder.branch(spec.id, dict(spec.branches), decider=spec.capability,
+                           bounds=dict(spec.branch_bounds) or None,
+                           exhausted=dict(spec.branch_exhausted) or None,
                            model_profile=spec.model_profile)
         else:
             on_reject = None

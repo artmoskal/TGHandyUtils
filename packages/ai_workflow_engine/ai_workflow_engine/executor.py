@@ -42,6 +42,7 @@ from ai_workflow_engine.models import (
     WorkflowUsageSummary,
 )
 from ai_workflow_engine.planning import PlanArtifact, PlanTask, render_plan
+from ai_workflow_engine.snapshot import MachineSnapshot
 from ai_workflow_engine.workflow import (
     END,
     KNOWN_NODE_KINDS,
@@ -69,6 +70,7 @@ class WorkflowState(TypedDict, total=False):
     node_status: Dict[str, str]
     branch_decisions: Dict[str, str]
     routes: Dict[str, str]
+    transition_counts: Dict[str, int]
     eval_counters: Dict[str, Dict[str, int]]
     attempts: Dict[str, int]
     artifacts: List[Any]
@@ -79,6 +81,9 @@ class WorkflowState(TypedDict, total=False):
     workflow_goal: Any
     usage_summary: Any
     plan_artifact: Any
+    resume_suspended_node: Optional[str]
+    resume_event: Any
+    machine_replay_done: bool
 
 
 class UnsupportedNodeError(ValueError):
@@ -129,6 +134,9 @@ class WorkflowRunResult(BaseModel):
     artifacts: List[WorkflowArtifact] = Field(default_factory=list)
     usage: WorkflowUsageSummary = Field(default_factory=WorkflowUsageSummary)
     trace: List[WorkflowTraceEvent] = Field(default_factory=list)
+    # Durable suspension: set ONLY when status == "requires_user_input" — feed it back through
+    # engine.resume(snapshot, event) to continue the machine without re-executing anything.
+    snapshot: Optional[MachineSnapshot] = None
 
     def node(self, node_id: str) -> Optional[NodeResult]:
         for record in reversed(self.node_results):
@@ -238,6 +246,106 @@ class WorkflowExecutor:
         final_state = await compiled.ainvoke(self._initial_state(payload, context), config=graph_config)
         return self._envelope(definition, final_state)
 
+    async def resume(
+        self,
+        definition: WorkflowDefinition,
+        snapshot: MachineSnapshot,
+        event_payload: Any,
+        context: CapabilityContext,
+    ) -> WorkflowRunResult:
+        """Continue a suspended machine: fast-forward replay (zero re-execution — recorded routes
+        steer the compiled graph) to the suspended node, execute it live with the resume event,
+        then run on normally. Restored usage seeds the run scope, so budgets stay cumulative."""
+
+        if snapshot.workflow_id != definition.workflow_id:
+            raise ValueError(
+                f"snapshot is for workflow '{snapshot.workflow_id}', not '{definition.workflow_id}'"
+            )
+        if not snapshot.suspended_node:
+            raise ValueError("snapshot has no suspended node — only suspended runs can resume")
+        self._bind_or_validate_event_loop()
+        binding_error = self._preflight(definition)
+        if binding_error is not None:
+            return self._failed_envelope(definition, binding_error)
+        compiled = self.compile(definition)
+        state = self._initial_state(snapshot.payload, context)
+        node_status = dict(snapshot.node_status)
+        routes = dict(snapshot.routes)
+        # The suspended node re-executes live (with the event); clear its halt verdict.
+        node_status.pop(snapshot.suspended_node, None)
+        routes.pop(snapshot.suspended_node, None)
+        state.update(
+            {
+                "node_outputs": {
+                    **snapshot.node_outputs,
+                    "__input__": snapshot.node_outputs.get("__input__", snapshot.payload),
+                },
+                "node_inputs": dict(snapshot.node_inputs),
+                "node_status": node_status,
+                "routes": routes,
+                "branch_decisions": dict(snapshot.branch_decisions),
+                "eval_counters": {k: dict(v) for k, v in snapshot.eval_counters.items()},
+                "transition_counts": dict(snapshot.transition_counts),
+                "attempts": dict(snapshot.attempts),
+                "node_results": [NodeResult.model_validate(r) for r in snapshot.node_results],
+                "artifacts": [
+                    WorkflowArtifact.model_validate(a) if isinstance(a, dict) else a
+                    for a in snapshot.artifacts
+                ],
+                "plan_artifact": snapshot.plan_artifact,
+                "fallback_reason": snapshot.fallback_reason,
+                "resume_suspended_node": snapshot.suspended_node,
+                "resume_event": event_payload,
+                "machine_replay_done": False,
+            }
+        )
+        self.runtime.trace_sink.record(
+            WorkflowTraceEvent(
+                node=snapshot.suspended_node,
+                decision="machine:resumed",
+                metadata={
+                    "workflow_id": definition.workflow_id,
+                    "completed_nodes": len(snapshot.node_results),
+                },
+            )
+        )
+        restored_usage = (
+            WorkflowUsageSummary.model_validate(snapshot.usage) if snapshot.usage else None
+        )
+        final_state = await self.runner.run(
+            compiled,
+            state,
+            workflow_type=context.goal.workflow_type,
+            goal=context.goal,
+            graph_config={"recursion_limit": self._recursion_limit(definition, context)},
+            usage_summary=restored_usage,
+        )
+        return self._envelope(definition, final_state)
+
+    def _with_replay(self, node: WorkflowNode, fn: Callable[[Dict[str, Any]], Awaitable[Dict[str, Any]]]):
+        """Resume fast-forward: while a restored run replays, completed nodes no-op (recorded
+        routes steer the graph) until the suspended node, which executes live. Normal runs pass
+        straight through (the resume keys are simply absent)."""
+
+        async def replay_aware(state: Dict[str, Any]) -> Dict[str, Any]:
+            suspended = state.get("resume_suspended_node")
+            if suspended and not state.get("machine_replay_done"):
+                if node.id != suspended:
+                    self.runtime.trace_sink.record(
+                        WorkflowTraceEvent(
+                            node=node.id,
+                            decision="machine:fastforward",
+                            metadata={"status": state.get("node_status", {}).get(node.id)},
+                        )
+                    )
+                    return {}
+                update = await fn(state)
+                update["machine_replay_done"] = True
+                return update
+            return await fn(state)
+
+        return replay_aware
+
     def _bind_or_validate_event_loop(self) -> None:
         current = asyncio.get_running_loop()
         if self._bound_loop is None or self._bound_loop.is_closed():
@@ -261,6 +369,7 @@ class WorkflowExecutor:
             "node_status": {},
             "branch_decisions": {},
             "routes": {},
+            "transition_counts": {},
             "eval_counters": {},
             "attempts": {},
             "artifacts": [],
@@ -287,7 +396,7 @@ class WorkflowExecutor:
                 raise UnsupportedNodeError(
                     f"node '{node.id}' kind '{node.kind}' is not supported by this executor"
                 )
-            graph.add_node(node.id, handler(self, definition, node))
+            graph.add_node(node.id, self._with_replay(node, handler(self, definition, node)))
 
         graph.add_edge(START, definition.entry)
         for node in definition.nodes:
@@ -297,85 +406,68 @@ class WorkflowExecutor:
         self._compiled[definition.workflow_id] = compiled
         return compiled
 
-    # ---------------------------------------------------------------- edge wiring
+    # ---------------------------------------------------------------- transition wiring
     def _wire_edges(self, graph: Any, definition: WorkflowDefinition, node: WorkflowNode, lg_end: Any) -> None:
+        """Wire one node's outgoing transitions — ONE generic path for every node kind, reading
+        the definition's first-class transitions (the machine routes itself from its own data)."""
+
+        outs = definition.outgoing(node.id)
         if node.kind == "branch":
-            path_map: Dict[str, Any] = {}
-            for label, target in node.branches.items():
-                path_map[label] = lg_end if target == END else target
+            path_map: Dict[str, Any] = {
+                t.label: (lg_end if t.target == END else t.target)
+                for t in outs
+                if t.policy == "decision" and t.label
+            }
             path_map["__invalid__"] = lg_end
-            graph.add_conditional_edges(node.id, self._branch_router(node), path_map)
-            return
-
-        if node.kind == "evaluate":
-            from ai_workflow_engine.workflow import Replan, Retrace
-
-            successor = self._sequential_successor(definition, node.id)
-            predecessor = self._sequential_predecessor(definition, node.id)
-            retrace_target = node.on_reject.target if isinstance(node.on_reject, Retrace) else None
-            replan_target = node.on_reject.target if isinstance(node.on_reject, Replan) else None
-            graph.add_conditional_edges(
-                node.id,
-                self._evaluate_router(node),
-                {
-                    "accept": lg_end if (successor is None or successor == END) else successor,
-                    "retry": predecessor or lg_end,
-                    "retrace": retrace_target or lg_end,
-                    "replan": replan_target or lg_end,
-                    "halt": lg_end,
-                },
-            )
-            return
-
-        # step + fanout: sequential continuation, fail-closed halt on failure.
-        successor = self._sequential_successor(definition, node.id)
-        target = lg_end if (successor is None or successor == END) else successor
-        graph.add_conditional_edges(
-            node.id,
-            self._step_router(node),
-            {"__next__": target, "__halt__": lg_end},
-        )
+            path_map["__halt__"] = lg_end
+        elif node.kind == "evaluate":
+            path_map = {"accept": lg_end, "retry": lg_end, "retrace": lg_end, "replan": lg_end, "halt": lg_end}
+            for t in outs:
+                if t.policy in ("on_accept", "on_reject") and t.label in path_map and t.target != END:
+                    path_map[t.label] = t.target
+        else:
+            nxt = next((t for t in outs if t.policy == "always"), None)
+            path_map = {
+                "__next__": lg_end if (nxt is None or nxt.target == END) else nxt.target,
+                "__halt__": lg_end,
+            }
+        graph.add_conditional_edges(node.id, self._route_for(node), path_map)
 
     @staticmethod
     def _sequential_successor(definition: WorkflowDefinition, node_id: str) -> Optional[str]:
-        for edge in definition.edges:
-            if edge.source == node_id and not edge.conditional:
-                return edge.target
+        for t in definition.transitions:
+            if t.source == node_id and t.policy == "always":
+                return t.target
         return None
 
     @staticmethod
     def _sequential_predecessor(definition: WorkflowDefinition, node_id: str) -> Optional[str]:
-        for edge in definition.edges:
-            if edge.target == node_id and not edge.conditional:
-                return edge.source
+        for t in definition.transitions:
+            if t.target == node_id and t.policy == "always":
+                return t.source
         return None
 
     @staticmethod
-    def _evaluate_router(node: WorkflowNode) -> Callable[[Dict[str, Any]], str]:
-        def route(state: Dict[str, Any]) -> str:
-            return state.get("routes", {}).get(node.id, "halt")
+    def _route_for(node: WorkflowNode) -> Callable[[Dict[str, Any]], str]:
+        """One routing convention for every node kind: handlers record the taken route under
+        ``routes[node.id]``; the router only reads state (pure, no side effects)."""
 
-        return route
-
-    @staticmethod
-    def _step_router(node: WorkflowNode) -> Callable[[Dict[str, Any]], str]:
-        def route(state: Dict[str, Any]) -> str:
-            if state.get("routes", {}).get(node.id) == "halt":
-                return "__halt__"
-            if state.get("node_status", {}).get(node.id) == "failed":
-                return "__halt__"
-            return "__next__"
-
-        return route
-
-    @staticmethod
-    def _branch_router(node: WorkflowNode) -> Callable[[Dict[str, Any]], str]:
-        def route(state: Dict[str, Any]) -> str:
-            label = state.get("branch_decisions", {}).get(node.id)
-            if label in node.branches:
-                return label
-            return "__invalid__"
-
+        if node.kind == "branch":
+            def route(state: Dict[str, Any]) -> str:
+                label = state.get("routes", {}).get(node.id)
+                if label == "__halt__":
+                    return "__halt__"
+                return label if label in node.branches else "__invalid__"
+        elif node.kind == "evaluate":
+            def route(state: Dict[str, Any]) -> str:
+                return state.get("routes", {}).get(node.id, "halt")
+        else:
+            def route(state: Dict[str, Any]) -> str:
+                if state.get("routes", {}).get(node.id) == "halt":
+                    return "__halt__"
+                if state.get("node_status", {}).get(node.id) == "failed":
+                    return "__halt__"
+                return "__next__"
         return route
 
     # ---------------------------------------------------------------- model binding
@@ -727,6 +819,11 @@ class WorkflowExecutor:
 
     def _build_branch_node(self, definition: WorkflowDefinition, node: WorkflowNode):
         decider = node.decider or node.capability or node.id
+        gates = {
+            t.label: t
+            for t in definition.outgoing(node.id)
+            if t.policy == "decision" and t.max_traversals is not None
+        }
 
         async def branch_fn(state: Dict[str, Any]) -> Dict[str, Any]:
             context: CapabilityContext = state[_CONTEXT]
@@ -735,18 +832,50 @@ class WorkflowExecutor:
             result = await self._invoke_bound(node, decider, payload, context, state, attempt=attempt)
             label = self._extract_label(result)
             valid = label in node.branches
+            try:
+                decision_policy = self.runtime.registry.get(decider)[0].kind
+            except Exception:
+                decision_policy = None
+
+            # Pre-set loop gates: a bounded decision transition counts its traversals; exceeding
+            # the bound either fails loudly or takes the declared escape label.
+            taken = label
+            error: Optional[str] = None if valid else f"branch '{node.id}' produced invalid label: {label!r}"
+            counts = dict(state.get("transition_counts", {}))
+            exhausted_gate = None
+            if valid and label in gates:
+                gate = gates[label]
+                key = f"{node.id}|{label}"
+                seen = counts.get(key, 0)
+                if seen >= gate.max_traversals:
+                    exhausted_gate = gate
+                    if gate.on_exhausted == "fail":
+                        taken = "__halt__"
+                        error = (
+                            f"branch '{node.id}' label '{label}' exceeded its pre-set gate "
+                            f"max_traversals={gate.max_traversals} (on_exhausted=fail)"
+                        )
+                    else:
+                        taken = gate.on_exhausted
+                else:
+                    counts[key] = seen + 1
+            failed = (not valid) or taken == "__halt__"
             update = self._record(
                 state,
                 node,
                 result,
                 attempts=attempt,
                 input_payload=payload,
-                branch_label=label,
-                force_status=None if valid else "failed",
-                error=None if valid else f"branch '{node.id}' produced invalid label: {label!r}",
+                branch_label=taken if valid and taken != "__halt__" else label,
+                force_status="failed" if failed else None,
+                error=error,
             )
-            branch_decisions = {**state.get("branch_decisions", {}), node.id: label}
-            update["branch_decisions"] = branch_decisions
+            update["branch_decisions"] = {
+                **state.get("branch_decisions", {}),
+                node.id: taken if valid and taken != "__halt__" else label,
+            }
+            update["routes"] = {**state.get("routes", {}), node.id: taken if valid else "__invalid__"}
+            update["transition_counts"] = counts
             # A branch is a routing decision, not a transform: the running payload passes through
             # unchanged so the selected downstream node sees the real data, not the decision.
             update[_RUNNING_PAYLOAD] = payload
@@ -755,10 +884,36 @@ class WorkflowExecutor:
                     node=node.id,
                     attempt=attempt,
                     decision="branch",
-                    error=None if valid else update.get("error"),
-                    metadata={"label": label, "valid": valid},
+                    error=update.get("error") if failed else None,
+                    metadata={"label": label, "valid": valid, "decision_policy": decision_policy},
                 )
             )
+            if exhausted_gate is not None:
+                self.runtime.trace_sink.record(
+                    WorkflowTraceEvent(
+                        node=node.id,
+                        decision="transition:exhausted",
+                        error=error if taken == "__halt__" else None,
+                        metadata={
+                            "label": label,
+                            "max_traversals": exhausted_gate.max_traversals,
+                            "rerouted_to": None if taken == "__halt__" else taken,
+                        },
+                    )
+                )
+            elif valid:
+                self.runtime.trace_sink.record(
+                    WorkflowTraceEvent(
+                        node=node.id,
+                        decision="transition:taken",
+                        metadata={
+                            "label": taken,
+                            "policy": "decision",
+                            "decision_policy": decision_policy,
+                            "traversals": counts.get(f"{node.id}|{label}"),
+                        },
+                    )
+                )
             return update
 
         return branch_fn
@@ -1357,6 +1512,17 @@ class WorkflowExecutor:
         async def human_fn(state: Dict[str, Any]) -> Dict[str, Any]:
             context: CapabilityContext = state[_CONTEXT]
             payload = self._node_input(state, node)
+            resume_event = state.get("resume_event")
+            if (
+                resume_event is not None
+                and state.get("resume_suspended_node") == node.id
+                and not state.get("machine_replay_done")
+            ):
+                # Resuming THIS suspension: the clarification capability sees the event and
+                # decides whether it answers the question (engine injects, product interprets).
+                context = context.model_copy(
+                    update={"metadata": {**context.metadata, "resume_event": resume_event}}
+                )
             result = await self.runtime.invoke(capability, payload, context)
             response = result.output
             clarification_status = getattr(response, "status", None)
@@ -1727,6 +1893,39 @@ class WorkflowExecutor:
         else:
             status = "completed"
         usage = final_state.get("usage_summary") or WorkflowUsageSummary()
+        snapshot: Optional[MachineSnapshot] = None
+        if status == "requires_user_input":
+            suspended = next(
+                (r.node_id for r in reversed(node_results) if r.status == "requires_user_input"),
+                None,
+            )
+            if suspended is not None:
+                plan = final_state.get("plan_artifact")
+                if plan is not None and hasattr(plan, "model_dump"):
+                    plan = plan.model_dump()
+                snapshot = MachineSnapshot(
+                    workflow_id=definition.workflow_id,
+                    suspended_node=suspended,
+                    payload=final_state.get(_RUNNING_PAYLOAD),
+                    node_outputs=dict(final_state.get("node_outputs", {})),
+                    node_inputs=dict(final_state.get("node_inputs", {})),
+                    node_status=dict(final_state.get("node_status", {})),
+                    routes=dict(final_state.get("routes", {})),
+                    branch_decisions=dict(final_state.get("branch_decisions", {})),
+                    eval_counters={
+                        k: dict(v) for k, v in final_state.get("eval_counters", {}).items()
+                    },
+                    transition_counts=dict(final_state.get("transition_counts", {})),
+                    attempts=dict(final_state.get("attempts", {})),
+                    node_results=[r.model_dump() for r in node_results],
+                    artifacts=[
+                        a.model_dump() if hasattr(a, "model_dump") else a
+                        for a in final_state.get("artifacts", [])
+                    ],
+                    plan_artifact=plan,
+                    usage=usage.model_dump() if hasattr(usage, "model_dump") else {},
+                    fallback_reason=final_state.get("fallback_reason"),
+                )
         return WorkflowRunResult(
             workflow_id=definition.workflow_id,
             status=status,
@@ -1737,6 +1936,7 @@ class WorkflowExecutor:
             artifacts=list(final_state.get("artifacts", [])),
             usage=usage,
             trace=self._trace_events(),
+            snapshot=snapshot,
         )
 
     def _failed_envelope(self, definition: WorkflowDefinition, error: str) -> WorkflowRunResult:

@@ -38,8 +38,9 @@ from ai_workflow_engine.models import (
     WorkflowRunContext,
 )
 from ai_workflow_engine.flow_authoring import FlowArtifact, build_definition_from_artifact
+from ai_workflow_engine.snapshot import MachineSnapshot
 from ai_workflow_engine.models import CapabilityResult, WorkflowTraceEvent
-from ai_workflow_engine.workflow import WorkflowDefinition
+from ai_workflow_engine.workflow import BranchDecision, WorkflowDefinition
 
 # A capability handler is ``callable(context, payload) -> result`` (sync or async). Capability
 # objects that expose a ``.spec`` attribute (e.g. HumanClarificationCapability) are also accepted.
@@ -52,6 +53,16 @@ class WorkflowPack(Protocol):
 
     def register(self, builder: "WorkflowEngineBuilder") -> None:
         ...
+
+
+def _guard_handler(name: str, fn: Callable[[Any], str]) -> CapabilityHandler:
+    """Wrap a plain ``fn(payload) -> label`` predicate as a deterministic branch decider."""
+
+    def guard(_context: CapabilityContext, payload: Any) -> BranchDecision:
+        return BranchDecision(label=str(fn(payload)), rationale=f"guard:{name}")
+
+    guard.__name__ = f"guard_{name}"
+    return guard
 
 
 def _coerce_spec(
@@ -162,6 +173,16 @@ class WorkflowEngine:
     def register_capability_spec(self, spec: CapabilitySpec, handler: CapabilityHandler) -> "WorkflowEngine":
         self.registry.register(spec, handler)
         return self
+
+    def register_guard(self, name: str, fn: Callable[[Any], str]) -> "WorkflowEngine":
+        """Register a deterministic routing guard: ``fn(payload) -> label``.
+
+        The cheap navigation path of the state machine — a branch decider with zero LLM calls and
+        zero ceremony; the branch trace records ``decision_policy="deterministic"``. The returned
+        label must be one the branch declares; anything else fails loudly like any decider.
+        """
+
+        return self.register_capability(name, _guard_handler(name, fn), kind="deterministic")
 
     def register_workflow(
         self,
@@ -295,6 +316,59 @@ class WorkflowEngine:
         recursion_limit: Optional[int] = None,
     ) -> WorkflowRunResult:
         definition = self._resolve(workflow)
+        context = self._run_context_for(
+            definition,
+            goal=goal,
+            user_id=user_id,
+            constraints=constraints,
+            delivery_target=delivery_target,
+        )
+        return await self.executor.run(
+            definition,
+            payload,
+            context,
+            recursion_fallback=recursion_fallback,
+            recursion_limit=recursion_limit,
+        )
+
+    async def resume(
+        self,
+        snapshot: Union[MachineSnapshot, str],
+        event_payload: Any = None,
+        *,
+        goal: Optional[WorkflowGoal] = None,
+        user_id: Optional[int] = None,
+        constraints: Optional[Dict[str, Any]] = None,
+    ) -> WorkflowRunResult:
+        """Continue a suspended workflow from its snapshot (live object or JSON string).
+
+        The machine fast-forwards through completed nodes (zero re-execution), executes the
+        suspended node with ``event_payload`` injected as ``context.metadata['resume_event']``,
+        and runs on normally — budgets cumulative across both halves. The workflow must be
+        registered on this engine (loud KeyError otherwise).
+        """
+
+        if isinstance(snapshot, str):
+            snapshot = MachineSnapshot.model_validate_json(snapshot)
+        definition = self.workflows.get(snapshot.workflow_id)
+        if definition is None:
+            raise KeyError(
+                f"Unknown workflow: {snapshot.workflow_id} — register it before resuming"
+            )
+        context = self._run_context_for(
+            definition, goal=goal, user_id=user_id, constraints=constraints
+        )
+        return await self.executor.resume(definition, snapshot, event_payload, context)
+
+    def _run_context_for(
+        self,
+        definition: WorkflowDefinition,
+        *,
+        goal: Optional[WorkflowGoal] = None,
+        user_id: Optional[int] = None,
+        constraints: Optional[Dict[str, Any]] = None,
+        delivery_target: Optional[str] = None,
+    ) -> CapabilityContext:
         plan = self._plan_for(definition)
         run_goal = goal or WorkflowGoal(
             workflow_type=definition.workflow_id,
@@ -305,7 +379,7 @@ class WorkflowEngine:
         merged_constraints = {**plan.constraints, **run_goal.constraints, **(constraints or {})}
         if merged_constraints != plan.constraints:
             plan = plan.model_copy(update={"constraints": merged_constraints})
-        context = CapabilityContext(
+        return CapabilityContext(
             goal=run_goal,
             run_context=WorkflowRunContext(
                 workflow_id=definition.workflow_id,
@@ -318,13 +392,6 @@ class WorkflowEngine:
             plan=plan,
             limits=plan.limits,
             metadata={"model_profiles": self.model_profiles},
-        )
-        return await self.executor.run(
-            definition,
-            payload,
-            context,
-            recursion_fallback=recursion_fallback,
-            recursion_limit=recursion_limit,
         )
 
     # ---------------------------------------------------------------- internals
@@ -441,6 +508,11 @@ class WorkflowEngineBuilder:
     def register_capability_spec(self, spec: CapabilitySpec, handler: CapabilityHandler) -> "WorkflowEngineBuilder":
         self._capabilities.append((spec, handler))
         return self
+
+    def register_guard(self, name: str, fn: Callable[[Any], str]) -> "WorkflowEngineBuilder":
+        """Deterministic routing guard (see :meth:`WorkflowEngine.register_guard`)."""
+
+        return self.register_capability(name, _guard_handler(name, fn), kind="deterministic")
 
     def register_workflow(
         self,

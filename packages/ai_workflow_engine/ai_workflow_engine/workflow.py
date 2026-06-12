@@ -8,7 +8,7 @@ The product never writes orchestration loops: branch/retry/retrace/fallback/fan-
 mechanics are expressed declaratively here and *executed* by the engine (``executor.py``).
 
 Public concepts (kept product-neutral):
-    WorkflowDefinition, WorkflowNode, WorkflowEdge, WorkflowBuilder, BranchDecision,
+    WorkflowDefinition, WorkflowNode, Transition, WorkflowBuilder, BranchDecision,
     Retry, Retrace, Replan, Fallback, SubworkflowRef, NodeKind.
 """
 
@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from ai_workflow_engine.models import RuntimeLimits, SchedulingPolicy
 
@@ -214,26 +214,97 @@ class WorkflowNode(BaseModel):
         return self.capability or self.id
 
 
-class WorkflowEdge(BaseModel):
-    """A directed edge. ``conditional`` edges carry a branch ``label`` and are taken only when
-    the source branch node selects that label."""
+class Transition(BaseModel):
+    """A directed, policy-tagged transition — the machine is fully described by its transitions.
+
+    ``policy`` says WHO selects this transition:
+      - ``always``:    unconditional continuation (sequential flow)
+      - ``decision``:  a decider (LLM, deterministic guard, or human answer) picked ``label``
+      - ``on_accept``: the evaluator accepted (materialized from evaluate nodes)
+      - ``on_reject``: the evaluator rejected (label = retry|retrace|replan); the bound mirrors
+        the evaluator's own counter, which enforces it
+
+    ``max_traversals`` is the pre-set gate for cycles: a ``decision`` transition that closes a
+    loop MUST declare it (validated); the executor counts traversals per run and applies
+    ``on_exhausted`` — ``"fail"`` (loud stop) or another label of the same branch node (a declared
+    escape route). Halting on failure is implicit machine law and never materialized.
+    """
 
     source: str
     target: str  # node id or END
     label: Optional[str] = None
-    conditional: bool = False
+    policy: Literal["always", "decision", "on_accept", "on_reject"] = "always"
+    max_traversals: Optional[int] = None
+    on_exhausted: str = "fail"
 
 
 class WorkflowDefinition(BaseModel):
-    """A validated, executable workflow graph (product owns this; engine runs it)."""
+    """A validated, executable workflow graph (product owns this; engine runs it).
+
+    The definition is the canonical machine-as-data: serializable, visualizable, and COMPLETE —
+    evaluator accept/reject routes are materialized into ``transitions`` at construction, so the
+    whole machine can be read (validated, rendered, stored) from its own data alone.
+    """
 
     workflow_id: str
     nodes: List[WorkflowNode]
-    edges: List[WorkflowEdge]
+    transitions: List[Transition]
     entry: str
     description: str = ""
     scheduling: Optional[SchedulingPolicy] = None
     limits: Optional[RuntimeLimits] = None
+
+    @model_validator(mode="after")
+    def _materialize_control_transitions(self) -> "WorkflowDefinition":
+        """Mirror evaluate-node control flow into first-class transitions (idempotent).
+
+        Enforcement of on_reject bounds stays in the evaluator mechanics (same counters); the
+        mirrored transitions make the machine's data complete for validation/viz/storage.
+        """
+
+        existing = {(t.source, t.label, t.policy) for t in self.transitions}
+        additions: List[Transition] = []
+        for node in self.nodes:
+            if node.kind != "evaluate":
+                continue
+            successor = next(
+                (t.target for t in self.transitions if t.source == node.id and t.policy == "always"),
+                END,
+            )
+            if (node.id, "accept", "on_accept") not in existing:
+                additions.append(
+                    Transition(source=node.id, target=successor, label="accept", policy="on_accept")
+                )
+            directive = node.on_reject
+            kind = getattr(directive, "kind", None)
+            if kind == "retry" and (node.id, "retry", "on_reject") not in existing:
+                predecessor = next(
+                    (t.source for t in self.transitions if t.target == node.id and t.policy == "always"),
+                    END,
+                )
+                additions.append(
+                    Transition(
+                        source=node.id, target=predecessor, label="retry", policy="on_reject",
+                        max_traversals=directive.max_attempts,
+                    )
+                )
+            elif kind == "retrace" and (node.id, "retrace", "on_reject") not in existing:
+                additions.append(
+                    Transition(
+                        source=node.id, target=directive.target, label="retrace", policy="on_reject",
+                        max_traversals=directive.max_retrace,
+                    )
+                )
+            elif kind == "replan" and (node.id, "replan", "on_reject") not in existing:
+                additions.append(
+                    Transition(
+                        source=node.id, target=directive.target, label="replan", policy="on_reject",
+                        max_traversals=directive.max_replans,
+                    )
+                )
+        if additions:
+            self.transitions = [*self.transitions, *additions]
+        return self
 
     def node(self, node_id: str) -> WorkflowNode:
         for node in self.nodes:
@@ -244,8 +315,8 @@ class WorkflowDefinition(BaseModel):
     def node_ids(self) -> List[str]:
         return [node.id for node in self.nodes]
 
-    def outgoing(self, node_id: str) -> List[WorkflowEdge]:
-        return [edge for edge in self.edges if edge.source == node_id]
+    def outgoing(self, node_id: str) -> List[Transition]:
+        return [t for t in self.transitions if t.source == node_id]
 
     def validate_graph(self) -> List[str]:
         """Return a list of structural errors (empty == valid)."""
@@ -323,11 +394,74 @@ class WorkflowDefinition(BaseModel):
                         f"planner node '{node.id}' recursive planning requires execution='sequential'"
                     )
 
-        for edge in self.edges:
-            if edge.source not in known:
-                errors.append(f"edge from unknown node: {edge.source}")
-            if edge.target != END and edge.target not in known:
-                errors.append(f"edge to unknown node: {edge.target}")
+        for t in self.transitions:
+            if t.source not in known:
+                errors.append(f"transition from unknown node: {t.source}")
+            if t.target != END and t.target not in known:
+                errors.append(f"transition to unknown node: {t.target}")
+            if t.max_traversals is not None:
+                if t.max_traversals < 1:
+                    errors.append(
+                        f"transition '{t.source}' -> '{t.target}' max_traversals must be >= 1"
+                    )
+                if t.policy in ("always", "on_accept"):
+                    errors.append(
+                        f"transition '{t.source}' -> '{t.target}' declares max_traversals on "
+                        f"policy '{t.policy}' — pre-set gates are enforced on decision transitions only"
+                    )
+            if t.on_exhausted != "fail":
+                if t.policy != "decision":
+                    errors.append(
+                        f"transition '{t.source}' -> '{t.target}' declares on_exhausted on policy "
+                        f"'{t.policy}' — escape labels exist only on decision transitions"
+                    )
+                else:
+                    source_node = next((n for n in self.nodes if n.id == t.source), None)
+                    if source_node is None or t.on_exhausted not in source_node.branches:
+                        errors.append(
+                            f"transition '{t.source}' label '{t.label}' on_exhausted "
+                            f"'{t.on_exhausted}' is not a declared label of that branch"
+                        )
+                    elif t.on_exhausted == t.label:
+                        errors.append(
+                            f"transition '{t.source}' label '{t.label}' on_exhausted must differ "
+                            f"from its own label"
+                        )
+
+        # Pre-set gate law: every cycle in the {always ∪ decision} subgraph must be broken by at
+        # least one BOUNDED decision transition (its counter closes the loop after N traversals).
+        # on_accept/on_reject transitions carry their own evaluator-owned counters and are exempt.
+        adjacency: Dict[str, List[Transition]] = {}
+        for t in self.transitions:
+            if t.source not in known or t.target == END or t.target not in known:
+                continue
+            if t.policy == "always" or (t.policy == "decision" and t.max_traversals is None):
+                adjacency.setdefault(t.source, []).append(t)
+        color: Dict[str, int] = dict.fromkeys(known, 0)  # 0 white, 1 grey, 2 black
+        offender: List[Transition] = []
+
+        def _visit(node_id: str) -> None:
+            color[node_id] = 1
+            for t in adjacency.get(node_id, []):
+                if offender:
+                    return
+                if color[t.target] == 1:
+                    offender.append(t)
+                    return
+                if color[t.target] == 0:
+                    _visit(t.target)
+            color[node_id] = 2
+
+        for node_id in ids:
+            if color.get(node_id) == 0 and not offender:
+                _visit(node_id)
+        if offender:
+            t = offender[0]
+            errors.append(
+                f"unbounded cycle: transition '{t.source}' -[{t.label or 'always'}]-> "
+                f"'{t.target}' closes a loop with no pre-set gate; declare max_traversals on a "
+                f"decision transition in this cycle"
+            )
 
         return errors
 
@@ -363,7 +497,7 @@ class WorkflowBuilder:
         self.workflow_id = workflow_id
         self.description = description
         self._nodes: List[WorkflowNode] = []
-        self._edges: List[WorkflowEdge] = []
+        self._transitions: List[Transition] = []
         self._entry: Optional[str] = None
         self._last: Optional[WorkflowNode] = None
         self._scheduling: Optional[SchedulingPolicy] = None
@@ -377,9 +511,9 @@ class WorkflowBuilder:
         #   - the previous node was a branch (branches route only via their labels), or
         #   - this node is already a target of an existing edge (i.e. a branch "landing pad"
         #     declared later in the chain — it is reached via its label, not by fall-through).
-        already_target = any(edge.target == node.id for edge in self._edges)
+        already_target = any(t.target == node.id for t in self._transitions)
         if self._last is not None and self._last.kind != "branch" and not already_target:
-            self._edges.append(WorkflowEdge(source=self._last.id, target=node.id))
+            self._transitions.append(Transition(source=self._last.id, target=node.id))
         self._nodes.append(node)
         self._last = node
 
@@ -423,10 +557,16 @@ class WorkflowBuilder:
         branches: Dict[str, str],
         *,
         decider: Optional[str] = None,
+        bounds: Optional[Dict[str, int]] = None,
+        exhausted: Optional[Dict[str, str]] = None,
         model_profile: Optional[str] = None,
         inject_plan: bool = False,
         description: str = "",
     ) -> "WorkflowBuilder":
+        """Declare a decision state. ``bounds`` sets the pre-set gate (max traversals) per label —
+        REQUIRED for any label that closes a cycle; ``exhausted`` optionally maps a bounded label
+        to the escape label taken once its gate is exhausted (default: loud failure)."""
+
         node = WorkflowNode(
             id=node_id,
             kind="branch",
@@ -438,8 +578,15 @@ class WorkflowBuilder:
         )
         self._append(node)
         for label, target in branches.items():
-            self._edges.append(
-                WorkflowEdge(source=node_id, target=target, label=label, conditional=True)
+            self._transitions.append(
+                Transition(
+                    source=node_id,
+                    target=target,
+                    label=label,
+                    policy="decision",
+                    max_traversals=(bounds or {}).get(label),
+                    on_exhausted=(exhausted or {}).get(label, "fail"),
+                )
             )
         return self
 
@@ -593,19 +740,19 @@ class WorkflowBuilder:
         if self._entry is None:
             raise WorkflowValidationError(["workflow has no nodes"])
 
-        # Connect terminal nodes (no outgoing edge, non-branch) to END.
-        sources_with_edges = {edge.source for edge in self._edges}
-        edges = list(self._edges)
+        # Connect terminal nodes (no outgoing transition, non-branch) to END.
+        sources_with_outgoing = {t.source for t in self._transitions}
+        transitions = list(self._transitions)
         for node in self._nodes:
             if node.kind == "branch":
                 continue
-            if node.id not in sources_with_edges:
-                edges.append(WorkflowEdge(source=node.id, target=END))
+            if node.id not in sources_with_outgoing:
+                transitions.append(Transition(source=node.id, target=END))
 
         definition = WorkflowDefinition(
             workflow_id=self.workflow_id,
             nodes=list(self._nodes),
-            edges=edges,
+            transitions=transitions,
             entry=self._entry,
             description=self.description,
             scheduling=self._scheduling,

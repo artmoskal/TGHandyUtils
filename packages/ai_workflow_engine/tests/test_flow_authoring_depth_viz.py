@@ -209,7 +209,7 @@ def test_workflow_to_mermaid_renders_structure_and_run_overlay():
     assert "flowchart TD" in text
     assert 'n_route{"route' in text          # branch shape
     assert "-->|good| n_process" in text      # labeled conditional edge
-    assert "-.->|retrace| n_ingest" in text   # bounded back-edge, dashed
+    assert "-.->|retrace \u22641| n_ingest" in text   # bounded back-edge, dashed
     assert 'n_check[/"check' in text          # evaluate shape
 
     class _Rec:

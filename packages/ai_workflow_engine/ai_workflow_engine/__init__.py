@@ -1,6 +1,6 @@
 """Reusable AI workflow engine package."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 from ai_workflow_engine.engine import (
     AgentCapability,
@@ -100,6 +100,7 @@ from ai_workflow_engine.llm_protocol import (
 )
 from ai_workflow_engine.model_binding import current_model_profile, model_profile_scope
 from ai_workflow_engine.planning import PlanArtifact, PlanTask, render_plan
+from ai_workflow_engine.snapshot import MachineSnapshot
 from ai_workflow_engine.flow_authoring import FlowArtifact, FlowNodeSpec, build_definition_from_artifact
 from ai_workflow_engine.viz import save_workflow_html, workflow_to_html, workflow_to_mermaid
 from ai_workflow_engine.workflow import (
@@ -112,7 +113,7 @@ from ai_workflow_engine.workflow import (
     SubworkflowRef,
     WorkflowBuilder,
     WorkflowDefinition,
-    WorkflowEdge,
+    Transition,
     WorkflowNode,
     WorkflowValidationError,
 )
@@ -140,7 +141,8 @@ __all__ = [
     "SubworkflowRef",
     "WorkflowBuilder",
     "WorkflowDefinition",
-    "WorkflowEdge",
+    "Transition",
+    "MachineSnapshot",
     "WorkflowNode",
     "WorkflowValidationError",
     "CapabilityBindingError",

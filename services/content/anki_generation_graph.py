@@ -448,7 +448,7 @@ class AnkiGenerationGraph:
         return decider
 
     def _anki_workflow_definition(self):
-        from ai_workflow_engine.workflow import END, WorkflowDefinition, WorkflowEdge, WorkflowNode
+        from ai_workflow_engine.workflow import END, Transition, WorkflowDefinition, WorkflowNode
 
         steps = [
             "parse_directives", "plan_image_assets", "plan_card_type",
@@ -512,14 +512,37 @@ class AnkiGenerationGraph:
         nodes = [WorkflowNode(id=name, kind="step", capability=name) for name in steps]
         for bid, bmap in branches.items():
             nodes.append(WorkflowNode(id=bid, kind="branch", decider=bid, branches=dict(bmap)))
-        edges = [WorkflowEdge(source=src, target=tgt) for src, tgt in sequential]
+        # Machine-level pre-set gates on every loop-closing label: a SAFETY NET strictly above
+        # the product deciders' own stop logic (deciders halt first; the gate catches runaway).
+        loop_bounds = {
+            ("route_text_validation", "retry"): 3,
+            ("route_text_validation", "fallback"): 2,
+            ("route_cloze_validation", "retry"): 3,
+            ("route_cloze_validation", "fallback"): 2,
+            ("route_visual_validation", "retry"): 3,
+            ("route_visual_validation", "fallback"): 2,
+            ("route_image_generation", "fallback"): 2,
+            ("route_rendered_validation", "fallback"): 2,
+            ("route_quality_evaluation", "retry_card_plan"): 2,
+            ("route_quality_evaluation", "repair_render"): 3,
+            ("route_quality_evaluation", "retry_text_scenario"): 2,
+            ("route_quality_evaluation", "retry_cloze_scenario"): 2,
+            ("route_quality_evaluation", "retry_visual_scenario"): 2,
+            ("route_quality_evaluation", "fallback"): 2,
+        }
+        transitions = [Transition(source=src, target=tgt) for src, tgt in sequential]
         for bid, bmap in branches.items():
             for label, tgt in bmap.items():
-                edges.append(WorkflowEdge(source=bid, target=tgt, label=label, conditional=True))
+                transitions.append(
+                    Transition(
+                        source=bid, target=tgt, label=label, policy="decision",
+                        max_traversals=loop_bounds.get((bid, label)),
+                    )
+                )
         return WorkflowDefinition(
             workflow_id="anki_generation",
             nodes=nodes,
-            edges=edges,
+            transitions=transitions,
             entry="parse_directives",
             description="Anki flashcard generation",
         )

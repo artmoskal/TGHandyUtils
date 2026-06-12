@@ -1952,7 +1952,7 @@ from ai_workflow_engine import (  # noqa: E402
     SubworkflowRef,
     WorkflowBuilder,
     WorkflowDefinition,
-    WorkflowEdge,
+    Transition,
     WorkflowNode,
     WorkflowValidationError,
 )
@@ -2009,18 +2009,23 @@ def test_workflow_builder_builds_valid_definition():
 
 def test_workflow_builder_wires_sequential_and_branch_edges():
     definition = _home_inventory_builder().build()
-    edges = {(e.source, e.target, e.label, e.conditional) for e in definition.edges}
+    transitions = {(t.source, t.target, t.label, t.policy) for t in definition.transitions}
 
-    assert ("select_evidence", "evidence_quality_gate", None, False) in edges
-    assert ("evidence_quality_gate", "extract_items", "enough", True) in edges
-    assert ("evidence_quality_gate", "ask_location", "ambiguous", True) in edges
-    assert ("evidence_quality_gate", "fallback_or_fail", "bad", True) in edges
-    assert not any(e.source == "evidence_quality_gate" and not e.conditional for e in definition.edges)
-    assert ("extract_items", "quality_gate", None, False) in edges
-    assert ("quality_gate", "write_inventory", None, False) in edges
-    assert ("write_inventory", END, None, False) in edges
-    assert ("ask_location", END, None, False) in edges
-    assert ("fallback_or_fail", END, None, False) in edges
+    assert ("select_evidence", "evidence_quality_gate", None, "always") in transitions
+    assert ("evidence_quality_gate", "extract_items", "enough", "decision") in transitions
+    assert ("evidence_quality_gate", "ask_location", "ambiguous", "decision") in transitions
+    assert ("evidence_quality_gate", "fallback_or_fail", "bad", "decision") in transitions
+    assert not any(
+        t.source == "evidence_quality_gate" and t.policy == "always" for t in definition.transitions
+    )
+    assert ("extract_items", "quality_gate", None, "always") in transitions
+    assert ("quality_gate", "write_inventory", None, "always") in transitions
+    assert ("write_inventory", END, None, "always") in transitions
+    assert ("ask_location", END, None, "always") in transitions
+    assert ("fallback_or_fail", END, None, "always") in transitions
+    # the machine is complete data: evaluator control routes are materialized transitions
+    assert ("quality_gate", "write_inventory", "accept", "on_accept") in transitions
+    assert ("quality_gate", "select_evidence", "retrace", "on_reject") in transitions
 
 
 def test_workflow_builder_rejects_unknown_branch_target():
@@ -2049,7 +2054,7 @@ def test_workflow_definition_flags_unsupported_node_kind():
     definition = WorkflowDefinition(
         workflow_id="bogus",
         nodes=[WorkflowNode(id="a", kind="teleport")],  # type: ignore[arg-type]
-        edges=[WorkflowEdge(source="a", target=END)],
+        transitions=[Transition(source="a", target=END)],
         entry="a",
     )
     errors = definition.validate_graph()
@@ -2082,7 +2087,7 @@ from ai_workflow_engine import (  # noqa: E402
     WorkflowExecutor,
     WorkflowRunResult,
 )
-from ai_workflow_engine.workflow import WorkflowEdge as _Edge  # noqa: E402
+from ai_workflow_engine.workflow import Transition as _Edge  # noqa: E402
 
 
 def _shout_engine() -> WorkflowEngine:
@@ -2141,7 +2146,7 @@ async def test_executor_fails_loudly_on_unsupported_node_kind():
     bogus = WorkflowDefinition(
         workflow_id="bogus",
         nodes=[WorkflowNode(id="a", kind="teleport")],  # type: ignore[arg-type]
-        edges=[_Edge(source="a", target=END)],
+        transitions=[_Edge(source="a", target=END)],
         entry="a",
     )
     result = await engine.run(bogus, {})
@@ -2740,7 +2745,7 @@ def test_engine_public_api_is_product_neutral():
     ]
     assert not offenders, f"product-specific names in engine public API: {offenders}"
     # Public workflow models also stay neutral in their field names.
-    for model in (WorkflowNode, WorkflowDefinition, WorkflowEdge, NodeResult, WorkflowRunResult):
+    for model in (WorkflowNode, WorkflowDefinition, Transition, NodeResult, WorkflowRunResult):
         fields = getattr(model, "model_fields", {})
         leaked = [f for f in fields for term in product_terms if term in f.lower()]
         assert not leaked, f"{model.__name__} leaks product field names: {leaked}"

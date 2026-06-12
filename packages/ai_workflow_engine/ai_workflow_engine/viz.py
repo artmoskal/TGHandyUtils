@@ -34,11 +34,15 @@ def workflow_to_mermaid(definition: WorkflowDefinition, result: Any = None) -> s
     lines = ["flowchart TD"]
     statuses: dict[str, str] = {}
     branch_taken: dict[str, str] = {}
+    suspended: Optional[str] = None
     if result is not None:
         for record in getattr(result, "node_results", []):
             statuses[record.node_id] = record.status
             if record.branch_label:
                 branch_taken[record.node_id] = record.branch_label
+        snap = getattr(result, "snapshot", None)
+        if snap is not None:
+            suspended = getattr(snap, "suspended_node", None)
 
     for node in definition.nodes:
         left, right = _SHAPES.get(node.kind, ("[", "]"))
@@ -46,39 +50,59 @@ def workflow_to_mermaid(definition: WorkflowDefinition, result: Any = None) -> s
         lines.append(f'    {_mid(node.id)}{left}"{label}"{right}')
     lines.append(f'    {_mid(END)}(("END"))')
 
-    for edge in definition.edges:
-        src, dst = _mid(edge.source), _mid(edge.target)
-        if edge.conditional and edge.label:
-            taken = branch_taken.get(edge.source) == edge.label
-            label = f"{edge.label} ✓" if taken else edge.label
-            lines.append(f"    {src} -->|{label}| {dst}")
+    for t in definition.transitions:
+        src, dst = _mid(t.source), _mid(t.target)
+        if t.policy == "decision":
+            bound = f" \u27f2\u2264{t.max_traversals}" if t.max_traversals else ""
+            taken = branch_taken.get(t.source) == t.label
+            text = f"{t.label}{bound}" + (" \u2713" if taken else "")
+            lines.append(f"    {src} -->|{text}| {dst}")
+            if t.on_exhausted != "fail":
+                esc = next(
+                    (s for s in definition.transitions
+                     if s.source == t.source and s.label == t.on_exhausted and s.policy == "decision"),
+                    None,
+                )
+                if esc is not None:
+                    lines.append(
+                        f"    {src} -.->|{t.label} exhausted \u21d2 {t.on_exhausted}| {_mid(esc.target)}"
+                    )
+        elif t.policy == "on_accept":
+            lines.append(f"    {src} -->|accept| {dst}")
+        elif t.policy == "on_reject":
+            bound = f" \u2264{t.max_traversals}" if t.max_traversals else ""
+            lines.append(f"    {src} -.->|{t.label}{bound}| {dst}")
         else:
+            # the evaluate node's sequential continuation is already drawn as its accept route
+            if definition.node(t.source).kind == "evaluate":
+                continue
             lines.append(f"    {src} --> {dst}")
 
     for node in definition.nodes:
-        if node.kind == "evaluate" and node.on_reject is not None:
-            kind = getattr(node.on_reject, "kind", "")
-            if kind in ("retrace", "replan"):
-                target = getattr(node.on_reject, "target", None)
-                if target:
-                    lines.append(f"    {_mid(node.id)} -.->|{kind}| {_mid(target)}")
-            elif kind == "retry":
-                cap = node.target_capability or "previous"
-                lines.append(f'    {_mid(node.id)} -.->|retry ≤{getattr(node.on_reject, "max_attempts", 1)}| {_mid(node.id)}')
-            elif kind == "fallback":
-                fb = getattr(node.on_reject, "capability", None) or node.fallback_capability
-                if fb:
-                    fb_id = _mid(f"fb_{node.id}")
-                    lines.append(f'    {fb_id}(["{fb}"]):::fallback')
-                    lines.append(f"    {_mid(node.id)} -.->|fallback| {fb_id}")
+        if node.kind != "evaluate":
+            continue
+        fb = (
+            getattr(node.on_reject, "capability", None)
+            if getattr(node.on_reject, "kind", "") == "fallback"
+            else None
+        ) or node.fallback_capability
+        if fb:
+            fb_id = _mid(f"fb_{node.id}")
+            lines.append(f'    {fb_id}(["{fb}"]):::fallback')
+            lines.append(f"    {_mid(node.id)} -.->|fallback| {fb_id}")
 
     lines.append("    classDef ok fill:#c8e6c9,stroke:#2e7d32;")
     lines.append("    classDef fail fill:#ffcdd2,stroke:#c62828;")
     lines.append("    classDef part fill:#fff9c4,stroke:#f9a825;")
     lines.append("    classDef fallback fill:#eeeeee,stroke:#9e9e9e,stroke-dasharray: 3 3;")
+    lines.append("    classDef susp fill:#bbdefb,stroke:#1565c0,stroke-width:3px;")
     for node_id, status in statuses.items():
+        if node_id == suspended:
+            continue  # the suspension marker below wins
         cls = "ok" if status == "accepted" else ("part" if status == "partial" else "fail")
         lines.append(f"    class {_mid(node_id)} {cls};")
+    if suspended:
+        lines.append(f"    class {_mid(suspended)} susp;")
     return "\n".join(lines)
 
 
