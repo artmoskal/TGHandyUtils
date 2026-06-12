@@ -1,6 +1,7 @@
 """Reusable workflow engine primitives."""
 
 from ai_workflow_engine.engine.agent import AgentCapability, AgentEpisodePlanner
+from ai_workflow_engine.engine.agent_planner import LLMAgentPlanner, ReplayPlanner, build_llm_agent_capability
 from ai_workflow_engine.engine.artifacts import cleanup_artifacts
 from ai_workflow_engine.engine.capabilities import (
     CapabilityRegistry,
@@ -44,6 +45,9 @@ from ai_workflow_engine.engine.supervisor import WorkflowDecisionPlanner, Workfl
 __all__ = [
     "AgentCapability",
     "AgentEpisodePlanner",
+    "LLMAgentPlanner",
+    "ReplayPlanner",
+    "build_llm_agent_capability",
     "StructuredLLMNode",
     "StructuredOutputError",
     "WorkflowLoopController",

@@ -3,6 +3,9 @@
 from ai_workflow_engine.engine import (
     AgentCapability,
     AgentEpisodePlanner,
+    LLMAgentPlanner,
+    ReplayPlanner,
+    build_llm_agent_capability,
     CapabilityRegistry,
     CapabilityRuntime,
     CapabilityCall,
