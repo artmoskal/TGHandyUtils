@@ -12,6 +12,24 @@ Internal package being evolved into a reusable, executable AI workflow builder/r
 > onto this engine (its product LangGraph graph was deleted), and one single `WorkflowExecutor` runs
 > the calendar / site-audit / inventory / card-generation example packs (see `examples.py`).
 
+## Layered architecture — lightweight core, infinitely extensible edges
+
+The framework is a swiss-army knife in the good sense: a small engine that runs *any* scenario,
+plus pluggable layers that extend it **by addition, never by editing the layer below**.
+
+| Layer | What | Extend by |
+|---|---|---|
+| **L0 Core engine** | Orchestration only: graph execution, branch/retry/retrace/replan, fan-out, scheduling + cancellation, budgets, side-effect/privacy gates, trace, checkpoints, model binding, plan-as-data. Zero domain knowledge. LangGraph is the hidden backend. | New *generic* node kinds only — never special cases |
+| **L1 Universal executors** | HOW a model/tool is reached, behind one socket: the `LLMCallable` protocol (LangChain `.invoke` clients are a peer family, not a privilege). Today: LangChain clients, plain async callables (raw HTTP / Ollama). Planned members: **console executors** (non-interactive `claude -p` / `codex exec`) and **no-API executors** (e.g. a browser extension driving a logged-in web LLM). | Implement `LLMCallable` — zero engine edits |
+| **L2 Domain node sets** | Reusable `WorkflowPack`s for project families, shipped as extras: media/image generation (reference images + QC), voice generation, presentation-building from images + scenario, future MCP tool suites. Universal within their domain, never required by L0/L1. | Ship a pack, `register_pack(...)` |
+| (L3 Products) | Workflow definitions, prompts, schemas, adapters, delivery. | `WorkflowBuilder` + capabilities |
+
+Non-negotiable invariant across L1: parse/repair/`pre_parse`, metering (incl. `cost_known=false`
+for subscription/no-API clients), budgets, timeouts, and per-node model binding apply
+**identically through every executor** — policy is engine-owned, transport is pluggable. And
+heterogeneous executors coexist per node in one workflow (strong API model on the planner step,
+weak local model on extraction, browser-bridged on a zero-budget step) via `model_profile`.
+
 ## Gap-Closure Notes (2026-06-10/11)
 
 - **`pre_parse` cleaners (G2):** `StructuredLLMNode(..., pre_parse=WEAK_MODEL_CLEANER,

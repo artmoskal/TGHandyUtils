@@ -93,6 +93,35 @@ if items.low_confidence: retry_or_retrace_somehow()    # ❌ product mini-engine
 - **Config-driven:** `WorkflowEngine.from_config(yaml)` loads profile/limits/policies/model-profiles/
   sinks; runtime policy is configured, never hand-coded in product loops.
 
+## 2b. LAYERED EXTENSIBILITY — the swiss-army contract (Artem, 2026-06-11)
+The framework stays **lightweight at the core and infinitely extensible at the edges**. Three
+layers, each extended **by addition, never by editing the layer below**:
+
+- **L0 — Core engine (orchestration only).** Graph execution, branching, retry/retrace/replan,
+  fan-out, scheduling/cancellation, budgets, side-effect/privacy gates, trace, checkpoints,
+  model binding, plan-as-data. Zero domain knowledge. Minimal deps (LangGraph is the hidden
+  execution backend; nothing else is sacred). *Litmus: a new scenario shape must be expressible
+  with existing node kinds + registered capabilities — if it needs an engine edit, that edit must
+  itself be a new generic node kind, not a special case.*
+- **L1 — Universal executors (client adapters).** HOW a model/tool is reached, behind ONE socket:
+  the `LLMCallable` protocol (and the LangChain-shaped `.invoke` family as a peer, not a
+  privilege). Members today/planned: LangChain clients · plain async callables (raw HTTP, e.g.
+  Ollama) · **console executors** (non-interactive `claude -p` / `codex exec`) · **no-API
+  executors** (e.g. a browser extension driving a logged-in web LLM and returning results).
+  *Invariant: parse/repair/pre_parse, metering (incl. `cost_known=false` for subscription/no-API),
+  budgets, timeouts, and model binding apply IDENTICALLY through every executor — policy is
+  engine-owned, transport is pluggable.*
+- **L2 — Domain node sets (packs).** Reusable `WorkflowPack`s for project *families*, installed as
+  extras and wired via `register_pack`: media/image generation (incl. reference images + QC),
+  voice generation, presentation-builder-from-images-and-scenario, future MCP tool suites.
+  Universal *within their domain*, irrelevant outside it — and never required by L0/L1.
+- (Products are effectively L3: workflow definitions, prompts, schemas, adapters, delivery.)
+
+**Values addendum:** (a) every new core dependency must justify why it isn't an extra; (b) a new
+executor = implement `LLMCallable`, a new domain = ship a pack — neither touches engine source;
+(c) heterogeneous executors coexist *per node* in one workflow (strong API model on the planner
+step, local weak model on extraction, browser-bridged on a zero-budget step) via G3 model binding.
+
 ## 3. FIRST-CLASS CONCEPTS (every one is executable; none are documentation-only labels)
 1. **`WorkflowDefinition`** (+ `WorkflowBuilder` DSL): nodes, edges, branches, conditions,
    subworkflows, retry/retrace/fallback policy, evaluator gates, capability binding, scheduling
