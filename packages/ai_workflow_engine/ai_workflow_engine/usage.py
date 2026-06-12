@@ -26,6 +26,11 @@ class WorkflowBudget:
     max_text_calls: Optional[int] = None
     max_image_calls: Optional[int] = None
     max_estimated_usd: Optional[float] = None
+    max_worker_calls: Optional[int] = None
+    max_input_tokens_per_call: Optional[int] = None
+    max_output_tokens_per_call: Optional[int] = None
+    max_images_per_call: Optional[int] = None
+    max_estimated_usd_per_call: Optional[float] = None
 
 
 @dataclass
@@ -33,6 +38,7 @@ class WorkflowUsageContext:
     run_context: WorkflowRunContext
     summary: WorkflowUsageSummary
     budget: WorkflowBudget
+    worker_call_count: int = 0
 
 
 _ACTIVE_USAGE: ContextVar[Optional[WorkflowUsageContext]] = ContextVar("workflow_usage", default=None)
@@ -107,13 +113,44 @@ def current_usage_context() -> Optional[WorkflowUsageContext]:
     return _ACTIVE_USAGE.get()
 
 
-def budget_from_config(config: Any) -> WorkflowBudget:
+def budget_from_config(config: Any, *, limits: Any = None) -> WorkflowBudget:
     if config is not None and not getattr(config, "WORKFLOW_USAGE_TRACKING_ENABLED", True):
         return WorkflowBudget()
-    return WorkflowBudget(
+    if limits is None and config is not None:
+        profile = getattr(config, "profile", None)
+        limits = getattr(profile, "limits", None)
+    config_budget = WorkflowBudget(
         max_text_calls=_positive_int(getattr(config, "WORKFLOW_MAX_TEXT_CALLS_PER_RUN", None)),
         max_image_calls=_positive_int(getattr(config, "WORKFLOW_MAX_IMAGE_CALLS_PER_RUN", None)),
         max_estimated_usd=_positive_float(getattr(config, "WORKFLOW_MAX_ESTIMATED_USD_PER_RUN", None)),
+        max_worker_calls=_positive_int(getattr(config, "WORKFLOW_MAX_WORKER_CALLS_PER_RUN", None)),
+        max_input_tokens_per_call=_positive_int(getattr(config, "WORKFLOW_MAX_INPUT_TOKENS_PER_CALL", None)),
+        max_output_tokens_per_call=_positive_int(getattr(config, "WORKFLOW_MAX_OUTPUT_TOKENS_PER_CALL", None)),
+        max_images_per_call=_positive_int(getattr(config, "WORKFLOW_MAX_IMAGES_PER_CALL", None)),
+        max_estimated_usd_per_call=_positive_float(
+            getattr(config, "WORKFLOW_MAX_ESTIMATED_USD_PER_CALL", None)
+        ),
+    )
+    if limits is None:
+        return config_budget
+    return WorkflowBudget(
+        max_text_calls=config_budget.max_text_calls,
+        max_image_calls=config_budget.max_image_calls,
+        max_estimated_usd=_limit_float(getattr(limits, "max_estimated_usd", None), config_budget.max_estimated_usd),
+        max_worker_calls=_limit_int(getattr(limits, "max_worker_calls", None), config_budget.max_worker_calls),
+        max_input_tokens_per_call=_limit_int(
+            getattr(limits, "max_input_tokens_per_call", None),
+            config_budget.max_input_tokens_per_call,
+        ),
+        max_output_tokens_per_call=_limit_int(
+            getattr(limits, "max_output_tokens_per_call", None),
+            config_budget.max_output_tokens_per_call,
+        ),
+        max_images_per_call=_limit_int(getattr(limits, "max_images_per_call", None), config_budget.max_images_per_call),
+        max_estimated_usd_per_call=_limit_float(
+            getattr(limits, "max_estimated_usd_per_call", None),
+            config_budget.max_estimated_usd_per_call,
+        ),
     )
 
 
@@ -124,15 +161,22 @@ def check_budget_before_call(operation: str, node: str) -> None:
     if operation == "chat" and context.budget.max_text_calls is not None:
         if context.summary.text_call_count >= context.budget.max_text_calls:
             raise WorkflowBudgetExceeded(
-                f"Workflow text-call budget exceeded before node {node}: "
+                f"Workflow max_text_calls budget exceeded before node {node}: "
                 f"{context.summary.text_call_count}/{context.budget.max_text_calls}"
             )
     if operation == "image" and context.budget.max_image_calls is not None:
         if context.summary.image_call_count >= context.budget.max_image_calls:
             raise WorkflowBudgetExceeded(
-                f"Workflow image-call budget exceeded before node {node}: "
+                f"Workflow max_image_calls budget exceeded before node {node}: "
                 f"{context.summary.image_call_count}/{context.budget.max_image_calls}"
             )
+    if operation in {"chat", "agent", "external"} and context.budget.max_worker_calls is not None:
+        if context.worker_call_count >= context.budget.max_worker_calls:
+            raise WorkflowBudgetExceeded(
+                f"Workflow max_worker_calls budget exceeded before {operation} node {node}: "
+                f"{context.worker_call_count}/{context.budget.max_worker_calls}"
+            )
+        context.worker_call_count += 1
 
 
 def record_usage_event(event: WorkflowUsageEvent) -> None:
@@ -534,3 +578,23 @@ def _positive_float(value: Any) -> Optional[float]:
     except (TypeError, ValueError):
         return None
     return parsed if parsed > 0 else None
+
+
+def _limit_int(value: Any, fallback: Optional[int]) -> Optional[int]:
+    if value is None:
+        return fallback
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return parsed if parsed >= 0 else fallback
+
+
+def _limit_float(value: Any, fallback: Optional[float]) -> Optional[float]:
+    if value is None:
+        return fallback
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return parsed if parsed >= 0 else fallback

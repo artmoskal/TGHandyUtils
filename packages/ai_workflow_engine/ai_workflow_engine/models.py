@@ -398,6 +398,11 @@ class RuntimeLimits(BaseModel):
     max_parallel_children: int = 4
     timeout_s: Optional[float] = None
     max_estimated_usd: Optional[float] = None
+    max_worker_calls: Optional[int] = None
+    max_input_tokens_per_call: Optional[int] = None
+    max_output_tokens_per_call: Optional[int] = None
+    max_images_per_call: Optional[int] = None
+    max_estimated_usd_per_call: Optional[float] = None
 
 
 class SafetyPolicy(BaseModel):

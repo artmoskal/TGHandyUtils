@@ -54,7 +54,13 @@ class WorkflowRunner:
         start = time.monotonic()
         self._log("workflow_start", ctx, {})
         try:
-            usage_context = WorkflowUsageContext(ctx, usage_summary, budget_from_config(self.config))
+            engine_context = state.get("engine_context")
+            limits = getattr(engine_context, "limits", None)
+            usage_context = WorkflowUsageContext(
+                ctx,
+                usage_summary,
+                budget_from_config(self.config, limits=limits),
+            )
             with workflow_usage_scope(usage_context):
                 try:
                     result = await self._invoke_graph(graph, state, graph_config)

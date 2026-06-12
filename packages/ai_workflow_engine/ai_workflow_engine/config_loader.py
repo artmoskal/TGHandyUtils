@@ -21,7 +21,10 @@ from ai_workflow_engine.models import ModelProfile, WorkflowProfile
 
 OverridePath = tuple[str, ...]
 
-SECRET_KEY_RE = re.compile(r"(api[_-]?key|token|secret|password|client[_-]?secret)", re.IGNORECASE)
+SECRET_KEY_RE = re.compile(
+    r"(api[_-]?key|(^|[_-])token($|[_-])|secret|password|client[_-]?secret)",
+    re.IGNORECASE,
+)
 SECRET_VALUE_RE = re.compile(
     r"(sk-[A-Za-z0-9_-]{16,}|xox[baprs]-[A-Za-z0-9-]{16,}|AIza[A-Za-z0-9_-]{16,})"
 )
@@ -42,6 +45,12 @@ DEFAULT_ENV_OVERRIDES: dict[str, OverridePath] = {
     "MAX_PARALLEL_CHILDREN": ("workflow", "limits", "max_parallel_children"),
     "TIMEOUT_S": ("workflow", "limits", "timeout_s"),
     "MAX_ESTIMATED_USD": ("workflow", "limits", "max_estimated_usd"),
+    "MAX_WORKER_CALLS": ("workflow", "limits", "max_worker_calls"),
+    "MAX_WORKER_CALLS_PER_RUN": ("workflow", "limits", "max_worker_calls"),
+    "MAX_INPUT_TOKENS_PER_CALL": ("workflow", "limits", "max_input_tokens_per_call"),
+    "MAX_OUTPUT_TOKENS_PER_CALL": ("workflow", "limits", "max_output_tokens_per_call"),
+    "MAX_IMAGES_PER_CALL": ("workflow", "limits", "max_images_per_call"),
+    "MAX_ESTIMATED_USD_PER_CALL": ("workflow", "limits", "max_estimated_usd_per_call"),
     "SCHEDULING_MODE": ("workflow", "scheduling", "mode"),
     "MAX_QUEUE_SIZE": ("workflow", "scheduling", "max_queue_size"),
     "STALE_AFTER_S": ("workflow", "scheduling", "stale_after_s"),

@@ -23,6 +23,7 @@ from ai_workflow_engine.models import (
     WorkflowTraceEvent,
     WorkflowUsageSummary,
 )
+from ai_workflow_engine.usage import check_budget_before_call
 
 CapabilityHandler = Callable[[CapabilityContext, Any], Any]
 
@@ -169,6 +170,8 @@ class CapabilityRuntime:
                     error=error,
                     metadata={"denied_side_effects": denied},
                 )
+            if spec.kind in {"agent", "external"}:
+                check_budget_before_call(spec.kind, name)
             result = handler(context, parsed_payload)
             if inspect.isawaitable(result):
                 if spec.timeout_s:
