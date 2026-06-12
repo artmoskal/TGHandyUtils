@@ -136,6 +136,9 @@ Per-run inputs (camera id, location hint) go via `engine.run(..., constraints={.
   `test_backend_slot_held_until_worker_completes_blocks_concurrent_call`). Modes:
   `single_flight_cancel`, `live_latest_only`, `run_latest`, `drop_stale` (`stale_after_s`),
   `coalesce`, `queue`, `drop_not_queue`. Lane = `backend_key` + `max_backend_concurrency`.
+  Threading contract: one engine instance is bound to one live asyncio event loop. If a sidecar
+  thread needs to submit work, use
+  `asyncio.run_coroutine_threadsafe(engine.run(...), engine_loop)`.
 - **Evidence refs, never raw bytes in state.** `EvidenceRef(role="contents", uri="frame://cam-1/…",
   media_type="image/jpeg", summary=…)`. Raw pixels stay out of state / trace / checkpoints.
 - **Raw-media export = double consent.** A capability exporting raw media declares

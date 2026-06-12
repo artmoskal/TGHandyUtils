@@ -192,14 +192,47 @@ Original request:
             return await self._invoke_callable_with_retry(
                 prompt_bundle, content_hash, usage_metadata, list(images), profile
             )
-        return await asyncio.to_thread(
-            self._invoke_with_retry,
+        return await self._invoke_blocking_with_retry(
             prompt_bundle,
             content_hash,
             message_factory,
             usage_metadata,
             profile,
         )
+
+    async def _invoke_blocking_with_retry(
+        self,
+        prompt_bundle: PromptBundle,
+        content_hash: str,
+        message_factory: Optional[MessageFactory],
+        usage_metadata: Optional[dict[str, Any]] = None,
+        profile: Any = None,
+    ) -> Any:
+        worker = asyncio.create_task(
+            asyncio.to_thread(
+                self._invoke_with_retry,
+                prompt_bundle,
+                content_hash,
+                message_factory,
+                usage_metadata,
+                profile,
+            )
+        )
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            # Blocking LangChain-style clients cannot be interrupted once their thread is running.
+            # Keep the coroutine alive until the thread finishes so scheduler slots are released only
+            # after the actual backend call exits; then propagate cancellation to the caller.
+            try:
+                await asyncio.shield(worker)
+            except Exception as exc:
+                logger.debug(
+                    "structured_llm_node_blocking_cancelled_after_worker_error node=%s error=%s",
+                    self.name,
+                    exc,
+                )
+            raise
 
     async def _invoke_callable_with_retry(
         self,

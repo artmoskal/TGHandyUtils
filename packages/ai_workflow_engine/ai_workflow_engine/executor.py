@@ -161,6 +161,7 @@ class WorkflowExecutor:
         # Shared across all runs on this executor so concurrent runs contend for the same backend
         # slots (single-flight / backpressure are engine-owned, not per-run policy state).
         self.scheduler = WorkflowScheduler()
+        self._bound_loop: Optional[asyncio.AbstractEventLoop] = None
         self._scheduled_tasks: Dict[str, tuple[str, asyncio.Task[Any]]] = {}
         self._scheduled_cancellations: Dict[tuple[str, str], str] = {}
         # ModelProfile registry for declarative per-node model binding (set by WorkflowEngine).
@@ -196,6 +197,7 @@ class WorkflowExecutor:
     ) -> WorkflowRunResult:
         """Execute ``definition`` from ``payload`` under ``context`` and return the envelope."""
 
+        self._bind_or_validate_event_loop()
         # Pre-flight: bindings and node kinds must resolve, or fail loudly + trace (no run).
         binding_error = self._preflight(definition)
         if binding_error is not None:
@@ -227,6 +229,7 @@ class WorkflowExecutor:
         summary (shared budget) instead of opening a fresh scope.
         """
 
+        self._bind_or_validate_event_loop()
         binding_error = self._preflight(definition)
         if binding_error is not None:
             return self._failed_envelope(definition, binding_error)
@@ -234,6 +237,17 @@ class WorkflowExecutor:
         graph_config = {"recursion_limit": self._recursion_limit(definition, context)}
         final_state = await compiled.ainvoke(self._initial_state(payload, context), config=graph_config)
         return self._envelope(definition, final_state)
+
+    def _bind_or_validate_event_loop(self) -> None:
+        current = asyncio.get_running_loop()
+        if self._bound_loop is None or self._bound_loop.is_closed():
+            self._bound_loop = current
+            return
+        if self._bound_loop is not current:
+            raise RuntimeError(
+                "This WorkflowExecutor is bound to one event loop; from other threads/loops use "
+                "asyncio.run_coroutine_threadsafe(engine.run(...), engine_loop)"
+            )
 
     @staticmethod
     def _initial_state(payload: Any, context: CapabilityContext) -> Dict[str, Any]:

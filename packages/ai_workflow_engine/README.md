@@ -82,6 +82,9 @@ weak local model on extraction, browser-bridged on a zero-budget step) via `mode
 - **Single-flight cancellation (G7):** `SchedulingPolicy(mode="single_flight_cancel")` is wired
   through the executor: a superseding run cancels the active worker, waits for real exit, promotes the
   latest run, and emits schedule trace decisions.
+  Threading contract: one `WorkflowExecutor` is bound to one live asyncio event loop. Sidecars or
+  other threads must marshal onto that loop with
+  `asyncio.run_coroutine_threadsafe(engine.run(...), engine_loop)`.
 - **Planner node (G6):** `WorkflowBuilder.plan(...)` invokes a planner capability that emits a
   `PlanArtifact`. The executor validates all declared tasks before execution (registered capability,
   side-effect allow-list, max task count, no recursive planner task), executes sequentially or
