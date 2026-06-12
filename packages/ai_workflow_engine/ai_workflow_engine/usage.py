@@ -194,6 +194,14 @@ def estimate_text_tokens(value: Any) -> int:
         return 0
     if isinstance(value, BaseMessage):
         return estimate_text_tokens(value.content)
+    if hasattr(value, "role") and hasattr(value, "tool_calls") and hasattr(value, "tool_results"):
+        # ChatMessage (duck-typed to avoid an import cycle with llm_protocol): count content,
+        # tool-call arguments, and tool-result text — never the pydantic repr (which would inflate
+        # the estimate with field names and image fingerprints).
+        parts: list[Any] = [value.content]
+        parts.extend(call.arguments for call in value.tool_calls)
+        parts.extend(result.content for result in value.tool_results)
+        return estimate_text_tokens(parts)
     if isinstance(value, str):
         if not value:
             return 0
@@ -595,10 +603,16 @@ def _enforce_usd_budget(context: WorkflowUsageContext) -> None:
 def _enforce_per_call_budget(event: WorkflowUsageEvent, context: WorkflowUsageContext) -> None:
     max_output = context.budget.max_output_tokens_per_call
     if max_output is not None and event.output_tokens > max_output:
-        raise WorkflowBudgetExceeded(
-            f"Workflow max_output_tokens_per_call budget exceeded after node {event.node}: "
-            f"{event.output_tokens}/{max_output}",
-            decision="truncated_by_budget",
+        # Spec (engine-completion §5): the output is already produced and paid for — record the
+        # truncation loudly (usage-event metadata + structured log), do NOT retroactively fail
+        # the call. Runaway protection across turns comes from max_worker_calls / USD caps.
+        event.metadata["truncated_by_budget"] = True
+        event.metadata["output_tokens_over_cap"] = f"{event.output_tokens}/{max_output}"
+        logger.warning(
+            "workflow_output_tokens_over_cap node=%s tokens=%s cap=%s",
+            event.node,
+            event.output_tokens,
+            max_output,
         )
     max_usd = context.budget.max_estimated_usd_per_call
     if (

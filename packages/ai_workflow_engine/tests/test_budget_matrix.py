@@ -302,11 +302,14 @@ async def test_output_token_cap_records_truncated_trace_after_response():
 
     result = await engine.run("per_call_budget", {"item": "budget"})
 
-    assert result.status == "failed"
+    # Spec semantics: the response is already produced and paid for — the run continues with the
+    # output, and the truncation is recorded loudly on the usage event (never a retroactive fail).
+    assert result.status == "completed"
     assert len(client.requests) == 1
-    assert result.usage.events[0].output_tokens == 5
-    assert "max_output_tokens_per_call" in (result.error or "")
-    assert any(event.node == "classify" and event.decision == "truncated_by_budget" for event in result.trace)
+    event = result.usage.events[0]
+    assert event.output_tokens == 5
+    assert event.metadata["truncated_by_budget"] is True
+    assert event.metadata["output_tokens_over_cap"] == "5/4"
 
 
 async def test_image_cap_denies_vision_node_before_llm_call():
@@ -390,3 +393,19 @@ async def test_input_token_cap_applies_to_langchain_path_too():
         with pytest.raises(WorkflowBudgetExceeded, match="max_input_tokens_per_call"):
             await node.run({"text": "long prompt body " * 50})
     assert client.calls == 0  # denied BEFORE the LangChain client was invoked
+
+
+def test_estimate_text_tokens_counts_chat_message_content_not_repr():
+    from ai_workflow_engine import ChatMessage, ToolCallRequest, ToolResult
+    from ai_workflow_engine.usage import estimate_text_tokens
+
+    message = ChatMessage(role="user", content="abcd")
+    assert estimate_text_tokens([message]) == 1  # 4 chars -> 1 token, no field-name inflation
+
+    tooled = ChatMessage(
+        role="tool",
+        tool_results=[ToolResult(call_id="c1", content="x" * 40)],
+        tool_calls=[ToolCallRequest(call_id="c1", name="t", arguments={"q": "y" * 40})],
+    )
+    estimate = estimate_text_tokens([tooled])
+    assert 15 <= estimate <= 40  # content+arguments based, not str(repr) of the whole model
