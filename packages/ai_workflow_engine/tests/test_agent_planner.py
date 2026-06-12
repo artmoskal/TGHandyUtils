@@ -442,3 +442,45 @@ async def test_replay_planner_replays_steps_without_llm_usage_and_detects_diverg
     assert partial.status == "accepted"
     assert partial.output.output["diverged"] is True
     assert "output" in partial.output.output["divergence"]
+
+
+async def test_planner_preserves_client_reported_notional_cost():
+    """A console-style client reports subscription cost via notional_usd (estimated_usd=None);
+    the planner must not lose it (cost-honesty: never an unknown when the envelope told us)."""
+    from ai_workflow_engine import LLMRequest, LLMResponse
+    from ai_workflow_engine.engine.agent_planner import LLMAgentPlanner
+    from ai_workflow_engine.models import (
+        AgentRunRequest,
+        CapabilityContext,
+        WorkflowGoal,
+        WorkflowRunContext,
+        WorkflowUsageSummary,
+    )
+    from ai_workflow_engine.usage import WorkflowBudget, WorkflowUsageContext, workflow_usage_scope
+
+    async def console_style_client(request: LLMRequest) -> LLMResponse:
+        return LLMResponse(
+            text='{"label": "done"}',
+            model="claude_p",
+            estimated_usd=None,
+            cost_class="subscription_notional",
+            notional_usd=0.0734,
+        )
+
+    planner = LLMAgentPlanner(console_style_client, tool_specs={}, node_name="console_planner")
+    context = CapabilityContext(
+        goal=WorkflowGoal(workflow_type="pilot", objective="x"),
+        run_context=WorkflowRunContext(workflow_id="wf-n", workflow_type="pilot"),
+    )
+    summary = WorkflowUsageSummary()
+    usage_context = WorkflowUsageContext(context.run_context, summary, WorkflowBudget())
+    with workflow_usage_scope(usage_context):
+        decision = await planner.next_step(
+            context, AgentRunRequest(prompt="go", subscription_mode=True), history=[]
+        )
+
+    assert decision.action == "finish"
+    event = summary.events[0]
+    assert event.cost_class == "subscription_notional"
+    assert event.notional_usd == 0.0734
+    assert event.metadata["cost_known"] is True

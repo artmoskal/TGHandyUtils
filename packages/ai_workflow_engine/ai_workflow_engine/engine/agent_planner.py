@@ -83,13 +83,20 @@ Original request:
             )
             self._check_turn_budget(llm_request)
             response = await self.llm(llm_request)
+            # Honor client-declared cost truth first (e.g. ConsoleLLMClient reports subscription
+            # cost via response.notional_usd with estimated_usd=None); fall back to the episode's
+            # subscription_mode. Never lose a reported notional cost (cost-honesty, RC2).
+            subscription = request.subscription_mode or response.cost_class == "subscription_notional"
+            notional = response.notional_usd
+            if notional is None and subscription:
+                notional = response.estimated_usd
             record_callable_usage(
                 response,
                 node=self.node_name,
                 attempt=len(history) + repair_round + 1,
                 metadata={"agent_planner": True},
-                cost_class="subscription_notional" if request.subscription_mode else "metered",
-                notional_usd=response.estimated_usd if request.subscription_mode else None,
+                cost_class="subscription_notional" if subscription else "metered",
+                notional_usd=notional,
             )
 
             if response.tool_calls:
