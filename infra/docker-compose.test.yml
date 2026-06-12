@@ -8,7 +8,7 @@ services:
     env_file: ../.env
     environment:
       # Python path for imports
-      - PYTHONPATH=/app:/app/packages/ai_workflow_engine
+      - PYTHONPATH=/app:/app/packages/ai_workflow_engine:/app/packages/ai_workflow_tools
     volumes:
       # Mount source code for development
       - ../:/app

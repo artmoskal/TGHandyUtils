@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-workflow-tools"
+version = "0.1.0"
+description = "Reusable CLI-agent tools for ai-workflow-engine."
+requires-python = ">=3.10"
+dependencies = [
+    "ai-workflow-engine",
+    "pydantic>=2.13.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ai_workflow_tools*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "unit: tools package unit tests",
+    "integration: tools package integration-style tests (still hermetic/fake-backed)",
+]
