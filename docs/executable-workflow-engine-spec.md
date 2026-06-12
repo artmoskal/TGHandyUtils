@@ -140,17 +140,46 @@ Lens: a framework earns a mandatory seat only by adding real functionality (per 
   keep all our code. Explicit registration is also load-bearing for traceability. Revisit only if
   we ever need lifecycle scopes/interception that the bespoke ~300-line container can't express.
 
+## 2e. STATE-MACHINISH EVOLUTION — AI navigates, authors, and recurses ON RAILS (Artem, 2026-06-12)
+
+**Concept (validated + implemented):** the engine is a compiled state machine whose transitions AI
+may *decide* (branch deciders, evaluator gates — existing) and whose work AI may *author* — now at
+two sanctioned levels:
+
+1. **Bounded recursive planning (depth-N, pre-set 1).** A planned task MAY itself be a planner
+   when the node opts in (`max_plan_depth >= 2`). Justification for allowing recursion at all:
+   real decompositions are hierarchical ("audit site" → per-section sub-plans), and forbidding
+   depth pushed that need into awkward hand-written subworkflow nesting. Why it stays safe —
+   the multiplication problem is bounded on every axis: per-level `max_tasks`, **cumulative
+   `max_total_planned_tasks` across ALL levels** (a counter depth cannot outrun), shared run
+   budget/USD caps, child plans re-validated at depth+1 against the SAME allow-lists (loud abort,
+   zero partial execution), replan owned by the TOP planner node only, recursion in `fanout`
+   execution mode rejected at build time. Trace: `plan:subplan_started/done/partial` +
+   per-task events with depth metadata.
+2. **Flow-as-data (`FlowArtifact` → `engine.run_authored_flow`).** An LLM emits a constrained
+   declarative flow (steps/branches/evaluator gates only); the engine validates EVERYTHING before
+   compiling — registered capabilities, allow-listed side effects, earlier-step-only retrace
+   targets, resolvable model profiles, `max_nodes` — and runs it through the SAME executor,
+   preflight, budgets, and trace as hand-written workflows. **The recursion firewall:** authored
+   flows may not contain planner or flow-author capabilities — AI-written things never contain
+   AI-writers; recursion exists ONLY through the depth mechanism above, where multiplication is
+   counter-bounded.
+
+**Visualization:** `workflow_to_mermaid/html` renders any definition as the state machine it is —
+node shapes by kind, labeled transitions, dashed bounded back-edges — and overlays a run result
+(status-colored states, check-marked taken transitions). Zero new dependencies.
+
 ## 2d. DEFERRED / OUT-OF-SCOPE REGISTER (single source; update when items land or die)
 | Item | Context | Trigger to do it |
 |---|---|---|
-| Media/voice seams → tools lib | Spec §12: stays in core, Anki imports them; needs BC re-export shims | When a 2nd consumer wants media without core, or next majorish version |
+| Media/voice seams → tools lib | Spec §12: stays in core. **2026-06-12 finding: "re-export shims in engine" would IMPORT tools = L0←L2 inversion — the originally planned mechanism is illegal.** Correct path: consumers (incl. Anki) switch imports to the tools location FIRST, then the engine copy is deleted (no shims) | Anki import migration |
 | Browser-bridge no-API executor | L1 member, protocol-ready; §2c #3: highest-maintenance member | A concrete paying use case (build LAST) |
-| `workflow_capability` adapter (parallel sub-workflow join / fanout over workflows) | Subworkflow nodes run sequentially; planner-fanout covers heterogeneous parallelism today | A consumer needs parallel sub-audit join (~30 lines) |
+| ~~`workflow_capability` adapter~~ | **DONE 2026-06-12**: `engine.register_workflow_capability(name, workflow_id)` — fanout over child workflows with partial-failure isolation | — |
 | Durable mid-run resume (resume any workflow at node N) | Checkpoints + mid-plan resume exist; clarification-resume re-runs; long-job resume is product-side design (both consumer guides say so) | First multi-hour resumable workload |
 | Token-level output streaming | Event-level live sinks exist (WP6); token streaming would extend `LLMCallable` | A UI that needs it |
 | Image+reference+QC promotion to an L2 pack | Production-proven inside Anki product code | 2nd consumer of the pattern (§2c #4 bar) |
 | Presentation-builder pack, MCP tool-suite packs | Named in the L2 vision | When the project materializes |
-| Planner depth ≥2 / recursive planners | FORBIDDEN by §2c #2, not merely deferred | Explicit spec change only |
+| ~~Planner depth ≥2~~ | **DONE 2026-06-12 via §2e**: bounded recursion, pre-set `max_plan_depth=1`, cumulative task budget | — |
 | `ANKI_*` env alias bridge sunset | config-architecture CFG-8: transition bridge, must not leak into engine | Pi `.env` migrated by aws_deploy |
 | `test.sh` `-k "a or b"` word-split bug | Workaround = paths/single tokens, documented everywhere | Next time someone touches test.sh |
 | Executor god-file split (handlers per module) | §2c #5: cosmetic, sanctioned | Next feature touching executor.py |
@@ -162,9 +191,12 @@ fence; violating a fence requires a deliberate, user-approved decision — never
 1. **Node-kind proliferation** (the inner-platform cliff). 8 kinds exist (step/branch/fanout/
    evaluate/subworkflow/human/planner). Domain needs become *capabilities or packs*, never kinds;
    a new kind must be generic across products. Fence: §2b rule + product-neutrality guard test.
-2. **Planner depth creep.** Depth-1 plans + bounded replans are the FEATURE. "Planners that spawn
-   planners" is the unbounded-agent cliff — requires an explicit spec change, not an accommodation.
-   Fence: depth-1 validation + `max_replans` counters are contract, with tests.
+2. **Planner depth creep.** AMENDED 2026-06-12 (Artem, explicit §2e decision): bounded recursion
+   is now SUPPORTED but PRE-SET OFF — `max_plan_depth=1` by default; a node opts into depth N
+   explicitly and the cumulative `max_total_planned_tasks` caps total AI-authored work across ALL
+   levels, so depth can multiply intent but never work. UNBOUNDED recursion remains forbidden;
+   AI-authored flows may not contain AI-writers (§2e). Fence: depth-aware validation + cumulative
+   budget + tests.
 3. **No-API/browser executor = highest-maintenance member of L1.** Brittle (UI drift), slow,
    ToS-gray. The protocol contains its blast radius (it is just one `LLMCallable`,
    `cost_known=false`, aggressive timeouts), but the adapter itself will be a maintenance pet.

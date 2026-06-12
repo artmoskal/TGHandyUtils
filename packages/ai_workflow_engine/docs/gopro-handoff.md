@@ -240,3 +240,15 @@ Implemented and gate-verified (commits up to `b014268`+):
   lives at `ai_workflow_tools.pilots.run_toy_three_axis_site_audit_pilot` — read it as the canonical
   end-to-end recipe; its test proves the replay run makes ZERO LLM calls.
 - Reminder (threading contract): one `WorkflowExecutor` ↔ one event loop; sidecar threads marshal via `asyncio.run_coroutine_threadsafe(engine.run(...), engine_loop)`.
+
+**Also landed 2026-06-12 (later — all additive, no breaking changes):**
+- **Flow-as-data**: `await engine.run_authored_flow(FlowArtifact(...), payload)` — an LLM can emit
+  a constrained workflow (steps/branches/gates), validated exhaustively before compiling, run on
+  the same rails. AI-authored flows cannot contain planners/flow-authors (recursion firewall).
+- **Bounded recursive planning**: `.plan(..., max_plan_depth=2, max_total_planned_tasks=32)` —
+  planned tasks may themselves be planners, depth pre-set to 1 (flat) unless you opt in; cumulative
+  task budget caps total work across all levels.
+- **Parallel sub-workflows**: `engine.register_workflow_capability("run_child", "child_flow")` then
+  `.fanout(..., capability="run_child")` — child workflows in parallel with failure isolation.
+- **Visualizer**: `workflow_to_mermaid(defn, result)` / `save_workflow_html(...)` — the state
+  machine as a diagram, with executed-path overlay (status colors, ✓ on taken transitions).
