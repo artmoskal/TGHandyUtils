@@ -11,6 +11,7 @@ from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 
+from ai_workflow_engine.parsing import STRUCTURED_REPAIR_PROMPT
 from ai_workflow_engine.usage import WorkflowBudgetExceeded, invoke_metered_chat
 
 logger = logging.getLogger(__name__)
@@ -40,15 +41,7 @@ class PromptBundle:
 class StructuredLLMNode:
     """Run one structured LLM call with Pydantic parsing and one repair attempt."""
 
-    _DEFAULT_REPAIR_PROMPT = """The previous structured-output response was invalid.
-
-Validation/parsing error:
-{error}
-
-Return a corrected JSON object only. Do not include prose or Markdown fences.
-
-Original request:
-{original_prompt}"""
+    _DEFAULT_REPAIR_PROMPT = STRUCTURED_REPAIR_PROMPT
 
     def __init__(
         self,

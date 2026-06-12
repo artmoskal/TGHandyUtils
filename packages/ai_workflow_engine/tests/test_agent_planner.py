@@ -484,3 +484,52 @@ async def test_planner_preserves_client_reported_notional_cost():
     assert event.cost_class == "subscription_notional"
     assert event.notional_usd == 0.0734
     assert event.metadata["cost_known"] is True
+
+
+async def test_build_llm_agent_capability_joins_the_shared_trace_sink():
+    """Episode tool-step traces must land in the SAME sink as the rest of the workflow when the
+    engine runtime/sink is passed — no private trace islands."""
+    from ai_workflow_engine import InMemoryTraceSink, LLMRequest, LLMResponse, ToolCallRequest
+    from ai_workflow_engine.engine.agent_planner import build_llm_agent_capability
+    from ai_workflow_engine.engine.capabilities import CapabilityRegistry
+    from ai_workflow_engine.models import (
+        AgentRunRequest,
+        CapabilityContext,
+        CapabilitySpec,
+        WorkflowGoal,
+        WorkflowRunContext,
+    )
+
+    registry = CapabilityRegistry()
+    registry.register(
+        CapabilitySpec(name="probe_tool", kind="tool", description="probe"),
+        lambda ctx, payload: {"ok": True},
+    )
+
+    calls = {"n": 0}
+
+    async def scripted_llm(request: LLMRequest) -> LLMResponse:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return LLMResponse(
+                tool_calls=[ToolCallRequest(call_id="c1", name="probe_tool", arguments={})]
+            )
+        return LLMResponse(text='{"done": true}')
+
+    shared_sink = InMemoryTraceSink()
+    capability = build_llm_agent_capability(
+        scripted_llm,
+        registry,
+        allowed_tools=["probe_tool"],
+        trace_sink=shared_sink,
+    )
+    context = CapabilityContext(
+        goal=WorkflowGoal(workflow_type="episode", objective="probe"),
+        run_context=WorkflowRunContext(workflow_id="wf-sink", workflow_type="episode"),
+    )
+
+    result = await capability(context, AgentRunRequest(prompt="go", allowed_tools=["probe_tool"]))
+
+    assert result.status in ("accepted", "partial")
+    assert any(e.node == "probe_tool" and e.decision == "start" for e in shared_sink.events)
+    assert any(e.node == "probe_tool" and e.decision == "accepted" for e in shared_sink.events)

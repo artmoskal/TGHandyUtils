@@ -103,3 +103,16 @@ def compose_cleaners(*cleaners: TextCleaner) -> TextCleaner:
 WEAK_MODEL_CLEANER: TextCleaner = compose_cleaners(
     strip_think_tags, extract_fenced_json, extract_first_json_object
 )
+
+
+# The one canonical repair prompt for structured-output retries (shared by StructuredLLMNode
+# and LLMAgentPlanner; one voice for the same contract).
+STRUCTURED_REPAIR_PROMPT = """The previous structured-output response was invalid.
+
+Validation/parsing error:
+{error}
+
+Return a corrected JSON object only. Do not include prose or Markdown fences.
+
+Original request:
+{original_prompt}"""

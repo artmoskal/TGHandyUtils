@@ -10,6 +10,7 @@ from langchain_core.output_parsers import PydanticOutputParser
 from pydantic import BaseModel
 
 from ai_workflow_engine.engine.agent import AgentCapability
+from ai_workflow_engine.parsing import STRUCTURED_REPAIR_PROMPT
 from ai_workflow_engine.engine.capabilities import CapabilityRegistry, CapabilityRuntime
 from ai_workflow_engine.llm_protocol import ChatMessage, LLMCallable, LLMRequest, ToolCallRequest, ToolResult, ToolSpec
 from ai_workflow_engine.llm_protocol import record_callable_usage
@@ -23,15 +24,7 @@ from ai_workflow_engine.vision import ImageInput
 class LLMAgentPlanner:
     """AgentEpisodePlanner driven by a plain LLMCallable with tool-calling support."""
 
-    _REPAIR_PROMPT = """The previous structured-output response was invalid.
-
-Validation/parsing error:
-{error}
-
-Return a corrected JSON object only. Do not include prose or Markdown fences.
-
-Original request:
-{original_prompt}"""
+    _REPAIR_PROMPT = STRUCTURED_REPAIR_PROMPT
 
     def __init__(
         self,
@@ -308,14 +301,24 @@ def build_llm_agent_capability(
     allowed_tools: Sequence[str],
     name: str = "agent_episode",
     side_effects: tuple[str, ...] = (),
+    runtime: CapabilityRuntime | None = None,
+    trace_sink: Any = None,
     **planner_kwargs: Any,
 ) -> AgentCapability:
+    """Build an LLM-driven agent capability over registry tools.
+
+    Pass the engine's runtime (or at least its trace sink) so the episode's per-tool trace events
+    land in the SAME sink as the rest of the workflow (one unified trace, not a private island):
+    ``build_llm_agent_capability(llm, engine.registry, runtime=engine.runtime, ...)``.
+    """
+
     specs = {spec.name: spec for spec in registry.list_specs()}
     tool_specs = {tool_name: _tool_spec_from_capability(specs[tool_name]) for tool_name in allowed_tools}
     planner = LLMAgentPlanner(llm, tool_specs=tool_specs, **planner_kwargs)
+    tool_runtime = runtime or CapabilityRuntime(registry, trace_sink)
     return AgentCapability(
         planner,
-        CapabilityRuntime(registry),
+        tool_runtime,
         name=name,
         side_effects=side_effects,
     )
