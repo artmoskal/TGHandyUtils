@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 from pathlib import Path
 import time
 from typing import Any, Callable, Iterable, NamedTuple, Protocol
@@ -26,6 +27,7 @@ from ai_workflow_engine.models import (
 from ai_workflow_engine.usage import check_budget_before_call
 
 CapabilityHandler = Callable[[CapabilityContext, Any], Any]
+logger = logging.getLogger(__name__)
 
 
 class CapabilityCall(NamedTuple):
@@ -62,6 +64,56 @@ class JsonlTraceSink:
         with self.path.open("a", encoding="utf-8") as fh:
             fh.write(event.model_dump_json())
             fh.write("\n")
+
+
+class CallbackTraceSink:
+    """Forward trace events to a callback without letting callback errors stop the run."""
+
+    def __init__(self, callback: Callable[[WorkflowTraceEvent], None]) -> None:
+        self.callback = callback
+
+    def record(self, event: WorkflowTraceEvent) -> None:
+        try:
+            self.callback(event)
+        except Exception:
+            logger.warning("trace sink callback failed", exc_info=True)
+
+
+class AsyncQueueTraceSink:
+    """Non-blocking asyncio.Queue trace feed for live observers."""
+
+    def __init__(
+        self,
+        queue: asyncio.Queue[WorkflowTraceEvent] | None = None,
+        *,
+        maxsize: int = 1000,
+    ) -> None:
+        self.queue = queue or asyncio.Queue(maxsize=maxsize)
+        self.dropped = 0
+
+    def record(self, event: WorkflowTraceEvent) -> None:
+        if self.queue.full():
+            try:
+                self.queue.get_nowait()
+            except asyncio.QueueEmpty:
+                dropped = False
+            else:
+                self.queue.task_done()
+                dropped = True
+            if dropped:
+                self.dropped += 1
+        self.queue.put_nowait(event)
+
+
+class TeeTraceSink:
+    """Fan each trace event out to multiple sinks."""
+
+    def __init__(self, *sinks: TraceSink) -> None:
+        self.sinks = list(sinks)
+
+    def record(self, event: WorkflowTraceEvent) -> None:
+        for sink in self.sinks:
+            sink.record(event)
 
 
 class CapabilityRegistry:

@@ -4,12 +4,15 @@ from ai_workflow_engine.engine.agent import AgentCapability, AgentEpisodePlanner
 from ai_workflow_engine.engine.agent_planner import LLMAgentPlanner, ReplayPlanner, build_llm_agent_capability
 from ai_workflow_engine.engine.artifacts import cleanup_artifacts
 from ai_workflow_engine.engine.capabilities import (
+    AsyncQueueTraceSink,
     CapabilityRegistry,
     CapabilityRuntime,
     CapabilityCall,
+    CallbackTraceSink,
     InMemoryTraceSink,
     JsonlTraceSink,
     RuntimePlanCompiler,
+    TeeTraceSink,
     TraceSink,
     artifact_result,
     capability_context_for_goal,
@@ -55,8 +58,11 @@ __all__ = [
     "CapabilityRegistry",
     "CapabilityRuntime",
     "CapabilityCall",
+    "CallbackTraceSink",
+    "AsyncQueueTraceSink",
     "InMemoryTraceSink",
     "JsonlTraceSink",
+    "TeeTraceSink",
     "CheckpointStore",
     "InMemoryCheckpointStore",
     "JsonlCheckpointStore",
