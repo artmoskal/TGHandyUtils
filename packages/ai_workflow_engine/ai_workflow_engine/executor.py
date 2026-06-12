@@ -876,6 +876,10 @@ class WorkflowExecutor:
                 context=context,
                 state=state,
             )
+            if task_outputs:
+                executed_plan = executed_plan.model_copy(
+                    update={"metadata": {**executed_plan.metadata, "task_outputs": task_outputs}}
+                )
             status = "partial" if task_failures else "accepted"
             if executed_plan.tasks and all(task.status in ("failed", "skipped") for task in executed_plan.tasks):
                 status = "failed"
@@ -936,7 +940,10 @@ class WorkflowExecutor:
             status = task.status if task.status in ("pending", "in_progress") else "pending"
             merged.append(task.model_copy(update={"status": status, "error": None, "output_ref": None}))
             seen.add(task.task_id)
-        return proposed.model_copy(update={"tasks": merged, "revision": prior.revision + 1})
+        metadata = {**proposed.metadata}
+        if "task_outputs" in prior.metadata and "task_outputs" not in metadata:
+            metadata["task_outputs"] = prior.metadata["task_outputs"]
+        return proposed.model_copy(update={"tasks": merged, "revision": prior.revision + 1, "metadata": metadata})
 
     def _validate_plan(
         self,

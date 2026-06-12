@@ -228,6 +228,7 @@ Original request:
 
 
 ReplayCompare = Callable[[AgentToolStep, AgentToolStep], Optional[str]]
+_MISSING_FINAL_OUTPUT = object()
 
 
 class ReplayPlanner:
@@ -239,12 +240,14 @@ class ReplayPlanner:
         *,
         on_divergence: Literal["fail", "finish_partial"] = "fail",
         compare: Optional[ReplayCompare] = None,
+        final_output: Any = _MISSING_FINAL_OUTPUT,
     ) -> None:
         if on_divergence not in {"fail", "finish_partial"}:
             raise ValueError("on_divergence must be 'fail' or 'finish_partial'")
         self.recorded_steps = list(recorded_steps)
         self.on_divergence = on_divergence
         self.compare = compare or self._compare_status
+        self.final_output = final_output
 
     def next_step(
         self,
@@ -261,10 +264,10 @@ class ReplayPlanner:
             return AgentStepDecision(action="fail", output=output, rationale=divergence)
 
         if len(history) >= len(self.recorded_steps):
-            return AgentStepDecision(
-                action="finish",
-                output={"replayed_steps": len(self.recorded_steps), "diverged": False},
-            )
+            output = {"replayed_steps": len(self.recorded_steps), "diverged": False}
+            if self.final_output is not _MISSING_FINAL_OUTPUT:
+                output = self.final_output
+            return AgentStepDecision(action="finish", output=output)
 
         call = self.recorded_steps[len(history)].call
         return AgentStepDecision(

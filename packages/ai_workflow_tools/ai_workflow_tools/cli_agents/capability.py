@@ -107,6 +107,21 @@ class CliAgentCapability:
             request.salvage_globs,
             snapshot,
         )
+        self._trace(
+            "artifacts_salvaged",
+            {
+                "new_artifact_count": new_count,
+                "artifacts": [
+                    {
+                        "ref_id": ref.ref_id,
+                        "role": ref.role,
+                        "uri": ref.uri,
+                        "media_type": ref.media_type,
+                    }
+                    for ref in evidence_refs
+                ],
+            },
+        )
         result_status, capability_status = self._status_from_external(external, output)
         stderr = str(output.get("stderr") or "")
         error = external.error if capability_status != "accepted" else None
