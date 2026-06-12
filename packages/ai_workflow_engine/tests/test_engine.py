@@ -1060,6 +1060,74 @@ async def test_external_process_capability_salvages_timeout_output():
     assert "started" in result.output["stdout"]
 
 
+async def test_external_process_capability_delivers_stdin_data():
+    result = await ExternalProcessCapability()(
+        capability_context_for_goal(WorkflowGoal(workflow_type="external", objective="pipe stdin")),
+        ExternalProcessRequest(
+            command=[
+                sys.executable,
+                "-c",
+                "import sys; print(sys.stdin.read().upper(), end='')",
+            ],
+            stdin_data="hello stdin",
+        ),
+    )
+
+    assert result.status == "accepted"
+    assert result.output["stdout"] == "HELLO STDIN"
+    assert result.output["result"] == "HELLO STDIN"
+
+
+async def test_external_process_capability_reads_result_file_when_present(tmp_path):
+    result_file = tmp_path / "last-message.txt"
+    result = await ExternalProcessCapability()(
+        capability_context_for_goal(WorkflowGoal(workflow_type="external", objective="read result file")),
+        ExternalProcessRequest(
+            command=[
+                sys.executable,
+                "-c",
+                "from pathlib import Path; Path('last-message.txt').write_text('from file'); print('stdout fallback')",
+            ],
+            cwd=str(tmp_path),
+            result_file="last-message.txt",
+        ),
+    )
+
+    assert result.status == "accepted"
+    assert result.output["stdout"].strip() == "stdout fallback"
+    assert result.output["result"] == "from file"
+    assert result_file.read_text() == "from file"
+
+
+async def test_external_process_capability_terminates_then_grace_kills_stubborn_child(tmp_path):
+    term_marker = tmp_path / "terminated.txt"
+    script = (
+        "import signal, sys, time\n"
+        "from pathlib import Path\n"
+        "marker = Path(sys.argv[1])\n"
+        "def on_term(_signum, _frame):\n"
+        "    marker.write_text('terminated')\n"
+        "    time.sleep(5)\n"
+        "signal.signal(signal.SIGTERM, on_term)\n"
+        "print('ready', flush=True)\n"
+        "time.sleep(10)\n"
+    )
+
+    result = await ExternalProcessCapability()(
+        capability_context_for_goal(WorkflowGoal(workflow_type="external", objective="grace kill")),
+        ExternalProcessRequest(
+            command=[sys.executable, "-c", script, str(term_marker)],
+            timeout_s=0.3,
+            kill_grace_s=0.1,
+        ),
+    )
+
+    assert result.status == "partial"
+    assert result.metadata["killed_after_grace"] is True
+    assert term_marker.read_text() == "terminated"
+    assert "ready" in result.output["stdout"]
+
+
 async def test_external_adapter_capability_writes_idempotently():
     registry = CapabilityRegistry()
     registry.register(

@@ -23,6 +23,9 @@ class ExternalProcessRequest:
     cwd: str | None = None
     env: dict[str, str] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
+    stdin_data: str | None = None
+    result_file: str | None = None
+    kill_grace_s: float = 10.0
 
 
 class ExternalProcessCapability:
@@ -42,18 +45,21 @@ class ExternalProcessCapability:
             *request.command,
             cwd=request.cwd,
             env=request.env or None,
+            stdin=asyncio.subprocess.PIPE if request.stdin_data is not None else None,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         stdout_task = asyncio.create_task(self._read_stream(process.stdout))
         stderr_task = asyncio.create_task(self._read_stream(process.stderr))
+        if request.stdin_data is not None:
+            await self._write_stdin(process, request.stdin_data)
         try:
             await asyncio.wait_for(process.wait(), timeout=request.timeout_s)
         except asyncio.TimeoutError:
-            process.kill()
-            await process.wait()
+            killed_after_grace = await self._terminate_with_grace(process, request.kill_grace_s)
             stdout = await stdout_task
             stderr = await stderr_task
+            result_text = self._read_result_file(request)
             return CapabilityResult(
                 status="partial",
                 error=f"external process timed out after {request.timeout_s}s",
@@ -61,19 +67,76 @@ class ExternalProcessCapability:
                     "returncode": process.returncode,
                     "stdout": stdout,
                     "stderr": stderr,
+                    "result": result_text if result_text is not None else stdout,
                 },
-                metadata={**request.metadata, "timeout_s": request.timeout_s},
+                metadata={
+                    **request.metadata,
+                    "timeout_s": request.timeout_s,
+                    "kill_grace_s": request.kill_grace_s,
+                    "killed_after_grace": killed_after_grace,
+                },
             )
 
         stdout = await stdout_task
         stderr = await stderr_task
+        result_text = self._read_result_file(request)
         status = "accepted" if process.returncode == 0 else "failed"
         return CapabilityResult(
             status=status,
             error=None if process.returncode == 0 else f"external process exited {process.returncode}",
-            output={"returncode": process.returncode, "stdout": stdout, "stderr": stderr},
-            metadata={**request.metadata, "timeout_s": request.timeout_s},
+            output={
+                "returncode": process.returncode,
+                "stdout": stdout,
+                "stderr": stderr,
+                "result": result_text if result_text is not None else stdout,
+            },
+            metadata={
+                **request.metadata,
+                "timeout_s": request.timeout_s,
+                "kill_grace_s": request.kill_grace_s,
+            },
         )
+
+    @staticmethod
+    async def _write_stdin(process: asyncio.subprocess.Process, data: str) -> None:
+        if process.stdin is None:
+            return
+        try:
+            process.stdin.write(data.encode("utf-8"))
+            await process.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        process.stdin.close()
+        await process.stdin.wait_closed()
+
+    @staticmethod
+    async def _terminate_with_grace(process: asyncio.subprocess.Process, kill_grace_s: float) -> bool:
+        killed_after_grace = False
+        if process.returncode is None:
+            try:
+                process.terminate()
+            except ProcessLookupError:
+                await process.wait()
+                return killed_after_grace
+        try:
+            await asyncio.wait_for(process.wait(), timeout=max(0.0, kill_grace_s))
+        except asyncio.TimeoutError:
+            if process.returncode is None:
+                process.kill()
+                killed_after_grace = True
+            await process.wait()
+        return killed_after_grace
+
+    @staticmethod
+    def _read_result_file(request: ExternalProcessRequest) -> str | None:
+        if not request.result_file:
+            return None
+        result_path = Path(request.result_file)
+        if not result_path.is_absolute() and request.cwd:
+            result_path = Path(request.cwd) / result_path
+        if not result_path.exists():
+            return None
+        return result_path.read_text(encoding="utf-8")
 
     @staticmethod
     async def _read_stream(stream: asyncio.StreamReader | None) -> str:
