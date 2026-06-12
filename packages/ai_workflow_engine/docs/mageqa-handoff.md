@@ -298,3 +298,20 @@ Implemented and gate-verified (commits up to `b014268`+):
   `.fanout(..., capability="run_child")` — child workflows in parallel with failure isolation.
 - **Visualizer**: `workflow_to_mermaid(defn, result)` / `save_workflow_html(...)` — the state
   machine as a diagram, with executed-path overlay (status colors, ✓ on taken transitions).
+
+## v0.2.0 migration (tag `engine-v0.2.0` = 8d58f88, 2026-06-12) — upgrade window OPEN
+
+Retag → rebuild wheel → run your suite (719/213/21 green at the tag). Expected work:
+
+1. **Builder-based code: nothing breaks.**
+2. Raw-definition construction/introspection only: `WorkflowDefinition.edges` →
+   `.transitions`, `WorkflowEdge` → `Transition` (`conditional` → `policy`).
+3. Any branch label that closes a loop now REQUIRES a pre-set gate:
+   `.branch(..., bounds={"label": N}, exhausted={"label": "escape"})` — ungated cycles fail
+   validation loudly by design. Audit re-check loops MUST declare their bounds (this replaces
+   "loop until the recursion limit kills it" with a declared, traced gate).
+
+Most relevant for MageQA packs: durable suspend/resume for long audits
+(`result.snapshot` + `engine.resume`, budgets cumulative across halves); `register_guard`
+for deterministic routing in QC gates (zero LLM cost, `decision_policy` traced); authored
+bounded loops in flow-as-data (`FlowNodeSpec.branch_bounds`/`branch_exhausted`).

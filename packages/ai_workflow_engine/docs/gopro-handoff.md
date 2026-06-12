@@ -257,3 +257,19 @@ Implemented and gate-verified (commits up to `b014268`+):
   `.fanout(..., capability="run_child")` — child workflows in parallel with failure isolation.
 - **Visualizer**: `workflow_to_mermaid(defn, result)` / `save_workflow_html(...)` — the state
   machine as a diagram, with executed-path overlay (status colors, ✓ on taken transitions).
+
+## v0.2.0 migration (tag `engine-v0.2.0` = 8d58f88, 2026-06-12) — upgrade window OPEN
+
+Retag → rebuild wheel → run your suite (719/213/21 green at the tag). Expected work:
+
+1. **Builder-based code (all current GoPro integration): nothing breaks.**
+2. Raw-definition construction/introspection only: `WorkflowDefinition.edges` →
+   `.transitions`, `WorkflowEdge` → `Transition` (`conditional` → `policy`).
+3. Any branch label that closes a loop now REQUIRES a pre-set gate:
+   `.branch(..., bounds={"label": N}, exhausted={"label": "escape"})` — ungated cycles fail
+   validation loudly by design. If the S1 goal-compiler emits loops, it must emit bounds.
+
+Earmarked for GoPro (your ACK list, all landed): `engine.resume(snapshot, event)` for
+ask-location clarification across processes (payloads must be JSON-serializable for the
+cross-process path); `register_guard` for deterministic zero-LLM gates;
+`model_dump_json()` round-trip for goal-compiler machine storage.
