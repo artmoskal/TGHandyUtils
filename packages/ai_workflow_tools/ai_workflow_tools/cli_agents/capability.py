@@ -1,0 +1,344 @@
+"""CLI-agent capability implementation."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+import hashlib
+import json
+import mimetypes
+from pathlib import Path
+from typing import Any, Callable, Protocol
+from urllib.parse import urlparse
+
+from ai_workflow_engine.engine.external import ExternalProcessCapability, ExternalProcessRequest
+from ai_workflow_engine.models import (
+    CapabilityContext,
+    CapabilityResult,
+    CapabilitySpec,
+    EvidenceRef,
+    WorkflowArtifact,
+    WorkflowTraceEvent,
+    WorkflowUsageEvent,
+)
+from ai_workflow_engine.parsing import compose_cleaners, extract_fenced_json, extract_first_json_object
+from ai_workflow_engine.usage import record_usage_event
+
+from .assembly import build_cli_agent_invocation
+from .models import CliAgentRequest, CliAgentResult, CliFlavor
+
+AssetLoader = Callable[[EvidenceRef], bytes]
+
+
+class TraceSink(Protocol):
+    def record(self, event: WorkflowTraceEvent) -> None:
+        """Record one trace event."""
+
+
+@dataclass(frozen=True)
+class _ParsedCliOutput:
+    text: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
+    num_turns: int | None = None
+    duration_ms: int | None = None
+    notional_cost_usd: float | None = None
+
+
+class CliAgentCapability:
+    """Run one CLI-backed agent episode as an engine capability."""
+
+    def __init__(
+        self,
+        flavor: CliFlavor,
+        *,
+        name: str = "cli_agent",
+        side_effects: list[str] | None = None,
+        asset_loader: AssetLoader | None = None,
+        trace_sink: TraceSink | None = None,
+        external_runner: ExternalProcessCapability | None = None,
+    ) -> None:
+        self.flavor = flavor
+        self.asset_loader = asset_loader
+        self.trace_sink = trace_sink
+        self.external_runner = external_runner or ExternalProcessCapability()
+        self.spec = CapabilitySpec(
+            name=name,
+            kind="agent",
+            input_model=CliAgentRequest,
+            output_model=CliAgentResult,
+            side_effects=list(side_effects or []),
+            metered=False,
+            timeout_s=None,
+        )
+
+    async def __call__(
+        self,
+        context: CapabilityContext,
+        request: CliAgentRequest | dict[str, Any],
+    ) -> CapabilityResult:
+        if isinstance(request, dict):
+            request = CliAgentRequest.model_validate(request)
+
+        workspace = Path(request.workspace_dir)
+        workspace.mkdir(parents=True, exist_ok=True)
+        self._stage_input_assets(workspace, request)
+        snapshot = self._snapshot_salvage(workspace, request.salvage_globs)
+        invocation = build_cli_agent_invocation(self.flavor, request)
+
+        external = await self.external_runner(
+            context,
+            ExternalProcessRequest(
+                command=invocation.argv,
+                cwd=str(workspace),
+                timeout_s=request.timeout_s,
+                stdin_data=invocation.stdin_data,
+                result_file=invocation.result_file,
+                kill_grace_s=10.0,
+                metadata={"flavor": self.flavor.name},
+            ),
+        )
+
+        output = external.output if isinstance(external.output, dict) else {}
+        parsed_output = self._parse_process_output(request, output)
+        evidence_refs, workflow_artifacts, new_count = self._salvage_artifacts(
+            workspace,
+            request.salvage_globs,
+            snapshot,
+        )
+        result_status, capability_status = self._status_from_external(external, output)
+        stderr = str(output.get("stderr") or "")
+        error = external.error if capability_status != "accepted" else None
+        result = CliAgentResult(
+            status=result_status,
+            text=parsed_output.text,
+            parsed=self._parse_lenient_json(parsed_output.text) if request.expect_json_result else None,
+            artifacts=evidence_refs,
+            new_artifact_count=new_count,
+            input_tokens=parsed_output.input_tokens,
+            output_tokens=parsed_output.output_tokens,
+            cache_read_tokens=parsed_output.cache_read_tokens,
+            cache_creation_tokens=parsed_output.cache_creation_tokens,
+            num_turns=parsed_output.num_turns,
+            duration_ms=parsed_output.duration_ms,
+            notional_cost_usd=parsed_output.notional_cost_usd,
+            returncode=_safe_int_or_none(output.get("returncode")),
+            stderr_tail=stderr[-800:],
+        )
+        self._record_usage(request, result, capability_status=capability_status, error=error)
+        return CapabilityResult(
+            status=capability_status,
+            output=result,
+            error=error,
+            artifacts=workflow_artifacts,
+            metadata={
+                "flavor": self.flavor.name,
+                "agent_status": result.status,
+                "new_artifact_count": result.new_artifact_count,
+                "cost_known": result.notional_cost_usd is not None,
+            },
+        )
+
+    def _stage_input_assets(self, workspace: Path, request: CliAgentRequest) -> None:
+        if not request.input_assets:
+            return
+        if self.asset_loader is None:
+            raise ValueError("CliAgentCapability requires asset_loader when input_assets are provided")
+
+        input_dir = workspace / "inputs"
+        input_dir.mkdir(parents=True, exist_ok=True)
+        fingerprints: list[dict[str, Any]] = []
+        for index, ref in enumerate(request.input_assets, start=1):
+            data = self.asset_loader(ref)
+            if not isinstance(data, (bytes, bytearray)):
+                raise ValueError("asset_loader must return bytes")
+            raw = bytes(data)
+            filename = f"input-{index}{_input_suffix(ref)}"
+            path = input_dir / filename
+            path.write_bytes(raw)
+            fingerprints.append(
+                {
+                    "sha12": hashlib.sha256(raw).hexdigest()[:12],
+                    "length": len(raw),
+                    "role": ref.role,
+                    "media_type": ref.media_type,
+                    "path": str(path.relative_to(workspace)),
+                }
+            )
+        self._trace("inputs_staged", {"inputs": fingerprints})
+
+    def _trace(self, decision: str, metadata: dict[str, Any]) -> None:
+        if self.trace_sink is None:
+            return
+        self.trace_sink.record(WorkflowTraceEvent(node=self.spec.name, decision=decision, metadata=metadata))
+
+    def _parse_process_output(self, request: CliAgentRequest, output: dict[str, Any]) -> _ParsedCliOutput:
+        stdout = str(output.get("stdout") or "")
+        if self.flavor.result_source == "stdout_json_envelope":
+            try:
+                envelope = json.loads(stdout)
+            except json.JSONDecodeError:
+                return _ParsedCliOutput(text=stdout)
+            if not isinstance(envelope, dict):
+                return _ParsedCliOutput(text=stdout)
+            usage = envelope.get("usage") if isinstance(envelope.get("usage"), dict) else {}
+            return _ParsedCliOutput(
+                text=_stringify_text(envelope.get("result")),
+                input_tokens=_safe_int(usage.get("input_tokens")),
+                output_tokens=_safe_int(usage.get("output_tokens")),
+                cache_read_tokens=_safe_int(usage.get("cache_read_input_tokens")),
+                cache_creation_tokens=_safe_int(usage.get("cache_creation_input_tokens")),
+                num_turns=_safe_int_or_none(envelope.get("num_turns")),
+                duration_ms=_safe_int_or_none(envelope.get("duration_ms")),
+                notional_cost_usd=_safe_float_or_none(envelope.get("total_cost_usd")),
+            )
+        if self.flavor.result_source == "result_file":
+            return _ParsedCliOutput(text=_stringify_text(output.get("result") or stdout))
+        return _ParsedCliOutput(text=stdout)
+
+    @staticmethod
+    def _parse_lenient_json(text: str) -> dict[str, Any] | None:
+        if not text.strip():
+            return None
+        cleaner = compose_cleaners(extract_fenced_json, extract_first_json_object)
+        try:
+            parsed = json.loads(cleaner(text))
+        except json.JSONDecodeError:
+            return None
+        return parsed if isinstance(parsed, dict) else {"value": parsed}
+
+    def _salvage_artifacts(
+        self,
+        workspace: Path,
+        globs: list[str],
+        snapshot: set[Path],
+    ) -> tuple[list[EvidenceRef], list[WorkflowArtifact], int]:
+        paths = self._collect_salvage_paths(workspace, globs)
+        new_paths = {path for path in paths if path not in snapshot}
+        evidence_refs: list[EvidenceRef] = []
+        workflow_artifacts: list[WorkflowArtifact] = []
+        for path in paths:
+            role = _artifact_role(path)
+            media_type = mimetypes.guess_type(path.name)[0]
+            evidence_refs.append(EvidenceRef(role=role, uri=str(path), media_type=media_type))
+            workflow_artifacts.append(
+                WorkflowArtifact(
+                    path=str(path),
+                    kind="media" if (media_type or "").startswith("image/") else "file",
+                    source=self.flavor.name,
+                    owner_node=self.spec.name,
+                    metadata={"role": role, "media_type": media_type, "new": path in new_paths},
+                )
+            )
+        return evidence_refs, workflow_artifacts, len(new_paths)
+
+    def _snapshot_salvage(self, workspace: Path, globs: list[str]) -> set[Path]:
+        return set(self._collect_salvage_paths(workspace, globs))
+
+    @staticmethod
+    def _collect_salvage_paths(workspace: Path, globs: list[str]) -> list[Path]:
+        paths: set[Path] = set()
+        for pattern in globs:
+            iterator = workspace.rglob(pattern) if pattern == "session*.md" else workspace.glob(pattern)
+            paths.update(path.resolve() for path in iterator if path.is_file())
+        return sorted(paths)
+
+    @staticmethod
+    def _status_from_external(external: CapabilityResult, output: dict[str, Any]) -> tuple[str, str]:
+        if external.status == "partial":
+            return "truncated", "partial"
+        returncode = _safe_int_or_none(output.get("returncode"))
+        if external.status == "accepted" and returncode == 0:
+            return "completed", "accepted"
+        return "error", "failed"
+
+    def _record_usage(
+        self,
+        request: CliAgentRequest,
+        result: CliAgentResult,
+        *,
+        capability_status: str,
+        error: str | None,
+    ) -> None:
+        cost_class = "subscription_notional" if request.subscription_mode else "metered"
+        cost_known = result.notional_cost_usd is not None
+        record_usage_event(
+            WorkflowUsageEvent(
+                provider=self.flavor.name,
+                operation="tool",
+                cost_class=cost_class,
+                node=self.spec.name,
+                model=request.model or self.flavor.name,
+                input_tokens=result.input_tokens,
+                output_tokens=result.output_tokens,
+                total_tokens=result.input_tokens + result.output_tokens,
+                input_token_details={
+                    "cache_read": result.cache_read_tokens,
+                    "cache_creation": result.cache_creation_tokens,
+                },
+                estimated_usd=result.notional_cost_usd if cost_class == "metered" else None,
+                notional_usd=result.notional_cost_usd if cost_class == "subscription_notional" else None,
+                elapsed_ms=result.duration_ms,
+                success=capability_status == "accepted",
+                error=error,
+                metadata={
+                    "cost_known": cost_known,
+                    "cost_source": cost_class if cost_known else "unknown",
+                    "returncode": result.returncode,
+                    "new_artifact_count": result.new_artifact_count,
+                },
+            )
+        )
+
+
+def _input_suffix(ref: EvidenceRef) -> str:
+    if ref.media_type:
+        guessed = mimetypes.guess_extension(ref.media_type)
+        if guessed:
+            return guessed
+    parsed = urlparse(ref.uri)
+    suffix = Path(parsed.path).suffix
+    return suffix or ".bin"
+
+
+def _artifact_role(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix in {".png", ".jpg", ".jpeg"}:
+        return "screenshot"
+    if path.name.startswith("session") and suffix == ".md":
+        return "session"
+    if path.name.startswith("page-") and suffix in {".yml", ".yaml"}:
+        return "page_record"
+    return "artifact"
+
+
+def _stringify_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, sort_keys=True)
+    return str(value)
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_float_or_none(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
