@@ -281,3 +281,41 @@ deciders receive their legal moves + live gate budgets via `inject_machine=True`
 (`context.metadata["machine"]`), and feed your flow-author prompts with
 `render_capability_catalog(engine.registry, allowed)` instead of hand-maintained tool lists.
 `render_machine_card(definition, node_id, state)` is available standalone for debugging and UIs.
+
+### How to use it (GoPro)
+
+```python
+# 1) Declare label semantics ONCE in the machine — stop maintaining them in decider prompts.
+.branch(
+    "evidence_quality_gate",
+    {"enough": "extract_items", "ambiguous": "ask_location", "bad": "fallback_or_fail"},
+    describe={
+        "enough":    "frames clearly show distinct items to inventory",
+        "ambiguous": "items visible but location/context unclear — ask the user",
+        "bad":       "footage unusable (dark/blurred) — fall back or fail",
+    },
+    inject_machine=True,   # this node's decider receives its legal moves at call time
+)
+
+# 2) The decider reads the card — labels, semantics, LIVE gate budgets — from metadata:
+def decide(context, payload):
+    card = context.metadata["machine"]
+    # e.g. "- retry -> select_evidence — ... [gate: 1 of 2 remaining]"
+    prompt = f"{card}\n\nEvidence:\n{payload}\n\nReturn exactly one label."
+    ...
+
+# 3) Zero-LLM routing where a predicate suffices (decision_policy='deterministic' in trace):
+engine.register_guard("evidence_quality_gate", lambda p: "enough" if p.frames else "bad")
+
+# 4) S1 goal-compiler: feed the author prompt the engine-generated catalog, not a hand list —
+#    side effects outside the allow-list are marked (DENIED), AI-writers marked NOT-AUTHORABLE:
+from ai_workflow_engine import render_capability_catalog
+catalog = render_capability_catalog(engine.registry, allowed_side_effects=allowed)
+
+# 5) Debugging / dashboards: render any state's moves standalone:
+from ai_workflow_engine import render_machine_card
+print(render_machine_card(definition, "evidence_quality_gate"))
+```
+
+Pairing with v0.2.0: when the compiler authors loops, emit `branch_bounds` + `describe` together —
+the card then shows navigators exactly how much loop budget remains before the gate trips.

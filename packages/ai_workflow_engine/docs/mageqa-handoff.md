@@ -323,3 +323,43 @@ deciders receive their legal moves + live gate budgets via `inject_machine=True`
 (`context.metadata["machine"]`), and feed your flow-author prompts with
 `render_capability_catalog(engine.registry, allowed)` instead of hand-maintained tool lists.
 `render_machine_card(definition, node_id, state)` is available standalone for debugging and UIs.
+
+### How to use it (MageQA)
+
+```python
+# 1) QC re-check loops: bounds + semantics declared together; the gate budget is VISIBLE
+#    to the judging LLM, so "one more pass?" decisions are made knowing what remains.
+.branch(
+    "qc_gate",
+    {"recheck": "run_checks", "pass": "report", "fail": "escalate"},
+    bounds={"recheck": 2},
+    exhausted={"recheck": "escalate"},
+    describe={
+        "recheck": "findings borderline — run the checks once more",
+        "pass":    "all findings verified — produce the report",
+        "fail":    "verification failed — escalate to a human",
+    },
+    inject_machine=True,
+)
+
+# 2) The judge capability sees its legal moves with live budgets:
+def judge(context, payload):
+    card = context.metadata["machine"]   # "- recheck -> run_checks — ... [gate: 1 of 2 remaining]"
+    ...
+
+# 3) Deterministic QC gates without an LLM call (severity thresholds, count checks):
+engine.register_guard("qc_gate", lambda p: "fail" if p.criticals else "pass")
+
+# 4) Builder-pack authoring prompts: engine-generated capability catalog with the firewall
+#    stated inline (planner/flow-author caps are marked NOT-AUTHORABLE):
+from ai_workflow_engine import render_capability_catalog
+catalog = render_capability_catalog(engine.registry, allowed_side_effects=allowed)
+
+# 5) Authored flows self-describe the same way:
+FlowNodeSpec(kind="branch", id="qc_gate", branches={...},
+             branch_bounds={"recheck": 2}, describe={"recheck": "borderline — once more"})
+```
+
+Pairing with v0.2.0: long audits still suspend/resume via `result.snapshot` + `engine.resume`;
+the card's live counts come from the same counters the snapshot preserves, so a resumed judge
+sees the loop budget it already spent before suspension.
