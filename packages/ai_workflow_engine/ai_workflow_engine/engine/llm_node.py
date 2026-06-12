@@ -326,12 +326,17 @@ Original request:
         usage_metadata: Optional[dict[str, Any]] = None,
         profile: Any = None,
     ) -> Any:
+        from ai_workflow_engine.usage import check_input_tokens_per_call, estimate_text_tokens
+
         last_error = ""
         for attempt in range(1, 2 + self.max_repair_rounds):
             try:
                 messages = self._messages_for_attempt(prompt_bundle, attempt, last_error)
                 if message_factory:
                     messages = list(message_factory(messages, attempt))
+                # Per-call input cap applies to LangChain-shaped clients too (not only plain
+                # callables); contextvars propagate into the worker thread via asyncio.to_thread.
+                check_input_tokens_per_call(estimate_text_tokens(messages), self.name)
                 output = invoke_metered_chat(
                     self._llm_for_profile(profile),
                     messages,

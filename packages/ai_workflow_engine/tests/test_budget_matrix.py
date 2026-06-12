@@ -358,3 +358,35 @@ async def test_per_call_usd_cap_denies_after_usage_event_is_recorded():
     assert len(client.requests) == 1
     assert result.usage.events[0].estimated_usd == 0.11
     assert "max_estimated_usd_per_call" in (result.error or "")
+
+
+class _CountingLangChainClient:
+    """LangChain-shaped (has .invoke) — used to pin per-call caps on the thread path."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def invoke(self, messages):
+        self.calls += 1
+        return SimpleNamespace(content='{"label": "ok"}')
+
+
+async def test_input_token_cap_applies_to_langchain_path_too():
+    client = _CountingLangChainClient()
+    node = StructuredLLMNode(
+        name="lc_capped_node",
+        config=object(),
+        output_model=Label,
+        prompt_template="Summarize: {text}",
+        input_variables=["text"],
+        llm=client,
+    )
+    context = WorkflowUsageContext(
+        WorkflowRunContext(workflow_id="wf-cap", workflow_type="budget"),
+        WorkflowUsageSummary(),
+        WorkflowBudget(max_input_tokens_per_call=5),
+    )
+    with workflow_usage_scope(context):
+        with pytest.raises(WorkflowBudgetExceeded, match="max_input_tokens_per_call"):
+            await node.run({"text": "long prompt body " * 50})
+    assert client.calls == 0  # denied BEFORE the LangChain client was invoked
