@@ -1,5 +1,10 @@
 # MageQA — AI Workflow Engine Usage Guide
 
+> **FREEZE NOTICE (2026-06-12):** pin tag `engine-v0.1.0` and build a wheel from it — the live
+> branch is under authorized breaking changes (state-machine round, lands as `engine-v0.2.0`).
+> Read `working-against-the-freeze.md` (same folder) for the pin/upgrade protocol and the exact
+> v0.2.0 change list BEFORE wiring anything.
+
 Status: **engine implemented and ready for adoption** (2026-06-12). The `WorkflowDefinition` /
 `WorkflowExecutor` / DI layer this doc previously waited on is live and proven (Anki migrated +
 live-tested; one `WorkflowExecutor` runs the product-neutral examples, including site-audit fan-out

@@ -10,12 +10,19 @@ Reading rule: if any sentence here conflicts with another doc, **this doc wins**
 ---
 
 ## 0. ONE SENTENCE (no side-readings)
-The engine is an **executable, DI-wired AI-workflow runtime**: a product **declares** a workflow with
-a builder/DSL and **registers** capabilities/prompts/schemas/adapters/policies; then
-`await engine.run(workflow, input)` executes the **whole** workflow — node dispatch, branching, gates,
-retries, retrace, fallback, fan-out/gather, scheduling, cancellation, side-effect/privacy/budget
-enforcement, trace, checkpoint, pause/resume, subworkflows — with **ZERO product-side orchestration
-loop**.
+The engine is an **AI-powered state machine** (executable, DI-wired): the machine provides the
+rails — states (nodes), **first-class transitions with declared policies**
+(`always`/`decision`/`on_accept`/`on_reject`), and **pre-set gates on every cycle** — while
+intelligence (deterministic code, LLMs, humans) only **navigates** (selects among declared
+transitions), **authors** (emits validated machine fragments: plans, flows), and **waits**
+(suspends durably, resumes on events). A product **declares** a workflow with a builder/DSL and
+**registers** capabilities/prompts/schemas/adapters/policies; then `await engine.run(workflow,
+input)` executes the **whole** machine — node dispatch, branching, gates, retries, retrace,
+fallback, fan-out/gather, scheduling, cancellation, side-effect/privacy/budget enforcement, trace,
+**snapshot/suspend/resume**, subworkflows — with **ZERO product-side orchestration loop**.
+Values: every navigation decision is a Transition with a declared policy; deterministic-first
+(never burn an LLM call where a predicate suffices); every cycle has a pre-set gate; every wait is
+resumable; the machine is data (serializable, visualizable, authorable).
 
 It is **not** a folder of helper classes a product wires in its own loop. The primitives already
 exist (the bricks); this spec builds **the engine that runs workflows** (the building).
@@ -169,20 +176,48 @@ two sanctioned levels:
 node shapes by kind, labeled transitions, dashed bounded back-edges — and overlays a run result
 (status-colored states, check-marked taken transitions). Zero new dependencies.
 
+**ROUND 2 (2026-06-12, implemented — the combined AI/state-machine core, per Artem: "prepare plan
+… then implement", breaking changes authorized "do not produce legacy shit"):**
+
+1. **Transitions are first-class.** `Transition(source, target, label, policy, max_traversals,
+   on_exhausted)` replaced `WorkflowEdge`; `WorkflowDefinition.transitions` is COMPLETE machine
+   data (evaluator accept/reject routes are materialized at construction, idempotently). One
+   wiring path + one router convention in the executor replaced the per-kind trio. BREAKING:
+   `edges`→`transitions`, `conditional`→`policy`; builder-based code unaffected.
+2. **Pre-set gate law (the user's doctrine, generalized).** Every cycle through decision
+   transitions MUST be broken by a bounded one: `validate_graph` rejects ungated cycles loudly
+   (previously a looping LLM decider spun until the blunt global recursion limit — found live as
+   an ungated fallback loop in Anki's machine, now gated). At run time the gate counts
+   traversals; exhaustion either fails loudly or takes the DECLARED escape label
+   (`.branch(..., bounds={...}, exhausted={...})`), traced as `transition:exhausted`.
+3. **Deterministic navigation first-class.** `engine.register_guard(name, fn)`: `fn(payload) ->
+   label` routes with zero LLM cost; trace records `decision_policy` per decision.
+4. **Durable suspend/resume (register row CLOSED).** Suspended runs return a `MachineSnapshot`
+   (complete position: outputs, statuses, routes, ALL loop counters, plan, usage);
+   `engine.resume(snapshot_or_json, event)` fast-forwards via recorded routes with ZERO
+   re-execution, injects the event into the suspended node's context, runs on live — budgets
+   cumulative across halves, cross-process when payloads are JSON-serializable (`to_json()`
+   fails loudly otherwise). Proven: double-suspension inside a bounded loop counts traversals
+   ACROSS suspensions.
+5. **Machine-as-data closed.** Authored flows may declare bounded loops
+   (`branch_bounds`/`branch_exhausted` — same gates, same validation); any definition
+   JSON-round-trips and runs identically. Viz renders gates (`⟲≤N`), policies, and suspended
+   states distinctly.
+
 ## 2d. DEFERRED / OUT-OF-SCOPE REGISTER (single source; update when items land or die)
 | Item | Context | Trigger to do it |
 |---|---|---|
 | Media/voice seams → tools lib | Spec §12: stays in core. **2026-06-12 finding: "re-export shims in engine" would IMPORT tools = L0←L2 inversion — the originally planned mechanism is illegal.** Correct path: consumers (incl. Anki) switch imports to the tools location FIRST, then the engine copy is deleted (no shims) | Anki import migration |
 | Browser-bridge no-API executor | L1 member, protocol-ready; §2c #3: highest-maintenance member | A concrete paying use case (build LAST) |
 | ~~`workflow_capability` adapter~~ | **DONE 2026-06-12**: `engine.register_workflow_capability(name, workflow_id)` — fanout over child workflows with partial-failure isolation | — |
-| Durable mid-run resume (resume any workflow at node N) | Checkpoints + mid-plan resume exist; clarification-resume re-runs; long-job resume is product-side design (both consumer guides say so) | First multi-hour resumable workload |
+| ~~Durable mid-run resume~~ | **DONE 2026-06-12 (§2e round 2)**: `MachineSnapshot` + `engine.resume` with fast-forward replay, cumulative budgets, cross-process JSON | — |
 | Token-level output streaming | Event-level live sinks exist (WP6); token streaming would extend `LLMCallable` | A UI that needs it |
 | Image+reference+QC promotion to an L2 pack | Production-proven inside Anki product code | 2nd consumer of the pattern (§2c #4 bar) |
 | Presentation-builder pack, MCP tool-suite packs | Named in the L2 vision | When the project materializes |
 | ~~Planner depth ≥2~~ | **DONE 2026-06-12 via §2e**: bounded recursion, pre-set `max_plan_depth=1`, cumulative task budget | — |
 | `ANKI_*` env alias bridge sunset | config-architecture CFG-8: transition bridge, must not leak into engine | Pi `.env` migrated by aws_deploy |
 | `test.sh` `-k "a or b"` word-split bug | Workaround = paths/single tokens, documented everywhere | Next time someone touches test.sh |
-| Executor god-file split (handlers per module) | §2c #5: cosmetic, sanctioned | Next feature touching executor.py |
+| Executor god-file split (handlers per module) | §2c #5: cosmetic, sanctioned. **2026-06-12: fence triggered by the SM round but deliberately deferred again (round already maximal); the NEXT executor touch MUST split first, no further deferrals** | Next executor change |
 
 ## 2c. RISK WATCHLIST — where this becomes a mess if discipline slips (reviewed 2026-06-12)
 The architecture's real threats are **discipline threats**, not design flaws. Each has a named
