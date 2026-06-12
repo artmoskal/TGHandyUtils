@@ -81,9 +81,13 @@ from ai_workflow_engine.parsing import (
 )
 from ai_workflow_engine.vision import ImageInput, StructuredVisionLLMNode
 from ai_workflow_engine.llm_protocol import (
+    ChatMessage,
     LLMCallable,
     LLMRequest,
     LLMResponse,
+    ToolCallRequest,
+    ToolResult,
+    ToolSpec,
     is_plain_llm_callable,
 )
 from ai_workflow_engine.model_binding import current_model_profile, model_profile_scope
@@ -214,9 +218,13 @@ __all__ = [
     "strip_think_tags",
     "ImageInput",
     "StructuredVisionLLMNode",
+    "ChatMessage",
     "LLMCallable",
     "LLMRequest",
     "LLMResponse",
+    "ToolCallRequest",
+    "ToolResult",
+    "ToolSpec",
     "is_plain_llm_callable",
     "current_model_profile",
     "model_profile_scope",

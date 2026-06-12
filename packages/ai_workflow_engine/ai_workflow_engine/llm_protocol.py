@@ -14,22 +14,69 @@ Cost integrity (review requirement RC2): a callable that reports no cost never y
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
+from typing import Any, Dict, List, Literal, Optional, Protocol, runtime_checkable
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from ai_workflow_engine.models import WorkflowUsageEvent
 from ai_workflow_engine.usage import estimate_cost_usd, record_usage_event
 from ai_workflow_engine.vision import ImageInput
 
 
+class ToolSpec(BaseModel):
+    """JSON-schema description of a tool an LLM may request."""
+
+    name: str
+    description: str = ""
+    input_schema: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ToolCallRequest(BaseModel):
+    """One LLM-requested tool call."""
+
+    call_id: str
+    name: str
+    arguments: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ToolResult(BaseModel):
+    """Result of a tool call, optionally carrying transport-only images."""
+
+    call_id: str
+    content: str = ""
+    images: List[ImageInput] = Field(default_factory=list)
+    is_error: bool = False
+
+    def image_fingerprints(self) -> List[Dict[str, Any]]:
+        return [image.fingerprint() for image in self.images]
+
+
+class ChatMessage(BaseModel):
+    """One multi-turn chat message for tool-calling-capable clients."""
+
+    role: Literal["system", "user", "assistant", "tool"]
+    content: Optional[str] = None
+    images: List[ImageInput] = Field(default_factory=list)
+    tool_calls: List[ToolCallRequest] = Field(default_factory=list)
+    tool_results: List[ToolResult] = Field(default_factory=list)
+
+
 class LLMRequest(BaseModel):
     """One chat-style request to a product-owned LLM client."""
 
     system: Optional[str] = None
-    user: str
+    user: str = ""
     images: List[ImageInput] = Field(default_factory=list)
+    messages: List[ChatMessage] = Field(default_factory=list)
+    tools: List[ToolSpec] = Field(default_factory=list)
+    tool_choice: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _require_user_or_messages(self) -> "LLMRequest":
+        if not self.user and not self.messages:
+            raise ValueError("LLMRequest requires either user text or messages")
+        return self
 
 
 class LLMResponse(BaseModel):
@@ -37,7 +84,9 @@ class LLMResponse(BaseModel):
 
     model_config = {"arbitrary_types_allowed": True}
 
-    text: str
+    text: str = ""
+    tool_calls: List[ToolCallRequest] = Field(default_factory=list)
+    stop_reason: Optional[str] = None
     model: str = ""
     input_tokens: int = 0
     output_tokens: int = 0
