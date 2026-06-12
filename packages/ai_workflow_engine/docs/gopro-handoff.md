@@ -319,3 +319,9 @@ print(render_machine_card(definition, "evidence_quality_gate"))
 
 Pairing with v0.2.0: when the compiler authors loops, emit `branch_bounds` + `describe` together —
 the card then shows navigators exactly how much loop budget remains before the gate trips.
+
+## v0.4.0 delta
+
+Media generation (image/voice) now lives in `ai_workflow_tools.media` (engine is orchestration-only;
+`vision`/image-input stays in the engine as LLM protocol). Breaking ONLY for direct media imports —
+none in your current integration. Install `ai-workflow-tools[media]` if you adopt the media pack.

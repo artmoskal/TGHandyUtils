@@ -363,3 +363,9 @@ FlowNodeSpec(kind="branch", id="qc_gate", branches={...},
 Pairing with v0.2.0: long audits still suspend/resume via `result.snapshot` + `engine.resume`;
 the card's live counts come from the same counters the snapshot preserves, so a resumed judge
 sees the loop budget it already spent before suspension.
+
+## v0.4.0 delta
+
+Media generation (image/voice) now lives in `ai_workflow_tools.media` (engine is orchestration-only;
+`vision`/image-input stays in the engine as LLM protocol). Breaking ONLY for direct media imports —
+none in your current integration. Install `ai-workflow-tools[media]` if you adopt the media pack.

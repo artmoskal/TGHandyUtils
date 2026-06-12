@@ -5,9 +5,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from ai_workflow_engine.image_models import GeneratedImage, ImageGenerationRequest
+from ai_workflow_tools.media.image_models import GeneratedImage, ImageGenerationRequest
 from ai_workflow_engine.models import WorkflowRunContext, WorkflowUsageSummary
-from ai_workflow_engine.image_generation import (
+from ai_workflow_tools.media.image_generation import (
     ComparisonImageGenerator,
     GeminiImageGenerator,
     OpenAIImageGenerator,
@@ -297,7 +297,7 @@ async def test_comparison_generator_runs_both_providers_and_keeps_primary_metada
     )
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(
-        "ai_workflow_engine.image_generation._generator_for_provider",
+        "ai_workflow_tools.media.image_generation._generator_for_provider",
         lambda provider, config: StaticGenerator(provider),
     )
     try:

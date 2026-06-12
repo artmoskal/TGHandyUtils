@@ -24,7 +24,7 @@ from services.content.anki_scenario_planners import (
 )
 from services.content.anki_quality_evaluator import AnkiRenderedCardEvaluator
 from services.content.anki_source import build_content_source
-from ai_workflow_engine.image_generation import OpenAIImageGenerator
+from ai_workflow_tools.media.image_generation import OpenAIImageGenerator
 
 pytestmark = pytest.mark.integration
 

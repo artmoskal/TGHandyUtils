@@ -38,8 +38,8 @@ from ai_workflow_engine.models import (
     WorkflowProfile,
     WorkflowRunContext,
 )
-from ai_workflow_engine.image_models import ImageGenerationRequest
-from ai_workflow_engine.voice_generation import VoiceGenerationRequest
+from ai_workflow_tools.media.image_models import ImageGenerationRequest
+from ai_workflow_tools.media.voice_generation import VoiceGenerationRequest
 from ai_workflow_engine.models import WorkflowGoal, WorkflowTraceEvent, WorkflowUsageSummary
 from services.anki_card_service import AnkiCardService
 from services.content.anki_directives import parse_directives

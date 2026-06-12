@@ -30,8 +30,8 @@ from services.content.anki_quality_evaluator import AnkiRenderedCardEvaluator
 from services.recipient_service import RecipientService
 from services.recipient_task_service import RecipientTaskService
 from services.openai_service import OpenAIService
-from ai_workflow_engine.image_generation import create_image_generator
-from ai_workflow_engine.voice_generation import create_voice_generator
+from ai_workflow_tools.media.image_generation import create_image_generator
+from ai_workflow_tools.media.voice_generation import create_voice_generator
 from services.voice_processing import VoiceProcessingService
 from services.image_processing import ImageProcessingService
 from services.oauth_state_manager import OAuthStateManager

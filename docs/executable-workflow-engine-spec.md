@@ -228,7 +228,7 @@ should have description of nodes entry and exit gates so AI could navigate state
 ## 2d. DEFERRED / OUT-OF-SCOPE REGISTER (single source; update when items land or die)
 | Item | Context | Trigger to do it |
 |---|---|---|
-| Media/voice seams → tools lib | Spec §12: stays in core. **2026-06-12 finding: "re-export shims in engine" would IMPORT tools = L0←L2 inversion — the originally planned mechanism is illegal.** Correct path: consumers (incl. Anki) switch imports to the tools location FIRST, then the engine copy is deleted (no shims) | Anki import migration |
+| ~~Media/voice seams → tools lib~~ | **DONE 2026-06-13 (v0.4.0)**: `ai_workflow_tools.media` (image_generation/image_models/voice_generation), shim-free — Anki + container + tests migrated in the same commit; engine `[media]` extra removed (tools has it); L0 purity guard test blocks regression. `vision.py` (image INPUT) stays in core — it is LLM protocol, not generation | — |
 | Browser-bridge no-API executor | L1 member, protocol-ready; §2c #3: highest-maintenance member | A concrete paying use case (build LAST) |
 | ~~`workflow_capability` adapter~~ | **DONE 2026-06-12**: `engine.register_workflow_capability(name, workflow_id)` — fanout over child workflows with partial-failure isolation | — |
 | ~~Durable mid-run resume~~ | **DONE 2026-06-12 (§2e round 2)**: `MachineSnapshot` + `engine.resume` with fast-forward replay, cumulative budgets, cross-process JSON | — |

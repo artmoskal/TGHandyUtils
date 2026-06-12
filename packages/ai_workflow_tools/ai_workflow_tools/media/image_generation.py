@@ -10,7 +10,7 @@ import uuid
 from contextlib import ExitStack
 from typing import Any, Callable, Protocol
 
-from ai_workflow_engine.image_models import GeneratedImage, ImageGenerationRequest
+from ai_workflow_tools.media.image_models import GeneratedImage, ImageGenerationRequest
 from ai_workflow_engine.usage import check_budget_before_call, record_image_usage
 
 logger = logging.getLogger(__name__)

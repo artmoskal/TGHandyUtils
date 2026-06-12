@@ -196,39 +196,16 @@ def test_engine_package_imports_without_project_prompt_root(tmp_path):
     assert result.stdout.strip() == "ok"
 
 
-def test_media_modules_import_without_optional_provider_sdks(tmp_path):
-    """The reusable package must import without optional media provider dependencies installed."""
-    package_root = Path(__file__).resolve().parents[1]
-    env = dict(os.environ)
-    env["PYTHONPATH"] = os.pathsep.join([str(package_root), env.get("PYTHONPATH", "")])
+def test_engine_core_contains_no_media_generation_modules():
+    """L0 purity guard: media GENERATION lives in ai_workflow_tools.media (vision INPUT stays —
+    it is part of the LLM protocol). Re-adding generation modules here is the L0<-L2 inversion
+    this guard exists to block."""
+    import importlib.util
 
-    script = """
-import builtins
-
-real_import = builtins.__import__
-blocked = {"openai"}
-
-def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
-    if name.split(".")[0] in blocked:
-        raise ModuleNotFoundError(name)
-    return real_import(name, globals, locals, fromlist, level)
-
-builtins.__import__ = guarded_import
-import ai_workflow_engine.image_generation
-import ai_workflow_engine.voice_generation
-print("ok")
-"""
-    result = subprocess.run(
-        [sys.executable, "-c", script],
-        cwd=tmp_path,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "ok"
+    for module in ("ai_workflow_engine.image_generation",
+                   "ai_workflow_engine.image_models",
+                   "ai_workflow_engine.voice_generation"):
+        assert importlib.util.find_spec(module) is None, f"{module} must not exist in L0"
 
 
 def test_package_import_does_not_load_host_repo_modules(tmp_path):

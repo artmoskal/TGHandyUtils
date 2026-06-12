@@ -15,7 +15,8 @@ git -C /Users/artemm/PycharmProjects/TGHandyUtils tag -l "engine*"
 #   engine-v0.1.0          <- v0.1.0 freeze (= commit 50117b1; tag-state suites 706/200/21)
 #   engine-v0.1.0-gopro    <- same commit; GoPro's earlier alias
 #   engine-v0.2.0          <- 8d58f88; 719/213/21 green; migration notes in your guide
-#   engine-v0.3.0          <- CURRENT: self-describing machine (ADDITIVE on v0.2.0 — no migration)
+#   engine-v0.3.0          <- self-describing machine (ADDITIVE on v0.2.0 — no migration)
+#   engine-v0.4.0          <- CURRENT: media generation moved to ai_workflow_tools.media (breaking ONLY for direct media importers)
 ```
 
 GoPro already does it right: wheel built from the tag (`tools/build_engine_wheel.sh` in their
@@ -131,3 +132,13 @@ transitions self-describe so AI can navigate them.
   flow-author prompts, recursion firewall marked inline (NOT-AUTHORABLE).
 - `FlowNodeSpec.describe` — authored machines self-describe too.
 - Internal: executor split into `nodes/` modules (no public import changes).
+
+## v0.4.0 — media seams moved to the tools package (L0 purity)
+
+Breaking ONLY if you import media generation directly (neither GoPro nor MageQA does today):
+
+- `ai_workflow_engine.image_generation` / `.image_models` / `.voice_generation` →
+  `ai_workflow_tools.media.*` (same names, shim-free by design — shims would invert L0←L2).
+- The engine's `[media]` extra is gone; install `ai-workflow-tools[media]` instead.
+- `vision.py` (image INPUT for VLM calls) stays in the engine — it is LLM protocol, not generation.
+- Everything else is untouched; builder-based code needs no changes.

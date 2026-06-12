@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ai-workflow-tools"
-version = "0.1.0"
+version = "0.2.0"
 description = "Reusable CLI-agent tools for ai-workflow-engine."
 requires-python = ">=3.10"
 dependencies = [
@@ -13,6 +13,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+media = [
+    "openai>=2.41.0",
+    "requests>=2.34.0",
+]
 test = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

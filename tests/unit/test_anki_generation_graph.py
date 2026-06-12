@@ -14,8 +14,8 @@ from models.anki_workflow import (
     TextCardScenario,
     VisualCardScenario,
 )
-from ai_workflow_engine.image_models import GeneratedImage
-from ai_workflow_engine.voice_generation import GeneratedVoiceAudio
+from ai_workflow_tools.media.image_models import GeneratedImage
+from ai_workflow_tools.media.voice_generation import GeneratedVoiceAudio
 from services.content.anki_generation_graph import AnkiGenerationGraph
 from services.content.anki_source import build_content_source
 from services.content.anki_directives import parse_directives
