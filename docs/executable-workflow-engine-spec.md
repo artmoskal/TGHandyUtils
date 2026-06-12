@@ -120,7 +120,12 @@ layers, each extended **by addition, never by editing the layer below**:
 **Values addendum:** (a) every new core dependency must justify why it isn't an extra; (b) a new
 executor = implement `LLMCallable`, a new domain = ship a pack — neither touches engine source;
 (c) heterogeneous executors coexist *per node* in one workflow (strong API model on the planner
-step, local weak model on extraction, browser-bridged on a zero-budget step) via G3 model binding.
+step, local weak model on extraction, browser-bridged on a zero-budget step) via G3 model binding;
+(d) **contract the mechanics, never the shapes** (Artem, 2026-06-12): universal layers contract
+what every case shares — transport, provenance (`EvidenceRef` + fingerprints on BOTH sides of an
+episode), validation (`PlanArtifact` + allow-lists), salvage — while per-domain payload shapes
+(video jobs, screenshot suites, finding schemas) stay role-tagged refs + product schemas at
+prompt level, graduating to an L2 pack only when TWO products share the shape.
 
 ## 2c. RISK WATCHLIST — where this becomes a mess if discipline slips (reviewed 2026-06-12)
 The architecture's real threats are **discipline threats**, not design flaws. Each has a named
