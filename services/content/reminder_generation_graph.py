@@ -62,7 +62,9 @@ class ReminderGenerationGraph:
     def __init__(self, parsing_service: Any, task_service: Any, runner: Optional[WorkflowRunner] = None):
         self.parsing_service = parsing_service
         self.task_service = task_service
-        self.runner = runner or WorkflowRunner(config=getattr(task_service, "config", None))
+        # Config comes from ParsingService (which carries it); RecipientTaskService does NOT have a
+        # .config, so reading it from there would silently hand the runner None and disable budget.
+        self.runner = runner or WorkflowRunner(config=getattr(parsing_service, "config", None))
         self.capability_trace_sink = InMemoryTraceSink()
         self.capability_registry = CapabilityRegistry()
         self.capability_runtime = CapabilityRuntime(self.capability_registry, self.capability_trace_sink)

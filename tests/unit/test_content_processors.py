@@ -310,3 +310,82 @@ async def test_reminder_processor_delegates_to_engine_and_replies(monkeypatch):
     assert task_svc.calls[0]["title"] == "Call Bob"
     assert task_svc.calls[0]["description"] == "U: call bob friday"
     assert parsing.calls[0][0] == "U: call bob friday"
+
+
+@pytest.mark.unit
+def test_reminder_graph_runner_takes_config_from_parsing_service():
+    # Regression: RecipientTaskService has no .config; the runner must read it from the parsing
+    # service or the engine budget integration silently disables (config=None).
+    parsing = _FakeParsing(None)
+    parsing.config = "CFG-OBJ"
+    task_svc = _FakeTaskSvc(ServiceResult.success_with_data("ok", None))
+    graph = ReminderGenerationGraph(parsing, task_svc)
+    assert graph.runner.config == "CFG-OBJ"
+
+
+@pytest.mark.unit
+async def test_reminder_processor_no_default_recipients_shows_picker(monkeypatch):
+    parsing = _FakeParsing({"title": "T", "due_time": "2026-06-20T09:00:00Z"})
+    task_svc = _FakeTaskSvc(ServiceResult.failure("NO_DEFAULT_RECIPIENTS"))
+
+    fake_services = Mock()
+    fake_services.get_parsing_service.return_value = parsing
+    monkeypatch.setattr("core.initialization.services", fake_services)
+
+    recipient_service = Mock()
+    recipient_service.is_recipient_ui_enabled.return_value = True
+    recipient_service.get_enabled_recipients.return_value = [Mock(id=5, name="Me", platform_type="todoist")]
+    fake_container = Mock()
+    fake_container.recipient_task_service.return_value = task_svc
+    fake_container.recipient_service.return_value = recipient_service
+    fake_container.task_repository.return_value.create.return_value = 99
+    monkeypatch.setattr("core.container.container", fake_container)
+    monkeypatch.setattr("helpers.ui_helpers.format_platform_button", lambda *a, **k: "Add to Me")
+    monkeypatch.setattr("keyboards.recipient.get_post_task_actions_keyboard", lambda actions: "KB")
+
+    message = Mock()
+    message.reply = AsyncMock()
+    message.chat = Mock(id=1)
+    message.message_id = 2
+    ctx = ProcessingContext(
+        message=message, thread_content=[("U", "x")], user_id=7, owner_name="A", location=None
+    )
+
+    result = await ReminderProcessor().process(ctx)
+
+    assert not result.success
+    args, kwargs = message.reply.call_args
+    assert "No default recipients set" in args[0]
+    assert kwargs.get("reply_markup") == "KB"
+
+
+@pytest.mark.unit
+async def test_reminder_processor_create_exception_replies_generic_error(monkeypatch):
+    parsing = _FakeParsing({"title": "T", "due_time": "2026-06-20T09:00:00Z"})
+
+    class _BoomTaskSvc:
+        def create_task_for_recipients(self, **kwargs):
+            raise RuntimeError("todoist down")
+
+    fake_services = Mock()
+    fake_services.get_parsing_service.return_value = parsing
+    monkeypatch.setattr("core.initialization.services", fake_services)
+
+    fake_container = Mock()
+    fake_container.recipient_task_service.return_value = _BoomTaskSvc()
+    fake_container.recipient_service.return_value = Mock()
+    monkeypatch.setattr("core.container.container", fake_container)
+
+    message = Mock()
+    message.reply = AsyncMock()
+    message.chat = Mock(id=1)
+    message.message_id = 2
+    ctx = ProcessingContext(
+        message=message, thread_content=[("U", "x")], user_id=7, owner_name="A", location=None
+    )
+
+    result = await ReminderProcessor().process(ctx)
+
+    assert not result.success
+    # engine swallows the capability exception -> create_result None -> generic error (parity)
+    assert "Error creating task" in message.reply.call_args[0][0]
