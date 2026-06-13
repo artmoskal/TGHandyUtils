@@ -1,16 +1,19 @@
 """Reminder/task content processor.
 
-This is the ORIGINAL reminder pipeline, moved verbatim out of
-handlers_modular/message/text_handler.process_thread_with_photos. Behaviour is unchanged;
-it still resolves collaborators via the global container + service locator so existing tests
-(which patch those points) keep working.
-"""
+The reminder ("todoist") pipeline now runs on the reusable workflow engine via
+ReminderGenerationGraph (parse -> create, with engine-owned trace + usage/budget scope). This
+processor owns only the Telegram delivery (success reply, no-default-recipient picker, error
+replies) — mirroring how AnkiProcessor owns delivery after its graph runs.
 
-import asyncio
+Collaborators are still resolved via the global container + service locator at call time, so
+existing tests (which patch those points) keep working; the resolved services are handed straight
+into the graph's leaf capabilities, which call them verbatim.
+"""
 
 from core.interfaces import IContentProcessor, ProcessingContext, ServiceResult
 from core.logging import get_logger
 from models.task import TaskCreate
+from services.content.reminder_generation_graph import ReminderGenerationGraph
 from services.content.thread_assembly import assemble_thread
 
 # NOTE: handlers_modular.base / helpers.ui_helpers / core.container are imported lazily inside
@@ -41,55 +44,40 @@ class ReminderProcessor(IContentProcessor):
                 f"and screenshot: {screenshot_data is not None}"
             )
 
-            # Parse using recipient parsing service
+            # Resolve collaborators at call time (preserves test patch-points), then run the
+            # parse -> create workflow on the engine.
             from core.initialization import services
             parsing_service = services.get_parsing_service()
-
-            parsed_task_dict = await asyncio.to_thread(
-                parsing_service.parse_content_to_task,
-                concatenated_content,
-                owner_name=owner_name,
-                location=ctx.location,
-                user_id=owner_id
-            )
-
-            if parsed_task_dict:
-                logger.info(f"LLM parsed task title: {parsed_task_dict['title']}")
-                task_data = TaskCreate(
-                    title=parsed_task_dict['title'],
-                    description=concatenated_content,  # Use original content
-                    due_time=parsed_task_dict['due_time']
-                )
-            else:
-                logger.info("LLM parsing failed, using fallback title")
-                from datetime import datetime, timezone, timedelta
-                tomorrow = datetime.now(timezone.utc) + timedelta(days=1)
-                due_time = tomorrow.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
-                task_data = TaskCreate(
-                    title=concatenated_content[:100],
-                    description=concatenated_content,
-                    due_time=due_time
-                )
-
-            # Create task using recipient task service WITH screenshot data
             task_service = container.recipient_task_service()
             recipient_service = container.recipient_service()
 
-            result = await asyncio.to_thread(
-                task_service.create_task_for_recipients,
-                user_id=owner_id,
-                title=task_data.title,
-                description=task_data.description,
-                due_time=task_data.due_time,
-                specific_recipients=None,
+            graph = ReminderGenerationGraph(parsing_service, task_service)
+            graph_result = await graph.run(
+                content=concatenated_content,
+                owner_id=owner_id,
+                owner_name=owner_name,
+                location=ctx.location,
                 screenshot_data=screenshot_data,
                 chat_id=message.chat.id,
-                message_id=message.message_id
+                message_id=message.message_id,
             )
 
-            success = result.success
-            feedback = result.message
-            actions = result.data
+            task_dict = graph_result.get("task_data")
+            create_result = graph_result.get("create_result")
+            if not task_dict or create_result is None:
+                # Parse raised, or the create capability failed inside the engine: same
+                # user-facing outcome as the old outer-exception path.
+                logger.error("Reminder workflow produced no task/create result")
+                await message.reply(
+                    "❌ Error creating task from messages. Please try again.",
+                    disable_web_page_preview=True,
+                )
+                return ServiceResult.failure("reminder workflow produced no result")
+
+            task_data = TaskCreate(**task_dict)
+            success = create_result.get("success")
+            feedback = create_result.get("message")
+            actions = create_result.get("data")
 
             if not success:
                 if feedback == "NO_DEFAULT_RECIPIENTS":

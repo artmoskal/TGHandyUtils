@@ -168,3 +168,145 @@ def test_anki_export_caption_mentions_media_count():
     assert "3 card(s)" in caption
     assert "Biology::Cells" in caption
     assert "Includes 2 media file(s)." in caption
+
+
+# ======================================================================================
+# Reminder ("todoist") path migrated onto the executable workflow engine
+# (services/content/reminder_generation_graph.py). Parity tests: the engine drives
+# parse -> create, reusing the existing services verbatim.
+# ======================================================================================
+
+from core.interfaces import ServiceResult
+from services.content.reminder_generation_graph import ReminderGenerationGraph
+from services.content.reminder_processor import ReminderProcessor
+
+
+class _FakeParsing:
+    def __init__(self, parsed):
+        self.parsed = parsed
+        self.calls = []
+
+    def parse_content_to_task(self, content, owner_name=None, location=None, user_id=None):
+        self.calls.append((content, owner_name, location, user_id))
+        return self.parsed
+
+
+class _FakeTaskSvc:
+    def __init__(self, result):
+        self.result = result
+        self.calls = []
+
+    def create_task_for_recipients(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.result
+
+
+@pytest.mark.unit
+async def test_reminder_graph_threads_parsed_task_into_create():
+    parsing = _FakeParsing({"title": "Call Bob", "due_time": "2026-06-20T09:00:00Z"})
+    task_svc = _FakeTaskSvc(ServiceResult.success_with_data("✅ created", {"add_actions": []}))
+    graph = ReminderGenerationGraph(parsing, task_svc)
+
+    out = await graph.run(
+        content="call bob friday",
+        owner_id=7,
+        owner_name="Art",
+        location="Lisbon",
+        screenshot_data={"file_id": "f1"},
+        chat_id=11,
+        message_id=22,
+    )
+
+    # parse output flows into create -> proves the engine threaded the two nodes in order
+    td = out["task_data"]
+    assert td["title"] == "Call Bob"
+    assert td["due_time"] == "2026-06-20T09:00:00Z"
+    assert td["description"] == "call bob friday"  # original content preserved (parity)
+    assert out["create_result"]["success"] is True
+    assert out["create_result"]["message"] == "✅ created"
+    assert out["usage"] is not None  # ran inside the engine's usage scope
+
+    # create_task_for_recipients received exactly the parsed task + passthrough context (parity)
+    call = task_svc.calls[0]
+    assert call["user_id"] == 7
+    assert call["title"] == "Call Bob"
+    assert call["due_time"] == "2026-06-20T09:00:00Z"
+    assert call["description"] == "call bob friday"
+    assert call["screenshot_data"] == {"file_id": "f1"}
+    assert call["chat_id"] == 11 and call["message_id"] == 22
+    assert call["specific_recipients"] is None
+    # parsing received the user context
+    assert parsing.calls[0] == ("call bob friday", "Art", "Lisbon", 7)
+
+
+@pytest.mark.unit
+async def test_reminder_graph_fallback_when_parse_returns_none():
+    from datetime import datetime, timezone
+
+    parsing = _FakeParsing(None)
+    task_svc = _FakeTaskSvc(ServiceResult.success_with_data("ok", None))
+    graph = ReminderGenerationGraph(parsing, task_svc)
+    long_content = "x" * 250
+
+    out = await graph.run(content=long_content, owner_id=1)
+
+    td = out["task_data"]
+    assert td["title"] == long_content[:100]  # first 100 chars, parity with old fallback
+    assert td["description"] == long_content
+    due = datetime.fromisoformat(td["due_time"])
+    assert due.hour == 9 and due.minute == 0  # tomorrow 09:00 UTC
+    assert due.date() > datetime.now(timezone.utc).date()
+    # the fallback task is still handed to create unchanged
+    assert task_svc.calls[0]["title"] == long_content[:100]
+
+
+@pytest.mark.unit
+async def test_reminder_graph_create_failure_surfaces_result():
+    parsing = _FakeParsing({"title": "T", "due_time": "2026-06-20T09:00:00Z"})
+    task_svc = _FakeTaskSvc(ServiceResult.failure("NO_DEFAULT_RECIPIENTS"))
+    graph = ReminderGenerationGraph(parsing, task_svc)
+
+    out = await graph.run(content="c", owner_id=1)
+
+    assert out["create_result"]["success"] is False
+    assert out["create_result"]["message"] == "NO_DEFAULT_RECIPIENTS"
+
+
+@pytest.mark.unit
+async def test_reminder_processor_delegates_to_engine_and_replies(monkeypatch):
+    parsing = _FakeParsing({"title": "Call Bob", "due_time": "2026-06-20T09:00:00Z"})
+    task_svc = _FakeTaskSvc(ServiceResult.success_with_data("✅ created", {"add_actions": []}))
+
+    fake_services = Mock()
+    fake_services.get_parsing_service.return_value = parsing
+    monkeypatch.setattr("core.initialization.services", fake_services)
+
+    fake_container = Mock()
+    fake_container.recipient_task_service.return_value = task_svc
+    fake_container.recipient_service.return_value = Mock()
+    monkeypatch.setattr("core.container.container", fake_container)
+
+    handle = AsyncMock()
+    monkeypatch.setattr("handlers_modular.base.handle_task_creation_response", handle)
+
+    message = Mock()
+    message.reply = AsyncMock()
+    message.chat = Mock(id=11)
+    message.message_id = 22
+    ctx = ProcessingContext(
+        message=message,
+        thread_content=[("U", "call bob friday")],
+        user_id=7,
+        owner_name="Art",
+        location="Lisbon",
+    )
+
+    result = await ReminderProcessor().process(ctx)
+
+    assert result.success
+    handle.assert_awaited_once()
+    # parity: the parsed task reached create_task_for_recipients through the engine.
+    # description is the assembled thread (assemble_thread prefixes the sender name).
+    assert task_svc.calls[0]["title"] == "Call Bob"
+    assert task_svc.calls[0]["description"] == "U: call bob friday"
+    assert parsing.calls[0][0] == "U: call bob friday"
