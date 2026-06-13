@@ -600,9 +600,13 @@ class AnkiGenerationGraph:
         if value in (None, ""):
             return None
         try:
-            return float(value)
+            parsed = float(value)
         except (TypeError, ValueError):
             return None
+        # App-config convention: 0 (the config.py default) means "no cap". The engine treats
+        # 0.0 as a HARD zero-spend cap (WP3 budget semantics), so translate at this boundary —
+        # passing 0.0 through killed every metered call with "exceeded: $x > $0.000000".
+        return parsed if parsed > 0 else None
 
     @staticmethod
     def _merge_trace(
