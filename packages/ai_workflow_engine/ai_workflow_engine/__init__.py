@@ -1,6 +1,6 @@
 """Reusable AI workflow engine package."""
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 from ai_workflow_engine.engine import (
     AgentCapability,

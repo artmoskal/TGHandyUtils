@@ -533,3 +533,30 @@ async def test_build_llm_agent_capability_joins_the_shared_trace_sink():
     assert result.status in ("accepted", "partial")
     assert any(e.node == "probe_tool" and e.decision == "start" for e in shared_sink.events)
     assert any(e.node == "probe_tool" and e.decision == "accepted" for e in shared_sink.events)
+
+
+async def test_agent_request_metadata_passes_through_to_llm_callable():
+    """Per-run AgentRunRequest.metadata reaches the LLMCallable (voice on_token / session routing),
+    while engine observability keys always win on collision."""
+    scripted = ScriptedLLM(LLMResponse(text="hello there", model="gpt-5.4-mini"))
+    capability = build_llm_agent_capability(
+        scripted,
+        CapabilityRegistry(),
+        allowed_tools=[],
+        system_prompt="you are a voice brain",
+    )
+    request = AgentRunRequest(
+        prompt="say hi",
+        metadata={"on_token": "SINK-handle", "session_id": "call-42", "workflow_id": "hijack"},
+    )
+
+    result = await capability(_context(), request)
+
+    assert result.status == "accepted"
+    sent = scripted.requests[0].metadata
+    # consumer keys flow through untouched
+    assert sent["on_token"] == "SINK-handle"
+    assert sent["session_id"] == "call-42"
+    # engine observability keys win on collision (consumer cannot clobber them)
+    assert sent["workflow_id"] == "wf-agent"
+    assert sent["agent_node"] == "agent_planner"

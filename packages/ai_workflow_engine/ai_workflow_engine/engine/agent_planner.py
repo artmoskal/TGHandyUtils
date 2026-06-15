@@ -68,6 +68,10 @@ class LLMAgentPlanner:
                 messages=messages,
                 tools=active_tools,
                 metadata={
+                    # Per-run passthrough: the consumer's AgentRunRequest.metadata reaches the
+                    # LLMCallable (e.g. an on_token sink / session id for per-call TTS routing in a
+                    # voice brain). Engine observability keys are applied AFTER so they always win.
+                    **request.metadata,
                     "agent_node": self.node_name,
                     "workflow_id": context.run_context.workflow_id,
                     "workflow_type": context.run_context.workflow_type,
