@@ -11,6 +11,9 @@ Rules:
   (e.g. never append "associated with <sender>"), unless the content is explicitly about that person.
 - Prefer one card. Use count 2-3 only when the build plan says separate high-value facts exist.
 - Make source_content concise but complete enough for the renderer to create self-contained cards.
+- The card question must be specific with a single definite answer. Never use vague framings like
+  "What is the relationship between X and Y?" or "How are X and Y related?"; ask a direct
+  what/which/when/how-much question whose answer is the exact fact.
 - rendering_guide should tell the renderer what to ask and what to keep off the front.
 - For sibling list/set material, one card means a grouped set-recall card: the front asks for the
   category/set, and the back must include every high-value sibling item or clearly grouped item

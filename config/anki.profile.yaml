@@ -31,12 +31,12 @@ models:
     max_retries: 1
   anki_decision:
     provider: openai
-    model: gpt-5.4-mini
+    model: gpt-5.4
     temperature: 0
     max_retries: 1
   anki_scenario:
     provider: openai
-    model: gpt-5.4-mini
+    model: gpt-5.4
     temperature: 0
     max_retries: 1
   anki_render:

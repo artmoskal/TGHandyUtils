@@ -23,6 +23,9 @@ Rules:
 - Use one generated image by default.
 - question_text must be the exact Anki front text. It must be self-contained, must not reveal the
   answer, and must not depend on the generated image when layout is text_front_image_back.
+- question_text must be specific with a single definite answer. Never use vague framings like
+  "What is the relationship between X and Y?" or "How are X and Y related?"; ask a direct
+  what/which/when/how-much question whose answer is the exact fact.
 - answer_text must be the exact concise Anki back answer. It must fully answer question_text in
   words; the generated image is a mnemonic/supporting visual, not a substitute for the answer.
 - The no-answer-leak rule applies to the FRONT/question side only. If the generated image is placed

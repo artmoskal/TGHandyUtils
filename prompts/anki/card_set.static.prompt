@@ -42,6 +42,10 @@ Rules:
   usable answer, choose 2-3 grouped cards by logical subtopic instead of one card per item.
 - Do not make one card per item by default. Split individual items only when each item has its own
   separate rule, definition, consequence, or user-requested focus.
+- Do not bundle unrelated facts into one card under a vague umbrella. If two facts do not share ONE
+  focused question with a single definite answer, make separate cards (respecting the count
+  guidance) or keep only the higher-value fact. Never paper over multiple facts with a
+  "relationship between X and Y" framing.
 - If directive_summary.language_voice is true, produce exactly one visual_basic card when generated
   or reused image media is feasible. Set count to 1, image_policy to generate/reference/reuse_user_image
   according to the image plan, fallback_kind to basic, and study_goal to a language-learning card
