@@ -25,6 +25,10 @@ Rules:
   generation references only when the user explicitly asks for reference/style/composition reuse or
   the image's visual appearance is itself important to the card.
 - Do not invent facts. source_facts must be grounded in the supplied content.
+- Sender/attribution names are CONTEXT, not study material. Source lines may be prefixed with a
+  sender name (e.g. `Alice: ...`); use them only to understand who said what. Never list a sender
+  name as a source_fact, and never let it reach a card question/answer (do not produce facts like
+  "associated with <sender>"), unless the substantive content is explicitly about that person.
 - If visual_basic is chosen, fallback_kind must be basic or cloze.
 - Decide target count when the user did not request an exact count. Prefer fewer cards by default:
   usually 1 card, 2-3 only for clearly separate high-value facts, and never more than 5 unless the

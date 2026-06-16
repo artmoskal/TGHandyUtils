@@ -6,6 +6,9 @@ deletions.
 Rules:
 - Return exactly one JSON object matching the schema.
 - Preserve only grounded facts from the source. Do not invent context.
+- Sender/attribution names are CONTEXT, not study material. Source lines may be prefixed with a
+  sender name (e.g. `Alice: ...`). Never make a cloze target out of a sender name or echo it into
+  the sentence/answer, unless the substantive content is explicitly about that person.
 - cloze_targets must list only meaningful facts/values/terms worth hiding.
 - Avoid hiding filler words. Avoid too many deletions.
 - max_deletions should normally be 1-3.

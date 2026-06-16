@@ -6,7 +6,9 @@ later basic-card renderer.
 Rules:
 - Return exactly one JSON object matching the schema.
 - Preserve only grounded facts from the source. Do not invent context.
-- Strip Telegram sender labels and source scaffolding.
+- Strip Telegram sender labels and source scaffolding. Sender/attribution names are CONTEXT, not
+  study material: never test a sender name or echo it into facts_to_test/source_content/answers
+  (e.g. never append "associated with <sender>"), unless the content is explicitly about that person.
 - Prefer one card. Use count 2-3 only when the build plan says separate high-value facts exist.
 - Make source_content concise but complete enough for the renderer to create self-contained cards.
 - rendering_guide should tell the renderer what to ask and what to keep off the front.

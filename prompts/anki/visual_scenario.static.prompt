@@ -13,6 +13,9 @@ Rules:
 - Return exactly one JSON object matching the schema.
 - Preserve only grounded facts from the source. Do not invent precise labels, numbers, anatomy, or
   relationships not in the source.
+- Sender/attribution names are CONTEXT, not study material. Source lines may be prefixed with a
+  sender name (e.g. `Alice: ...`). Never test a sender name or echo it into question_text/answer_text
+  (e.g. never append "associated with <sender>"), unless the content is explicitly about that person.
 - For cockpit instruments, charts, radios, altimetry, weather, legal minima, frequencies, pressure
   settings, or performance data, do not ask the image model to draw exact numeric values or units
   unless the source gives them. Prefer generic labels, arrows, blank gauge marks, or source-grounded
