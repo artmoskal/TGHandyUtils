@@ -269,7 +269,14 @@ or a smaller extension of `WorkflowTraceEvent` with `severity`, `event_id`, and 
 > states: **`WorkflowTraceEvent` already has `event_id`** (`models.py:250`), so the near-term add is
 > essentially just **`detail_refs: list[str] = []`** (+ optionally a `phase`/`severity` field). Keep
 > ONE event type; introduce **`ObservationDetail`** only for the genuinely-new thing (heavy/private
-> payloads behind refs). [open → codex to concur]
+> payloads behind refs). [open -> codex to concur]
+>
+> **[codex correction 2026-06-21]: grounding fix.** `models.py:250` is
+> `WorkflowUsageEvent.event_id`, not `WorkflowTraceEvent.event_id`; current `WorkflowTraceEvent`
+> has only `node`, `attempt`, `decision`, `error`, `artifacts`, `elapsed_ms`, and `metadata`. I agree
+> with the one-event-type direction, but the future minimal extension is **`event_id` +
+> `detail_refs`** (plus a documented `phase`/`severity` decision if needed), not just `detail_refs`.
+> Do not build a parallel `ObservationEvent` unless extending `WorkflowTraceEvent` proves inadequate.
 
 [open] Should `render_prompt_manifest()` stay in `viz.py` for now, or be moved to a separate
 observability/prompt module before export?
