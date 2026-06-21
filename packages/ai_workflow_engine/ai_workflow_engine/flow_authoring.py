@@ -74,89 +74,194 @@ def build_definition_from_artifact(
     Every violation is collected and raised in ONE loud error — no partial compilation.
     """
 
+    errors = _validate_flow_artifact(
+        artifact,
+        registry=registry,
+        model_profiles=model_profiles,
+        allowed_side_effects=allowed_side_effects,
+        max_nodes=max_nodes,
+    )
+    if errors:
+        raise WorkflowValidationError(errors)
+
+    return _compile_flow_artifact(artifact, workflow_id=workflow_id)
+
+
+def _validate_flow_artifact(
+    artifact: FlowArtifact,
+    *,
+    registry: Any,
+    model_profiles: Dict[str, Any],
+    allowed_side_effects: List[str],
+    max_nodes: int,
+) -> list[str]:
     errors: list[str] = []
     if not artifact.nodes:
         errors.append("authored flow has no nodes")
     if len(artifact.nodes) > max_nodes:
         errors.append(f"authored flow has {len(artifact.nodes)} nodes, exceeds max_nodes={max_nodes}")
 
-    declared_ids: list[str] = []
+    declared_ids = _collect_declared_ids(artifact.nodes, errors)
+    allowed = set(allowed_side_effects)
+    step_ids_so_far: set[str] = set()
     for spec in artifact.nodes:
+        errors.extend(
+            _validate_flow_node(
+                spec,
+                registry=registry,
+                model_profiles=model_profiles,
+                allowed_side_effects=allowed,
+                declared_ids=declared_ids,
+                step_ids_so_far=step_ids_so_far,
+            )
+        )
+        if spec.kind == "step":
+            step_ids_so_far.add(spec.id)
+    return errors
+
+
+def _collect_declared_ids(nodes: List[FlowNodeSpec], errors: list[str]) -> list[str]:
+    declared_ids: list[str] = []
+    for spec in nodes:
         if not spec.id:
             errors.append("authored node with empty id")
         elif spec.id in declared_ids:
             errors.append(f"duplicate authored node id: {spec.id}")
         declared_ids.append(spec.id)
+    return declared_ids
 
-    allowed = set(allowed_side_effects)
 
-    def check_capability(label: str, name: Optional[str]) -> None:
-        if not name:
-            return
-        try:
-            cap_spec, handler = registry.get(name)
-        except KeyError:
-            errors.append(f"{label}: capability '{name}' is not registered")
-            return
-        if cap_spec.metadata.get("planner") is True or getattr(handler, "is_planner", False):
-            errors.append(
-                f"{label}: capability '{name}' is a planner — authored flows may not contain "
-                "AI-writers (use bounded planner depth instead)"
+def _validate_flow_node(
+    spec: FlowNodeSpec,
+    *,
+    registry: Any,
+    model_profiles: Dict[str, Any],
+    allowed_side_effects: set[str],
+    declared_ids: list[str],
+    step_ids_so_far: set[str],
+) -> list[str]:
+    label = f"node '{spec.id}'"
+    errors: list[str] = []
+    if spec.model_profile and spec.model_profile not in model_profiles:
+        errors.append(f"{label}: unknown model profile '{spec.model_profile}'")
+    if spec.kind == "step":
+        errors.extend(
+            _validate_authored_capability(
+                label, spec.capability or spec.id, registry, allowed_side_effects
             )
-        if cap_spec.metadata.get("flow_author") is True or getattr(handler, "is_flow_author", False):
+        )
+    elif spec.kind == "branch":
+        errors.extend(_validate_branch_spec(spec, registry, allowed_side_effects, declared_ids))
+    elif spec.kind == "evaluate":
+        errors.extend(_validate_evaluate_spec(spec, registry, allowed_side_effects, step_ids_so_far))
+    return errors
+
+
+def _validate_branch_spec(
+    spec: FlowNodeSpec,
+    registry: Any,
+    allowed_side_effects: set[str],
+    declared_ids: list[str],
+) -> list[str]:
+    label = f"node '{spec.id}'"
+    errors: list[str] = []
+    if not spec.branches:
+        errors.append(f"{label}: branch has no branches")
+    errors.extend(
+        _validate_authored_capability(
+            label, spec.capability or spec.id, registry, allowed_side_effects
+        )
+    )
+    for branch_label, target in spec.branches.items():
+        if target not in declared_ids:
+            errors.append(f"{label}: branch '{branch_label}' -> unknown node '{target}'")
+    return errors
+
+
+def _validate_evaluate_spec(
+    spec: FlowNodeSpec,
+    registry: Any,
+    allowed_side_effects: set[str],
+    step_ids_so_far: set[str],
+) -> list[str]:
+    label = f"node '{spec.id}'"
+    errors: list[str] = []
+    errors.extend(
+        _validate_authored_capability(
+            label, spec.capability or spec.id, registry, allowed_side_effects
+        )
+    )
+    errors.extend(_validate_authored_capability(label, spec.target, registry, allowed_side_effects))
+    if spec.on_reject == "retrace":
+        if not spec.retrace_to:
+            errors.append(f"{label}: on_reject=retrace requires retrace_to")
+        elif spec.retrace_to not in step_ids_so_far:
             errors.append(
-                f"{label}: capability '{name}' authors flows — recursion through generated "
-                "structure is forbidden"
+                f"{label}: retrace_to '{spec.retrace_to}' must be an EARLIER step "
+                "(bounded back-edges only)"
             )
-        denied = sorted(effect for effect in cap_spec.side_effects if effect not in allowed)
-        if denied:
-            errors.append(f"{label}: capability '{name}' side effects denied: {', '.join(denied)}")
+    if spec.on_reject == "fallback":
+        if not spec.fallback:
+            errors.append(f"{label}: on_reject=fallback requires fallback")
+        else:
+            errors.extend(
+                _validate_authored_capability(label, spec.fallback, registry, allowed_side_effects)
+            )
+    return errors
 
-    step_ids_so_far: set[str] = set()
-    for spec in artifact.nodes:
-        label = f"node '{spec.id}'"
-        if spec.model_profile and spec.model_profile not in model_profiles:
-            errors.append(f"{label}: unknown model profile '{spec.model_profile}'")
-        if spec.kind == "step":
-            check_capability(label, spec.capability or spec.id)
-            step_ids_so_far.add(spec.id)
-        elif spec.kind == "branch":
-            if not spec.branches:
-                errors.append(f"{label}: branch has no branches")
-            check_capability(label, spec.capability or spec.id)
-            for branch_label, target in spec.branches.items():
-                if target not in declared_ids:
-                    errors.append(f"{label}: branch '{branch_label}' -> unknown node '{target}'")
-        elif spec.kind == "evaluate":
-            check_capability(label, spec.capability or spec.id)
-            check_capability(label, spec.target)
-            if spec.on_reject == "retrace":
-                if not spec.retrace_to:
-                    errors.append(f"{label}: on_reject=retrace requires retrace_to")
-                elif spec.retrace_to not in step_ids_so_far:
-                    errors.append(
-                        f"{label}: retrace_to '{spec.retrace_to}' must be an EARLIER step "
-                        "(bounded back-edges only)"
-                    )
-            if spec.on_reject == "fallback":
-                if not spec.fallback:
-                    errors.append(f"{label}: on_reject=fallback requires fallback")
-                else:
-                    check_capability(label, spec.fallback)
-    if errors:
-        raise WorkflowValidationError(errors)
 
-    builder = WorkflowBuilder(workflow_id or f"authored:{artifact.flow_id}",
-                              description=artifact.goal)
+def _validate_authored_capability(
+    label: str,
+    name: Optional[str],
+    registry: Any,
+    allowed_side_effects: set[str],
+) -> list[str]:
+    if not name:
+        return []
+    try:
+        cap_spec, handler = registry.get(name)
+    except KeyError:
+        return [f"{label}: capability '{name}' is not registered"]
+
+    errors: list[str] = []
+    if cap_spec.metadata.get("planner") is True or getattr(handler, "is_planner", False):
+        errors.append(
+            f"{label}: capability '{name}' is a planner — authored flows may not contain "
+            "AI-writers (use bounded planner depth instead)"
+        )
+    if cap_spec.metadata.get("flow_author") is True or getattr(handler, "is_flow_author", False):
+        errors.append(
+            f"{label}: capability '{name}' authors flows — recursion through generated "
+            "structure is forbidden"
+        )
+    denied = sorted(effect for effect in cap_spec.side_effects if effect not in allowed_side_effects)
+    if denied:
+        errors.append(f"{label}: capability '{name}' side effects denied: {', '.join(denied)}")
+    return errors
+
+
+def _compile_flow_artifact(
+    artifact: FlowArtifact,
+    *,
+    workflow_id: Optional[str],
+) -> WorkflowDefinition:
+    builder = WorkflowBuilder(
+        workflow_id or f"authored:{artifact.flow_id}",
+        description=artifact.goal,
+    )
     for spec in artifact.nodes:
         if spec.kind == "step":
             builder.step(spec.id, capability=spec.capability, model_profile=spec.model_profile)
         elif spec.kind == "branch":
-            builder.branch(spec.id, dict(spec.branches), decider=spec.capability,
-                           bounds=dict(spec.branch_bounds) or None,
-                           exhausted=dict(spec.branch_exhausted) or None,
-                           describe=dict(spec.describe) or None,
-                           model_profile=spec.model_profile)
+            builder.branch(
+                spec.id,
+                dict(spec.branches),
+                decider=spec.capability,
+                bounds=dict(spec.branch_bounds) or None,
+                exhausted=dict(spec.branch_exhausted) or None,
+                describe=dict(spec.describe) or None,
+                model_profile=spec.model_profile,
+            )
         else:
             on_reject = None
             if spec.on_reject == "retry":
@@ -165,9 +270,14 @@ def build_definition_from_artifact(
                 on_reject = Retrace(spec.retrace_to, max_retrace=spec.max_retrace)
             elif spec.on_reject == "fallback":
                 on_reject = Fallback(spec.fallback)
-            builder.evaluate(spec.id, target=spec.target, evaluator=spec.capability,
-                             on_reject=on_reject, fallback=spec.fallback,
-                             model_profile=spec.model_profile)
+            builder.evaluate(
+                spec.id,
+                target=spec.target,
+                evaluator=spec.capability,
+                on_reject=on_reject,
+                fallback=spec.fallback,
+                model_profile=spec.model_profile,
+            )
     return builder.build()
 
 

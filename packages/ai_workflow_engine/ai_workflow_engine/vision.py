@@ -135,7 +135,7 @@ class StructuredVisionLLMNode(StructuredLLMNode):
             return messages
         updated = list(messages)
         last = updated[-1]
-        text = last.content if isinstance(last.content, str) else last.content
+        text = last.content
         parts: List[Any]
         if isinstance(text, str):
             parts = [{"type": "text", "text": text}]

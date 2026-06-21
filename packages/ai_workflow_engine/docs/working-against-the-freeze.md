@@ -1,7 +1,8 @@
 # Working against the engine freeze (GoPro + MageQA)
 
-Status: **upgrade window OPEN** — `engine-v0.2.0` is tagged and green (2026-06-12). v0.1.0 pins
-keep working; upgrade tag-to-tag per the protocol below.
+Status: **tag-to-tag consumer protocol** — `engine-v0.2.0` through `engine-v0.4.0` are tagged guide
+points from 2026-06-12, and v0.1.0 pins keep working. The live branch has later working-tree updates
+after v0.4.x; consumers still upgrade deliberately from tag to tag per the protocol below.
 Audience: GoPro and MageQA integrators. Read this BEFORE wiring the engine into your repo.
 
 ## TL;DR
@@ -16,8 +17,15 @@ git -C /Users/artemm/PycharmProjects/TGHandyUtils tag -l "engine*"
 #   engine-v0.1.0-gopro    <- same commit; GoPro's earlier alias
 #   engine-v0.2.0          <- 8d58f88; 719/213/21 green; migration notes in your guide
 #   engine-v0.3.0          <- self-describing machine (ADDITIVE on v0.2.0 — no migration)
-#   engine-v0.4.0          <- CURRENT: media generation moved to ai_workflow_tools.media (breaking ONLY for direct media importers)
+#   engine-v0.4.0          <- latest listed freeze tag: media generation moved to ai_workflow_tools.media (breaking ONLY for direct media importers)
 ```
+
+Current live-branch delta after the listed tags (2026-06-21): T1 workflow memory is built
+(`AgentMemory`, `FullReplayMemory`, `ImageEvictingMemory`, `MemoryStore`, `InMemoryMemoryStore`),
+the store scope is `MemoryNamespace(product, tenant, subject, kind)`, memory modes are exactly
+`full_replay` and `image_evicting`, S0 non-default memory replay determinism is tested, and
+`validate_graph` / `build_definition_from_artifact` were decomposed.
+This is not a permission to track the branch; wait for a new tag before consumer upgrades.
 
 GoPro already does it right: wheel built from the tag (`tools/build_engine_wheel.sh` in their
 repo), vendored into their image, plus a canary test that runs the engine's toy pilot. MageQA:

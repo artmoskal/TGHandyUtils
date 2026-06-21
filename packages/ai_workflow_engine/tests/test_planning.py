@@ -139,6 +139,30 @@ async def test_planner_aborts_invalid_plan_before_any_task_execution():
     assert any(event.decision == "plan:validation_failed" for event in result.trace)
 
 
+async def test_planner_reports_plan_artifact_validation_reason():
+    engine = (
+        WorkflowEngineBuilder()
+        .with_profile(_profile("malformed_plan"))
+        .register_capability(
+            "planner",
+            lambda _ctx, _payload: {
+                "goal": "malformed",
+                "tasks": [{"task_id": "missing-required-fields"}],
+            },
+            kind="llm",
+        )
+        .register_workflow(WorkflowBuilder("malformed_plan").plan("make_plan", capability="planner").build())
+        .build()
+    )
+
+    result = await engine.run("malformed_plan", {})
+
+    assert result.status == "failed"
+    assert "PlanArtifact-compatible output" in (result.error or "")
+    assert "description" in (result.error or "")
+    assert "capability" in (result.error or "")
+
+
 async def test_planner_enforces_max_tasks_and_depth_one_capability_rule():
     engine = (
         WorkflowEngineBuilder()

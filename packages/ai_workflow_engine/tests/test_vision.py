@@ -5,6 +5,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
 
 from ai_workflow_engine import (
@@ -184,6 +185,20 @@ def test_from_path_reads_file_at_call_time(tmp_path):
     part = image.as_content_part()
     assert part["image_url"]["url"].startswith("data:image/png;base64,")
     assert base64.b64decode(part["image_url"]["url"].split(",", 1)[1]) == b"png-bytes-here"
+
+
+def test_attach_images_preserves_existing_multimodal_content_parts():
+    original_text = {"type": "text", "text": "inspect this"}
+    existing_image = {"type": "image_url", "image_url": {"url": "https://cam.local/existing.jpg"}}
+    image = ImageInput(source="url", data="https://cam.local/new.jpg", role="context")
+
+    updated = StructuredVisionLLMNode._attach_images(
+        [HumanMessage(content=[original_text, existing_image])],
+        [image],
+    )
+
+    assert updated[-1].content[:2] == [original_text, existing_image]
+    assert updated[-1].content[2]["image_url"]["url"] == "https://cam.local/new.jpg"
 
 
 # ---------------------------------------------------------------- budget + timeout

@@ -88,6 +88,18 @@ from ai_workflow_engine.parsing import (
     strip_think_tags,
 )
 from ai_workflow_engine.vision import ImageInput, StructuredVisionLLMNode
+from ai_workflow_engine.memory import (
+    AgentMemory,
+    AgentMemoryRenderContext,
+    FullReplayMemory,
+    ImageEvictingMemory,
+    InMemoryMemoryStore,
+    MemoryNamespace,
+    MemoryRecord,
+    MemoryStore,
+    resolve_agent_memory,
+    render_full_replay_messages,
+)
 from ai_workflow_engine.llm_protocol import (
     ChatMessage,
     LLMCallable,
@@ -236,6 +248,16 @@ __all__ = [
     "strip_think_tags",
     "ImageInput",
     "StructuredVisionLLMNode",
+    "AgentMemory",
+    "AgentMemoryRenderContext",
+    "FullReplayMemory",
+    "ImageEvictingMemory",
+    "InMemoryMemoryStore",
+    "MemoryNamespace",
+    "MemoryRecord",
+    "MemoryStore",
+    "resolve_agent_memory",
+    "render_full_replay_messages",
     "ChatMessage",
     "LLMCallable",
     "LLMRequest",

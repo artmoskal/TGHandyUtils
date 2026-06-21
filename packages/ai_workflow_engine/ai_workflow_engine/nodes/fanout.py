@@ -8,14 +8,14 @@ from typing import Any, Dict
 from ai_workflow_engine.engine.capabilities import CapabilityCall, gather_capabilities
 from ai_workflow_engine.models import CapabilityContext, CapabilityResult, WorkflowTraceEvent
 from ai_workflow_engine.workflow import WorkflowDefinition, WorkflowNode
-from ai_workflow_engine.executor import _CONTEXT, _RUNNING_PAYLOAD
+from ai_workflow_engine._runtime_state import CONTEXT, RUNNING_PAYLOAD
 
 
 def build_fanout_node(executor, definition: WorkflowDefinition, node: WorkflowNode):
     item_capability = node.item_capability or node.capability or node.id
 
     async def fanout_fn(state: Dict[str, Any]) -> Dict[str, Any]:
-        context: CapabilityContext = state[_CONTEXT]
+        context: CapabilityContext = state[CONTEXT]
         items = _resolve_items(state, node)
         if not isinstance(items, list):
             failed = CapabilityResult(
@@ -63,10 +63,10 @@ def build_fanout_node(executor, definition: WorkflowDefinition, node: WorkflowNo
 def _resolve_items(state: Dict[str, Any], node: WorkflowNode) -> Any:
     key = node.fan_items_key
     if not key:
-        return state.get(_RUNNING_PAYLOAD)
+        return state.get(RUNNING_PAYLOAD)
     parts = key.split(".")
     head = parts[0]
-    value = state.get(_RUNNING_PAYLOAD) if head == "payload" else state.get("node_outputs", {}).get(head)
+    value = state.get(RUNNING_PAYLOAD) if head == "payload" else state.get("node_outputs", {}).get(head)
     for attr in parts[1:]:
         if value is None:
             break

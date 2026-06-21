@@ -9,14 +9,14 @@ import uuid
 from typing import Any, Dict, List, Optional
 from ai_workflow_engine.models import CapabilityContext, CapabilityResult, WorkflowTraceEvent
 from ai_workflow_engine.workflow import WorkflowDefinition, WorkflowNode
-from ai_workflow_engine.executor import _CONTEXT
+from ai_workflow_engine._runtime_state import CONTEXT
 
 
 def build_step_node(executor, definition: WorkflowDefinition, node: WorkflowNode):
     capability = node.capability or node.id
 
     async def step_fn(state: Dict[str, Any]) -> Dict[str, Any]:
-        context: CapabilityContext = state[_CONTEXT]
+        context: CapabilityContext = state[CONTEXT]
         payload = executor._node_input(state, node)
 
         # Engine-owned pre-invocation gate: forbidden side effect / raw-media export /

@@ -4,6 +4,7 @@ import pytest
 
 from ai_workflow_engine import (
     FlowArtifact,
+    FlowNodeSpec,
     PlanArtifact,
     PlanTask,
     WorkflowBuilder,
@@ -108,6 +109,16 @@ def _authoring_engine():
         "a_planner", lambda ctx, p: p,
         spec=CapabilitySpec(name="a_planner", kind="llm", metadata={"planner": True}),
     )
+    builder.register_capability(
+        "send_external",
+        lambda ctx, p: p,
+        spec=CapabilitySpec(name="send_external", kind="tool", side_effects=["network"]),
+    )
+    builder.register_capability(
+        "author_flow",
+        lambda ctx, p: p,
+        spec=CapabilitySpec(name="author_flow", kind="llm", metadata={"flow_author": True}),
+    )
     return builder.build()
 
 
@@ -157,6 +168,27 @@ async def test_authored_flow_node_cap():
     engine = _authoring_engine()
     with pytest.raises(WorkflowValidationError, match="max_nodes"):
         await engine.run_authored_flow(_artifact(), "x", max_nodes=2)
+
+
+async def test_authored_flow_reports_branch_evaluate_side_effect_and_firewall_errors():
+    engine = _authoring_engine()
+    bad = FlowArtifact(
+        flow_id="bad_validation_buckets",
+        nodes=[
+            FlowNodeSpec(kind="step", id="send_external"),
+            FlowNodeSpec(kind="branch", id="route", branches={"bad": "missing"}),
+            FlowNodeSpec(kind="evaluate", id="gate", target="summarize", on_reject="fallback"),
+            FlowNodeSpec(kind="step", id="recursive_author", capability="author_flow"),
+        ],
+    )
+
+    with pytest.raises(WorkflowValidationError) as exc:
+        await engine.run_authored_flow(bad, "x")
+    message = str(exc.value)
+    assert "send_external" in message and "side effects denied: network" in message
+    assert "branch 'bad' -> unknown node 'missing'" in message
+    assert "on_reject=fallback requires fallback" in message
+    assert "author_flow" in message and "recursion through generated structure is forbidden" in message
 
 
 # ---------------------------------------------------------------- workflow capability fanout

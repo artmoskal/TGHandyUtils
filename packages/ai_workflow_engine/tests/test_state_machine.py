@@ -8,7 +8,23 @@ from pydantic import BaseModel
 
 pytestmark = pytest.mark.unit
 
-from ai_workflow_engine import FlowArtifact, FlowNodeSpec, WorkflowEngineBuilder
+from ai_workflow_engine import (
+    AgentCapability,
+    AgentRunRequest,
+    CapabilityRegistry,
+    CapabilityRuntime,
+    CapabilitySpec,
+    EvidenceRef,
+    FlowArtifact,
+    FlowNodeSpec,
+    LLMAgentPlanner,
+    LLMRequest,
+    LLMResponse,
+    MachineSnapshot,
+    ToolCallRequest,
+    ToolSpec,
+    WorkflowEngineBuilder,
+)
 from ai_workflow_engine.workflow import (
     BranchDecision,
     Retrace,
@@ -22,6 +38,10 @@ from ai_workflow_engine.workflow import (
 class ClarificationOut(BaseModel):
     status: str
     value: Any = None
+
+
+class AgentCaption(BaseModel):
+    caption: str
 
 
 # ======================================================================================
@@ -148,6 +168,94 @@ def _clarify_engine():
     return builder.build(), calls
 
 
+class _MemoryProbeLLM:
+    def __init__(self, *, fail_if_called: bool = False):
+        self.fail_if_called = fail_if_called
+        self.requests: list[LLMRequest] = []
+
+    async def __call__(self, request: LLMRequest) -> LLMResponse:
+        self.requests.append(request)
+        if self.fail_if_called:
+            raise AssertionError("resume must fast-forward recorded agent state, not invoke live memory")
+        if len(self.requests) == 1:
+            return LLMResponse(
+                tool_calls=[
+                    ToolCallRequest(
+                        call_id="shot-1",
+                        name="screenshot",
+                        arguments={"selector": "body"},
+                    )
+                ]
+            )
+        return LLMResponse(text='{"caption": "recorded evidence"}')
+
+
+def _agent_memory_replay_engine(
+    client: _MemoryProbeLLM,
+    *,
+    memory=None,
+    calls: dict[str, int],
+):
+    registry = CapabilityRegistry()
+
+    def image_loader(_ref: EvidenceRef) -> bytes:
+        calls["loads"] += 1
+        return b"raw-image-bytes"
+
+    async def screenshot(_context, _payload):
+        calls["screenshots"] += 1
+        return EvidenceRef(role="screenshot", uri="memory://frame-1", media_type="image/png")
+
+    registry.register(
+        CapabilitySpec(name="screenshot", kind="tool", description="Capture a checkpoint-safe frame ref"),
+        screenshot,
+    )
+    planner = LLMAgentPlanner(
+        client,
+        tool_specs={
+            "screenshot": ToolSpec(
+                name="screenshot",
+                description="Capture a screenshot",
+                input_schema={"type": "object", "properties": {"selector": {"type": "string"}}},
+            )
+        },
+        output_model=AgentCaption,
+        node_name="memory_probe_agent",
+        image_loader=image_loader,
+        memory=memory,
+    )
+    agent = AgentCapability(
+        planner,
+        CapabilityRuntime(registry),
+        name="agent_memory_probe",
+    )
+    builder = WorkflowEngineBuilder()
+    builder.register_capability_spec(agent.spec, agent)
+
+    def ask(context, _payload):
+        calls["ask"] += 1
+        event = context.metadata.get("resume_event")
+        if event is None:
+            return ClarificationOut(status="pending")
+        return ClarificationOut(status="answered", value=event)
+
+    def finish(_context, payload):
+        calls["finish"] += 1
+        answer = payload.value if isinstance(payload, ClarificationOut) else payload
+        return {"resumed": True, "answer": answer}
+
+    builder.register_capability("ask", ask, kind="deterministic")
+    builder.register_capability("finish", finish, kind="deterministic")
+    builder.register_workflow(
+        WorkflowBuilder("agent_memory_replay")
+        .step("agent", capability="agent_memory_probe")
+        .human("ask")
+        .step("finish")
+        .build()
+    )
+    return builder.build()
+
+
 async def test_suspension_captures_a_complete_machine_snapshot():
     engine, _calls = _clarify_engine()
     result = await engine.run("clarify_machine", {"question": "what color?"})
@@ -194,6 +302,49 @@ async def test_snapshot_json_roundtrip_resumes_on_a_fresh_engine():
     assert resumed.status == "completed"
     assert fresh_calls["a"] == 0  # the first half is NEVER re-executed, even cross-process
     assert fresh_calls["b"] == 1
+
+
+async def test_memory_projection_is_input_only_for_snapshot_replay_determinism():
+    calls = {"screenshots": 0, "loads": 0, "ask": 0, "finish": 0}
+    client = _MemoryProbeLLM()
+    engine = _agent_memory_replay_engine(
+        client,
+        memory={"mode": "image_evicting", "keep_last_images": 0},
+        calls=calls,
+    )
+    first = await engine.run(
+        "agent_memory_replay",
+        AgentRunRequest(
+            prompt="Capture and describe.",
+            allowed_tools=["screenshot"],
+            max_steps=3,
+        ),
+    )
+
+    assert first.status == "requires_user_input"
+    assert calls == {"screenshots": 1, "loads": 0, "ask": 1, "finish": 0}
+    assert len(client.requests) == 2
+    tool_results = client.requests[1].messages[-1].tool_results
+    assert tool_results and tool_results[0].images == []  # real ImageEvicting prompt view
+    assert "memory:image_evicted" in tool_results[0].content
+
+    blob = first.snapshot.to_json()
+    assert "memory://frame-1" in blob
+    assert "raw-image-bytes" not in blob
+    recorded = MachineSnapshot.model_validate_json(blob)
+    recorded_agent = recorded.node_outputs["agent"]
+    assert recorded_agent["steps"][0]["output"]["uri"] == "memory://frame-1"
+
+    fresh_calls = {"screenshots": 0, "loads": 0, "ask": 0, "finish": 0}
+    fresh_client = _MemoryProbeLLM(fail_if_called=True)
+    fresh_engine = _agent_memory_replay_engine(fresh_client, memory=None, calls=fresh_calls)
+    resumed = await fresh_engine.resume(blob, {"answer": "blue"})
+
+    assert resumed.status == "completed"
+    assert resumed.output == {"resumed": True, "answer": {"answer": "blue"}}
+    assert fresh_client.requests == []
+    assert fresh_calls == {"screenshots": 0, "loads": 0, "ask": 1, "finish": 1}
+    assert any(e.decision == "machine:fastforward" and e.node == "agent" for e in resumed.trace)
 
 
 async def test_resume_on_engine_without_the_workflow_is_loud():

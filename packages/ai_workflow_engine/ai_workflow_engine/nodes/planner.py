@@ -6,17 +6,18 @@ Mechanical split of the executor god-file (spec §2c#5). Functions take the
 from __future__ import annotations
 import asyncio
 from typing import Any, Dict, Optional
+from pydantic import ValidationError
 from ai_workflow_engine.models import CapabilityContext, CapabilityResult, WorkflowArtifact, WorkflowTraceEvent
 from ai_workflow_engine.planning import PlanArtifact, PlanTask
 from ai_workflow_engine.workflow import WorkflowDefinition, WorkflowNode
-from ai_workflow_engine.executor import _CONTEXT, _RUNNING_PAYLOAD
+from ai_workflow_engine._runtime_state import CONTEXT, RUNNING_PAYLOAD
 
 
 def build_planner_node(executor, definition: WorkflowDefinition, node: WorkflowNode):
     planner_capability = node.capability or node.id
 
     async def planner_fn(state: Dict[str, Any]) -> Dict[str, Any]:
-        context: CapabilityContext = state[_CONTEXT]
+        context: CapabilityContext = state[CONTEXT]
         payload = executor._node_input(state, node)
         attempt = state.get("attempts", {}).get(node.id, 0) + 1
 
@@ -35,11 +36,15 @@ def build_planner_node(executor, definition: WorkflowDefinition, node: WorkflowN
                     force_status="failed",
                     error=planner_result.error or "planner failed",
                 )
-            plan = _coerce_plan_artifact(planner_result.output)
+            plan_errors: list[str] = []
+            plan = _coerce_plan_artifact(planner_result.output, errors=plan_errors)
             if plan is None:
+                error = f"planner '{node.id}' did not emit a PlanArtifact-compatible output"
+                if plan_errors:
+                    error += f": {'; '.join(plan_errors)}"
                 failed = CapabilityResult(
                     status="failed",
-                    error=f"planner '{node.id}' did not emit a PlanArtifact-compatible output",
+                    error=error,
                 )
                 return executor._record(
                     state, node, failed, attempts=attempt, input_payload=payload
@@ -103,12 +108,12 @@ def build_planner_node(executor, definition: WorkflowDefinition, node: WorkflowN
         node_outputs.update(task_outputs)
         update["node_outputs"] = node_outputs
         update["plan_artifact"] = executed_plan
-        update[_RUNNING_PAYLOAD] = executed_plan
+        update[RUNNING_PAYLOAD] = executed_plan
         return update
 
     return planner_fn
 
-def _coerce_plan_artifact(value: Any) -> Optional[PlanArtifact]:
+def _coerce_plan_artifact(value: Any, *, errors: Optional[list[str]] = None) -> Optional[PlanArtifact]:
     if value is None:
         return None
     if isinstance(value, PlanArtifact):
@@ -116,7 +121,9 @@ def _coerce_plan_artifact(value: Any) -> Optional[PlanArtifact]:
     if isinstance(value, dict):
         try:
             return PlanArtifact.model_validate(value)
-        except Exception:
+        except ValidationError as exc:
+            if errors is not None:
+                errors.append(str(exc))
             return None
     return None
 

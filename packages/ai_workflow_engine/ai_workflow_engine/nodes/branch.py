@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 from ai_workflow_engine.models import CapabilityContext, CapabilityResult, WorkflowTraceEvent
 from ai_workflow_engine.workflow import BranchDecision, WorkflowDefinition, WorkflowNode
-from ai_workflow_engine.executor import _CONTEXT, _RUNNING_PAYLOAD
+from ai_workflow_engine._runtime_state import CONTEXT, RUNNING_PAYLOAD
 
 
 def build_branch_node(executor, definition: WorkflowDefinition, node: WorkflowNode):
@@ -19,7 +19,7 @@ def build_branch_node(executor, definition: WorkflowDefinition, node: WorkflowNo
     }
 
     async def branch_fn(state: Dict[str, Any]) -> Dict[str, Any]:
-        context: CapabilityContext = state[_CONTEXT]
+        context: CapabilityContext = state[CONTEXT]
         payload = executor._node_input(state, node)
         attempt = state.get("attempts", {}).get(node.id, 0) + 1
         result = await executor._invoke_bound(node, decider, payload, context, state, attempt=attempt, definition=definition)
@@ -71,7 +71,7 @@ def build_branch_node(executor, definition: WorkflowDefinition, node: WorkflowNo
         update["transition_counts"] = counts
         # A branch is a routing decision, not a transform: the running payload passes through
         # unchanged so the selected downstream node sees the real data, not the decision.
-        update[_RUNNING_PAYLOAD] = payload
+        update[RUNNING_PAYLOAD] = payload
         executor.runtime.trace_sink.record(
             WorkflowTraceEvent(
                 node=node.id,

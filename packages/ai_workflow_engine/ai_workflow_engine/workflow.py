@@ -331,149 +331,258 @@ class WorkflowDefinition(BaseModel):
     def validate_graph(self) -> List[str]:
         """Return a list of structural errors (empty == valid)."""
 
-        errors: List[str] = []
         if not self.nodes:
-            errors.append("workflow has no nodes")
-            return errors
+            return ["workflow has no nodes"]
 
         ids = [node.id for node in self.nodes]
-        seen: set[str] = set()
-        for node_id in ids:
-            if node_id in seen:
-                errors.append(f"duplicate node id: {node_id}")
-            seen.add(node_id)
         known = set(ids)
+        nodes_by_id = _first_nodes_by_id(self.nodes)
 
-        if self.entry not in known:
-            errors.append(f"entry node not found: {self.entry}")
-
-        for node in self.nodes:
-            if node.kind not in KNOWN_NODE_KINDS:
-                errors.append(f"node '{node.id}' has unsupported kind: {node.kind}")
-                continue
-            if node.kind == "branch":
-                if not node.branches:
-                    errors.append(f"branch node '{node.id}' has no branches")
-                for label, target in node.branches.items():
-                    if target != END and target not in known:
-                        errors.append(
-                            f"branch node '{node.id}' label '{label}' -> unknown node: {target}"
-                        )
-            elif node.kind == "fanout":
-                if not node.fan_items_key:
-                    errors.append(f"fanout node '{node.id}' missing fan_items_key")
-                if not (node.item_capability or node.capability):
-                    errors.append(f"fanout node '{node.id}' missing item_capability")
-            elif node.kind == "evaluate":
-                if not node.evaluator:
-                    errors.append(f"evaluate node '{node.id}' missing evaluator")
-                if not node.target_capability:
-                    errors.append(f"evaluate node '{node.id}' missing target_capability")
-                if isinstance(node.on_reject, Retrace) and node.on_reject.target not in known:
-                    errors.append(
-                        f"evaluate node '{node.id}' retrace target unknown: {node.on_reject.target}"
-                    )
-                if isinstance(node.on_reject, Replan) and node.on_reject.target not in known:
-                    errors.append(
-                        f"evaluate node '{node.id}' replan target unknown: {node.on_reject.target}"
-                    )
-                if (
-                    isinstance(node.on_reject, Replan)
-                    and node.on_reject.target in known
-                    and self.node(node.on_reject.target).kind != "planner"
-                ):
-                    errors.append(
-                        f"evaluate node '{node.id}' replan target is not a planner: {node.on_reject.target}"
-                    )
-            elif node.kind == "subworkflow":
-                if not node.subworkflow:
-                    errors.append(f"subworkflow node '{node.id}' missing subworkflow ref")
-            elif node.kind == "planner":
-                if not (node.capability or node.id):
-                    errors.append(f"planner node '{node.id}' missing capability")
-                if node.max_tasks < 1:
-                    errors.append(f"planner node '{node.id}' max_tasks must be >= 1")
-                if node.max_replans < 0:
-                    errors.append(f"planner node '{node.id}' max_replans must be >= 0")
-                if node.max_plan_depth < 1:
-                    errors.append(f"planner node '{node.id}' max_plan_depth must be >= 1")
-                if node.max_total_planned_tasks < 1:
-                    errors.append(f"planner node '{node.id}' max_total_planned_tasks must be >= 1")
-                if node.max_plan_depth > 1 and node.execution == "fanout":
-                    errors.append(
-                        f"planner node '{node.id}' recursive planning requires execution='sequential'"
-                    )
-
-        for t in self.transitions:
-            if t.source not in known:
-                errors.append(f"transition from unknown node: {t.source}")
-            if t.target != END and t.target not in known:
-                errors.append(f"transition to unknown node: {t.target}")
-            if t.max_traversals is not None:
-                if t.max_traversals < 1:
-                    errors.append(
-                        f"transition '{t.source}' -> '{t.target}' max_traversals must be >= 1"
-                    )
-                if t.policy in ("always", "on_accept"):
-                    errors.append(
-                        f"transition '{t.source}' -> '{t.target}' declares max_traversals on "
-                        f"policy '{t.policy}' — pre-set gates are enforced on decision transitions only"
-                    )
-            if t.on_exhausted != "fail":
-                if t.policy != "decision":
-                    errors.append(
-                        f"transition '{t.source}' -> '{t.target}' declares on_exhausted on policy "
-                        f"'{t.policy}' — escape labels exist only on decision transitions"
-                    )
-                else:
-                    source_node = next((n for n in self.nodes if n.id == t.source), None)
-                    if source_node is None or t.on_exhausted not in source_node.branches:
-                        errors.append(
-                            f"transition '{t.source}' label '{t.label}' on_exhausted "
-                            f"'{t.on_exhausted}' is not a declared label of that branch"
-                        )
-                    elif t.on_exhausted == t.label:
-                        errors.append(
-                            f"transition '{t.source}' label '{t.label}' on_exhausted must differ "
-                            f"from its own label"
-                        )
-
-        # Pre-set gate law: every cycle in the {always ∪ decision} subgraph must be broken by at
-        # least one BOUNDED decision transition (its counter closes the loop after N traversals).
-        # on_accept/on_reject transitions carry their own evaluator-owned counters and are exempt.
-        adjacency: Dict[str, List[Transition]] = {}
-        for t in self.transitions:
-            if t.source not in known or t.target == END or t.target not in known:
-                continue
-            if t.policy == "always" or (t.policy == "decision" and t.max_traversals is None):
-                adjacency.setdefault(t.source, []).append(t)
-        color: Dict[str, int] = dict.fromkeys(known, 0)  # 0 white, 1 grey, 2 black
-        offender: List[Transition] = []
-
-        def _visit(node_id: str) -> None:
-            color[node_id] = 1
-            for t in adjacency.get(node_id, []):
-                if offender:
-                    return
-                if color[t.target] == 1:
-                    offender.append(t)
-                    return
-                if color[t.target] == 0:
-                    _visit(t.target)
-            color[node_id] = 2
-
-        for node_id in ids:
-            if color.get(node_id) == 0 and not offender:
-                _visit(node_id)
-        if offender:
-            t = offender[0]
-            errors.append(
-                f"unbounded cycle: transition '{t.source}' -[{t.label or 'always'}]-> "
-                f"'{t.target}' closes a loop with no pre-set gate; declare max_traversals on a "
-                f"decision transition in this cycle"
-            )
-
+        errors: List[str] = []
+        errors.extend(_validate_graph_identity(ids, self.entry, known))
+        errors.extend(_validate_node_shapes(self.nodes, known, nodes_by_id))
+        errors.extend(_validate_transitions(self.transitions, nodes_by_id, known))
+        errors.extend(_validate_cycle_gates(ids, self.transitions, known))
         return errors
+
+
+def _first_nodes_by_id(nodes: List[WorkflowNode]) -> Dict[str, WorkflowNode]:
+    nodes_by_id: Dict[str, WorkflowNode] = {}
+    for node in nodes:
+        nodes_by_id.setdefault(node.id, node)
+    return nodes_by_id
+
+
+def _validate_graph_identity(ids: List[str], entry: str, known: set[str]) -> List[str]:
+    errors: List[str] = []
+    seen: set[str] = set()
+    for node_id in ids:
+        if node_id in seen:
+            errors.append(f"duplicate node id: {node_id}")
+        seen.add(node_id)
+    if entry not in known:
+        errors.append(f"entry node not found: {entry}")
+    return errors
+
+
+def _validate_node_shapes(
+    nodes: List[WorkflowNode],
+    known: set[str],
+    nodes_by_id: Dict[str, WorkflowNode],
+) -> List[str]:
+    errors: List[str] = []
+    for node in nodes:
+        if node.kind not in KNOWN_NODE_KINDS:
+            errors.append(f"node '{node.id}' has unsupported kind: {node.kind}")
+            continue
+        if node.kind == "branch":
+            errors.extend(_validate_branch_node(node, known))
+        elif node.kind == "fanout":
+            errors.extend(_validate_fanout_node(node))
+        elif node.kind == "evaluate":
+            errors.extend(_validate_evaluate_node(node, known, nodes_by_id))
+        elif node.kind == "subworkflow":
+            errors.extend(_validate_subworkflow_node(node))
+        elif node.kind == "planner":
+            errors.extend(_validate_planner_node(node))
+    return errors
+
+
+def _validate_branch_node(node: WorkflowNode, known: set[str]) -> List[str]:
+    errors: List[str] = []
+    if not node.branches:
+        errors.append(f"branch node '{node.id}' has no branches")
+    for label, target in node.branches.items():
+        if target != END and target not in known:
+            errors.append(f"branch node '{node.id}' label '{label}' -> unknown node: {target}")
+    return errors
+
+
+def _validate_fanout_node(node: WorkflowNode) -> List[str]:
+    errors: List[str] = []
+    if not node.fan_items_key:
+        errors.append(f"fanout node '{node.id}' missing fan_items_key")
+    if not (node.item_capability or node.capability):
+        errors.append(f"fanout node '{node.id}' missing item_capability")
+    return errors
+
+
+def _validate_evaluate_node(
+    node: WorkflowNode,
+    known: set[str],
+    nodes_by_id: Dict[str, WorkflowNode],
+) -> List[str]:
+    errors: List[str] = []
+    if not node.evaluator:
+        errors.append(f"evaluate node '{node.id}' missing evaluator")
+    if not node.target_capability:
+        errors.append(f"evaluate node '{node.id}' missing target_capability")
+    if isinstance(node.on_reject, Retrace) and node.on_reject.target not in known:
+        errors.append(f"evaluate node '{node.id}' retrace target unknown: {node.on_reject.target}")
+    if isinstance(node.on_reject, Replan) and node.on_reject.target not in known:
+        errors.append(f"evaluate node '{node.id}' replan target unknown: {node.on_reject.target}")
+    if (
+        isinstance(node.on_reject, Replan)
+        and node.on_reject.target in known
+        and nodes_by_id[node.on_reject.target].kind != "planner"
+    ):
+        errors.append(
+            f"evaluate node '{node.id}' replan target is not a planner: {node.on_reject.target}"
+        )
+    return errors
+
+
+def _validate_subworkflow_node(node: WorkflowNode) -> List[str]:
+    if not node.subworkflow:
+        return [f"subworkflow node '{node.id}' missing subworkflow ref"]
+    return []
+
+
+def _validate_planner_node(node: WorkflowNode) -> List[str]:
+    errors: List[str] = []
+    if not (node.capability or node.id):
+        errors.append(f"planner node '{node.id}' missing capability")
+    if node.max_tasks < 1:
+        errors.append(f"planner node '{node.id}' max_tasks must be >= 1")
+    if node.max_replans < 0:
+        errors.append(f"planner node '{node.id}' max_replans must be >= 0")
+    if node.max_plan_depth < 1:
+        errors.append(f"planner node '{node.id}' max_plan_depth must be >= 1")
+    if node.max_total_planned_tasks < 1:
+        errors.append(f"planner node '{node.id}' max_total_planned_tasks must be >= 1")
+    if node.max_plan_depth > 1 and node.execution == "fanout":
+        errors.append(f"planner node '{node.id}' recursive planning requires execution='sequential'")
+    return errors
+
+
+def _validate_transitions(
+    transitions: List[Transition],
+    nodes_by_id: Dict[str, WorkflowNode],
+    known: set[str],
+) -> List[str]:
+    errors: List[str] = []
+    for transition in transitions:
+        if transition.source not in known:
+            errors.append(f"transition from unknown node: {transition.source}")
+        if transition.target != END and transition.target not in known:
+            errors.append(f"transition to unknown node: {transition.target}")
+        errors.extend(_validate_transition_gate(transition))
+        errors.extend(_validate_transition_exhaustion(transition, nodes_by_id))
+    return errors
+
+
+def _validate_transition_gate(transition: Transition) -> List[str]:
+    if transition.max_traversals is None:
+        return []
+    errors: List[str] = []
+    if transition.max_traversals < 1:
+        errors.append(
+            f"transition '{transition.source}' -> '{transition.target}' max_traversals must be >= 1"
+        )
+    if transition.policy in ("always", "on_accept"):
+        errors.append(
+            f"transition '{transition.source}' -> '{transition.target}' declares max_traversals on "
+            f"policy '{transition.policy}' — pre-set gates are enforced on decision transitions only"
+        )
+    return errors
+
+
+def _validate_transition_exhaustion(
+    transition: Transition,
+    nodes_by_id: Dict[str, WorkflowNode],
+) -> List[str]:
+    if transition.on_exhausted == "fail":
+        return []
+    if transition.policy != "decision":
+        return [
+            f"transition '{transition.source}' -> '{transition.target}' declares on_exhausted on "
+            f"policy '{transition.policy}' — escape labels exist only on decision transitions"
+        ]
+    source_node = nodes_by_id.get(transition.source)
+    if source_node is None or transition.on_exhausted not in source_node.branches:
+        return [
+            f"transition '{transition.source}' label '{transition.label}' on_exhausted "
+            f"'{transition.on_exhausted}' is not a declared label of that branch"
+        ]
+    if transition.on_exhausted == transition.label:
+        return [
+            f"transition '{transition.source}' label '{transition.label}' on_exhausted must differ "
+            f"from its own label"
+        ]
+    return []
+
+
+def _validate_cycle_gates(
+    ids: List[str],
+    transitions: List[Transition],
+    known: set[str],
+) -> List[str]:
+    # Pre-set gate law: every cycle in the {always ∪ decision} subgraph must be broken by at
+    # least one BOUNDED decision transition (its counter closes the loop after N traversals).
+    # on_accept/on_reject transitions carry their own evaluator-owned counters and are exempt.
+    transition = _find_unbounded_cycle_transition(
+        ids,
+        _unbounded_cycle_adjacency(transitions, known),
+        known,
+    )
+    if transition is None:
+        return []
+    return [
+        f"unbounded cycle: transition '{transition.source}' -[{transition.label or 'always'}]-> "
+        f"'{transition.target}' closes a loop with no pre-set gate; declare max_traversals on a "
+        f"decision transition in this cycle"
+    ]
+
+
+def _unbounded_cycle_adjacency(
+    transitions: List[Transition],
+    known: set[str],
+) -> Dict[str, List[Transition]]:
+    adjacency: Dict[str, List[Transition]] = {}
+    for transition in transitions:
+        if _participates_in_unbounded_cycle_search(transition, known):
+            adjacency.setdefault(transition.source, []).append(transition)
+    return adjacency
+
+
+def _participates_in_unbounded_cycle_search(transition: Transition, known: set[str]) -> bool:
+    if transition.source not in known or transition.target == END or transition.target not in known:
+        return False
+    return transition.policy == "always" or (
+        transition.policy == "decision" and transition.max_traversals is None
+    )
+
+
+def _find_unbounded_cycle_transition(
+    ids: List[str],
+    adjacency: Dict[str, List[Transition]],
+    known: set[str],
+) -> Transition | None:
+    color: Dict[str, int] = dict.fromkeys(known, 0)  # 0 white, 1 grey, 2 black
+    for node_id in ids:
+        if color.get(node_id) != 0:
+            continue
+        offender = _visit_unbounded_cycle(node_id, adjacency, color)
+        if offender is not None:
+            return offender
+    return None
+
+
+def _visit_unbounded_cycle(
+    node_id: str,
+    adjacency: Dict[str, List[Transition]],
+    color: Dict[str, int],
+) -> Transition | None:
+    color[node_id] = 1
+    for transition in adjacency.get(node_id, []):
+        if color[transition.target] == 1:
+            return transition
+        if color[transition.target] == 0:
+            offender = _visit_unbounded_cycle(transition.target, adjacency, color)
+            if offender is not None:
+                return offender
+    color[node_id] = 2
+    return None
 
 
 # --------------------------------------------------------------------------------------

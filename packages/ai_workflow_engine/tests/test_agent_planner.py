@@ -1,8 +1,12 @@
+import json
+
 import pytest
 from pydantic import BaseModel
 
 from ai_workflow_engine import (
     AgentCapability,
+    FullReplayMemory,
+    ImageEvictingMemory,
     LLMAgentPlanner,
     LLMRequest,
     LLMResponse,
@@ -11,6 +15,7 @@ from ai_workflow_engine import (
     ToolSpec,
     WEAK_MODEL_CLEANER,
     build_llm_agent_capability,
+    render_full_replay_messages,
 )
 from ai_workflow_engine.engine.capabilities import CapabilityRegistry, CapabilityRuntime
 from ai_workflow_engine.models import (
@@ -106,6 +111,10 @@ def _planner(client: ScriptedLLM, **kwargs) -> LLMAgentPlanner:
         node_name="agent_brain",
         **kwargs,
     )
+
+
+def _messages_json(messages) -> str:
+    return json.dumps([message.model_dump(mode="json") for message in messages], sort_keys=True)
 
 
 async def test_llm_agent_planner_runs_scripted_tool_loop_with_image_result_and_usage():
@@ -332,6 +341,147 @@ async def test_llm_agent_planner_loads_image_evidence_refs_at_call_boundary():
     assert image.media_type == "image/png"
     assert image.role == "screenshot"
     assert image.metadata == {"evidence_ref_id": "shot-1"}
+
+
+def test_full_replay_memory_matches_direct_history_renderer_byte_for_byte():
+    evidence = EvidenceRef(
+        ref_id="shot-1",
+        role="screenshot",
+        uri="memory://shot-1",
+        media_type="image/png",
+    )
+    history = [
+        AgentToolStep(
+            call=AgentToolCall(tool_name="navigate", payload={"url": "https://example.test"}, rationale="open"),
+            status="accepted",
+            output={"url": "https://example.test", "loaded": True},
+        ),
+        AgentToolStep(
+            call=AgentToolCall(tool_name="screenshot", payload={"selector": "body"}, rationale="capture"),
+            status="accepted",
+            output={"artifact": evidence, "observation": "page is visible"},
+        ),
+    ]
+
+    def load_image(_ref: EvidenceRef) -> bytes:
+        return b"shot-bytes"
+
+    planner = _planner(ScriptedLLM(), image_loader=load_image, memory=FullReplayMemory())
+    request = AgentRunRequest(prompt="Inspect screenshot evidence.", allowed_tools=["navigate", "screenshot"])
+
+    direct = render_full_replay_messages(request, history, planner._memory_render_context())
+    via_memory = planner._messages_from_history(request, history)
+
+    assert _messages_json(via_memory) == _messages_json(direct)
+    assert via_memory[-1].tool_results[0].images[0].fingerprint() == direct[-1].tool_results[0].images[0].fingerprint()
+
+
+def test_image_evicting_memory_keeps_recent_image_refs_and_audits_evicted_turns():
+    old_ref = EvidenceRef(
+        ref_id="shot-old",
+        role="screenshot",
+        uri="memory://shot-old",
+        media_type="image/png",
+        metadata={"fingerprint": {"sha12": "oldabc", "length": 10}},
+    )
+    new_ref = EvidenceRef(
+        ref_id="shot-new",
+        role="screenshot",
+        uri="memory://shot-new",
+        media_type="image/png",
+        metadata={"fingerprint": {"sha12": "newabc", "length": 11}},
+    )
+    history = [
+        AgentToolStep(
+            call=AgentToolCall(tool_name="screenshot", payload={"selector": "#old"}, rationale="old"),
+            status="accepted",
+            output={"artifact": old_ref, "observation": "old frame"},
+        ),
+        AgentToolStep(
+            call=AgentToolCall(tool_name="screenshot", payload={"selector": "#new"}, rationale="new"),
+            status="accepted",
+            output={"artifact": new_ref, "observation": "new frame"},
+        ),
+    ]
+    loaded: list[EvidenceRef] = []
+
+    def load_image(ref: EvidenceRef) -> bytes:
+        loaded.append(ref)
+        return f"bytes:{ref.ref_id}".encode()
+
+    planner = _planner(
+        ScriptedLLM(),
+        image_loader=load_image,
+        memory={"mode": "image_evicting", "keep_last_images": 1},
+    )
+
+    messages = planner._messages_from_history(
+        AgentRunRequest(prompt="Inspect frames.", allowed_tools=["screenshot"]),
+        history,
+    )
+
+    tool_messages = [message for message in messages if message.role == "tool"]
+    old_tool = tool_messages[0].tool_results[0]
+    new_tool = tool_messages[1].tool_results[0]
+    assert old_tool.images == []
+    assert "memory:image_evicted" in old_tool.content
+    assert "memory://shot-old" in old_tool.content
+    assert "oldabc" in old_tool.content
+    assert len(new_tool.images) == 1
+    assert new_tool.images[0].metadata == {"evidence_ref_id": "shot-new"}
+    assert loaded == [new_ref]
+
+
+def test_image_evicting_memory_fails_loud_without_safe_evidence_ref():
+    history = [
+        AgentToolStep(
+            call=AgentToolCall(tool_name="screenshot", payload={}, rationale="capture"),
+            status="accepted",
+            output=ImageInput(source="base64", data="aW1hZ2U=", media_type="image/png", role="screenshot"),
+        )
+    ]
+    planner = _planner(ScriptedLLM(), memory=ImageEvictingMemory(keep_last_images=0))
+
+    with pytest.raises(ValueError, match="without an EvidenceRef"):
+        planner._messages_from_history(
+            AgentRunRequest(prompt="Inspect frames.", allowed_tools=["screenshot"]),
+            history,
+        )
+
+
+def test_image_evicting_memory_kept_evidence_requires_loader():
+    history = [
+        AgentToolStep(
+            call=AgentToolCall(tool_name="screenshot", payload={}, rationale="capture"),
+            status="accepted",
+            output=EvidenceRef(
+                ref_id="shot-1",
+                role="screenshot",
+                uri="memory://shot-1",
+                media_type="image/png",
+            ),
+        )
+    ]
+    planner = _planner(ScriptedLLM(), memory=ImageEvictingMemory(keep_last_images=1))
+
+    with pytest.raises(ValueError, match="no image_loader"):
+        planner._messages_from_history(
+            AgentRunRequest(prompt="Inspect frames.", allowed_tools=["screenshot"]),
+            history,
+        )
+
+
+def test_llm_agent_planner_logs_invalid_image_shaped_tool_outputs(caplog):
+    planner = _planner(ScriptedLLM())
+
+    caplog.set_level("WARNING", logger="ai_workflow_engine.engine.agent_planner")
+    images = planner._images_from_output(
+        {"source": "base64", "data": "not-image-enough", "media_type": 123, "role": "screenshot"}
+    )
+
+    assert images == []
+    assert "agent_planner_invalid_image_output" in caplog.text
+    assert "media_type" in caplog.text
 
 
 async def test_build_llm_agent_capability_derives_tool_specs_and_runs_episode():

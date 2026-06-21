@@ -10,14 +10,14 @@ from typing import Any, Dict, Optional
 from ai_workflow_engine.models import CapabilityContext, CapabilityResult, CriticismEnvelope, EvaluationDecision, WorkflowTraceEvent
 from ai_workflow_engine.planning import PlanArtifact
 from ai_workflow_engine.workflow import Fallback, Replan, Retrace, Retry, WorkflowDefinition, WorkflowNode
-from ai_workflow_engine.executor import _CONTEXT, _RUNNING_PAYLOAD
+from ai_workflow_engine._runtime_state import CONTEXT, RUNNING_PAYLOAD
 
 
 def build_evaluate_node(executor, definition: WorkflowDefinition, node: WorkflowNode):
     evaluator = node.evaluator or node.id
 
     async def evaluate_fn(state: Dict[str, Any]) -> Dict[str, Any]:
-        context: CapabilityContext = state[_CONTEXT]
+        context: CapabilityContext = state[CONTEXT]
         evaluated_payload = executor._node_input(state, node)
         attempt = state.get("attempts", {}).get(node.id, 0) + 1
         eval_result = await executor._invoke_bound(node, evaluator, evaluated_payload, context, state, attempt=attempt, definition=definition)
@@ -55,7 +55,7 @@ def build_evaluate_node(executor, definition: WorkflowDefinition, node: Workflow
         )
         update["routes"] = {**state.get("routes", {}), node.id: effect["route"]}
         update["eval_counters"] = {**state.get("eval_counters", {}), node.id: counters}
-        update[_RUNNING_PAYLOAD] = effect["output"]
+        update[RUNNING_PAYLOAD] = effect["output"]
         if effect["status"] == "requires_user_input":
             update["status"] = "requires_user_input"
         executor.runtime.trace_sink.record(

@@ -135,3 +135,64 @@ def save_workflow_html(definition: WorkflowDefinition, path: str,
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(workflow_to_html(definition, result, title), encoding="utf-8")
     return str(target)
+
+
+def render_prompt_manifest(definition: WorkflowDefinition, registry: Any) -> str:
+    """Static "structure + prompts" view of a *built* workflow: every node, the capability it
+    resolves to, and the prompt template(s) that capability carries.
+
+    Complements the other structure renderers — ``workflow_to_mermaid`` (graph shape) and
+    ``render_machine_card`` (per-state transition semantics) — by surfacing the one thing they omit:
+    the prompts. Read-only introspection over the registered handlers; no execution, no LLM calls, no
+    raw bytes. Pass the engine's registry::
+
+        print(render_prompt_manifest(workflow, engine.registry))
+
+    For each node it reports the resolved ``effective_capability`` and, when the registered handler
+    exposes them, its prompt templates: a ``StructuredLLMNode``'s ``prompt`` / ``static_prompt`` /
+    ``dynamic_prompt`` and an agent capability's planner ``system_prompt``. Deterministic, tool, or
+    dynamically-rendered capabilities are reported as having no static prompt — there is nothing to
+    show until run time, for which use ``ai_workflow_engine.prompt_capture.PromptCapturingLLMClient``.
+    """
+
+    lines = [f"# Prompt manifest: {definition.workflow_id}", ""]
+    for node in definition.nodes:
+        capability = node.effective_capability()
+        lines.append(f"## {node.id}  (kind={node.kind}, capability={capability or '—'})")
+        handler = None
+        if capability is not None:
+            try:
+                _spec, handler = registry.get(capability)
+            except KeyError:
+                lines.append("  (capability not registered)")
+                lines.append("")
+                continue
+        prompts = _extract_prompts(handler)
+        if not prompts:
+            lines.append("  (no static prompt — deterministic / tool / dynamic capability)")
+        for label, text in prompts:
+            lines.append(f"  [{label}]")
+            lines.extend(f"    {line}" for line in text.splitlines())
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _extract_prompts(handler: Any) -> list:
+    """Best-effort, duck-typed prompt extraction from a registered capability handler.
+
+    Returns ``[(label, template_text), ...]`` for the prompt-bearing shapes the engine ships
+    (``StructuredLLMNode`` and agent capabilities) and ``[]`` for handlers with no static prompt.
+    Never raises — unknown handler shapes simply yield nothing.
+    """
+
+    if handler is None:
+        return []
+    prompts = []
+    for attr, label in (("static_prompt", "static"), ("dynamic_prompt", "dynamic"), ("prompt", "prompt")):
+        template = getattr(getattr(handler, attr, None), "template", None)
+        if isinstance(template, str) and template:
+            prompts.append((label, template))
+    system_prompt = getattr(getattr(handler, "planner", None), "system_prompt", None)
+    if isinstance(system_prompt, str) and system_prompt:
+        prompts.append(("agent_system", system_prompt))
+    return prompts

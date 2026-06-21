@@ -7,14 +7,14 @@ from __future__ import annotations
 from typing import Any, Dict
 from ai_workflow_engine.models import CapabilityContext, CapabilityResult, WorkflowTraceEvent
 from ai_workflow_engine.workflow import WorkflowDefinition, WorkflowNode
-from ai_workflow_engine.executor import _CONTEXT
+from ai_workflow_engine._runtime_state import CONTEXT
 
 
 def build_subworkflow_node(executor, definition: WorkflowDefinition, node: WorkflowNode):
     ref = node.subworkflow
 
     async def subflow_fn(state: Dict[str, Any]) -> Dict[str, Any]:
-        context: CapabilityContext = state[_CONTEXT]
+        context: CapabilityContext = state[CONTEXT]
         child_def = executor.subworkflows.get(ref.workflow_id) if ref else None
         payload = executor._node_input(state, node)
         if child_def is None:

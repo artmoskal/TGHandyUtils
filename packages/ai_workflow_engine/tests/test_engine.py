@@ -1785,6 +1785,22 @@ async def test_structured_llm_node_splits_static_prefix_and_dynamic_tail():
     assert llm.messages[0][1].content == "Dynamic goal: make cards"
 
 
+def test_structured_llm_node_rejects_mixed_prompt_modes():
+    with pytest.raises(ValueError, match="prompt_template cannot be combined"):
+        StructuredLLMNode(
+            name="unit_structured_node",
+            config=object(),
+            output_model=WorkflowDecision,
+            prompt_template="Full prompt {goal}",
+            input_variables=["goal"],
+            static_prompt_template="Stable rules.\n{format_instructions}",
+            dynamic_prompt_template="Dynamic goal: {goal}",
+            dynamic_input_variables=["goal"],
+            model_attr="UNIT_MODEL",
+            llm=FakeLLM([]),
+        )
+
+
 def test_structured_llm_node_requires_injected_llm_or_factory():
     node = StructuredLLMNode(
         name="unit_structured_node",
@@ -1924,6 +1940,7 @@ async def test_workflow_decision_planner_repairs_bad_json_once():
 from ai_workflow_engine import (  # noqa: E402
     END,
     Fallback,
+    Replan,
     Retrace,
     Retry,
     SubworkflowRef,
@@ -2047,6 +2064,117 @@ def test_workflow_evaluate_retrace_target_must_exist():
             .build()
         )
     assert any("retrace target unknown: does_not_exist" in e for e in exc.value.errors)
+
+
+def test_workflow_definition_flags_node_shape_validation_concerns():
+    definition = WorkflowDefinition(
+        workflow_id="bad_node_shapes",
+        nodes=[
+            WorkflowNode(id="empty_branch", kind="branch"),
+            WorkflowNode(id="branch", kind="branch", branches={"missing": "ghost"}),
+            WorkflowNode(id="fan", kind="fanout"),
+            WorkflowNode(id="eval", kind="evaluate", on_reject=Retrace("ghost")),
+            WorkflowNode(id="sub", kind="subworkflow"),
+            WorkflowNode(
+                id="plan",
+                kind="planner",
+                max_tasks=0,
+                max_replans=-1,
+                max_plan_depth=0,
+                max_total_planned_tasks=0,
+            ),
+            WorkflowNode(id="plan_recursive", kind="planner", max_plan_depth=2, execution="fanout"),
+            WorkflowNode(id="not_planner"),
+            WorkflowNode(
+                id="eval_replan",
+                kind="evaluate",
+                evaluator="gate",
+                target_capability="target",
+                on_reject=Replan("not_planner"),
+            ),
+        ],
+        transitions=[],
+        entry="empty_branch",
+    )
+
+    errors = definition.validate_graph()
+
+    assert any("branch node 'empty_branch' has no branches" in e for e in errors)
+    assert any("branch node 'branch' label 'missing' -> unknown node: ghost" in e for e in errors)
+    assert any("fanout node 'fan' missing fan_items_key" in e for e in errors)
+    assert any("fanout node 'fan' missing item_capability" in e for e in errors)
+    assert any("evaluate node 'eval' missing evaluator" in e for e in errors)
+    assert any("evaluate node 'eval' missing target_capability" in e for e in errors)
+    assert any("evaluate node 'eval' retrace target unknown: ghost" in e for e in errors)
+    assert any("subworkflow node 'sub' missing subworkflow ref" in e for e in errors)
+    assert any("planner node 'plan' max_tasks must be >= 1" in e for e in errors)
+    assert any("planner node 'plan' max_replans must be >= 0" in e for e in errors)
+    assert any("planner node 'plan' max_plan_depth must be >= 1" in e for e in errors)
+    assert any("planner node 'plan' max_total_planned_tasks must be >= 1" in e for e in errors)
+    assert any(
+        "planner node 'plan_recursive' recursive planning requires execution='sequential'" in e
+        for e in errors
+    )
+    assert any("evaluate node 'eval_replan' replan target is not a planner: not_planner" in e for e in errors)
+
+
+def test_workflow_definition_flags_transition_validation_concerns():
+    definition = WorkflowDefinition(
+        workflow_id="bad_transitions",
+        nodes=[
+            WorkflowNode(id="gate", kind="branch", branches={"again": "done", "done": END}),
+            WorkflowNode(id="done"),
+        ],
+        transitions=[
+            Transition(source="ghost", target="done"),
+            Transition(source="gate", target="ghost"),
+            Transition(source="gate", target="done", label="again", policy="decision", max_traversals=0),
+            Transition(source="gate", target="done", policy="always", max_traversals=1),
+            Transition(source="gate", target="done", policy="always", on_exhausted="done"),
+            Transition(source="gate", target="done", label="again", policy="decision", on_exhausted="missing"),
+            Transition(source="gate", target="done", label="again", policy="decision", on_exhausted="again"),
+        ],
+        entry="gate",
+    )
+
+    errors = definition.validate_graph()
+
+    assert any("transition from unknown node: ghost" in e for e in errors)
+    assert any("transition to unknown node: ghost" in e for e in errors)
+    assert any("transition 'gate' -> 'done' max_traversals must be >= 1" in e for e in errors)
+    assert any("pre-set gates are enforced on decision transitions only" in e for e in errors)
+    assert any("escape labels exist only on decision transitions" in e for e in errors)
+    assert any("on_exhausted 'missing' is not a declared label of that branch" in e for e in errors)
+    assert any("on_exhausted must differ from its own label" in e for e in errors)
+
+
+def test_workflow_definition_flags_cycle_gate_validation_concern():
+    definition = WorkflowDefinition(
+        workflow_id="bad_cycle",
+        nodes=[WorkflowNode(id="a"), WorkflowNode(id="b")],
+        transitions=[
+            Transition(source="a", target="b"),
+            Transition(source="b", target="a"),
+        ],
+        entry="a",
+    )
+    errors = definition.validate_graph()
+    assert any("unbounded cycle" in e for e in errors)
+
+    bounded = WorkflowDefinition(
+        workflow_id="bounded_cycle",
+        nodes=[
+            WorkflowNode(id="draft"),
+            WorkflowNode(id="gate", kind="branch", branches={"again": "draft", "done": END}),
+        ],
+        transitions=[
+            Transition(source="draft", target="gate"),
+            Transition(source="gate", target="draft", label="again", policy="decision", max_traversals=1),
+            Transition(source="gate", target=END, label="done", policy="decision"),
+        ],
+        entry="draft",
+    )
+    assert bounded.validate_graph() == []
 
 
 # ======================================================================================

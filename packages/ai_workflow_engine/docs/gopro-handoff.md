@@ -10,6 +10,12 @@ Status: **engine implemented and ready for adoption** (2026-06-12). The `Workflo
 live-tested; one `WorkflowExecutor` runs the product-neutral examples). The first sibling tools
 package, `ai_workflow_tools`, now ships CLI-agent and console-LLM support for `claude -p` /
 `codex exec`.
+Current working-tree delta (2026-06-21): after the v0.4.x guide text, the engine also has the T1
+memory seam (`AgentMemory`, `FullReplayMemory`, `ImageEvictingMemory`, `MemoryStore`,
+`MemoryNamespace(product, tenant, subject, kind)`, `InMemoryMemoryStore`), canonical memory modes
+`full_replay` / `image_evicting`, and the non-default memory snapshot/resume determinism test.
+Durable/semantic memory, FlowArtifact v1.5, ProcessArtifact/v2, and browser/no-API executors are
+still deferred. Consumers should still move tag-to-tag; do not track the live branch implicitly.
 Source needs: `/Users/artemm/PycharmProjects/gopro-streaming/docs/architecture/workflow-execution-engine-requirements.md`,
 `/Users/artemm/PycharmProjects/gopro-streaming/docs/universal_event_descriptor/HOME_INVENTORY_CASE.md`.
 
@@ -322,6 +328,7 @@ the card then shows navigators exactly how much loop budget remains before the g
 
 ## v0.4.0 delta
 
-Media generation (image/voice) now lives in `ai_workflow_tools.media` (engine is orchestration-only;
-`vision`/image-input stays in the engine as LLM protocol). Breaking ONLY for direct media imports —
-none in your current integration. Install `ai-workflow-tools[media]` if you adopt the media pack.
+Media generation (image/voice) now lives in `ai_workflow_tools.media`: the engine remains
+domain/provider-neutral while modality-specific providers live in tool packs. `vision`/image-input
+stays in the engine as LLM protocol. Breaking ONLY for direct media imports — none in your current
+integration. Install `ai-workflow-tools[media]` if you adopt the media pack.

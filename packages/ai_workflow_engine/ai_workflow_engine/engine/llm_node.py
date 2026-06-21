@@ -39,7 +39,11 @@ class PromptBundle:
 
 
 class StructuredLLMNode:
-    """Run one structured LLM call with Pydantic parsing and one repair attempt."""
+    """Run one structured LLM call with Pydantic parsing and bounded repair attempts.
+
+    Prompt modes are mutually exclusive: pass either `prompt_template` or the split
+    `static_prompt_template` + `dynamic_prompt_template` pair.
+    """
 
     _DEFAULT_REPAIR_PROMPT = STRUCTURED_REPAIR_PROMPT
 
@@ -86,6 +90,10 @@ class StructuredLLMNode:
         self.static_prompt: Optional[PromptTemplate] = None
         self.dynamic_prompt: Optional[PromptTemplate] = None
         if static_prompt_template or dynamic_prompt_template:
+            if prompt_template is not None:
+                raise ValueError(
+                    "prompt_template cannot be combined with static_prompt_template/dynamic_prompt_template"
+                )
             if not static_prompt_template or not dynamic_prompt_template:
                 raise ValueError("Both static_prompt_template and dynamic_prompt_template are required")
             self.static_prompt = PromptTemplate(

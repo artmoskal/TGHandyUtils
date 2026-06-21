@@ -10,6 +10,12 @@ Status: **engine implemented and ready for adoption** (2026-06-12). The `Workflo
 live-tested; one `WorkflowExecutor` runs the product-neutral examples, including site-audit fan-out
 and the fake-backed three-axis pilot). The first sibling tools package, `ai_workflow_tools`, now
 ships CLI-agent and console-LLM support for `claude -p` / `codex exec`.
+Current working-tree delta (2026-06-21): after the v0.4.x guide text, the engine also has the T1
+memory seam (`AgentMemory`, `FullReplayMemory`, `ImageEvictingMemory`, `MemoryStore`,
+`MemoryNamespace(product, tenant, subject, kind)`, `InMemoryMemoryStore`), canonical memory modes
+`full_replay` / `image_evicting`, and the non-default memory snapshot/resume determinism test.
+Durable/semantic memory, FlowArtifact v1.5, ProcessArtifact/v2, and browser/no-API executors are
+still deferred. Consumers should still move tag-to-tag; do not track the live branch implicitly.
 Source needs: `/Users/artemm/PycharmProjects/MageQA/docs/17-qa-orchestrator-architecture.md`,
 `/Users/artemm/PycharmProjects/MageQA/docs/14-agentic-tester-architecture.md`.
 
@@ -223,6 +229,13 @@ Unknown CLI cost stays explicit through `cost_known=false` metadata.
   same executor, with inherited/narrowed budget and parent/child trace.
 - **Fail-closed safety propagation.** `SafetyPolicy(fail_mode="fail_closed")`; forbidden side effects /
   missing capabilities / unsupported nodes fail loudly + trace, never silently no-op.
+- **Memory store contract.** The engine exposes deterministic `MemoryStore` plus dev-only
+  `InMemoryMemoryStore`; MageQA owns the durable sqlite implementation behind that Protocol. Use
+  `MemoryNamespace("mageqa", tenant_id, target_origin, record_kind)` where `tenant_id` is the hard
+  isolation boundary, `target_origin` is the site/app target, and `record_kind` is a family such as
+  `learned_flow`, `finding_history`, `target_profile`, or `flaky_check`. Recall is exact/filter-based
+  (`get` / `search(metadata_filter=...)`), non-authoritative, and evidence-linked through
+  `MemoryRecord.evidence_refs`; semantic/vector recall and LLM extraction are deferred.
 
 ---
 
@@ -237,7 +250,10 @@ Unknown CLI cost stays explicit through `cost_known=false` metadata.
 3. Express plan→fan-out→adjudicate→deepen→report with `WorkflowBuilder`; delete your coordinator loop,
    fan-out/gather loop, retry/deepen loop, and any trace/budget runtime.
 4. Move per-role models / rubric defaults / budget / safety into a YAML profile; load via `from_config`.
-5. Replace your run entrypoint with `await engine.run("audit_site", site_input)`.
+5. If you need cross-run memory, implement a product sqlite `MemoryStore` and inject it into the
+   capabilities that read/write learned flows, finding history, target profiles, and flaky-check
+   state. Do not add a product coordinator loop around the engine for memory.
+6. Replace your run entrypoint with `await engine.run("audit_site", site_input)`.
 
 **Done when** you can delete MageQA orchestration loops and still run from
 `WorkflowDefinition + registered capabilities` through `engine.run`. Verify with a `format_trace_events`
@@ -253,7 +269,8 @@ BranchDecision, Retry, Retrace, Fallback, SubworkflowRef, AgentCapability, LLMAg
 ReplayPlanner, EvidenceRef, ExternalWriteRequest, ExternalWriteResult, ExternalAdapterCapability,
 ExternalProcessCapability, HumanClarificationCapability, StructuredLLMNode, SchedulingPolicy,
 SafetyPolicy, RuntimeLimits, WorkflowProfile, ModelProfile, WorkflowGoal, InMemoryTraceSink,
-JsonlTraceSink, CallbackTraceSink, AsyncQueueTraceSink, TeeTraceSink, format_trace_events`.
+JsonlTraceSink, CallbackTraceSink, AsyncQueueTraceSink, TeeTraceSink, MemoryNamespace, MemoryRecord,
+MemoryStore, InMemoryMemoryStore, format_trace_events`.
 Tools import from `ai_workflow_tools.cli_agents`: `CliAgentCapability`, `CliAgentRequest`,
 `CliAgentResult`, `ConsoleLLMClient`, `McpServerConfig`, `claude_p`, `codex_exec`. Runnable
 examples: `ai_workflow_engine/examples.py` (`build_demo_engine`, `SiteAuditPack`,
@@ -366,6 +383,7 @@ sees the loop budget it already spent before suspension.
 
 ## v0.4.0 delta
 
-Media generation (image/voice) now lives in `ai_workflow_tools.media` (engine is orchestration-only;
-`vision`/image-input stays in the engine as LLM protocol). Breaking ONLY for direct media imports —
-none in your current integration. Install `ai-workflow-tools[media]` if you adopt the media pack.
+Media generation (image/voice) now lives in `ai_workflow_tools.media`: the engine remains
+domain/provider-neutral while modality-specific providers live in tool packs. `vision`/image-input
+stays in the engine as LLM protocol. Breaking ONLY for direct media imports — none in your current
+integration. Install `ai-workflow-tools[media]` if you adopt the media pack.

@@ -2,6 +2,9 @@
 
 Reusable, executable AI workflow builder/runtime.
 
+Architecture source of truth: `docs/executable-workflow-engine-spec.md` at the repo root. This
+README is a package summary; if it conflicts with the binding spec, the binding spec wins.
+
 > **Status (2026-06-12): the core engine and first tools library are implemented.**
 > `WorkflowDefinition` + `WorkflowBuilder` (declare), `WorkflowEngineBuilder` /
 > `WorkflowEngine.from_config` (DI/IoC wiring), and `WorkflowExecutor` /
@@ -14,15 +17,36 @@ Reusable, executable AI workflow builder/runtime.
 > `WorkflowExecutor` runs the summary / calendar / site-audit / inventory / card-generation example
 > packs plus the fake-backed three-axis pilot (see `examples.py`).
 
+> **Current working-tree delta (2026-06-21):** T1 workflow memory is also built:
+> `AgentMemory`, `FullReplayMemory`, `ImageEvictingMemory`, `MemoryStore`, and
+> `MemoryNamespace(product, tenant, subject, kind)`, and `InMemoryMemoryStore`. Memory modes are
+> exactly `full_replay` and `image_evicting`; durable or semantic memory backends remain deferred.
+
 ## Soul
 
 The platform is an implementation-agnostic workflow engine plus a set of tool libraries:
 
-- **Core owns mechanics only.** The engine declares and runs workflows, fan-out, evaluator deepen
-  loops, budgets, side-effect gates, trace, checkpoints, human gates, and subworkflows-as-tools. It
-  does not import browser, TTS, camera, Telegram, or product schemas.
+- **Core owns domain-neutral mechanics and services.** The engine declares and runs workflows,
+  fan-out, evaluator deepen loops, budgets, side-effect gates, trace, checkpoints, human gates,
+  subworkflows-as-tools, artifact/evidence references, replay, scheduler/policy plumbing,
+  capability registration, and the T1 workflow-memory seam. It does not import browser, TTS,
+  camera, Telegram, or product schemas.
 - **Tools are swappable libraries.** Provider and CLI details live in `ai_workflow_tools`, future
   sibling packages, or product adapters behind typed capabilities and `LLMCallable` clients.
+- **One engine spans the complexity gradient.** A one-step Todoist reminder, Anki card generation,
+  GoPro video/pipeline planning, and MageQA QA-session planning must all fit the same contracts.
+  Simple workflows stay one-step simple; complex workflows opt into planners, fan-out, agents,
+  subworkflows, memory, scheduling, evidence, and retrace without forking the runtime.
+- **Workflow memory is not just conversation history.** The target model lets agents, planner
+  nodes, and subworkflows opt into scoped memory of retries, discovered evidence, rejected plan
+  branches, produced artifacts, evaluator decisions, and what worked or failed across runs. Memory
+  remains byte-free, evidence-linked, explicit by scope, and disabled for flows that do not ask for
+  it.
+  Status: T1 is shipped for bounded agent prompt projection (`AgentMemory`, `FullReplayMemory`,
+  `ImageEvictingMemory`) plus the deterministic
+  `MemoryStore`/`MemoryNamespace(product, tenant, subject, kind)`/`InMemoryMemoryStore` contract.
+  Durable/semantic stores, compacting/windowed/structured policies, and broader workflow/project
+  scopes remain deferred until a named consumer proves the need.
 - **Economics is part of the architecture.** Metered calls are budgeted explicitly; subscription or
   flat-rate workers report notional or unknown cost honestly instead of pretending to be free.
 - **Rigidity is a three-axis choice.** Work item execution, work-set composition, and replay mode can
@@ -30,26 +54,112 @@ The platform is an implementation-agnostic workflow engine plus a set of tool li
 - **Evidence goes both directions.** Inputs enter agent episodes as fingerprinted `input_assets`;
   outputs leave as salvaged `EvidenceRef`s and counts. Bytes stay out of state, trace, and
   checkpoints.
+- **Workers are universal, not "LLM nodes."** Deterministic Python, API LLMs, local models,
+  `claude -p`, `codex exec`, CLI/browser agents, media tools, humans, and subworkflows all fit the
+  same capability contract: declared input/output schemas, policy, budget, trace, artifact/evidence,
+  and normalized `CapabilityResult` semantics. The engine owns validation, retry/retrace/fallback,
+  state transitions, and branch-label enforcement around every worker.
 - **Failures are loud.** Missing capabilities, denied side effects, and exhausted budgets produce
   explicit failures and trace events.
 
-## Layered architecture — lightweight core, infinitely extensible edges
+## Layered architecture — domain-neutral core, infinitely extensible edges
 
-The framework is a swiss-army knife in the good sense: a small engine that runs *any* scenario,
-plus pluggable layers that extend it **by addition, never by editing the layer below**.
+The framework is a swiss-army knife in the good sense: a domain-neutral engine that runs *any*
+scenario, from a single deterministic task to a long-running agentic pipeline, plus pluggable layers
+that extend it **by addition, never by editing the layer below**.
 
 | Layer | What | Extend by |
 |---|---|---|
-| **L0 Core engine** | Orchestration only: graph execution, branch/retry/retrace/replan, fan-out, scheduling + cancellation, budgets, side-effect/privacy gates, trace, checkpoints, model binding, plan-as-data. Zero domain knowledge. LangGraph is the hidden backend. | New *generic* node kinds only — never special cases |
+| **L0 Core engine + universal services** | Graph execution, branch/retry/retrace/replan, fan-out, scheduling + cancellation, budgets, side-effect/privacy gates, trace, checkpoints, model binding, plan-as-data, artifact/evidence references, replay, human approval, evaluator/adjudicator mechanics, capability registry, policy/secrets plumbing, and the T1 workflow-memory seam. Zero domain knowledge. LangGraph is the hidden backend. | New generic mechanics only — never special cases |
 | **L1 Universal executors** | HOW a model/tool is reached, behind one socket: the `LLMCallable` protocol (LangChain `.invoke` clients are a peer family, not a privilege). Today: LangChain clients, plain async callables (raw HTTP / Ollama), and `ConsoleLLMClient` in `ai_workflow_tools` for non-interactive `claude -p` / `codex exec` text-to-JSON calls. Future no-API executors can implement the same socket. | Implement `LLMCallable` — zero engine edits |
-| **L2 Domain/tool libraries** | Reusable packages and `WorkflowPack`s. Today: `ai_workflow_tools` ships CLI-agent capability support (`CliAgentCapability`, `CliAgentRequest.input_assets`, MCP config env, salvage provenance) plus console clients. Core media/voice seams remain in-package because current consumers import them. | Ship a package/pack, `register_pack(...)` |
-| (L3 Products) | Workflow definitions, prompts, schemas, adapters, delivery. | `WorkflowBuilder` + capabilities |
+| **L2 Modality/tool packs** | Reusable packages and `WorkflowPack`s for non-mandatory modalities: CLI/browser agents, MCP suites, TTS/STT, image generation, video analysis/production, OCR, VLM frame analysis. Today: `ai_workflow_tools` ships CLI-agent capability support (`CliAgentCapability`, `CliAgentRequest.input_assets`, MCP config env, salvage provenance), console clients, and media generation provider seams. Engine `vision.py` stays in core because image input is part of the LLM protocol. | Ship a package/pack, `register_pack(...)` |
+| **L3 Domain packs** | Todoist, Anki, GoPro, MageQA, CRM, or other product-family packs. They package workflow definitions, prompts, rubrics, schemas, and adapters on top of L0-L2. | Product/family package |
+| (L4 Products) | Deployment, UI/transport, account config, delivery. | `WorkflowBuilder` + capabilities |
 
 Non-negotiable invariant across L1: parse/repair/`pre_parse`, metering (incl. `cost_known=false`
 for subscription/no-API clients), budgets, timeouts, and per-node model binding apply
 **identically through every executor** — policy is engine-owned, transport is pluggable. And
 heterogeneous executors coexist per node in one workflow (strong API model on the planner step,
 weak local model on extraction, browser-bridged on a zero-budget step) via `model_profile`.
+
+## Universal worker contract
+
+The engine is not a DAG runner for prompt calls. A prompt call is just one worker implementation
+behind a capability. The executor is the main actor: it builds the invocation context, applies
+policy and budget gates, invokes the worker, validates the result, records trace/usage/artifact
+metadata, and chooses the next transition.
+
+Every worker is normalized through the same shape:
+
+- invocation: typed payload, node/task context, input `EvidenceRef`s, expected output schema,
+  allowed tools/side effects, model profile, timeout/budget, branch/evaluator options, trace ids,
+  and declared workflow-memory read/write scope where a built memory policy supports it;
+- result: `CapabilityResult(status="accepted" | "rejected" | "partial" | "failed")` or a
+  workflow-level suspension such as `requires_user_input`, plus structured output, branch label or
+  evaluator criticism, usage/cost, artifact/evidence refs, `new_artifact_count`, metadata, and
+  failure details.
+
+This is a semantic contract, not a mandate to merge every adapter into one `WorkerInvocation` class
+or a central inheritance tree. Transport-specific DTOs such as `LLMRequest` and `CliAgentRequest`
+stay focused; the engine enforces the shared policy around them.
+
+That is the anti-drift rule for future work: adding a smarter model, a weaker local model, a CLI
+agent, a browser bridge, or a video tool must mean registering a capability/client/pack, not adding
+a product-side orchestration loop or a special node class that bypasses validation. Simple flows can
+leave artifacts, memory, agents, and planners disabled; complex GoPro/MageQA flows opt into them
+under the same executor.
+
+## Memory Status And Modes
+
+The shipped memory slice is intentionally narrow and replay-safe:
+
+- `FullReplayMemory` is the default and renders canonical agent history exactly as before.
+- `ImageEvictingMemory(keep_last_images=N)` keeps only the most recent image-bearing tool turns as
+  LLM images and replaces evicted images with explicit evidence/fingerprint audit markers.
+- `MemoryStore` and `InMemoryMemoryStore` define deterministic exact/filter memory storage for tests
+  and development. Durable stores and semantic search are not shipped.
+- `MemoryNamespace(product, tenant, subject, kind)` is the public memory scope. `tenant` is the hard
+  isolation boundary; `subject` is the product-owned target such as a site origin, camera, project, or
+  run family; `kind` is the record family inside that subject.
+
+Config/profile mode names are exact: `full_replay` and `image_evicting`. Alias strings such as
+`full`, `default`, `image_eviction`, and `semantic_search` fail loudly. Memory is prompt input, not
+control state; snapshot/resume replay must fast-forward recorded nodes without consulting live
+memory.
+
+## Generated process authoring status
+
+`FlowArtifact` is shipped as constrained flow-as-data: an AI or deterministic builder can emit
+validated `step` / `branch` / `evaluate` machines over registered capabilities, and
+`engine.run_authored_flow(...)` runs them through the same executor, budgets, preflight, and trace
+as hand-written workflows. That is enough for a narrow goal compiler, but it is not full arbitrary
+pipeline authoring.
+
+Near-term scope is `FlowArtifact` v1.5: add authorable `fanout`, registered `subworkflow` references,
+and explicit `input_key` / `output_key` mapping while keeping the existing safety model. Authored
+flows still must not contain planner or flow-author capabilities, register tools, execute arbitrary
+code, or bypass side-effect/model-profile validation.
+
+The endgame is a separate `ProcessArtifact` / `FlowArtifact` v2 for durable generated processing
+pipelines: richer DAG/dataflow, video/segment fan-out, artifact routing, workflow-memory scopes, and
+compile/register/reuse lifecycle. That is future-stage only and requires explicit Artem approval
+after v1.5, T2 memory/storage needs, and the artifact/evidence store have proven functional in
+narrower scope.
+
+## Feature Requests And Gaps
+
+When a product needs something the engine or tools do not cover, file the request against the
+smallest reusable layer instead of patching product orchestration around the engine:
+
+- workload and named consumer proving the need;
+- why `WorkflowBuilder` plus registered capabilities/packs cannot express it today;
+- proposed layer: L0 core mechanic, L1 executor/client, L2 modality/tool pack, or L3 domain pack;
+- data, privacy, side-effect, budget, replay, and artifact/evidence impact;
+- acceptance tests or product smoke checks, run through the repo-approved wrappers.
+
+Default pushback rule: product-specific behavior starts as an adapter, capability, or pack. Core
+changes need a reusable mechanic, fail-loud validation, and tests that prove simple flows keep their
+low overhead.
 
 ## Gap-Closure Notes (2026-06-10/11)
 
@@ -181,6 +291,9 @@ Implemented today (verified against the package source):
   plain-callable clients;
 - `LLMAgentPlanner`, `build_llm_agent_capability`, and `ReplayPlanner` for bounded agent episodes
   and zero-LLM replay;
+- `AgentMemory`, `FullReplayMemory`, `ImageEvictingMemory`, `MemoryStore`,
+  `MemoryNamespace(product, tenant, subject, kind)`, and `InMemoryMemoryStore` for the T1
+  bounded-agent memory seam and deterministic store contract;
 - workflow profiles, runtime plans, scheduling policy, runtime limits, safety policy, session state,
   evidence references, model profiles, fail modes, `WorkflowResult` uncertainty states, and
   evaluator/retry/retrace models;

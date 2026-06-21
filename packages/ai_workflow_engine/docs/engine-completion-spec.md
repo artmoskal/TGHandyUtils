@@ -1,9 +1,10 @@
 # Engine Completion Spec — agentic loop, CLI workers, economics, observability
 
-Status: **approved scope, ready to implement** (2026-06-12).
-Audience: the implementing developer. This spec is self-contained — every operational fact needed
-(including the MageQA CLI invocation details) is embedded with its source citation; you should not
-need to re-derive anything from the MageQA repo.
+Status: **historical implementation/completion spec** (approved 2026-06-12; shipped later).
+Current architecture source of truth: `docs/executable-workflow-engine-spec.md`.
+Audience: implementers and reviewers who need provenance for the agentic-loop/CLI-worker completion
+work. This spec preserves detailed operational facts and original gates, but it is not the current
+architecture authority; if it conflicts with the binding spec, the binding spec wins.
 
 > [claude]: **UPDATE 2026-06-12 (later): all review items below are now FOLDED INTO THE SPEC BODY**
 > — #1 → §10 (docker test commands, tools-suite collection, standalone gates, per-WP commit
@@ -14,10 +15,10 @@ need to re-derive anything from the MageQA repo.
 >
 > [claude]: **Engine-side alignment review, 2026-06-12 — APPROVED with 3 process corrections.**
 > Conceptually this spec is fully aligned with the engine's layered contract
-> (`docs/executable-workflow-engine-spec.md` §2b): §0 restates the soul faithfully; WP5's
+> (`docs/executable-workflow-engine-spec.md` §3): §0 restates the soul faithfully; WP5's
 > `ai_workflow_tools` is the L2 packaging convention + the planned L1 console executor; WP1 grows
 > the `LLMRequest` protocol additively against a named consumer (the sanctioned bar — recorded in
-> spec §2c risk #4); WP4 deepens RC2 cost-honesty; WP6 closes the known streaming-sink gap via the
+> spec §11 risk #4); WP4 deepens RC2 cost-honesty; WP6 closes the known streaming-sink gap via the
 > predicted extension point; WP2's `ReplayPlanner` adds the mode axis with ZERO new node kinds.
 > No invariant violations found. Corrections for the implementer (process, not architecture):
 > 1. **Testing commands (§10) violate TGHandyUtils repo rules.** Inside this repo, day-to-day runs
@@ -46,7 +47,7 @@ need to re-derive anything from the MageQA repo.
 >    ~50 lines on top of WP5's flavors; ship it in `ai_workflow_tools/cli_agents/` beside them.
 >    (Layering note for the record: **L1 is the socket in core; members may live anywhere** —
 >    embedding vendor argv recipes in core would buy nothing and put CLI flag drift on the core
->    release cycle. The tools-lib placement follows the engine spec §2b, and is correct.)
+>    release cycle. The tools-lib placement follows the engine spec §3, and is correct.)
 > 6. **Assets-IN symmetry (small WP5 addition; Artem 2026-06-12).** Assets-OUT is contracted
 >    (salvage → role-tagged `EvidenceRef` + `new_artifact_count`, salvage-always); assets-IN is
 >    informal (product drops files into `workspace_dir`, untraced). Add
@@ -56,7 +57,7 @@ need to re-derive anything from the MageQA repo.
 >    (relative paths under an `inputs/` subdir). ~30 lines. Rationale: input provenance is the
 >    other half of "evidence or it didn't happen", and freeze-to-replay (WP2 mode axis) is
 >    incomplete if an episode's inputs aren't part of its record.
->    **Explicit non-goals, by rule (engine spec §2c #4):** no typed per-domain asset bundles
+>    **Explicit non-goals, by rule (engine spec §3 value (d) and §11 risk #4):** no typed per-domain asset bundles
 >    (video-job, screenshot-set…) in universal layers — that is role-tagged `EvidenceRef`s +
 >    product schemas at prompt level until TWO products share a bundle shape (then it's an L2
 >    pack). And "LLM returns a set of tasks to execute" needs NO new contract — that is the
@@ -82,13 +83,17 @@ Sources of truth:
 
 The platform is an **implementation-agnostic workflow engine plus a SET of tool libraries**:
 
-1. **Engine core knows no domain.** It owns orchestration mechanics only: declare → run, fan-out,
-   evaluator deepen-loops, budgets, side-effect gates, trace, checkpoints, human gates,
-   subworkflows-as-tools. It never imports a browser, a TTS SDK, or a product schema.
-2. **Tools are swappable libraries on stable seams.** Text→speech, reference-image generation,
-   *run a CLI agent (`claude -p` / `codex exec`)*, browse a site, write a DB, and **whole
-   subworkflows** are all "tools": typed capabilities with schemas, side-effect class, timeout,
-   budget, trace. Provider/impl specifics live in the tool lib (or product), never in the core.
+1. **Engine core knows no domain, but it is not artificially tiny.** It owns universal workflow
+   mechanics and services: declare → run, fan-out, evaluator deepen-loops, budgets, side-effect
+   gates, trace, checkpoints, human gates, subworkflows-as-tools, artifact/evidence references,
+   replay, scheduling, capability registration, policy/secrets plumbing, and the intended
+   workflow-memory contract. It never imports a browser, a TTS SDK, or a product schema.
+2. **Tools are swappable libraries on stable seams.** Text→speech, speech→text,
+   reference-image generation, video production/analysis, OCR, VLM frame analysis, *run a CLI
+   agent (`claude -p` / `codex exec`)*, browse a site, write a DB, and **whole subworkflows** are
+   all "tools": typed capabilities with schemas, side-effect class, timeout, budget, trace.
+   Provider/impl specifics live in the tool lib, modality pack, domain pack, or product, never as a
+   core special case.
 3. **Economics is a design axis, not an afterthought.** Subscription/flat-rate workers are the
    default execution substrate; metered API calls are the explicitly budgeted exception. Cost is
    always honest: known, estimated-with-source, or visibly unknown — never phantom `$0.00`.
@@ -108,8 +113,21 @@ The platform is an **implementation-agnostic workflow engine plus a SET of tool 
    salvaged artifacts (`EvidenceRef`); inputs handed to an episode are staged + fingerprint-traced
    the same way (`input_assets`), so provenance and freeze-to-replay cover what went in, not just
    what came out. Byte payloads never enter state/trace/checkpoints (fingerprints only).
-6. **Fail closed, loudly.** Unregistered capability, denied side effect, exhausted budget →
+6. **Memory is workflow memory, not only chat history.** Agents, planner nodes, and subworkflows
+   can opt into scoped memory of retries, discoveries, rejected branches, produced artifacts,
+   evaluator decisions, and what worked or failed across runs. Memory must stay evidence-linked,
+   byte-free, explicit by scope, and disabled for flows that do not request it. This spec treats
+   memory as a binding design direction; the unified memory service remains outside the shipped
+   completion scope.
+7. **Fail closed, loudly.** Unregistered capability, denied side effect, exhausted budget →
    explicit failure + trace event, never a silent no-op.
+8. **Universal workers, one contract.** The engine must not collapse into a graph of "LLM nodes."
+   Deterministic Python, API LLMs, local/weak models, `claude -p`, `codex exec`, CLI/browser
+   agents, external scripts, media tools, humans, and subworkflows are all worker implementations
+   behind capabilities. The engine owns the invocation envelope, schema validation, branch-label
+   enforcement, retry/retrace/fallback, budgets, trace, artifacts, and future workflow-memory scope;
+   workers return normalized `CapabilityResult` semantics and never hide product orchestration
+   loops.
 
 Current state honesty: the voice/image generation *seams* (provider-neutral requests, lazy optional
 deps) already follow value #2 in-package (`pkg/voice_generation.py`, `pkg/image_generation.py`),
@@ -137,13 +155,15 @@ packages/
 ```
 
 Rule going forward (record in both READMEs): anything provider-, CLI-, or domain-specific lands in
-`ai_workflow_tools` (or a future sibling lib / the product), not in core. The in-core media seams
-stay where they are for now (Anki imports them); migrating them into the tools lib is a separate
-later effort and out of scope here.
+`ai_workflow_tools`, a future modality pack, a domain pack, or the product, not as a core special
+case. Universal workflow services such as the workflow-memory contract, artifact/evidence
+references, replay, scheduling, policy gates, and evaluator/adjudicator mechanics belong in the
+engine as pluggable, opt-in services. The in-core media seams stay where they are for now (Anki
+imports them); migrating them into the tools lib is a separate later effort and out of scope here.
 
 ## 1b. Use cases → which contract carries them (Artem, 2026-06-12)
 
-The dividing rule (now also engine spec §2b value (d)): **contract the mechanics every case
+The dividing rule (now also engine spec §3 value (d)): **contract the mechanics every case
 shares — transport, provenance, validation, salvage; never the per-domain shapes.**
 
 | Use case | Contract that carries it | New code? |
@@ -152,9 +172,18 @@ shares — transport, provenance, validation, salvage; never the per-domain shap
 | Site audit: screenshots + JSON findings out | `CliAgentCapability` salvage → role-tagged `EvidenceRef`s + `new_artifact_count` grounding input | WP5 (already) |
 | Asset transformation (e.g. video creation from clips, image set processing) | `input_assets` in (staged + fingerprinted) → work in workspace → salvage globs out (`*.mp4` is just another glob + role) | WP5 (§7.2/§7.3.0) |
 | "LLM, give me a set of tasks to execute" | NO new contract: console/CLI client as a **planner capability** with `output_model=PlanArtifact` — the planner node validates every task against registry + side-effect allow-lists before anything runs | composition only |
+| "LLM, build me a small validated process" | `FlowArtifact` v1: constrained flow-as-data (`step` / `branch` / `evaluate`) over registered capabilities, same preflight/budget/trace as hand-written workflows | already shipped |
+| "LLM, build me a richer process using existing engine mechanics" | `FlowArtifact` v1.5: planned narrow expansion to authorable `fanout`, registered `subworkflow` refs, and explicit `input_key` / `output_key` mapping; recursion firewall remains | small future task |
+| "LLM, build an arbitrary GoPro video-processing pipeline" | Future `ProcessArtifact` / `FlowArtifact` v2: durable generated pipeline with richer dataflow, artifact routing, workflow-memory scopes, and compile/register/reuse lifecycle | **future-stage only; requires explicit Artem approval** |
 | Exploration frozen into regression | `AgentRunResult.steps` recording → `ReplayPlanner` (WP2); inputs included via `input_assets` provenance | WP2 |
 | Live progress UI over any of the above | `CallbackTraceSink` / `AsyncQueueTraceSink` / `TeeTraceSink` (WP6) | WP6 |
-| Typed per-domain bundles ("video job", "screenshot suite") | **Deliberately uncontracted** — role-tagged refs + product schemas at prompt level; graduates to an L2 pack only when TWO products share the shape (engine spec §2c #4 bar) | none, by rule |
+| Typed per-domain bundles ("video job", "screenshot suite") | **Deliberately uncontracted** — role-tagged refs + product schemas at prompt level; graduates to an L2 pack only when TWO products share the shape (engine spec §3 value (d) + §11 risk #4 bar) | none, by rule |
+
+Post-completion clarification (Artem + codex, 2026-06-20): do not treat the shipped
+`FlowArtifact` as full arbitrary pipeline authoring. The current implementation is correct for a
+constrained goal compiler. The small next scope is v1.5. The full generated-process endgame waits
+until v1.5, workflow memory, and artifact/evidence storage prove useful in real GoPro/MageQA scope,
+and then needs explicit user confirmation before it becomes current implementation work.
 
 ---
 

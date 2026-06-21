@@ -7,14 +7,14 @@ from __future__ import annotations
 from typing import Any, Dict
 from ai_workflow_engine.models import CapabilityContext, CapabilityResult, WorkflowTraceEvent
 from ai_workflow_engine.workflow import WorkflowDefinition, WorkflowNode
-from ai_workflow_engine.executor import _CONTEXT
+from ai_workflow_engine._runtime_state import CONTEXT
 
 
 def build_human_node(executor, definition: WorkflowDefinition, node: WorkflowNode):
     capability = node.capability or node.id
 
     async def human_fn(state: Dict[str, Any]) -> Dict[str, Any]:
-        context: CapabilityContext = state[_CONTEXT]
+        context: CapabilityContext = state[CONTEXT]
         payload = executor._node_input(state, node)
         resume_event = state.get("resume_event")
         if (

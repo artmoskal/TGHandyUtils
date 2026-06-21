@@ -31,6 +31,7 @@ from ai_workflow_engine.engine.capabilities import (
 from ai_workflow_engine.engine.runner import WorkflowRunner
 from ai_workflow_engine.engine.scheduler import WorkflowScheduler
 from ai_workflow_engine.model_binding import model_profile_scope
+from ai_workflow_engine._runtime_state import CONTEXT, RUNNING_PAYLOAD
 from ai_workflow_engine.models import (
     CapabilityContext,
     CapabilityResult,
@@ -51,11 +52,6 @@ from ai_workflow_engine.workflow import (
     WorkflowNode,
     render_machine_card,
 )
-
-# Internal state keys reserved by the executor (kept out of product state space).
-_RUNNING_PAYLOAD = "payload"
-_CONTEXT = "engine_context"
-
 
 class WorkflowState(TypedDict, total=False):
     """LangGraph state schema. Every key is declared so LangGraph propagates it across nodes
@@ -364,8 +360,8 @@ class WorkflowExecutor:
     @staticmethod
     def _initial_state(payload: Any, context: CapabilityContext) -> Dict[str, Any]:
         return {
-            _RUNNING_PAYLOAD: payload,
-            _CONTEXT: context,
+            RUNNING_PAYLOAD: payload,
+            CONTEXT: context,
             # "__input__" lets any node read the original workflow input via input_key.
             "node_outputs": {"__input__": payload},
             "node_inputs": {},
@@ -570,7 +566,7 @@ class WorkflowExecutor:
     def _node_input(state: Dict[str, Any], node: WorkflowNode) -> Any:
         if node.input_key:
             return state.get("node_outputs", {}).get(node.input_key)
-        return state.get(_RUNNING_PAYLOAD)
+        return state.get(RUNNING_PAYLOAD)
 
     @staticmethod
     def _record(
@@ -606,7 +602,7 @@ class WorkflowExecutor:
         )
         node_results = [*state.get("node_results", []), record]
         update: Dict[str, Any] = {
-            _RUNNING_PAYLOAD: result.output,
+            RUNNING_PAYLOAD: result.output,
             "node_outputs": node_outputs,
             "node_inputs": node_inputs,
             "node_status": node_status,
@@ -719,7 +715,7 @@ class WorkflowExecutor:
                 snapshot = MachineSnapshot(
                     workflow_id=definition.workflow_id,
                     suspended_node=suspended,
-                    payload=final_state.get(_RUNNING_PAYLOAD),
+                    payload=final_state.get(RUNNING_PAYLOAD),
                     node_outputs=dict(final_state.get("node_outputs", {})),
                     node_inputs=dict(final_state.get("node_inputs", {})),
                     node_status=dict(final_state.get("node_status", {})),
@@ -742,7 +738,7 @@ class WorkflowExecutor:
         return WorkflowRunResult(
             workflow_id=definition.workflow_id,
             status=status,
-            output=final_state.get(_RUNNING_PAYLOAD),
+            output=final_state.get(RUNNING_PAYLOAD),
             error=final_state.get("error"),
             fallback_reason=final_state.get("fallback_reason"),
             node_results=node_results,
