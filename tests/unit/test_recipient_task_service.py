@@ -474,3 +474,20 @@ class TestRecipientTaskService:
         service_recipient = self.recipient_service.get_recipient_by_id(self.test_user_id, recipient_id)
         assert service_recipient.name == factory_recipient.name
         assert service_recipient.is_personal == factory_recipient.is_personal
+
+    def test_success_feedback_shows_local_time_not_utc_for_located_user(self):
+        """Regression: removing ParsingService._get_timezone_name must not force due-times to UTC."""
+        from unittest.mock import Mock
+        from models.parameter_objects import TaskFeedbackData
+        self.recipient_service.get_user_preferences = Mock(return_value=Mock(location="Portugal"))
+        feedback_data = TaskFeedbackData(
+            recipients=[],
+            task_urls={},
+            failed_recipients=[],
+            title="Test reminder",
+            description="",
+            due_time="2026-06-21T09:00:00Z",
+            user_id=1,
+        )
+        message = self.task_service._generate_success_feedback(feedback_data)
+        assert "Portugal time" in message

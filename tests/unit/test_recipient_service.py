@@ -432,3 +432,25 @@ class TestRecipientService:
             if not retrieved.is_personal:
                 shared = self.recipient_service.get_shared_recipients(self.test_user_id)
                 assert any(r.id == recipient_id for r in shared)
+
+    def test_update_location_injects_config_and_threads_to_parsing(self):
+        """Regression: RecipientService must accept config; update_location must not AttributeError."""
+        from unittest.mock import Mock, patch
+        config = Mock()
+        prefs_repo = Mock()
+        prefs_repo.get_preferences.return_value = Mock()
+        prefs_repo.update_preferences.return_value = True
+        service = RecipientService(Mock(), prefs_repo, config=config)
+        assert service.config is config
+        with patch("services.parsing_service.ParsingService") as parsing_cls:
+            parsing_cls.return_value.parse_timezone_with_llm.return_value = 3
+            result = service.update_location(user_id=1, location="Portugal")
+        assert result is True
+        parsing_cls.assert_called_once_with(config, prefs_repo)
+
+    def test_update_location_without_config_fails_loud(self):
+        """Regression: missing config raises a clear error, not a cryptic AttributeError."""
+        from unittest.mock import Mock
+        service = RecipientService(Mock(), Mock())  # config defaults to None
+        with pytest.raises(RuntimeError, match="config"):
+            service.update_location(user_id=1, location="Portugal")

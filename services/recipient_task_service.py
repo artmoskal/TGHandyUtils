@@ -451,31 +451,18 @@ class RecipientTaskService:
             # Convert UTC time to user's local time
             if location:
                 try:
-                    # Simple timezone conversion using the same logic as parsing service
-                    import zoneinfo
-                    from dateutil import parser as date_parser
-                    from datetime import datetime, timezone, timedelta
-                    
-                    # Parse UTC time
-                    utc_time = date_parser.isoparse(feedback_data.due_time)
-                    if utc_time.tzinfo is None:
-                        utc_time = utc_time.replace(tzinfo=timezone.utc)
-                    
-                    # Get timezone offset using the same logic as parsing service
-                    location_lower = location.lower().strip()
-                    
-                    # Use the existing parsing service timezone resolution
+                    from datetime import datetime
                     from services.parsing_service import ParsingService
+
+                    # ParsingService owns the canonical UTC->local formatter (offset + tz name +
+                    # format). __new__ avoids needing config: convert_utc_to_local_display only uses
+                    # get_timezone_offset, which is deterministic and config-free.
                     temp_service = ParsingService.__new__(ParsingService)
-                    
-                    # Get timezone offset using the existing intelligent lookup
-                    offset_hours = temp_service.get_timezone_offset(location)
-                    timezone_name = temp_service._get_timezone_name(location)
-                    
-                    # Convert to local time
-                    local_time = utc_time + timedelta(hours=offset_hours)
-                    
-                    local_time_display = f"{local_time.strftime('%B %d, %Y at %H:%M')} ({timezone_name})"
+                    local_time_display = temp_service.convert_utc_to_local_display(
+                        feedback_data.due_time, location
+                    )
+                    if not local_time_display:
+                        raise ValueError("local time conversion returned no value")
                     logger.info(f"Timezone conversion successful: UTC {feedback_data.due_time} -> Local {local_time_display}")
                     feedback_parts.append(f"📅 **Due:** {local_time_display}")
                 except Exception as e:

@@ -172,7 +172,8 @@ class ApplicationContainer(containers.DeclarativeContainer):
     recipient_service = providers.Factory(
         RecipientService,
         repository=unified_recipient_repository,
-        preferences_repo=user_preferences_repository
+        preferences_repo=user_preferences_repository,
+        config=config
     )
     
     recipient_task_service = providers.Factory(

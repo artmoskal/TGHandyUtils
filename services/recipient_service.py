@@ -7,7 +7,7 @@ from models.unified_recipient import (
 )
 from models.parameter_objects import RecipientCreationData, SharedRecipientCreationData
 from database.unified_recipient_repository import UnifiedRecipientRepository
-from core.interfaces import IUserPreferencesRepository
+from core.interfaces import IUserPreferencesRepository, IConfig
 from core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -16,9 +16,13 @@ logger = get_logger(__name__)
 class RecipientService:
     """Clean service for unified recipient management."""
     
-    def __init__(self, repository: UnifiedRecipientRepository, preferences_repo: IUserPreferencesRepository):
+    def __init__(self, repository: UnifiedRecipientRepository, preferences_repo: IUserPreferencesRepository,
+                 config: Optional[IConfig] = None):
         self.repository = repository
         self.preferences_repo = preferences_repo
+        # Needed only by the location/timezone update path (LLM timezone parsing). The composition
+        # root injects it; kept optional so unrelated callers/tests need not supply it.
+        self.config = config
     
     def get_all_recipients(self, user_id: int) -> List[UnifiedRecipient]:
         """Get all recipients for user."""
@@ -218,6 +222,11 @@ class RecipientService:
         """Update user's location and calculate timezone offset."""
         from services.parsing_service import ParsingService
         
+        if self.config is None:
+            raise RuntimeError(
+                "RecipientService.update_location needs config for timezone parsing; "
+                "inject it via the composition root."
+            )
         # Calculate UTC offset for the new location using LLM
         parsing_service = ParsingService(self.config, self.preferences_repo)
         utc_offset = parsing_service.parse_timezone_with_llm(location)
