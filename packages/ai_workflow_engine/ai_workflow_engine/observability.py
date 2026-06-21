@@ -44,7 +44,8 @@ class ObservationNode(BaseModel):
     elapsed_ms: int = 0
     usage_event_ids: list[str] = Field(default_factory=list)
     total_tokens: int = 0
-    estimated_usd: Optional[float] = None
+    metered_usd: Optional[float] = None
+    notional_usd: Optional[float] = None
 
 
 class ObservationGraph(BaseModel):
@@ -109,7 +110,9 @@ def build_observation_graph(
     for event in _usage_iter(usage_events):
         graph.usage_events.append(event)
         if graph.run_id is None:
-            run_id = event.metadata.get("workflow_id") if event.metadata else None
+            run_id = event.metadata.get("run_id") if event.metadata else None
+            if not run_id:
+                run_id = event.metadata.get("workflow_id") if event.metadata else None
             graph.run_id = str(run_id) if run_id else None
         node = graph.nodes.setdefault(
             event.node,
@@ -117,9 +120,7 @@ def build_observation_graph(
         )
         _extend_unique(node.usage_event_ids, [event.event_id])
         node.total_tokens += int(event.total_tokens or 0)
-        cost = _usage_cost(event)
-        if cost is not None:
-            node.estimated_usd = round((node.estimated_usd or 0.0) + cost, 6)
+        _add_usage_cost(node, event)
 
     return graph
 
@@ -264,8 +265,21 @@ def _infer_phase(event: WorkflowTraceEvent) -> Optional[str]:
 
 
 def _usage_cost(event: WorkflowUsageEvent) -> Optional[float]:
-    value = event.estimated_usd if event.estimated_usd is not None else event.notional_usd
-    return float(value) if value is not None else None
+    if event.cost_class == "metered" and event.estimated_usd is not None:
+        return float(event.estimated_usd)
+    if event.cost_class == "subscription_notional" and event.notional_usd is not None:
+        return float(event.notional_usd)
+    return None
+
+
+def _add_usage_cost(node: ObservationNode, event: WorkflowUsageEvent) -> None:
+    cost = _usage_cost(event)
+    if cost is None:
+        return
+    if event.cost_class == "metered":
+        node.metered_usd = round((node.metered_usd or 0.0) + cost, 6)
+        return
+    node.notional_usd = round((node.notional_usd or 0.0) + cost, 6)
 
 
 def _extend_unique(target: list[str], values: Iterable[str]) -> None:
@@ -281,8 +295,7 @@ def _run_label(graph: ObservationGraph) -> str:
 
 
 def _node_row(node: ObservationNode) -> str:
-    cost = f"${node.estimated_usd:.4f}" if node.estimated_usd is not None else "?"
-    usage = f"{node.total_tokens} tokens / {cost}" if node.total_tokens or node.estimated_usd is not None else "-"
+    usage = _usage_label(node)
     return (
         "<tr>"
         f"<td><code>{html.escape(node.node_id)}</code></td>"
@@ -293,6 +306,17 @@ def _node_row(node: ObservationNode) -> str:
         f"<td>{html.escape(', '.join(node.detail_refs) or '-')}</td>"
         "</tr>"
     )
+
+
+def _usage_label(node: ObservationNode) -> str:
+    parts = []
+    if node.total_tokens:
+        parts.append(f"{node.total_tokens} tokens")
+    if node.metered_usd is not None:
+        parts.append(f"metered ${node.metered_usd:.4f}")
+    if node.notional_usd is not None:
+        parts.append(f"notional ${node.notional_usd:.4f}")
+    return " / ".join(parts) if parts else "-"
 
 
 def _timeline_row(item: ObservationTimelineEntry, details: Mapping[str, ObservationDetail]) -> str:

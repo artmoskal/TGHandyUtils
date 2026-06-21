@@ -6,6 +6,8 @@ from types import SimpleNamespace
 import pytest
 from langchain_core.prompts import PromptTemplate
 
+from ai_workflow_engine import build_observation_graph, observation_graph_to_html
+from ai_workflow_engine.engine import InMemoryDetailSink
 from ai_workflow_engine.llm_protocol import ChatMessage, LLMRequest, LLMResponse
 from ai_workflow_engine.prompt_capture import PromptCapturingLLMClient
 from ai_workflow_engine.viz import render_prompt_manifest
@@ -50,15 +52,24 @@ def test_prompt_manifest_dumps_node_prompts_and_marks_promptless_nodes():
     assert "no static prompt" in manifest
 
 
+def test_prompt_capturing_client_requires_shared_detail_sink():
+    async def inner(request: LLMRequest) -> LLMResponse:
+        return LLMResponse(text="ok")
+
+    with pytest.raises(TypeError, match="detail_sink"):
+        PromptCapturingLLMClient(inner, _CollectSink())
+
+
 async def test_prompt_capturing_client_records_digest_detail_then_delegates_by_default():
     sink = _CollectSink()
+    details = InMemoryDetailSink()
     seen = {}
 
     async def inner(request: LLMRequest) -> LLMResponse:
         seen["request"] = request
         return LLMResponse(text="ok")
 
-    client = PromptCapturingLLMClient(inner, sink)
+    client = PromptCapturingLLMClient(inner, sink, detail_sink=details)
     secret_image = ImageInput(source="base64", data="RAW_SECRET_BYTES", media_type="image/png")
     request = LLMRequest(
         system="be terse",
@@ -84,7 +95,7 @@ async def test_prompt_capturing_client_records_digest_detail_then_delegates_by_d
     assert "RAW_SECRET_BYTES" not in blob
     assert event.phase == "llm:request"
     assert event.detail_refs
-    detail = client.detail_sink.details[0]
+    detail = details.details[0]
     assert detail.detail_id == event.detail_refs[0]
     assert detail.redaction_state == "digest_only"
     assert detail.digest == event.metadata["prompt_digest"]
@@ -94,11 +105,12 @@ async def test_prompt_capturing_client_records_digest_detail_then_delegates_by_d
 @pytest.mark.unit
 async def test_prompt_capturing_client_can_capture_full_text_in_detail_only():
     sink = _CollectSink()
+    details = InMemoryDetailSink()
 
     async def inner(request: LLMRequest) -> LLMResponse:
         return LLMResponse(text="ok")
 
-    client = PromptCapturingLLMClient(inner, sink, capture_text=True)
+    client = PromptCapturingLLMClient(inner, sink, detail_sink=details, capture_text=True)
     request = LLMRequest(
         system="be terse",
         messages=[ChatMessage(role="user", content="hello world")],
@@ -108,9 +120,14 @@ async def test_prompt_capturing_client_can_capture_full_text_in_detail_only():
     await client(request)
 
     event = sink.events[0]
-    detail = client.detail_sink.details[0]
+    detail = details.details[0]
     assert "hello world" not in event.model_dump_json()
     assert "be terse" not in event.model_dump_json()
     assert "hello world" in detail.text
     assert "be terse" in detail.text
     assert detail.redaction_state == "none"
+    definition = WorkflowBuilder("prompt_run").step("ask").build()
+    graph = build_observation_graph(definition, sink.events, details=details.details)
+    assert event.detail_refs[0] in graph.details
+    html = observation_graph_to_html(definition, graph)
+    assert "hello world" in html

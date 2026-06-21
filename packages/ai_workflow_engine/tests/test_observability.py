@@ -91,6 +91,7 @@ async def test_workflow_runner_streams_usage_to_usage_sink():
     result = await WorkflowRunner(usage_sink=sink).run(UsageGraph(), {}, goal=goal)
 
     assert len(sink.events) == 1
+    assert sink.events[0].metadata["run_id"] == result["workflow_context"].workflow_id
     assert sink.events[0].metadata["workflow_id"] == result["workflow_context"].workflow_id
     assert sink.events[0].metadata["workflow_type"] == "usage"
 
@@ -126,9 +127,42 @@ def test_observation_graph_projects_trace_usage_details_and_renders_html():
     assert graph.run_id == "run-1"
     assert graph.nodes["plan"].status == "completed"
     assert graph.nodes["plan"].total_tokens == 42
+    assert graph.nodes["plan"].metered_usd == 0.01
+    assert graph.nodes["plan"].notional_usd is None
     assert graph.nodes["plan"].detail_refs == ["detail-1"]
     assert "llm:request" in render_runtime_timeline(graph)
     html = observation_graph_to_html(definition, graph)
     assert "flowchart TD" in html
     assert "42 tok" in html
+    assert "metered $0.0100" in html
     assert "abc123" in html
+
+
+def test_observation_graph_keeps_metered_and_notional_costs_separate():
+    definition = WorkflowBuilder("cost").step("llm").build()
+    graph = build_observation_graph(
+        definition,
+        [],
+        [
+            WorkflowUsageEvent(node="llm", operation="chat", total_tokens=10, estimated_usd=0.25),
+            WorkflowUsageEvent(
+                node="llm",
+                operation="chat",
+                cost_class="subscription_notional",
+                total_tokens=20,
+                estimated_usd=99.0,
+                notional_usd=0.42,
+                metadata={"run_id": "run-cost"},
+            ),
+        ],
+    )
+
+    node = graph.nodes["llm"]
+    assert graph.run_id == "run-cost"
+    assert node.total_tokens == 30
+    assert node.metered_usd == 0.25
+    assert node.notional_usd == 0.42
+    html = observation_graph_to_html(definition, graph)
+    assert "metered $0.2500" in html
+    assert "notional $0.4200" in html
+    assert "$99.0000" not in html

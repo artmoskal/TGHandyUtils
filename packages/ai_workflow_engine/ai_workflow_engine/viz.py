@@ -244,9 +244,15 @@ def _status_class(status: str) -> str:
 
 def _observed_usage_label(observed: Any) -> str:
     tokens = int(getattr(observed, "total_tokens", 0) or 0)
-    cost = getattr(observed, "estimated_usd", None)
-    if not tokens and cost is None:
+    metered = getattr(observed, "metered_usd", None)
+    notional = getattr(observed, "notional_usd", None)
+    if not tokens and metered is None and notional is None:
         return ""
-    if cost is None:
-        return f"{tokens} tok"
-    return f"{tokens} tok / ${float(cost):.4f}"
+    parts = []
+    if tokens:
+        parts.append(f"{tokens} tok")
+    if metered is not None:
+        parts.append(f"metered ${float(metered):.4f}")
+    if notional is not None:
+        parts.append(f"notional ${float(notional):.4f}")
+    return " / ".join(parts)

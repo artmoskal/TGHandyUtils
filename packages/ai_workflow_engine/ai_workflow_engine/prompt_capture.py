@@ -19,7 +19,7 @@ import hashlib
 import json
 from typing import Any
 
-from ai_workflow_engine.engine.capabilities import DetailSink, InMemoryDetailSink, TraceSink
+from ai_workflow_engine.engine.capabilities import DetailSink, TraceSink
 from ai_workflow_engine.llm_protocol import ChatMessage, LLMRequest, LLMResponse
 from ai_workflow_engine.models import ObservationDetail, PrivacyLevel, WorkflowTraceEvent
 
@@ -28,16 +28,21 @@ class PromptCapturingLLMClient:
     """Wrap any ``LLMCallable`` to record each call's rendered prompt into a trace sink.
 
     Drop-in: it *is* an ``LLMCallable`` (``async __call__(request) -> LLMResponse``); it records a
-    ``WorkflowTraceEvent`` (``decision="llm:prompt"`` by default) then delegates to the inner client
-    unchanged. The event's ``metadata`` carries the system/user text and the full message list with
-    image **fingerprints only** — never raw image data. The node label and workflow ids are read from
-    ``request.metadata`` (the agent/LLM nodes populate ``agent_node`` / ``workflow_id``)::
+    ``WorkflowTraceEvent`` (``decision="llm:prompt"`` by default) plus a linked
+    ``ObservationDetail`` then delegates to the inner client unchanged. The trace event carries only
+    a digest/counts; the detail sink carries the optional prompt body with image **fingerprints only**
+    — never raw image data. The node label and workflow ids are read from ``request.metadata`` (the
+    agent/LLM nodes populate ``agent_node`` / ``workflow_id``)::
 
-        client = PromptCapturingLLMClient(real_client, engine.runtime.trace_sink)
+        client = PromptCapturingLLMClient(
+            real_client,
+            engine.runtime.trace_sink,
+            detail_sink=engine.detail_sink,
+        )
         engine.register_capability("ask", build_llm_agent_capability(client, ...))
 
-    The recorded events land in the SAME sink as the rest of the run, so ``format_trace_events`` and
-    any viz over the trace see prompts inline with transitions, decisions, and usage.
+    The trace event and detail record must land in shared run sinks so graph drill-down can resolve
+    ``detail_refs``. A private detail sink is intentionally not created.
     """
 
     def __init__(
@@ -45,14 +50,14 @@ class PromptCapturingLLMClient:
         inner: Any,
         trace_sink: TraceSink,
         *,
-        detail_sink: DetailSink | None = None,
+        detail_sink: DetailSink,
         decision: str = "llm:prompt",
         capture_text: bool = False,
         privacy: PrivacyLevel = "internal",
     ) -> None:
         self._inner = inner
         self._trace_sink = trace_sink
-        self.detail_sink = detail_sink or InMemoryDetailSink()
+        self.detail_sink = detail_sink
         self._decision = decision
         self._capture_text = capture_text
         self._privacy = privacy

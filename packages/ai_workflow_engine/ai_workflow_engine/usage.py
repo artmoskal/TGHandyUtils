@@ -314,6 +314,7 @@ def check_images_per_call(image_count: int, node: str) -> None:
 def record_usage_event(event: WorkflowUsageEvent) -> None:
     context = current_usage_context()
     if context:
+        event.metadata.setdefault("run_id", context.run_context.workflow_id)
         event.metadata.setdefault("workflow_id", context.run_context.workflow_id)
         event.metadata.setdefault("workflow_type", context.run_context.workflow_type)
         event.metadata.setdefault("user_id", context.run_context.user_id)

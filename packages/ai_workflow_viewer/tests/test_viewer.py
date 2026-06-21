@@ -62,5 +62,6 @@ def test_jsonl_observation_viewer_renders_html_from_public_contracts(tmp_path):
     assert "Viewer test" in html
     assert "flowchart TD" in html
     assert "9 tok" in html
+    assert "metered $0.0100" in html
     assert "digest" in html
     assert [record["type"] for record in viewer.event_records()] == ["trace", "trace", "usage", "detail"]

@@ -20,6 +20,8 @@ from ai_workflow_engine.config_loader import WorkflowConfigBundle, load_workflow
 from ai_workflow_engine.engine.capabilities import (
     CapabilityRegistry,
     CapabilityRuntime,
+    DetailSink,
+    InMemoryDetailSink,
     InMemoryTraceSink,
     RuntimePlanCompiler,
     TraceSink,
@@ -111,6 +113,7 @@ class WorkflowEngine:
         *,
         registry: Optional[CapabilityRegistry] = None,
         trace_sink: Optional[TraceSink] = None,
+        detail_sink: Optional[DetailSink] = None,
         usage_sink: Optional[UsageSink] = None,
         checkpoint_store: Optional[CheckpointStore] = None,
         config: Optional[WorkflowConfigBundle] = None,
@@ -120,6 +123,7 @@ class WorkflowEngine:
     ) -> None:
         self.registry = registry or CapabilityRegistry()
         self.trace_sink = trace_sink or InMemoryTraceSink()
+        self.detail_sink = detail_sink or InMemoryDetailSink()
         self.runtime = CapabilityRuntime(self.registry, self.trace_sink)
         self.executor = WorkflowExecutor(self.runtime, config=config)
         self.executor.runner.usage_sink = usage_sink
@@ -444,6 +448,7 @@ class WorkflowEngineBuilder:
     def __init__(self) -> None:
         self._config: Optional[WorkflowConfigBundle] = None
         self._trace_sink: Optional[TraceSink] = None
+        self._detail_sink: Optional[DetailSink] = None
         self._usage_sink: Optional[UsageSink] = None
         self._checkpoint_store: Optional[CheckpointStore] = None
         self._prompt_root: Optional[Path] = None
@@ -468,6 +473,10 @@ class WorkflowEngineBuilder:
 
     def with_trace_sink(self, sink: TraceSink) -> "WorkflowEngineBuilder":
         self._trace_sink = sink
+        return self
+
+    def with_detail_sink(self, sink: DetailSink) -> "WorkflowEngineBuilder":
+        self._detail_sink = sink
         return self
 
     def with_usage_sink(self, sink: UsageSink) -> "WorkflowEngineBuilder":
@@ -542,6 +551,7 @@ class WorkflowEngineBuilder:
     def build(self) -> WorkflowEngine:
         engine = WorkflowEngine(
             trace_sink=self._trace_sink,
+            detail_sink=self._detail_sink,
             usage_sink=self._usage_sink,
             checkpoint_store=self._checkpoint_store,
             config=self._config,
