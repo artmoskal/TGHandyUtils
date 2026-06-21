@@ -15,11 +15,13 @@ composes with any client (LangChain-backed, plain-callable, console).
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
 
-from ai_workflow_engine.engine.capabilities import TraceSink
+from ai_workflow_engine.engine.capabilities import DetailSink, InMemoryDetailSink, TraceSink
 from ai_workflow_engine.llm_protocol import ChatMessage, LLMRequest, LLMResponse
-from ai_workflow_engine.models import WorkflowTraceEvent
+from ai_workflow_engine.models import ObservationDetail, PrivacyLevel, WorkflowTraceEvent
 
 
 class PromptCapturingLLMClient:
@@ -38,32 +40,78 @@ class PromptCapturingLLMClient:
     any viz over the trace see prompts inline with transitions, decisions, and usage.
     """
 
-    def __init__(self, inner: Any, trace_sink: TraceSink, *, decision: str = "llm:prompt") -> None:
+    def __init__(
+        self,
+        inner: Any,
+        trace_sink: TraceSink,
+        *,
+        detail_sink: DetailSink | None = None,
+        decision: str = "llm:prompt",
+        capture_text: bool = False,
+        privacy: PrivacyLevel = "internal",
+    ) -> None:
         self._inner = inner
         self._trace_sink = trace_sink
+        self.detail_sink = detail_sink or InMemoryDetailSink()
         self._decision = decision
+        self._capture_text = capture_text
+        self._privacy = privacy
 
     async def __call__(self, request: LLMRequest) -> LLMResponse:
-        self._trace_sink.record(self._event(request))
+        event, detail = self._event_and_detail(request)
+        self.detail_sink.record(detail)
+        self._trace_sink.record(event)
         return await self._inner(request)
 
-    def _event(self, request: LLMRequest) -> WorkflowTraceEvent:
+    def _event_and_detail(self, request: LLMRequest) -> tuple[WorkflowTraceEvent, ObservationDetail]:
         meta = dict(request.metadata or {})
         node = str(meta.get("agent_node") or meta.get("node") or "llm")
         attempt = int(meta.get("repair_round", 0) or 0) + 1
-        return WorkflowTraceEvent(
+        prompt_payload = _prompt_payload(request)
+        prompt_digest = _digest(prompt_payload)
+        event = WorkflowTraceEvent(
             node=node,
             attempt=attempt,
             decision=self._decision,
+            phase="llm:request",
             metadata={
                 "workflow_id": meta.get("workflow_id"),
                 "workflow_type": meta.get("workflow_type"),
-                "system": request.system,
-                "user": request.user,
-                "messages": [_redact_message(message) for message in request.messages],
-                "request_image_fingerprints": [image.fingerprint() for image in request.images],
+                "prompt_digest": prompt_digest,
+                "message_count": len(request.messages),
+                "request_image_count": len(request.images),
             },
         )
+        detail = ObservationDetail(
+            event_id=event.event_id,
+            kind="rendered_prompt",
+            privacy=self._privacy,
+            redaction_state="none" if self._capture_text else "digest_only",
+            content_type="text/plain" if self._capture_text else "application/json",
+            text=_render_prompt_text(prompt_payload) if self._capture_text else None,
+            json_value=prompt_payload if self._capture_text else None,
+            digest=prompt_digest,
+        )
+        event = event.model_copy(update={"detail_refs": [detail.detail_id]})
+        return event, detail
+
+
+def _prompt_payload(request: LLMRequest) -> dict:
+    return {
+        "system": request.system,
+        "user": request.user,
+        "messages": [_redact_message(message) for message in request.messages],
+        "request_image_fingerprints": [image.fingerprint() for image in request.images],
+    }
+
+
+def _digest(payload: dict) -> str:
+    raw = json.dumps(payload, sort_keys=True, default=str, ensure_ascii=True).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _render_prompt_text(payload: dict) -> str:
+    return json.dumps(payload, indent=2, sort_keys=True, default=str, ensure_ascii=True)
 
 
 def _redact_message(message: ChatMessage) -> dict:

@@ -50,7 +50,7 @@ def test_prompt_manifest_dumps_node_prompts_and_marks_promptless_nodes():
     assert "no static prompt" in manifest
 
 
-async def test_prompt_capturing_client_records_byte_free_prompt_then_delegates():
+async def test_prompt_capturing_client_records_digest_detail_then_delegates_by_default():
     sink = _CollectSink()
     seen = {}
 
@@ -76,8 +76,41 @@ async def test_prompt_capturing_client_records_byte_free_prompt_then_delegates()
     event = sink.events[0]
     assert event.decision == "llm:prompt"
     assert event.node == "ask"
-    # prompt text captured, raw image bytes NEVER in the trace (fingerprints only)
+    # default is digest-only: prompt text is not in the compact trace event
     blob = event.model_dump_json()
-    assert "hello world" in blob
-    assert "be terse" in blob
+    assert "prompt_digest" in blob
+    assert "hello world" not in blob
+    assert "be terse" not in blob
     assert "RAW_SECRET_BYTES" not in blob
+    assert event.phase == "llm:request"
+    assert event.detail_refs
+    detail = client.detail_sink.details[0]
+    assert detail.detail_id == event.detail_refs[0]
+    assert detail.redaction_state == "digest_only"
+    assert detail.digest == event.metadata["prompt_digest"]
+    assert detail.text is None
+
+
+@pytest.mark.unit
+async def test_prompt_capturing_client_can_capture_full_text_in_detail_only():
+    sink = _CollectSink()
+
+    async def inner(request: LLMRequest) -> LLMResponse:
+        return LLMResponse(text="ok")
+
+    client = PromptCapturingLLMClient(inner, sink, capture_text=True)
+    request = LLMRequest(
+        system="be terse",
+        messages=[ChatMessage(role="user", content="hello world")],
+        metadata={"agent_node": "ask"},
+    )
+
+    await client(request)
+
+    event = sink.events[0]
+    detail = client.detail_sink.details[0]
+    assert "hello world" not in event.model_dump_json()
+    assert "be terse" not in event.model_dump_json()
+    assert "hello world" in detail.text
+    assert "be terse" in detail.text
+    assert detail.redaction_state == "none"

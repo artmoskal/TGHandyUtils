@@ -161,7 +161,9 @@ async def test_graph_invokes_runner_with_explicit_recursion_limit():
     assert rendered.cards[0].question == "Q"
     assert runner.graph_config == {"recursion_limit": 96}
     assert callable(runner.recursion_fallback)
-    assert runner.goal.metadata == {"telegram_chat_id": None, "telegram_message_id": None}
+    assert runner.goal.metadata["telegram_chat_id"] is None
+    assert runner.goal.metadata["telegram_message_id"] is None
+    assert runner.goal.metadata["run_id"]
 
 
 @pytest.mark.unit
@@ -260,7 +262,7 @@ async def test_graph_reuses_uploaded_image_by_default():
 
 
 @pytest.mark.unit
-async def test_graph_nodes_run_through_generic_capability_runtime():
+async def test_graph_nodes_run_through_generic_capability_runtime(tmp_path):
     svc = Mock()
     svc.extract_cards.return_value = [AnkiCard(question="What is shown?", answer="A valve")]
     source = build_content_source([("U", "Valve diagram")], user_id=10, owner_name="U")
@@ -277,6 +279,17 @@ async def test_graph_nodes_run_through_generic_capability_runtime():
     assert graph.capability_registry.get("package_cards")[0].side_effects == ["local_write"]
     assert any(event.node == "parse_directives" and event.decision == "accepted" for event in graph.capability_trace_sink.events)
     assert any(event.node == "package_cards" and event.decision == "accepted" for event in graph.capability_trace_sink.events)
+    observation = graph.last_observation_graph()
+    assert observation.workflow_id == "anki_generation"
+    assert observation.run_id
+    assert observation.nodes["package_cards"].status == "completed"
+    html_target = tmp_path / "anki-observation.html"
+    html_path = graph.save_last_observation_html(str(html_target))
+    html = html_target.read_text(encoding="utf-8")
+    assert html_path == str(html_target)
+    assert "Anki generation observation" in html
+    assert "flowchart TD" in html
+    assert "package_cards" in html
 
 
 @pytest.mark.unit

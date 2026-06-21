@@ -41,6 +41,11 @@ from ai_workflow_engine.models import (
 from ai_workflow_tools.media.image_models import ImageGenerationRequest
 from ai_workflow_tools.media.voice_generation import VoiceGenerationRequest
 from ai_workflow_engine.models import WorkflowGoal, WorkflowTraceEvent, WorkflowUsageSummary
+from ai_workflow_engine.observability import (
+    ObservationGraph,
+    build_observation_graph,
+    save_observation_html,
+)
 from services.anki_card_service import AnkiCardService
 from services.content.anki_directives import parse_directives
 from services.content.anki_renderers import (
@@ -167,6 +172,7 @@ class AnkiGenerationGraph:
         self.capability_registry = CapabilityRegistry()
         self.capability_runtime = CapabilityRuntime(self.capability_registry, self.capability_trace_sink)
         self.last_run_state: Optional[AnkiGraphState] = None
+        self.last_run_result: Any = None
         # The Anki workflow now runs on the reusable executable engine (no product-owned graph).
         self._workflow_engine = None
         self._capabilities_registered = False
@@ -188,6 +194,7 @@ class AnkiGenerationGraph:
     async def run(self, source: ContentSource, message: Any = None) -> RenderedCardSet:
         engine = self._engine()
         runtime_plan = self._runtime_plan_for_source(source)
+        run_id = str(uuid.uuid4())
         goal = WorkflowGoal(
             workflow_type="anki_generation",
             objective="Generate focused Anki flashcards from Telegram content",
@@ -203,12 +210,13 @@ class AnkiGenerationGraph:
             delivery_target="telegram_anki_package",
             user_id=source.user_id,
             metadata={
+                "run_id": run_id,
                 "telegram_chat_id": self._optional_int(getattr(getattr(message, "chat", None), "id", None)),
                 "telegram_message_id": self._optional_int(getattr(message, "message_id", None)),
             },
         )
         run_context = WorkflowRunContext(
-            workflow_id=str(uuid.uuid4()),
+            workflow_id=run_id,
             workflow_type=goal.workflow_type,
             goal_id=goal.goal_id,
             delivery_target=goal.delivery_target,
@@ -232,6 +240,7 @@ class AnkiGenerationGraph:
             recursion_fallback=self._engine_recursion_fallback,
             recursion_limit=self._graph_recursion_limit(),
         )
+        self.last_run_result = result
         final_state = result.output if isinstance(result.output, dict) else {}
         self.last_run_state = final_state
         rendered = final_state.get("rendered")
@@ -241,6 +250,31 @@ class AnkiGenerationGraph:
         if usage_summary:
             rendered = rendered.model_copy(update={"usage_summary": usage_summary})
         return rendered
+
+    def last_observation_graph(self) -> ObservationGraph:
+        """Project the most recent Anki run into the engine's generic observation graph."""
+
+        if self.last_run_state is None or self.last_run_result is None:
+            raise RuntimeError("AnkiGenerationGraph has no completed run to observe")
+        engine = self._engine()
+        definition = engine.workflows["anki_generation"]
+        trace_events = list(self.last_run_state.get("trace", []))
+        trace_events.extend(getattr(self.last_run_result, "trace", []) or [])
+        usage_summary = getattr(self.last_run_result, "usage", None)
+        return build_observation_graph(definition, trace_events, usage_summary or ())
+
+    def save_last_observation_html(self, path: str, *, title: Optional[str] = None) -> str:
+        """Write a static inspection page for the most recent Anki run."""
+
+        engine = self._engine()
+        definition = engine.workflows["anki_generation"]
+        graph = self.last_observation_graph()
+        return save_observation_html(
+            definition,
+            graph,
+            path,
+            title=title or "Anki generation observation",
+        )
 
     def _engine_recursion_fallback(self, wrapper_state: Dict[str, Any], exc: Exception) -> Dict[str, Any]:
         """Adapt the product recursion fallback to the engine's wrapper state shape.

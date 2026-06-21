@@ -7,7 +7,7 @@ but use these goal/trace/artifact records so workflow execution is observable an
 import uuid
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 CapabilityKind = Literal[
@@ -36,6 +36,17 @@ WorkflowResultStatus = Literal[
     "requires_user_input",
     "external_tool_unavailable",
 ]
+WorkflowTraceSeverity = Literal["debug", "info", "warning", "error"]
+ObservationDetailKind = Literal[
+    "rendered_prompt",
+    "llm_response",
+    "tool_payload",
+    "tool_result",
+    "artifact_preview",
+    "planner_output",
+    "memory_projection",
+]
+ObservationRedactionState = Literal["none", "redacted", "digest_only"]
 EvaluationAction = Literal[
     "accept",
     "repair",
@@ -224,6 +235,34 @@ class WorkflowTraceEvent(BaseModel):
     artifacts: List[str] = Field(default_factory=list)
     elapsed_ms: Optional[int] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    event_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    detail_refs: List[str] = Field(default_factory=list)
+    phase: Optional[str] = None
+    severity: WorkflowTraceSeverity = "info"
+    run_id: Optional[str] = None
+
+
+class ObservationDetail(BaseModel):
+    """Heavy/private observability payload linked from a compact trace event."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    detail_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    event_id: str
+    kind: ObservationDetailKind
+    privacy: PrivacyLevel = "internal"
+    redaction_state: ObservationRedactionState = "digest_only"
+    content_type: str = "text/plain"
+    text: Optional[str] = None
+    json_value: Optional[Dict[str, Any]] = Field(default=None, alias="json")
+    artifact_id: Optional[str] = None
+    digest: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _reject_raw_bytes(self) -> "ObservationDetail":
+        if _contains_raw_bytes(self.json_value):
+            raise ValueError("ObservationDetail json payload must not contain raw bytes")
+        return self
 
 
 class WorkflowUsageEvent(BaseModel):
@@ -248,6 +287,16 @@ class WorkflowUsageEvent(BaseModel):
     error: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
     event_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+
+
+def _contains_raw_bytes(value: Any) -> bool:
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return True
+    if isinstance(value, dict):
+        return any(_contains_raw_bytes(item) for item in value.values())
+    if isinstance(value, (list, tuple, set)):
+        return any(_contains_raw_bytes(item) for item in value)
+    return False
 
 
 class WorkflowUsageSummary(BaseModel):

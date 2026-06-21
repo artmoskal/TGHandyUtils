@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 import logging
 import time
+import asyncio
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any, Iterable, Literal, Optional
+from pathlib import Path
+from typing import Any, Iterable, Literal, Optional, Protocol
 
 from langchain_core.messages import BaseMessage
 
@@ -23,6 +25,73 @@ class WorkflowBudgetExceeded(Exception):
     def __init__(self, message: str, *, decision: Optional[str] = None):
         super().__init__(message)
         self.decision = decision
+
+
+class UsageSink(Protocol):
+    """Receives usage events from the runtime."""
+
+    def record(self, event: WorkflowUsageEvent) -> None:
+        """Store one usage event."""
+
+
+class InMemoryUsageSink:
+    """Simple usage sink suitable for tests and short in-process runs."""
+
+    def __init__(self) -> None:
+        self.events: list[WorkflowUsageEvent] = []
+
+    def record(self, event: WorkflowUsageEvent) -> None:
+        self.events.append(event)
+
+
+class JsonlUsageSink:
+    """Append usage events to a JSONL file."""
+
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+
+    def record(self, event: WorkflowUsageEvent) -> None:
+        with self.path.open("a", encoding="utf-8") as fh:
+            fh.write(event.model_dump_json())
+            fh.write("\n")
+
+
+class AsyncQueueUsageSink:
+    """Non-blocking asyncio.Queue usage feed for live observers."""
+
+    def __init__(
+        self,
+        queue: asyncio.Queue[WorkflowUsageEvent] | None = None,
+        *,
+        maxsize: int = 1000,
+    ) -> None:
+        self.queue = queue or asyncio.Queue(maxsize=maxsize)
+        self.dropped = 0
+
+    def record(self, event: WorkflowUsageEvent) -> None:
+        if self.queue.full():
+            try:
+                self.queue.get_nowait()
+            except asyncio.QueueEmpty:
+                dropped = False
+            else:
+                self.queue.task_done()
+                dropped = True
+            if dropped:
+                self.dropped += 1
+        self.queue.put_nowait(event)
+
+
+class TeeUsageSink:
+    """Fan each usage event out to multiple sinks."""
+
+    def __init__(self, *sinks: UsageSink) -> None:
+        self.sinks = list(sinks)
+
+    def record(self, event: WorkflowUsageEvent) -> None:
+        for sink in self.sinks:
+            sink.record(event)
 
 
 @dataclass(frozen=True)
@@ -42,6 +111,7 @@ class WorkflowUsageContext:
     run_context: WorkflowRunContext
     summary: WorkflowUsageSummary
     budget: WorkflowBudget
+    usage_sink: Optional[UsageSink] = None
     worker_call_count: int = 0
 
 
@@ -248,6 +318,8 @@ def record_usage_event(event: WorkflowUsageEvent) -> None:
         event.metadata.setdefault("workflow_type", context.run_context.workflow_type)
         event.metadata.setdefault("user_id", context.run_context.user_id)
         context.summary.add_event(event)
+        if context.usage_sink is not None:
+            context.usage_sink.record(event)
         logger.info("workflow_usage %s", json.dumps(event.model_dump(), sort_keys=True, default=str))
         _enforce_per_call_budget(event, context)
         _enforce_usd_budget(context)

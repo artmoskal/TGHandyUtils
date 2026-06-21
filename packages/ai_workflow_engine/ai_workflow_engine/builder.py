@@ -12,6 +12,7 @@ reusable parts without the product owning any orchestration mechanics.
 
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple, Union, runtime_checkable
 
@@ -40,6 +41,7 @@ from ai_workflow_engine.models import (
 from ai_workflow_engine.flow_authoring import FlowArtifact, build_definition_from_artifact
 from ai_workflow_engine.snapshot import MachineSnapshot
 from ai_workflow_engine.models import CapabilityResult, WorkflowTraceEvent
+from ai_workflow_engine.usage import UsageSink
 from ai_workflow_engine.workflow import BranchDecision, WorkflowDefinition
 
 # A capability handler is ``callable(context, payload) -> result`` (sync or async). Capability
@@ -109,6 +111,7 @@ class WorkflowEngine:
         *,
         registry: Optional[CapabilityRegistry] = None,
         trace_sink: Optional[TraceSink] = None,
+        usage_sink: Optional[UsageSink] = None,
         checkpoint_store: Optional[CheckpointStore] = None,
         config: Optional[WorkflowConfigBundle] = None,
         default_profile: Optional[WorkflowProfile] = None,
@@ -119,6 +122,8 @@ class WorkflowEngine:
         self.trace_sink = trace_sink or InMemoryTraceSink()
         self.runtime = CapabilityRuntime(self.registry, self.trace_sink)
         self.executor = WorkflowExecutor(self.runtime, config=config)
+        self.executor.runner.usage_sink = usage_sink
+        self.usage_sink = usage_sink
         self.model_profiles = dict(model_profiles or {})
         # Executor shares the live registry so per-node model bindings resolve + validate there.
         self.executor.model_profiles = self.model_profiles
@@ -379,10 +384,11 @@ class WorkflowEngine:
         merged_constraints = {**plan.constraints, **run_goal.constraints, **(constraints or {})}
         if merged_constraints != plan.constraints:
             plan = plan.model_copy(update={"constraints": merged_constraints})
+        run_id = str(run_goal.metadata.get("run_id") or uuid.uuid4())
         return CapabilityContext(
             goal=run_goal,
             run_context=WorkflowRunContext(
-                workflow_id=definition.workflow_id,
+                workflow_id=run_id,
                 workflow_type=run_goal.workflow_type,
                 goal_id=run_goal.goal_id,
                 delivery_target=run_goal.delivery_target,
@@ -438,6 +444,7 @@ class WorkflowEngineBuilder:
     def __init__(self) -> None:
         self._config: Optional[WorkflowConfigBundle] = None
         self._trace_sink: Optional[TraceSink] = None
+        self._usage_sink: Optional[UsageSink] = None
         self._checkpoint_store: Optional[CheckpointStore] = None
         self._prompt_root: Optional[Path] = None
         self._default_profile: Optional[WorkflowProfile] = None
@@ -461,6 +468,10 @@ class WorkflowEngineBuilder:
 
     def with_trace_sink(self, sink: TraceSink) -> "WorkflowEngineBuilder":
         self._trace_sink = sink
+        return self
+
+    def with_usage_sink(self, sink: UsageSink) -> "WorkflowEngineBuilder":
+        self._usage_sink = sink
         return self
 
     def with_checkpoint_store(self, store: CheckpointStore) -> "WorkflowEngineBuilder":
@@ -531,6 +542,7 @@ class WorkflowEngineBuilder:
     def build(self) -> WorkflowEngine:
         engine = WorkflowEngine(
             trace_sink=self._trace_sink,
+            usage_sink=self._usage_sink,
             checkpoint_store=self._checkpoint_store,
             config=self._config,
             default_profile=self._default_profile,

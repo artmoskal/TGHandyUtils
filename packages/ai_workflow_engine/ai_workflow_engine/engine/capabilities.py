@@ -15,6 +15,7 @@ from ai_workflow_engine.models import (
     CapabilityContext,
     CapabilityResult,
     CapabilitySpec,
+    ObservationDetail,
     RuntimePlan,
     RuntimeLimits,
     WorkflowArtifact,
@@ -24,6 +25,7 @@ from ai_workflow_engine.models import (
     WorkflowTraceEvent,
     WorkflowUsageSummary,
 )
+from ai_workflow_engine._runtime_state import current_workflow_run_context
 from ai_workflow_engine.usage import check_budget_before_call
 
 CapabilityHandler = Callable[[CapabilityContext, Any], Any]
@@ -43,6 +45,13 @@ class TraceSink(Protocol):
         """Store one trace event."""
 
 
+class DetailSink(Protocol):
+    """Receives heavy/private observability detail records."""
+
+    def record(self, detail: ObservationDetail) -> None:
+        """Store one detail record."""
+
+
 class InMemoryTraceSink:
     """Simple trace sink suitable for tests and short in-process runs."""
 
@@ -51,6 +60,16 @@ class InMemoryTraceSink:
 
     def record(self, event: WorkflowTraceEvent) -> None:
         self.events.append(event)
+
+
+class InMemoryDetailSink:
+    """Simple detail sink suitable for tests and short debug runs."""
+
+    def __init__(self) -> None:
+        self.details: list[ObservationDetail] = []
+
+    def record(self, detail: ObservationDetail) -> None:
+        self.details.append(detail)
 
 
 class JsonlTraceSink:
@@ -66,6 +85,19 @@ class JsonlTraceSink:
             fh.write("\n")
 
 
+class JsonlDetailSink:
+    """Append observation details to a JSONL file."""
+
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+
+    def record(self, detail: ObservationDetail) -> None:
+        with self.path.open("a", encoding="utf-8") as fh:
+            fh.write(detail.model_dump_json(by_alias=True))
+            fh.write("\n")
+
+
 class CallbackTraceSink:
     """Forward trace events to a callback without letting callback errors stop the run."""
 
@@ -77,6 +109,23 @@ class CallbackTraceSink:
             self.callback(event)
         except Exception:
             logger.warning("trace sink callback failed", exc_info=True)
+
+
+class ContextEnrichingTraceSink:
+    """Add run/phase/severity metadata to trace events before forwarding them."""
+
+    def __init__(self, inner: TraceSink) -> None:
+        self.inner = inner
+
+    @property
+    def events(self) -> Any:
+        return getattr(self.inner, "events", None)
+
+    def record(self, event: WorkflowTraceEvent) -> None:
+        self.inner.record(_enrich_trace_event(event))
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.inner, name)
 
 
 class AsyncQueueTraceSink:
@@ -105,6 +154,32 @@ class AsyncQueueTraceSink:
         self.queue.put_nowait(event)
 
 
+class AsyncQueueDetailSink:
+    """Non-blocking asyncio.Queue detail feed for live observers."""
+
+    def __init__(
+        self,
+        queue: asyncio.Queue[ObservationDetail] | None = None,
+        *,
+        maxsize: int = 1000,
+    ) -> None:
+        self.queue = queue or asyncio.Queue(maxsize=maxsize)
+        self.dropped = 0
+
+    def record(self, detail: ObservationDetail) -> None:
+        if self.queue.full():
+            try:
+                self.queue.get_nowait()
+            except asyncio.QueueEmpty:
+                dropped = False
+            else:
+                self.queue.task_done()
+                dropped = True
+            if dropped:
+                self.dropped += 1
+        self.queue.put_nowait(detail)
+
+
 class TeeTraceSink:
     """Fan each trace event out to multiple sinks."""
 
@@ -114,6 +189,17 @@ class TeeTraceSink:
     def record(self, event: WorkflowTraceEvent) -> None:
         for sink in self.sinks:
             sink.record(event)
+
+
+class TeeDetailSink:
+    """Fan each detail record out to multiple sinks."""
+
+    def __init__(self, *sinks: DetailSink) -> None:
+        self.sinks = list(sinks)
+
+    def record(self, detail: ObservationDetail) -> None:
+        for sink in self.sinks:
+            sink.record(detail)
 
 
 class CapabilityRegistry:
@@ -188,7 +274,7 @@ class CapabilityRuntime:
         trace_sink: TraceSink | None = None,
     ) -> None:
         self.registry = registry
-        self.trace_sink = trace_sink or InMemoryTraceSink()
+        self.trace_sink = ContextEnrichingTraceSink(trace_sink or InMemoryTraceSink())
 
     async def invoke(
         self,
@@ -292,6 +378,35 @@ class CapabilityRuntime:
             return []
         allowed = set(context.plan.safety.allowed_side_effects)
         return [side_effect for side_effect in spec.side_effects if side_effect not in allowed]
+
+
+def _enrich_trace_event(event: WorkflowTraceEvent) -> WorkflowTraceEvent:
+    updates: dict[str, Any] = {}
+    context = current_workflow_run_context()
+    if context is not None and not event.run_id:
+        run_id = getattr(context, "workflow_id", None)
+        if run_id:
+            updates["run_id"] = str(run_id)
+    if event.phase is None:
+        phase = _infer_trace_phase(event)
+        if phase:
+            updates["phase"] = phase
+    if event.error and event.severity == "info":
+        updates["severity"] = "error"
+    return event.model_copy(update=updates) if updates else event
+
+
+def _infer_trace_phase(event: WorkflowTraceEvent) -> str | None:
+    if event.error:
+        return "error"
+    decision = event.decision or ""
+    if decision == "start":
+        return "node:start"
+    if decision in {"accepted", "failed", "partial", "rejected"}:
+        return "node:end"
+    if decision:
+        return "node:decision"
+    return None
 
 
 def capability_context_for_goal(

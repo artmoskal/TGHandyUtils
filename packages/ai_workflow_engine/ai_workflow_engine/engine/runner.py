@@ -7,8 +7,14 @@ import time
 import uuid
 from typing import Any, Awaitable, Callable, Dict, Optional
 
+from ai_workflow_engine._runtime_state import workflow_run_context_scope
 from ai_workflow_engine.models import WorkflowGoal, WorkflowRunContext, WorkflowUsageSummary
-from ai_workflow_engine.usage import WorkflowUsageContext, budget_from_config, workflow_usage_scope
+from ai_workflow_engine.usage import (
+    UsageSink,
+    WorkflowUsageContext,
+    budget_from_config,
+    workflow_usage_scope,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -16,8 +22,9 @@ logger = logging.getLogger(__name__)
 class WorkflowRunner:
     """Execute a compiled workflow graph with consistent logging and IDs."""
 
-    def __init__(self, config: Any = None):
+    def __init__(self, config: Any = None, usage_sink: UsageSink | None = None):
         self.config = config
+        self.usage_sink = usage_sink
 
     async def run(
         self,
@@ -37,8 +44,15 @@ class WorkflowRunner:
         if not effective_type:
             raise ValueError("workflow_type or goal.workflow_type is required")
 
+        engine_context = initial_state.get("engine_context")
+        engine_run_context = getattr(engine_context, "run_context", None)
+        run_id = (
+            getattr(engine_run_context, "workflow_id", None)
+            or (goal.metadata.get("run_id") if goal else None)
+            or str(uuid.uuid4())
+        )
         ctx = WorkflowRunContext(
-            workflow_id=str(uuid.uuid4()),
+            workflow_id=str(run_id),
             workflow_type=effective_type,
             goal_id=goal.goal_id if goal else None,
             delivery_target=goal.delivery_target if goal else None,
@@ -56,14 +70,14 @@ class WorkflowRunner:
         start = time.monotonic()
         self._log("workflow_start", ctx, {})
         try:
-            engine_context = state.get("engine_context")
             limits = getattr(engine_context, "limits", None)
             usage_context = WorkflowUsageContext(
                 ctx,
                 usage_summary,
                 budget_from_config(self.config, limits=limits),
+                usage_sink=self.usage_sink,
             )
-            with workflow_usage_scope(usage_context):
+            with workflow_run_context_scope(ctx), workflow_usage_scope(usage_context):
                 try:
                     result = await self._invoke_graph(graph, state, graph_config)
                     outcome = "success"

@@ -28,12 +28,18 @@ def _mid(node_id: str) -> str:
     return "n_" + re.sub(r"[^0-9A-Za-z_]", "_", node_id)
 
 
-def workflow_to_mermaid(definition: WorkflowDefinition, result: Any = None) -> str:
+def workflow_to_mermaid(
+    definition: WorkflowDefinition,
+    result: Any = None,
+    *,
+    observation_graph: Any = None,
+) -> str:
     """Render the state machine; with ``result``, overlay the executed path."""
 
     lines = ["flowchart TD"]
     statuses: dict[str, str] = {}
     branch_taken: dict[str, str] = {}
+    observed_nodes = getattr(observation_graph, "nodes", {}) if observation_graph is not None else {}
     suspended: Optional[str] = None
     if result is not None:
         for record in getattr(result, "node_results", []):
@@ -43,11 +49,28 @@ def workflow_to_mermaid(definition: WorkflowDefinition, result: Any = None) -> s
         snap = getattr(result, "snapshot", None)
         if snap is not None:
             suspended = getattr(snap, "suspended_node", None)
+    for node_id, observed in observed_nodes.items():
+        statuses[node_id] = getattr(observed, "status", statuses.get(node_id, "not_started"))
 
+    declared_node_ids = {node.id for node in definition.nodes}
     for node in definition.nodes:
         left, right = _SHAPES.get(node.kind, ("[", "]"))
         label = node.id if node.kind == "step" else f"{node.id}\n«{node.kind}»"
+        observed = observed_nodes.get(node.id) if hasattr(observed_nodes, "get") else None
+        if observed is not None:
+            usage = _observed_usage_label(observed)
+            if usage:
+                label = f"{label}\n{usage}"
         lines.append(f'    {_mid(node.id)}{left}"{label}"{right}')
+    for node_id, observed in observed_nodes.items():
+        if node_id in declared_node_ids:
+            continue
+        kind = getattr(observed, "kind", "external")
+        label = f"{node_id}\n«{kind}»"
+        usage = _observed_usage_label(observed)
+        if usage:
+            label = f"{label}\n{usage}"
+        lines.append(f'    {_mid(node_id)}["{label}"]')
     lines.append(f'    {_mid(END)}(("END"))')
 
     for t in definition.transitions:
@@ -99,7 +122,7 @@ def workflow_to_mermaid(definition: WorkflowDefinition, result: Any = None) -> s
     for node_id, status in statuses.items():
         if node_id == suspended:
             continue  # the suspension marker below wins
-        cls = "ok" if status == "accepted" else ("part" if status == "partial" else "fail")
+        cls = _status_class(status)
         lines.append(f"    class {_mid(node_id)} {cls};")
     if suspended:
         lines.append(f"    class {_mid(suspended)} susp;")
@@ -121,19 +144,32 @@ mermaid.initialize({{ startOnLoad: true }});
 """
 
 
-def workflow_to_html(definition: WorkflowDefinition, result: Any = None,
-                     title: Optional[str] = None) -> str:
+def workflow_to_html(
+    definition: WorkflowDefinition,
+    result: Any = None,
+    title: Optional[str] = None,
+    *,
+    observation_graph: Any = None,
+) -> str:
     return _HTML_TEMPLATE.format(
         title=title or f"Workflow: {definition.workflow_id}",
-        mermaid=workflow_to_mermaid(definition, result).replace("\\n", "\n"),
+        mermaid=workflow_to_mermaid(
+            definition,
+            result,
+            observation_graph=observation_graph,
+        ).replace("\\n", "\n"),
     )
 
 
 def save_workflow_html(definition: WorkflowDefinition, path: str,
-                       result: Any = None, title: Optional[str] = None) -> str:
+                       result: Any = None, title: Optional[str] = None,
+                       *, observation_graph: Any = None) -> str:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(workflow_to_html(definition, result, title), encoding="utf-8")
+    target.write_text(
+        workflow_to_html(definition, result, title, observation_graph=observation_graph),
+        encoding="utf-8",
+    )
     return str(target)
 
 
@@ -196,3 +232,21 @@ def _extract_prompts(handler: Any) -> list:
     if isinstance(system_prompt, str) and system_prompt:
         prompts.append(("agent_system", system_prompt))
     return prompts
+
+
+def _status_class(status: str) -> str:
+    if status in {"accepted", "completed", "valid", "answered", "provisional"}:
+        return "ok"
+    if status in {"partial", "running", "not_started"}:
+        return "part"
+    return "fail"
+
+
+def _observed_usage_label(observed: Any) -> str:
+    tokens = int(getattr(observed, "total_tokens", 0) or 0)
+    cost = getattr(observed, "estimated_usd", None)
+    if not tokens and cost is None:
+        return ""
+    if cost is None:
+        return f"{tokens} tok"
+    return f"{tokens} tok / ${float(cost):.4f}"
