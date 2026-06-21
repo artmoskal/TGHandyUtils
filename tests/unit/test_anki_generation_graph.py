@@ -16,6 +16,7 @@ from models.anki_workflow import (
 )
 from ai_workflow_tools.media.image_models import GeneratedImage
 from ai_workflow_tools.media.voice_generation import GeneratedVoiceAudio
+from ai_workflow_engine.engine import InMemoryDetailSink
 from services.content.anki_generation_graph import AnkiGenerationGraph
 from services.content.anki_source import build_content_source
 from services.content.anki_directives import parse_directives
@@ -266,7 +267,12 @@ async def test_graph_nodes_run_through_generic_capability_runtime(tmp_path):
     svc = Mock()
     svc.extract_cards.return_value = [AnkiCard(question="What is shown?", answer="A valve")]
     source = build_content_source([("U", "Valve diagram")], user_id=10, owner_name="U")
-    graph = AnkiGenerationGraph(svc)
+    details = InMemoryDetailSink()
+    graph = AnkiGenerationGraph(
+        svc,
+        detail_sink=details,
+        capture_observation_detail_text=True,
+    )
 
     rendered = await graph.run(source)
 
@@ -283,13 +289,47 @@ async def test_graph_nodes_run_through_generic_capability_runtime(tmp_path):
     assert observation.workflow_id == "anki_generation"
     assert observation.run_id
     assert observation.nodes["package_cards"].status == "completed"
+    assert details.details
+    assert observation.details
+    assert all(ref in observation.details for event in observation.timeline for ref in event.detail_refs)
+    assert "Valve diagram" in "\n".join(detail.text or "" for detail in observation.details.values())
     html_target = tmp_path / "anki-observation.html"
     html_path = graph.save_last_observation_html(str(html_target))
     html = html_target.read_text(encoding="utf-8")
     assert html_path == str(html_target)
     assert "Anki generation observation" in html
     assert "flowchart TD" in html
+    assert "Investigation Graph" in html
+    assert "Parse message directives" in html
+    assert "Choose card type branch" in html
     assert "package_cards" in html
+    assert "tool_payload" in html
+    assert "Valve diagram" in html
+
+
+@pytest.mark.unit
+def test_anki_workflow_definition_owns_node_and_transition_descriptions():
+    definition = AnkiGenerationGraph(Mock())._anki_workflow_definition()
+
+    assert definition.validate_graph() == []
+    node = definition.node("parse_directives")
+    assert node.title == "Parse message directives"
+    assert node.description.startswith("Parse message directives")
+    branch = definition.node("route_card_kind")
+    assert branch.title == "Choose card type branch"
+    assert branch.description.startswith("Choose card type branch")
+    assert branch.branches == {
+        "basic": "prepare_text_scenario",
+        "cloze": "prepare_cloze_scenario",
+        "visual_basic": "prepare_visual_scenario",
+    }
+
+    transition = next(
+        item
+        for item in definition.transitions
+        if item.source == "route_card_kind" and item.label == "basic"
+    )
+    assert transition.description == "Use ordinary front/back cards."
 
 
 @pytest.mark.unit

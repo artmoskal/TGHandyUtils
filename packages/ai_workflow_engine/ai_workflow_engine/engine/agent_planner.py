@@ -18,6 +18,7 @@ from ai_workflow_engine.llm_protocol import record_callable_usage
 from ai_workflow_engine.memory import AgentMemory, AgentMemoryRenderContext, resolve_agent_memory
 from ai_workflow_engine.models import AgentRunRequest, AgentStepDecision, AgentToolCall, AgentToolStep, CapabilityContext
 from ai_workflow_engine.models import CapabilitySpec, EvidenceRef
+from ai_workflow_engine.observability_capture import ObservationCapture, llm_request_payload, llm_response_payload
 from ai_workflow_engine.usage import check_budget_before_call, check_images_per_call, check_input_tokens_per_call
 from ai_workflow_engine.usage import estimate_text_tokens
 from ai_workflow_engine.vision import ImageInput
@@ -42,6 +43,9 @@ class LLMAgentPlanner:
         node_name: str = "agent_planner",
         image_loader: Optional[Callable[[EvidenceRef], bytes]] = None,
         memory: Optional[AgentMemory | str | Mapping[str, Any]] = None,
+        trace_sink: Any = None,
+        detail_sink: Any = None,
+        capture_detail_text: bool = False,
     ) -> None:
         self.llm = llm
         self.tool_specs = dict(tool_specs)
@@ -52,6 +56,14 @@ class LLMAgentPlanner:
         self.node_name = node_name
         self.image_loader = image_loader
         self.memory = resolve_agent_memory(memory)
+        self.trace_sink = trace_sink
+        self.detail_sink = detail_sink
+        self._capture_detail_text = capture_detail_text
+        self.observation = ObservationCapture(
+            trace_sink,
+            detail_sink=detail_sink,
+            mode="full" if capture_detail_text else "off",
+        )
         self.parser = PydanticOutputParser(pydantic_object=output_model) if output_model is not None else None
 
     async def next_step(
@@ -60,7 +72,7 @@ class LLMAgentPlanner:
         request: AgentRunRequest,
         history: list[AgentToolStep],
     ) -> AgentStepDecision:
-        base_messages = self._messages_from_history(request, history)
+        base_messages = self._messages_from_history(request, history, context)
         active_tools = [self.tool_specs[name] for name in request.allowed_tools if name in self.tool_specs]
         last_error = ""
         last_text = ""
@@ -85,7 +97,13 @@ class LLMAgentPlanner:
                 },
             )
             self._check_turn_budget(llm_request)
-            response = await self.llm(llm_request)
+            self._record_llm_request(llm_request, history, repair_round)
+            try:
+                response = await self.llm(llm_request)
+            except Exception as exc:
+                self._record_llm_error(llm_request, history, repair_round, exc)
+                raise
+            self._record_llm_response(llm_request, response, history, repair_round)
             # Honor client-declared cost truth first (e.g. ConsoleLLMClient reports subscription
             # cost via response.notional_usd with estimated_usd=None); fall back to the episode's
             # subscription_mode. Never lose a reported notional cost (cost-honesty, RC2).
@@ -124,8 +142,119 @@ class LLMAgentPlanner:
             rationale=f"{self.node_name} finish parsing failed: {last_error}",
         )
 
-    def _messages_from_history(self, request: AgentRunRequest, history: Sequence[AgentToolStep]) -> list[ChatMessage]:
-        return self.memory.render(request, history, self._memory_render_context())
+    def _messages_from_history(
+        self,
+        request: AgentRunRequest,
+        history: Sequence[AgentToolStep],
+        context: CapabilityContext | None = None,
+    ) -> list[ChatMessage]:
+        messages = self.memory.render(request, history, self._memory_render_context())
+        self._record_memory_projection(request, history, messages, context)
+        return messages
+
+    def _record_memory_projection(
+        self,
+        request: AgentRunRequest,
+        history: Sequence[AgentToolStep],
+        messages: Sequence[ChatMessage],
+        context: CapabilityContext | None,
+    ) -> None:
+        self.observation.record(
+            node=self.node_name,
+            attempt=len(history) + 1,
+            decision="memory:projection",
+            phase="memory:projection",
+            kind="memory_projection",
+            payload={
+                "memory_mode": self.memory.__class__.__name__,
+                "prompt": request.prompt,
+                "history": list(history),
+                "messages": list(messages),
+            },
+            metadata={
+                "memory_mode": self.memory.__class__.__name__,
+                "history_steps": len(history),
+                "message_count": len(messages),
+                "image_count": self._image_count(messages),
+                "workflow_id": context.run_context.workflow_id if context else None,
+                "workflow_type": context.run_context.workflow_type if context else None,
+            },
+            digest_metadata_key="projection_digest",
+        )
+
+    def _record_llm_request(
+        self,
+        request: LLMRequest,
+        history: Sequence[AgentToolStep],
+        repair_round: int,
+    ) -> None:
+        self.observation.record(
+            node=self.node_name,
+            attempt=len(history) + repair_round + 1,
+            decision="llm:request",
+            phase="llm:request",
+            kind="rendered_prompt",
+            payload=llm_request_payload(request),
+            metadata={
+                "workflow_id": request.metadata.get("workflow_id"),
+                "workflow_type": request.metadata.get("workflow_type"),
+                "repair_round": repair_round,
+                "message_count": len(request.messages),
+                "tool_count": len(request.tools),
+            },
+            digest_metadata_key="prompt_digest",
+        )
+
+    def _record_llm_response(
+        self,
+        request: LLMRequest,
+        response: Any,
+        history: Sequence[AgentToolStep],
+        repair_round: int,
+    ) -> None:
+        self.observation.record(
+            node=self.node_name,
+            attempt=len(history) + repair_round + 1,
+            decision="llm:response",
+            phase="llm:response",
+            kind="llm_response",
+            payload=llm_response_payload(response),
+            metadata={
+                "workflow_id": request.metadata.get("workflow_id"),
+                "workflow_type": request.metadata.get("workflow_type"),
+                "repair_round": repair_round,
+                "model": getattr(response, "model", ""),
+                "tool_call_count": len(getattr(response, "tool_calls", [])),
+                "total_tokens": getattr(response, "total_tokens", 0),
+            },
+            digest_metadata_key="response_digest",
+        )
+
+    def _record_llm_error(
+        self,
+        request: LLMRequest,
+        history: Sequence[AgentToolStep],
+        repair_round: int,
+        exc: Exception,
+    ) -> None:
+        error = str(exc) or exc.__class__.__name__
+        self.observation.record(
+            node=self.node_name,
+            attempt=len(history) + repair_round + 1,
+            decision="llm:response",
+            phase="llm:response",
+            kind="llm_response",
+            payload={"error_type": exc.__class__.__name__, "error": error},
+            severity="error",
+            error=error,
+            metadata={
+                "workflow_id": request.metadata.get("workflow_id"),
+                "workflow_type": request.metadata.get("workflow_type"),
+                "repair_round": repair_round,
+                "error_type": exc.__class__.__name__,
+            },
+            digest_metadata_key="response_digest",
+        )
 
     def _memory_render_context(self) -> AgentMemoryRenderContext:
         return AgentMemoryRenderContext(
@@ -320,10 +449,21 @@ def build_llm_agent_capability(
     ``build_llm_agent_capability(llm, engine.registry, runtime=engine.runtime, ...)``.
     """
 
+    if runtime is None and (
+        planner_kwargs.get("detail_sink") is not None
+        or planner_kwargs.get("capture_detail_text")
+    ):
+        raise ValueError(
+            "Agent observability detail capture requires runtime=engine.runtime; "
+            "otherwise prompt/tool/memory details can land in a private or missing sink"
+        )
     specs = {spec.name: spec for spec in registry.list_specs()}
     tool_specs = {tool_name: _tool_spec_from_capability(specs[tool_name]) for tool_name in allowed_tools}
-    planner = LLMAgentPlanner(llm, tool_specs=tool_specs, **planner_kwargs)
     tool_runtime = runtime or CapabilityRuntime(registry, trace_sink)
+    planner_kwargs.setdefault("trace_sink", tool_runtime.trace_sink)
+    planner_kwargs.setdefault("detail_sink", tool_runtime.detail_sink)
+    planner_kwargs.setdefault("capture_detail_text", getattr(tool_runtime, "_capture_detail_text", False))
+    planner = LLMAgentPlanner(llm, tool_specs=tool_specs, **planner_kwargs)
     return AgentCapability(
         planner,
         tool_runtime,

@@ -21,7 +21,6 @@ from ai_workflow_engine.engine.capabilities import (
     CapabilityRegistry,
     CapabilityRuntime,
     DetailSink,
-    InMemoryDetailSink,
     InMemoryTraceSink,
     RuntimePlanCompiler,
     TraceSink,
@@ -114,6 +113,7 @@ class WorkflowEngine:
         registry: Optional[CapabilityRegistry] = None,
         trace_sink: Optional[TraceSink] = None,
         detail_sink: Optional[DetailSink] = None,
+        capture_detail_text: bool = False,
         usage_sink: Optional[UsageSink] = None,
         checkpoint_store: Optional[CheckpointStore] = None,
         config: Optional[WorkflowConfigBundle] = None,
@@ -123,8 +123,13 @@ class WorkflowEngine:
     ) -> None:
         self.registry = registry or CapabilityRegistry()
         self.trace_sink = trace_sink or InMemoryTraceSink()
-        self.detail_sink = detail_sink or InMemoryDetailSink()
-        self.runtime = CapabilityRuntime(self.registry, self.trace_sink)
+        self.detail_sink = detail_sink
+        self.runtime = CapabilityRuntime(
+            self.registry,
+            self.trace_sink,
+            detail_sink=self.detail_sink,
+            capture_detail_text=capture_detail_text,
+        )
         self.executor = WorkflowExecutor(self.runtime, config=config)
         self.executor.runner.usage_sink = usage_sink
         self.usage_sink = usage_sink
@@ -176,12 +181,33 @@ class WorkflowEngine:
         )
         if resolved.name != name:
             resolved = resolved.model_copy(update={"name": name})
+        self._assert_observability_sink_alignment(handler)
         self.registry.register(resolved, handler)
         return self
 
     def register_capability_spec(self, spec: CapabilitySpec, handler: CapabilityHandler) -> "WorkflowEngine":
+        self._assert_observability_sink_alignment(handler)
         self.registry.register(spec, handler)
         return self
+
+    def _assert_observability_sink_alignment(self, handler: Any) -> None:
+        if self.detail_sink is None:
+            return
+        runtime = getattr(handler, "tool_runtime", None)
+        if runtime is None:
+            return
+        runtime_detail_sink = getattr(runtime, "detail_sink", None)
+        if runtime_detail_sink is not self.detail_sink:
+            raise ValueError(
+                "Agent capability observability sink mismatch: build/register it with "
+                "runtime=engine.runtime so trace and detail refs resolve in the same run view"
+            )
+        planner = getattr(handler, "planner", None)
+        planner_detail_sink = getattr(planner, "detail_sink", self.detail_sink)
+        if planner_detail_sink is not self.detail_sink:
+            raise ValueError(
+                "Agent planner observability sink mismatch: use the engine runtime/detail sink"
+            )
 
     def register_guard(self, name: str, fn: Callable[[Any], str]) -> "WorkflowEngine":
         """Register a deterministic routing guard: ``fn(payload) -> label``.
@@ -449,6 +475,7 @@ class WorkflowEngineBuilder:
         self._config: Optional[WorkflowConfigBundle] = None
         self._trace_sink: Optional[TraceSink] = None
         self._detail_sink: Optional[DetailSink] = None
+        self._capture_detail_text = False
         self._usage_sink: Optional[UsageSink] = None
         self._checkpoint_store: Optional[CheckpointStore] = None
         self._prompt_root: Optional[Path] = None
@@ -477,6 +504,10 @@ class WorkflowEngineBuilder:
 
     def with_detail_sink(self, sink: DetailSink) -> "WorkflowEngineBuilder":
         self._detail_sink = sink
+        return self
+
+    def with_detail_text_capture(self, enabled: bool = True) -> "WorkflowEngineBuilder":
+        self._capture_detail_text = enabled
         return self
 
     def with_usage_sink(self, sink: UsageSink) -> "WorkflowEngineBuilder":
@@ -552,6 +583,7 @@ class WorkflowEngineBuilder:
         engine = WorkflowEngine(
             trace_sink=self._trace_sink,
             detail_sink=self._detail_sink,
+            capture_detail_text=self._capture_detail_text,
             usage_sink=self._usage_sink,
             checkpoint_store=self._checkpoint_store,
             config=self._config,

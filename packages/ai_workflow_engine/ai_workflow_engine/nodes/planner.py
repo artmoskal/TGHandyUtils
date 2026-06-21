@@ -56,6 +56,7 @@ def build_planner_node(executor, definition: WorkflowDefinition, node: WorkflowN
             plan = resume_plan
             planner_result = CapabilityResult(status="accepted", output=plan)
 
+        _record_planner_output(executor, node, plan, attempt)
         validation_errors = _validate_plan(executor, node, plan, context)
         if validation_errors:
             error = "planner validation failed: " + "; ".join(validation_errors)
@@ -112,6 +113,38 @@ def build_planner_node(executor, definition: WorkflowDefinition, node: WorkflowN
         return update
 
     return planner_fn
+
+
+def _record_planner_output(executor, node: WorkflowNode, plan: PlanArtifact, attempt: int) -> None:
+    executor.runtime.observation.record(
+        node=node.id,
+        attempt=attempt,
+        decision="planner:output",
+        phase="planner:output",
+        kind="planner_output",
+        payload={
+            "goal": plan.goal,
+            "revision": plan.revision,
+            "tasks": [
+                {
+                    "task_id": task.task_id,
+                    "description": task.description,
+                    "capability": task.capability,
+                    "status": task.status,
+                    "output_ref": task.output_ref,
+                    "error": task.error,
+                }
+                for task in plan.tasks
+            ],
+            "metadata": plan.metadata,
+        },
+        metadata={
+            "revision": plan.revision,
+            "task_count": len(plan.tasks),
+        },
+        digest_metadata_key="plan_digest",
+    )
+
 
 def _coerce_plan_artifact(value: Any, *, errors: Optional[list[str]] = None) -> Optional[PlanArtifact]:
     if value is None:

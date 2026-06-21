@@ -21,6 +21,7 @@ from ai_workflow_engine import (
     render_runtime_timeline,
 )
 from ai_workflow_engine.engine import InMemoryDetailSink, JsonlDetailSink
+from ai_workflow_engine.observability_capture import byte_free
 from ai_workflow_engine.usage import record_usage_event
 
 pytestmark = pytest.mark.unit
@@ -73,9 +74,108 @@ async def test_engine_trace_events_are_enriched_with_distinct_run_ids():
     second_ids = {event.run_id for event in second.trace if event.run_id}
     assert first_ids
     assert second_ids
-    assert len(second_ids) == 2  # shared in-memory sink intentionally contains both runs
-    assert len(first_ids | second_ids) == 2
+    assert len(first_ids) == 1
+    assert len(second_ids) == 1
+    assert first_ids.isdisjoint(second_ids)
+    assert len({event.run_id for event in trace.events if event.run_id}) == 2
     assert all(event.phase for event in second.trace if event.node == "step")
+
+
+async def test_engine_detail_sink_without_full_capture_does_not_create_pseudo_details():
+    trace = InMemoryTraceSink()
+    details = InMemoryDetailSink()
+    engine = (
+        WorkflowEngineBuilder()
+        .with_trace_sink(trace)
+        .with_detail_sink(details)
+        .register_capability("step", lambda _ctx, payload: {"value": payload["value"]}, kind="tool")
+        .register_workflow(WorkflowBuilder("tool_details").step("step").build())
+        .build()
+    )
+
+    result = await engine.run("tool_details", {"value": "SECRET"})
+
+    assert result.status == "completed"
+    assert details.details == []
+    tool_events = [event for event in result.trace if event.phase in {"tool:request", "tool:result"}]
+    assert [event.detail_refs for event in tool_events] == [[], []]
+    assert "SECRET" not in json.dumps([event.model_dump() for event in tool_events], default=str)
+
+
+async def test_engine_detail_text_capture_is_explicit():
+    details = InMemoryDetailSink()
+    engine = (
+        WorkflowEngineBuilder()
+        .with_detail_sink(details)
+        .with_detail_text_capture()
+        .register_capability("step", lambda _ctx, payload: {"value": payload["value"]}, kind="tool")
+        .register_workflow(WorkflowBuilder("tool_detail_text").step("step").build())
+        .build()
+    )
+
+    result = await engine.run("tool_detail_text", {"value": "VISIBLE"})
+
+    assert result.status == "completed"
+    assert {detail.redaction_state for detail in details.details} == {"none"}
+    assert any("VISIBLE" in (detail.text or "") for detail in details.details)
+
+
+async def test_engine_detail_text_capture_is_runtime_wide_not_capability_opt_in():
+    details = InMemoryDetailSink()
+    engine = (
+        WorkflowEngineBuilder()
+        .with_detail_sink(details)
+        .with_detail_text_capture()
+        .register_capability("step", lambda _ctx, payload: {"value": payload["value"]}, kind="tool")
+        .register_workflow(WorkflowBuilder("tool_detail_digest").step("step").build())
+        .build()
+    )
+
+    result = await engine.run("tool_detail_digest", {"value": "HIDDEN"})
+
+    assert result.status == "completed"
+    assert details.details
+    assert all(detail.redaction_state == "none" for detail in details.details)
+    assert "HIDDEN" in json.dumps([detail.model_dump(by_alias=True) for detail in details.details], default=str)
+
+
+async def test_engine_detail_text_capture_records_external_capabilities_when_enabled():
+    details = InMemoryDetailSink()
+    engine = (
+        WorkflowEngineBuilder()
+        .with_detail_sink(details)
+        .with_detail_text_capture()
+        .register_capability(
+            "send_secret",
+            lambda _ctx, payload: {"sent": payload["token"]},
+            kind="external",
+        )
+        .register_workflow(WorkflowBuilder("secret_detail_digest").step("send_secret").build())
+        .build()
+    )
+
+    result = await engine.run("secret_detail_digest", {"token": "SECRET_TOKEN"})
+
+    assert result.status == "completed"
+    assert details.details
+    assert all(detail.redaction_state == "none" for detail in details.details)
+    assert "SECRET_TOKEN" in json.dumps([detail.model_dump(by_alias=True) for detail in details.details], default=str)
+
+
+def test_byte_free_redacts_data_uri_and_base64_like_strings():
+    encoded = "a" * 1024
+    payload = byte_free(
+        {
+            "image_b64": encoded,
+            "uri": "data:image/png;base64," + encoded,
+            "ordinary": "not base64 text",
+        }
+    )
+
+    assert payload["image_b64"]["type"] == "encoded_binary_string"
+    assert payload["uri"]["type"] == "data_uri"
+    assert payload["ordinary"] == "not base64 text"
+    assert encoded not in json.dumps(payload)
 
 
 async def test_workflow_runner_streams_usage_to_usage_sink():
@@ -97,7 +197,12 @@ async def test_workflow_runner_streams_usage_to_usage_sink():
 
 
 def test_observation_graph_projects_trace_usage_details_and_renders_html():
-    definition = WorkflowBuilder("observe").step("plan").step("render").build()
+    definition = (
+        WorkflowBuilder("observe")
+        .step("plan", title="Plan cards", description="Decide the output shape.")
+        .step("render", title="Render cards", description="Materialize the final artifact.")
+        .build()
+    )
     prompt_event = WorkflowTraceEvent(
         node="plan",
         decision="llm:prompt",
@@ -109,8 +214,10 @@ def test_observation_graph_projects_trace_usage_details_and_renders_html():
         detail_id="detail-1",
         event_id=prompt_event.event_id,
         kind="rendered_prompt",
-        redaction_state="digest_only",
+        redaction_state="none",
         content_type="text/plain",
+        text="full prompt text",
+        json={"prompt": "full prompt text"},
         digest="abc123",
     )
     graph = build_observation_graph(
@@ -132,10 +239,19 @@ def test_observation_graph_projects_trace_usage_details_and_renders_html():
     assert graph.nodes["plan"].detail_refs == ["detail-1"]
     assert "llm:request" in render_runtime_timeline(graph)
     html = observation_graph_to_html(definition, graph)
+    assert "Investigation Graph" in html
+    assert "Plan cards" in html
+    assert "Decide the output shape." in html
+    assert 'data-node-id="plan"' in html
+    assert 'id="node-inspector"' in html
+    assert "Overview" in html
+    assert "Investigate" in html
+    assert "Raw Details" in html
     assert "flowchart TD" in html
     assert "42 tok" in html
     assert "metered $0.0100" in html
     assert "abc123" in html
+    assert "full prompt text" in html
 
 
 def test_observation_graph_keeps_metered_and_notional_costs_separate():
@@ -166,3 +282,59 @@ def test_observation_graph_keeps_metered_and_notional_costs_separate():
     assert "metered $0.2500" in html
     assert "notional $0.4200" in html
     assert "$99.0000" not in html
+
+
+def test_observation_graph_filters_selected_run_and_referenced_details():
+    definition = WorkflowBuilder("observe_runs").step("plan").build()
+    run_1_event = WorkflowTraceEvent(
+        node="plan",
+        decision="llm:prompt",
+        phase="llm:request",
+        detail_refs=["detail-1"],
+        run_id="run-1",
+    )
+    run_2_event = WorkflowTraceEvent(
+        node="plan",
+        decision="llm:prompt",
+        phase="llm:request",
+        detail_refs=["detail-2"],
+        run_id="run-2",
+    )
+
+    graph = build_observation_graph(
+        definition,
+        [run_1_event, run_2_event],
+        [
+            WorkflowUsageEvent(node="plan", total_tokens=3, metadata={"run_id": "run-1"}),
+            WorkflowUsageEvent(node="plan", total_tokens=99, metadata={"run_id": "run-2"}),
+        ],
+        [
+            ObservationDetail(
+                detail_id="detail-1",
+                event_id=run_1_event.event_id,
+                run_id="run-1",
+                kind="rendered_prompt",
+                digest="run-1-digest",
+            ),
+            ObservationDetail(
+                detail_id="detail-2",
+                event_id=run_2_event.event_id,
+                run_id="run-2",
+                kind="rendered_prompt",
+                digest="run-2-digest",
+            ),
+            ObservationDetail(
+                detail_id="unreferenced",
+                event_id="other",
+                run_id="run-1",
+                kind="rendered_prompt",
+                digest="should-not-render",
+            ),
+        ],
+        run_id="run-1",
+    )
+
+    assert graph.run_id == "run-1"
+    assert [entry.event_id for entry in graph.timeline] == [run_1_event.event_id]
+    assert graph.nodes["plan"].total_tokens == 3
+    assert list(graph.details) == ["detail-1"]

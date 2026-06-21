@@ -31,7 +31,7 @@ from ai_workflow_engine.engine.capabilities import (
 from ai_workflow_engine.engine.runner import WorkflowRunner
 from ai_workflow_engine.engine.scheduler import WorkflowScheduler
 from ai_workflow_engine.model_binding import model_profile_scope
-from ai_workflow_engine._runtime_state import CONTEXT, RUNNING_PAYLOAD
+from ai_workflow_engine._runtime_state import CONTEXT, RUNNING_PAYLOAD, observation_capture_scope
 from ai_workflow_engine.models import (
     CapabilityContext,
     CapabilityResult,
@@ -215,14 +215,15 @@ class WorkflowExecutor:
         limit = recursion_limit or self._recursion_limit(definition, context)
         graph_config = {"recursion_limit": limit}
         # Top-level run: WorkflowRunner installs the usage/budget scope + lifecycle logging.
-        final_state = await self.runner.run(
-            compiled,
-            self._initial_state(payload, context),
-            workflow_type=context.goal.workflow_type,
-            goal=context.goal,
-            graph_config=graph_config,
-            recursion_fallback=recursion_fallback,
-        )
+        with observation_capture_scope(self.runtime.observation):
+            final_state = await self.runner.run(
+                compiled,
+                self._initial_state(payload, context),
+                workflow_type=context.goal.workflow_type,
+                goal=context.goal,
+                graph_config=graph_config,
+                recursion_fallback=recursion_fallback,
+            )
         return self._envelope(definition, final_state)
 
     async def _run_inner(
@@ -243,7 +244,8 @@ class WorkflowExecutor:
             return self._failed_envelope(definition, binding_error)
         compiled = self.compile(definition)
         graph_config = {"recursion_limit": self._recursion_limit(definition, context)}
-        final_state = await compiled.ainvoke(self._initial_state(payload, context), config=graph_config)
+        with observation_capture_scope(self.runtime.observation):
+            final_state = await compiled.ainvoke(self._initial_state(payload, context), config=graph_config)
         return self._envelope(definition, final_state)
 
     async def resume(
@@ -303,6 +305,7 @@ class WorkflowExecutor:
             WorkflowTraceEvent(
                 node=snapshot.suspended_node,
                 decision="machine:resumed",
+                run_id=context.run_context.workflow_id,
                 metadata={
                     "workflow_id": definition.workflow_id,
                     "completed_nodes": len(snapshot.node_results),
@@ -312,14 +315,15 @@ class WorkflowExecutor:
         restored_usage = (
             WorkflowUsageSummary.model_validate(snapshot.usage) if snapshot.usage else None
         )
-        final_state = await self.runner.run(
-            compiled,
-            state,
-            workflow_type=context.goal.workflow_type,
-            goal=context.goal,
-            graph_config={"recursion_limit": self._recursion_limit(definition, context)},
-            usage_summary=restored_usage,
-        )
+        with observation_capture_scope(self.runtime.observation):
+            final_state = await self.runner.run(
+                compiled,
+                state,
+                workflow_type=context.goal.workflow_type,
+                goal=context.goal,
+                graph_config={"recursion_limit": self._recursion_limit(definition, context)},
+                usage_summary=restored_usage,
+            )
         return self._envelope(definition, final_state)
 
     def _with_replay(self, node: WorkflowNode, fn: Callable[[Dict[str, Any]], Awaitable[Dict[str, Any]]]):
@@ -691,6 +695,10 @@ class WorkflowExecutor:
     # ---------------------------------------------------------------- envelopes
     def _envelope(self, definition: WorkflowDefinition, final_state: Dict[str, Any]) -> WorkflowRunResult:
         node_results: List[NodeResult] = list(final_state.get("node_results", []))
+        run_context = final_state.get("workflow_context") or getattr(
+            final_state.get(CONTEXT), "run_context", None
+        )
+        run_id = str(run_context.workflow_id) if run_context and run_context.workflow_id else None
         explicit = final_state.get("status")
         status: WorkflowResultStatus
         if explicit == "failed":
@@ -744,22 +752,25 @@ class WorkflowExecutor:
             node_results=node_results,
             artifacts=list(final_state.get("artifacts", [])),
             usage=usage,
-            trace=self._trace_events(),
+            trace=self._trace_events(run_id=run_id),
             snapshot=snapshot,
         )
 
     def _failed_envelope(self, definition: WorkflowDefinition, error: str) -> WorkflowRunResult:
         # Loud failure: surface error + emit a trace event; never run a downgraded path.
-        self.runtime.trace_sink.record(
-            WorkflowTraceEvent(node=definition.workflow_id, decision="rejected", error=error)
-        )
+        event = WorkflowTraceEvent(node=definition.workflow_id, decision="rejected", error=error)
+        self.runtime.trace_sink.record(event)
         return WorkflowRunResult(
             workflow_id=definition.workflow_id,
             status="failed",
             error=error,
-            trace=self._trace_events(),
+            trace=[event],
         )
 
-    def _trace_events(self) -> List[WorkflowTraceEvent]:
+    def _trace_events(self, *, run_id: str | None = None) -> List[WorkflowTraceEvent]:
         events = getattr(self.runtime.trace_sink, "events", None)
-        return list(events) if isinstance(events, list) else []
+        if not isinstance(events, list):
+            return []
+        if run_id is None:
+            return list(events)
+        return [event for event in events if event.run_id == run_id]

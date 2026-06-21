@@ -128,17 +128,18 @@ async def test_single_flight_cancel_cancels_previous_waits_for_exit_then_promote
     promoted_run_id = cancel_previous.metadata["run_id"]
     previous_run_id = cancel_previous.metadata["previous_run_id"]
     assert promoted_run_id != previous_run_id
+    shared_trace = engine.trace_sink.events
     assert any(
         e.decision == "schedule:cancel_request"
         and e.metadata["previous_run_id"] == previous_run_id
         and e.metadata["superseding_run_id"] == promoted_run_id
-        for e in res_b.trace
+        for e in shared_trace
     )
     assert any(
         e.decision == "schedule:cancelled"
         and e.metadata["run_id"] == previous_run_id
         and e.metadata["superseded_by"] == promoted_run_id
-        for e in res_b.trace
+        for e in shared_trace
     )
     assert any(
         e.decision == "schedule:promote" and e.metadata["run_id"] == promoted_run_id

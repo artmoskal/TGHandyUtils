@@ -26,7 +26,8 @@ short summary of that binding spec.
 - `packages/ai_workflow_engine`: product-neutral, domain-neutral engine core for typed workflow
   definitions, fan-out, evaluator retrace, planner artifacts, bounded agents, replay, budgets,
   side-effect gates, traces, checkpoints, scheduling, human clarification, artifact/evidence
-  references, capability registration, policy gates, and the T1 workflow-memory seam.
+  references, capability registration, policy gates, runtime observation graphs/detail capture, and
+  the T1 workflow-memory seam.
 - `packages/ai_workflow_tools`: sibling tool library for CLI-agent episodes and console LLM calls over
   `claude -p` / `codex exec`, including MCP config env, `input_assets` fingerprint provenance,
   artifact salvage, `new_artifact_count`, and subscription-notional cost reporting.

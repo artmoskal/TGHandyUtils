@@ -142,6 +142,7 @@ class WorkflowNode(BaseModel):
     # (contract: "unsupported node types must fail loudly", never silently downgraded).
     kind: str = "step"
     capability: Optional[str] = None
+    title: str = ""
     description: str = ""
 
     # input/output state mapping. Default: a step consumes the running payload and stores its
@@ -651,6 +652,7 @@ class WorkflowBuilder:
         model_profile: Optional[str] = None,
         inject_plan: bool = False,
         inject_machine: bool = False,
+        title: str = "",
         description: str = "",
     ) -> "WorkflowBuilder":
         self._append(
@@ -667,6 +669,7 @@ class WorkflowBuilder:
                 model_profile=model_profile,
                 inject_plan=inject_plan,
                 inject_machine=inject_machine,
+                title=title,
                 description=description,
             )
         )
@@ -684,6 +687,7 @@ class WorkflowBuilder:
         model_profile: Optional[str] = None,
         inject_plan: bool = False,
         inject_machine: bool = False,
+        title: str = "",
         description: str = "",
     ) -> "WorkflowBuilder":
         """Declare a decision state. ``bounds`` sets the pre-set gate (max traversals) per label —
@@ -698,6 +702,7 @@ class WorkflowBuilder:
             model_profile=model_profile,
             inject_plan=inject_plan,
             inject_machine=inject_machine,
+            title=title,
             description=description,
         )
         self._append(node)
@@ -725,6 +730,7 @@ class WorkflowBuilder:
         output_key: Optional[str] = None,
         inject_plan: bool = False,
         inject_machine: bool = False,
+        title: str = "",
         description: str = "",
     ) -> "WorkflowBuilder":
         self._append(
@@ -737,6 +743,7 @@ class WorkflowBuilder:
                 output_key=output_key,
                 inject_plan=inject_plan,
                 inject_machine=inject_machine,
+                title=title,
                 description=description,
             )
         )
@@ -753,6 +760,7 @@ class WorkflowBuilder:
         model_profile: Optional[str] = None,
         inject_plan: bool = False,
         inject_machine: bool = False,
+        title: str = "",
         description: str = "",
     ) -> "WorkflowBuilder":
         # Default the evaluated target to the most recent step's capability.
@@ -772,6 +780,7 @@ class WorkflowBuilder:
                 model_profile=model_profile,
                 inject_plan=inject_plan,
                 inject_machine=inject_machine,
+                title=title,
                 description=description,
             )
         )
@@ -792,6 +801,7 @@ class WorkflowBuilder:
         model_profile: Optional[str] = None,
         inject_plan: bool = False,
         inject_machine: bool = False,
+        title: str = "",
         description: str = "",
     ) -> "WorkflowBuilder":
         self._append(
@@ -809,6 +819,7 @@ class WorkflowBuilder:
                 model_profile=model_profile,
                 inject_plan=inject_plan,
                 inject_machine=inject_machine,
+                title=title,
                 description=description,
             )
         )
@@ -823,6 +834,7 @@ class WorkflowBuilder:
         max_steps: Optional[int] = None,
         inject_plan: bool = False,
         inject_machine: bool = False,
+        title: str = "",
         description: str = "",
     ) -> "WorkflowBuilder":
         workflow_id = workflow if isinstance(workflow, str) else workflow.workflow_id
@@ -835,6 +847,7 @@ class WorkflowBuilder:
                 ),
                 inject_plan=inject_plan,
                 inject_machine=inject_machine,
+                title=title,
                 description=description,
             )
         )
@@ -847,6 +860,7 @@ class WorkflowBuilder:
         capability: Optional[str] = None,
         inject_plan: bool = False,
         inject_machine: bool = False,
+        title: str = "",
         description: str = "",
     ) -> "WorkflowBuilder":
         self._append(
@@ -856,6 +870,7 @@ class WorkflowBuilder:
                 capability=capability or node_id,
                 inject_plan=inject_plan,
                 inject_machine=inject_machine,
+                title=title,
                 description=description,
             )
         )

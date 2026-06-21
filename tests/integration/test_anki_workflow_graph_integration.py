@@ -24,6 +24,7 @@ from services.content.anki_scenario_planners import (
 )
 from services.content.anki_quality_evaluator import AnkiRenderedCardEvaluator
 from services.content.anki_source import build_content_source
+from ai_workflow_engine.engine import InMemoryDetailSink
 from ai_workflow_tools.media.image_generation import OpenAIImageGenerator
 
 pytestmark = pytest.mark.integration
@@ -61,6 +62,8 @@ def _production_graph(
     enable_image_generation: bool = False,
     enable_auto_image_generation: bool = False,
     enable_quality_evaluation: bool = False,
+    detail_sink=None,
+    capture_observation_detail_text: bool = False,
 ) -> AnkiGenerationGraph:
     image_generator = OpenAIImageGenerator(config) if enable_image_generation else None
     quality_evaluator = AnkiRenderedCardEvaluator(config, inspect_images=False) if enable_quality_evaluation else None
@@ -82,6 +85,8 @@ def _production_graph(
         image_quality=Config.ANKI_IMAGE_QUALITY,
         image_output_format=Config.ANKI_IMAGE_OUTPUT_FORMAT,
         generated_media_root=str(tmp_path / "generated_media"),
+        detail_sink=detail_sink,
+        capture_observation_detail_text=capture_observation_detail_text,
     )
 
 
@@ -202,6 +207,56 @@ async def test_anki_workflow_small_real_graph_integration(name, message, expecte
         assert rendered.image_asset_plan.image_role == "ignore_media"
 
     _assert_package_writes(service, rendered.cards, tmp_path, name)
+
+
+@pytest.mark.api
+@pytest.mark.asyncio
+async def test_anki_workflow_real_observation_graph_html(tmp_path):
+    config = _configure_graph_models()
+    service = AnkiCardService(config)
+    details = InMemoryDetailSink()
+    graph = _production_graph(
+        service,
+        config,
+        tmp_path,
+        enable_image_generation=False,
+        detail_sink=details,
+        capture_observation_detail_text=True,
+    )
+
+    source = build_content_source(
+        [
+            (
+                "runtime_observation",
+                "Photosynthesis lets green plants use sunlight, water, and carbon dioxide "
+                "to produce glucose and oxygen.",
+            )
+        ],
+        user_id=12345,
+        owner_name="runtime_observation",
+    )
+    rendered = await graph.run(source)
+
+    assert rendered.cards
+    observation = graph.last_observation_graph()
+    assert observation.run_id
+    assert observation.details
+    assert any(detail.kind == "tool_payload" for detail in observation.details.values())
+    assert any(detail.kind == "tool_result" for detail in observation.details.values())
+    assert any(entry.phase == "tool:request" and entry.decision == "start" for entry in observation.timeline)
+    assert all(entry.decision != "tool:payload" for entry in observation.timeline)
+
+    target = Path(os.getenv("ANKI_OBSERVATION_HTML", "/app/test-results/anki-runtime-observation.html"))
+    html_path = graph.save_last_observation_html(
+        str(target),
+        title="Anki runtime observation (paid)",
+    )
+    html = Path(html_path).read_text(encoding="utf-8")
+    assert "Anki runtime observation (paid)" in html
+    assert "Open all details" in html
+    assert "tool_payload" in html
+    assert "tool_result" in html
+    assert "runtime_observation" in html
 
 
 @pytest.mark.api

@@ -49,6 +49,7 @@ from ai_workflow_engine.engine import (
     HumanClarificationCapability,
     InMemoryCheckpointStore,
     InMemoryHumanClarificationChannel,
+    InMemoryDetailSink,
     InMemoryTraceSink,
     JsonlCheckpointStore,
     JsonlExternalWriteSink,
@@ -62,6 +63,7 @@ from ai_workflow_engine.engine import (
     WorkflowScheduler,
     WorkflowSupervisor,
     assert_checkpoint_payload_safe,
+    artifact_result,
     capability_context_for_goal,
     cleanup_artifacts,
     gather_capabilities,
@@ -473,6 +475,98 @@ async def test_capability_runtime_validates_input_output_and_records_trace():
     assert result.status == "accepted"
     assert result.output == AddOutput(total=5)
     assert [event.decision for event in trace.events] == ["start", "accepted"]
+
+
+async def test_capability_runtime_records_tool_payload_and_result_details_when_enabled():
+    def echo(_context, payload):
+        return {"echo": payload["text"]}
+
+    registry = CapabilityRegistry()
+    registry.register(CapabilitySpec(name="echo", kind="tool"), echo)
+    trace = InMemoryTraceSink()
+    details = InMemoryDetailSink()
+    runtime = CapabilityRuntime(registry, trace, detail_sink=details, capture_detail_text=True)
+    goal = WorkflowGoal(workflow_type="observe_tools", objective="observe tool io")
+
+    result = await runtime.invoke(
+        "echo",
+        {"text": "SECRET input"},
+        capability_context_for_goal(goal),
+    )
+
+    assert result.status == "accepted"
+    assert result.output == {"echo": "SECRET input"}
+    tool_events = [event for event in trace.events if event.phase in {"tool:request", "tool:result"}]
+    assert [event.decision for event in tool_events] == ["start", "accepted"]
+    assert [detail.kind for detail in details.details] == ["tool_payload", "tool_result"]
+    assert tool_events[0].detail_refs == [details.details[0].detail_id]
+    assert tool_events[1].detail_refs == [details.details[1].detail_id]
+    assert details.details[0].event_id == tool_events[0].event_id
+    assert details.details[1].event_id == tool_events[1].event_id
+    assert details.details[0].redaction_state == "none"
+    assert details.details[0].json_value["payload"]["text"] == "SECRET input"
+    trace_blob = json.dumps([event.model_dump() for event in tool_events], default=str)
+    detail_blob = json.dumps([detail.model_dump(by_alias=True) for detail in details.details], default=str)
+    assert "SECRET input" not in trace_blob
+    assert "SECRET input" in detail_blob
+
+
+async def test_capability_runtime_records_tool_error_detail_when_enabled():
+    def fail(_context, _payload):
+        raise ValueError("tool exploded")
+
+    registry = CapabilityRegistry()
+    registry.register(CapabilitySpec(name="unstable", kind="tool"), fail)
+    trace = InMemoryTraceSink()
+    details = InMemoryDetailSink()
+    runtime = CapabilityRuntime(registry, trace, detail_sink=details, capture_detail_text=True)
+    goal = WorkflowGoal(workflow_type="observe_tools", objective="observe tool errors")
+
+    result = await runtime.invoke("unstable", {"text": "ok"}, capability_context_for_goal(goal))
+
+    assert result.status == "failed"
+    response_event = next(event for event in trace.events if event.phase == "tool:result")
+    response_detail = next(detail for detail in details.details if detail.kind == "tool_result")
+    assert response_event.severity == "error"
+    assert response_event.error == "tool exploded"
+    assert response_event.detail_refs == [response_detail.detail_id]
+    assert response_detail.redaction_state == "none"
+    assert response_detail.json_value["error"] == "tool exploded"
+
+
+async def test_capability_runtime_records_artifact_preview_details_when_enabled():
+    artifact = WorkflowArtifact(
+        path="/tmp/engine-observation-report.html",
+        kind="file",
+        source="unit",
+        owner_node="producer",
+    )
+
+    def produce(_context, _payload):
+        return artifact_result({"created": True}, [artifact])
+
+    registry = CapabilityRegistry()
+    registry.register(CapabilitySpec(name="producer", kind="tool"), produce)
+    trace = InMemoryTraceSink()
+    details = InMemoryDetailSink()
+    runtime = CapabilityRuntime(registry, trace, detail_sink=details, capture_detail_text=True)
+    goal = WorkflowGoal(workflow_type="observe_artifacts", objective="observe artifacts")
+
+    result = await runtime.invoke("producer", {}, capability_context_for_goal(goal))
+
+    assert result.status == "accepted"
+    assert result.artifacts == [artifact]
+    assert [detail.kind for detail in details.details] == [
+        "tool_payload",
+        "tool_result",
+        "artifact_preview",
+    ]
+    artifact_event = next(event for event in trace.events if event.phase == "tool:result")
+    artifact_detail = details.details[2]
+    assert artifact_event.detail_refs == [details.details[1].detail_id, artifact_detail.detail_id]
+    assert artifact_detail.event_id == artifact_event.event_id
+    assert artifact_detail.redaction_state == "none"
+    assert artifact_detail.json_value["artifact"]["path"] == "/tmp/engine-observation-report.html"
 
 
 async def test_jsonl_trace_sink_records_events(tmp_path):
@@ -2882,6 +2976,38 @@ def test_format_trace_events_renders_flow_decisions_and_usage():
     assert "overload" in text
     assert "metered $0.0100" in text  # usage/cost footer
     assert "notional" not in text  # pure-metered run: absent is not unknown
+
+
+def test_format_trace_events_preserves_usage_footer_when_trace_is_truncated():
+    from ai_workflow_engine import format_trace_events
+    from ai_workflow_engine.models import WorkflowTraceEvent
+
+    events = [
+        WorkflowTraceEvent(
+            node=f"noisy_{index}",
+            decision="accepted",
+            metadata={"payload": "x" * 600},
+        )
+        for index in range(12)
+    ]
+    usage = WorkflowUsageSummary(
+        events=[
+            WorkflowUsageEvent(node="metered", operation="chat", total_tokens=100, estimated_usd=0.01),
+            WorkflowUsageEvent(
+                node="notional",
+                operation="chat",
+                total_tokens=50,
+                cost_class="subscription_notional",
+                notional_usd=0.02,
+            ),
+        ]
+    )
+
+    text = format_trace_events(events, usage=usage, title="Trace", max_total_len=600)
+
+    assert "…(trace truncated)" in text
+    assert "metered $0.0100" in text
+    assert "notional $0.0200" in text
 
 
 async def test_executor_runs_external_process_step():

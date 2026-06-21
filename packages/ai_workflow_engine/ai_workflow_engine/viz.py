@@ -55,7 +55,9 @@ def workflow_to_mermaid(
     declared_node_ids = {node.id for node in definition.nodes}
     for node in definition.nodes:
         left, right = _SHAPES.get(node.kind, ("[", "]"))
-        label = node.id if node.kind == "step" else f"{node.id}\n«{node.kind}»"
+        label = _node_display_label(node)
+        if node.kind != "step":
+            label = f"{label}\n«{node.kind}»"
         observed = observed_nodes.get(node.id) if hasattr(observed_nodes, "get") else None
         if observed is not None:
             usage = _observed_usage_label(observed)
@@ -240,6 +242,13 @@ def _status_class(status: str) -> str:
     if status in {"partial", "running", "not_started"}:
         return "part"
     return "fail"
+
+
+def _node_display_label(node: Any) -> str:
+    title = getattr(node, "title", "") or node.id
+    if title == node.id:
+        return node.id
+    return f"{title}\n{node.id}"
 
 
 def _observed_usage_label(observed: Any) -> str:

@@ -14,6 +14,10 @@ _ACTIVE_WORKFLOW_CONTEXT: ContextVar[Optional[Any]] = ContextVar(
     "workflow_run_context",
     default=None,
 )
+_ACTIVE_OBSERVATION_CAPTURE: ContextVar[Optional[Any]] = ContextVar(
+    "workflow_observation_capture",
+    default=None,
+)
 
 
 @contextmanager
@@ -27,3 +31,16 @@ def workflow_run_context_scope(context: Any) -> Iterator[Any]:
 
 def current_workflow_run_context() -> Optional[Any]:
     return _ACTIVE_WORKFLOW_CONTEXT.get()
+
+
+@contextmanager
+def observation_capture_scope(capture: Any) -> Iterator[Any]:
+    token = _ACTIVE_OBSERVATION_CAPTURE.set(capture)
+    try:
+        yield capture
+    finally:
+        _ACTIVE_OBSERVATION_CAPTURE.reset(token)
+
+
+def current_observation_capture() -> Optional[Any]:
+    return _ACTIVE_OBSERVATION_CAPTURE.get()

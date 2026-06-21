@@ -1,9 +1,9 @@
 # Engine Observability Design Discussion
 
-Status: active discussion for Claude/codex review
+Status: implemented after explicit user approval; keep as rationale/provenance
 Created: 2026-06-21 01:36:50 WEST
 Scope: `packages/ai_workflow_engine` observability, static visualization, runtime graph UI, prompt/output inspection
-Permanent docs: not updated yet. Migrate only after explicit user confirmation.
+Permanent docs: updated in `packages/ai_workflow_engine/docs/observability-levels-feedback.md`.
 
 ## Context
 
@@ -49,7 +49,8 @@ Needs correction/constraint:
 - `PromptCapturingLLMClient` currently records full prompt text in `WorkflowTraceEvent.metadata`.
   That is acceptable for a deliberately enabled debug wrapper, but it is not the target contract for a
   live graph. Runtime trace events should stay small; full rendered prompt/output data should move
-  behind detail references with privacy/redaction controls.
+  behind detail references. When internal investigation capture is enabled, those detail records must
+  preserve the full byte-free source, not only a digest.
 - The note in `2026-06-20-engine-review-followups.md` saying the future runtime graph needs "no new
   engine mechanics" is too strong. Existing sinks are a good foundation, but we likely need a small
   stable observation/detail contract to avoid overloading free-form trace metadata.
@@ -70,6 +71,35 @@ The observability foundation should be:
 In short: events are truth, details are expandable payloads, graph is a renderer.
 
 Do not make text logs, Mermaid, or prompt manifests the source of truth. They are output formats.
+
+## Correction: Internal Observability Is Full-Fidelity
+
+[codex] correction (2026-06-21): the earlier discussion used "privacy", "redaction", and
+"digest-only by default" too broadly. That wording came from the existing model fields
+(`ObservationDetail.privacy`, `ObservationDetail.redaction_state`) and from the byte-free rule for raw
+media. It was then over-applied to the internal investigation path, producing useless SHA-only detail
+cards in the viewer.
+
+The corrected doctrine:
+
+- Trace events stay compact and readable. They may carry summaries, ids, digests, status, and
+  references.
+- Observation details are the internal investigation source. When explicit detail capture is enabled,
+  the detail must preserve the full byte-free `text`/`json` payload or result plus a digest. The digest
+  is correlation/integrity metadata, not a substitute for the payload.
+- Simplified UI cards are projections over the detail. They may show "significant bits" first, but the
+  raw byte-free source must remain one click away.
+- Binary/media bytes are still not stored inline in trace/detail JSON. They are represented by
+  artifacts, fingerprints, lengths, and digests so the HTML/log store remains usable.
+- Product/export privacy is a consumer policy. The engine should not silently obfuscate internal
+  application observability. If a product wants redacted exports, build that as an explicit projection
+  or retention policy on top of the raw internal detail stream.
+- If capture is disabled, it is acceptable to have no detail record or a minimal reference. It is not
+  acceptable for "investigation mode" to produce detail cards whose only useful value is a SHA.
+
+Implementation implication: repair the current `capture_text=False -> digest_only detail` behavior for
+internal debugging. The expected debug/investigation mode is compact trace row + full byte-free detail +
+digest, not "something happened, hash xxx".
 
 ## Trace Versus Usage
 
@@ -125,7 +155,11 @@ class ObservationEvent(BaseModel):
         "workflow:start",
         "node:start",
         "llm:request",
+        "llm:response",
         "tool:request",
+        "tool:result",
+        "planner:output",
+        "memory:projection",
         "node:decision",
         "artifact:created",
         "node:end",
@@ -184,7 +218,8 @@ Suggested layers:
 - Level 1: node timeline, attempts, branch decisions, fallbacks, retries, elapsed time, severity.
 - Level 2: capability/tool calls, artifact IDs, usage/cost, memory projection names.
 - Level 3: expandable prompt and output details, only when debug capture is enabled.
-- Level 4: raw investigation details, gated by explicit privacy/debug settings.
+- Level 4: raw byte-free investigation details when explicit internal capture is enabled; product or
+  export redaction is a separate projection/policy.
 
 Future live updates:
 
@@ -198,8 +233,8 @@ This keeps the core runtime stable while allowing better UI later.
 
 ## Prompt And Output Investigation
 
-Yes, the investigation view eventually needs rendered prompts and outputs. But the default event should
-carry summaries and references, not the full payload.
+Yes, the investigation view needs rendered prompts and outputs. But the trace event should carry
+summaries and references, not the full payload.
 
 Recommended prompt event:
 
@@ -218,8 +253,10 @@ Recommended prompt event:
 }
 ```
 
-The detail record can hold full rendered text when debug capture is explicitly enabled. Otherwise it
-can hold only a digest/redacted preview.
+The detail record holds full rendered text/JSON when internal debug capture is explicitly enabled.
+If capture is not enabled, the viewer should not pretend it has an investigable detail by showing only
+a digest. Digest-only records are for disabled capture, export/redaction projections, or explicit
+product policy, not the normal internal investigation mode.
 
 This avoids three bad outcomes:
 
@@ -261,10 +298,11 @@ observability code when it wants better drill-down UX.
 
 ## Implementation Stance
 
-Do not implement the full observability system before the engine tag unless the user explicitly
-changes scope.
+Superseded sequencing note: the original recommendation was to defer the full observability system
+until after the engine tag. Artem explicitly changed scope on 2026-06-21 and approved the rework
+before the tag, so this section is preserved only as historical rationale.
 
-Recommended now:
+Original recommendation before the user moved scope:
 
 - Keep `workflow_to_mermaid()` as-is.
 - Keep `render_prompt_manifest()` only as a debug helper, or later move it out of `viz.py` if it grows.
@@ -273,16 +311,16 @@ Recommended now:
 - Do not add token streaming as an engine feature. Streaming remains a BYO LLM client concern.
 - Do not build browser/UI runtime graph now.
 
-Recommended when observability becomes an implementation epic:
+Implemented epic shape:
 
 1. Extend `WorkflowTraceEvent` with `event_id`, `detail_refs`, and the agreed viewer fields
    (`phase`, `severity`, `run_id`) instead of introducing a parallel `ObservationEvent`.
-2. Add `ObservationDetail` plus a detail sink/store with explicit privacy and redaction policy.
+2. Add `ObservationDetail` plus a detail sink/store with explicit internal-capture and optional
+   export/redaction policy.
 3. Add a projector: `WorkflowDefinition + trace events + usage events + details -> ObservationGraph`.
 4. Add Mermaid/HTML/live renderers over `ObservationGraph`.
 5. Migrate prompt capture to emit compact event plus `rendered_prompt` detail record.
-6. Before implementation, spike the two code-grounded seams: `run_id` propagation into trace events and
-   live usage-event delivery. Today trace has sinks/queues; usage is a separate summary/logger stream.
+6. Verify `run_id` propagation, trace/detail scoping, usage projection, and Anki runtime HTML.
 
 ## Open Questions For Claude
 
@@ -348,7 +386,8 @@ observability/prompt module before export?
 - Static renderer can show the workflow graph without running the workflow.
 - Runtime event stream can update a graph incrementally without blocking the workflow.
 - Trace and usage stay separate source records but render together in one timeline/graph.
-- Prompt/output details are available only when explicitly enabled.
+- Prompt/output details are available only when explicitly enabled; when enabled, they are full
+  byte-free source plus digest, not digest-only placeholders.
 - Raw image/audio/video bytes never enter trace events.
 - Large text payloads are stored as details or artifacts, not inline event metadata.
 - Unknown node kinds and unknown detail kinds render generically.
@@ -361,12 +400,11 @@ Sequencing: the observability implementation is a later epic after the memory/ta
 explicitly moves it earlier. The one-event-type contract is settled now: extend `WorkflowTraceEvent`,
 keep `WorkflowUsageEvent` separate, and store heavy/private payloads behind `ObservationDetail` refs.
 
-[codex] readiness review (2026-06-21): the contract direction is sound, but implementation must not assume
-two things that the code does not yet provide. First, current state has two context ids:
-`engine_context.run_context.workflow_id` is seeded from the workflow definition id, while
-`WorkflowRunner` creates a per-run UUID at `workflow_context.workflow_id` for usage/logging. Trace events
-are emitted through `TraceSink` without automatic enrichment from either context, so the live-view
-`run_id` must be threaded deliberately and must not accidentally reuse the definition id. Second, usage
-events are accumulated in `WorkflowUsageSummary` and logged, but there is no `UsageSink`/async queue
-equivalent to `TraceSink`. The build plan must include those as preflight decisions before live
-multi-run viewing or live cost updates.
+[codex] readiness review (2026-06-21, corrected after Claude recheck): the contract direction is
+sound, but implementation must keep two code-grounded seams explicit. First, per-event `run_id`
+generation/enrichment is now verified: the engine uses a per-run UUID in `run_context.workflow_id`, and
+the workflow definition id is `workflow_type`. The earlier worry that `run_id` reused the definition id
+was false. Remaining multi-run work is viewer/projector filtering, detail scoping, and run-local result
+traces. Second, usage events are accumulated in `WorkflowUsageSummary` and logged, but there is no
+`UsageSink`/async queue equivalent to `TraceSink`. The build plan must include those as preflight
+decisions before live multi-run viewing or live cost updates.

@@ -11,6 +11,13 @@ from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 
+from ai_workflow_engine._runtime_state import current_observation_capture
+from ai_workflow_engine.observability_capture import (
+    langchain_messages_payload,
+    langchain_response_payload,
+    llm_request_payload,
+    llm_response_payload,
+)
 from ai_workflow_engine.parsing import STRUCTURED_REPAIR_PROMPT
 from ai_workflow_engine.usage import WorkflowBudgetExceeded, invoke_metered_chat
 
@@ -273,7 +280,13 @@ class StructuredLLMNode:
                 )
                 check_images_per_call(len(request.images), self.name)
                 check_budget_before_call("chat", self.name)
-                response = await self.llm(request)
+                self._record_callable_request(request, attempt, profile)
+                try:
+                    response = await self.llm(request)
+                except Exception as exc:
+                    self._record_llm_error(attempt, exc, profile, transport="plain_callable")
+                    raise
+                self._record_callable_response(request, response, attempt, profile)
                 record_callable_usage(
                     response,
                     node=self.name,
@@ -338,16 +351,23 @@ class StructuredLLMNode:
                 # Per-call input cap applies to LangChain-shaped clients too (not only plain
                 # callables); contextvars propagate into the worker thread via asyncio.to_thread.
                 check_input_tokens_per_call(estimate_text_tokens(messages), self.name)
-                output = invoke_metered_chat(
-                    self._llm_for_profile(profile),
-                    messages,
-                    node=self.name,
-                    model=profile.model if profile is not None else self._model_name(),
-                    attempt=attempt,
-                    metadata={"output_model": self.output_model.__name__, **(usage_metadata or {})},
-                    config=self.config,
-                )
+                model_name = profile.model if profile is not None else self._model_name()
+                self._record_langchain_request(messages, attempt, profile)
+                try:
+                    output = invoke_metered_chat(
+                        self._llm_for_profile(profile),
+                        messages,
+                        node=self.name,
+                        model=model_name,
+                        attempt=attempt,
+                        metadata={"output_model": self.output_model.__name__, **(usage_metadata or {})},
+                        config=self.config,
+                    )
+                except Exception as exc:
+                    self._record_llm_error(attempt, exc, profile, transport="langchain")
+                    raise
                 raw_text = self._message_content(output)
+                self._record_langchain_response(output, raw_text, attempt, profile)
                 parsed = self.parser.parse(self._apply_pre_parse(raw_text, attempt, content_hash))
                 if self.validator:
                     self.validator(parsed)
@@ -423,6 +443,105 @@ class StructuredLLMNode:
                 ),
             )
         return cleaned
+
+    def _record_callable_request(self, request: Any, attempt: int, profile: Any) -> None:
+        capture = current_observation_capture()
+        if capture is None:
+            return
+        capture.record(
+            node=self.name,
+            attempt=attempt,
+            decision="llm:request",
+            phase="llm:request",
+            kind="rendered_prompt",
+            payload=llm_request_payload(request),
+            metadata=self._observation_metadata(profile, transport="plain_callable", request=request),
+            digest_metadata_key="prompt_digest",
+        )
+
+    def _record_callable_response(self, request: Any, response: Any, attempt: int, profile: Any) -> None:
+        capture = current_observation_capture()
+        if capture is None:
+            return
+        capture.record(
+            node=self.name,
+            attempt=attempt,
+            decision="llm:response",
+            phase="llm:response",
+            kind="llm_response",
+            payload=llm_response_payload(response),
+            metadata={
+                **self._observation_metadata(profile, transport="plain_callable", request=request),
+                "model": getattr(response, "model", ""),
+                "tool_call_count": len(getattr(response, "tool_calls", [])),
+                "total_tokens": getattr(response, "total_tokens", 0),
+            },
+            digest_metadata_key="response_digest",
+        )
+
+    def _record_langchain_request(self, messages: Sequence[Any], attempt: int, profile: Any) -> None:
+        capture = current_observation_capture()
+        if capture is None:
+            return
+        capture.record(
+            node=self.name,
+            attempt=attempt,
+            decision="llm:request",
+            phase="llm:request",
+            kind="rendered_prompt",
+            payload=langchain_messages_payload(messages),
+            metadata=self._observation_metadata(profile, transport="langchain"),
+            digest_metadata_key="prompt_digest",
+        )
+
+    def _record_langchain_response(self, output: Any, raw_text: str, attempt: int, profile: Any) -> None:
+        capture = current_observation_capture()
+        if capture is None:
+            return
+        capture.record(
+            node=self.name,
+            attempt=attempt,
+            decision="llm:response",
+            phase="llm:response",
+            kind="llm_response",
+            payload=langchain_response_payload(output, text=raw_text),
+            metadata=self._observation_metadata(profile, transport="langchain"),
+            digest_metadata_key="response_digest",
+        )
+
+    def _record_llm_error(self, attempt: int, exc: Exception, profile: Any, *, transport: str) -> None:
+        capture = current_observation_capture()
+        if capture is None:
+            return
+        error = str(exc) or exc.__class__.__name__
+        capture.record(
+            node=self.name,
+            attempt=attempt,
+            decision="llm:response",
+            phase="llm:response",
+            kind="llm_response",
+            payload={"error_type": exc.__class__.__name__, "error": error},
+            severity="error",
+            error=error,
+            metadata={
+                **self._observation_metadata(profile, transport=transport),
+                "error_type": exc.__class__.__name__,
+            },
+            digest_metadata_key="response_digest",
+        )
+
+    def _observation_metadata(self, profile: Any, *, transport: str, request: Any = None) -> dict[str, Any]:
+        metadata = {
+            "output_model": self.output_model.__name__,
+            "transport": transport,
+            "model": profile.model if profile is not None else self._model_name(),
+        }
+        if profile is not None:
+            metadata["model_profile"] = profile.name
+        if request is not None:
+            metadata["message_count"] = len(getattr(request, "messages", []))
+            metadata["request_image_count"] = len(getattr(request, "images", []))
+        return metadata
 
     def _messages_for_attempt(
         self,

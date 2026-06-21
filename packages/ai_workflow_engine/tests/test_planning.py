@@ -11,6 +11,7 @@ import pytest
 
 from ai_workflow_engine import (
     CapabilityResult,
+    InMemoryDetailSink,
     CapabilitySpec,
     PlanArtifact,
     PlanTask,
@@ -97,6 +98,48 @@ async def test_planner_executes_tasks_with_partial_failure_isolation_and_trace()
     assert any(event.decision == "plan:task_started" for event in result.trace)
     assert any(event.decision == "plan:task_failed" and event.metadata["task_id"] == "bad" for event in result.trace)
     assert result.output.model_dump_json()
+
+
+async def test_planner_records_planner_output_detail_when_enabled():
+    details = InMemoryDetailSink()
+    engine = (
+        WorkflowEngineBuilder()
+        .with_profile(_profile("planned_observation"))
+        .with_detail_sink(details)
+        .with_detail_text_capture()
+        .register_capability(
+            "planner",
+            lambda _ctx, _payload: PlanArtifact(
+                goal="SECRET goal",
+                tasks=[
+                    PlanTask(
+                        task_id="extract",
+                        description="SECRET description",
+                        capability="extract",
+                        payload={"value": 1},
+                    )
+                ],
+            ),
+            kind="llm",
+        )
+        .register_capability("extract", lambda _ctx, payload: payload["value"], kind="deterministic")
+        .register_workflow(
+            WorkflowBuilder("planned_observation").plan("make_plan", capability="planner").build()
+        )
+        .build()
+    )
+
+    result = await engine.run("planned_observation", {})
+
+    assert result.status == "completed"
+    planner_event = next(event for event in result.trace if event.phase == "planner:output")
+    planner_detail = next(detail for detail in details.details if detail.kind == "planner_output")
+    assert planner_event.detail_refs == [planner_detail.detail_id]
+    assert planner_event.metadata["task_count"] == 1
+    assert planner_detail.redaction_state == "none"
+    assert planner_detail.json_value["goal"] == "SECRET goal"
+    assert "SECRET" not in planner_event.model_dump_json()
+    assert "SECRET" in planner_detail.model_dump_json(by_alias=True)
 
 
 async def test_planner_aborts_invalid_plan_before_any_task_execution():

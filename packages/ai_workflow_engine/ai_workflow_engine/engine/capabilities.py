@@ -7,6 +7,7 @@ import inspect
 import logging
 from pathlib import Path
 import time
+import uuid
 from typing import Any, Callable, Iterable, NamedTuple, Protocol
 
 from pydantic import ValidationError
@@ -26,6 +27,7 @@ from ai_workflow_engine.models import (
     WorkflowUsageSummary,
 )
 from ai_workflow_engine._runtime_state import current_workflow_run_context
+from ai_workflow_engine.observability_capture import ObservationCapture
 from ai_workflow_engine.usage import check_budget_before_call
 
 CapabilityHandler = Callable[[CapabilityContext, Any], Any]
@@ -272,9 +274,19 @@ class CapabilityRuntime:
         self,
         registry: CapabilityRegistry,
         trace_sink: TraceSink | None = None,
+        *,
+        detail_sink: DetailSink | None = None,
+        capture_detail_text: bool = False,
     ) -> None:
         self.registry = registry
         self.trace_sink = ContextEnrichingTraceSink(trace_sink or InMemoryTraceSink())
+        self.detail_sink = detail_sink
+        self._capture_detail_text = capture_detail_text
+        self.observation = ObservationCapture(
+            self.trace_sink,
+            detail_sink=detail_sink,
+            mode="full" if capture_detail_text else "off",
+        )
 
     async def invoke(
         self,
@@ -286,13 +298,34 @@ class CapabilityRuntime:
     ) -> CapabilityResult:
         spec, handler = self.registry.get(name)
         start = time.monotonic()
-        self._record(WorkflowTraceEvent(node=name, attempt=attempt, decision="start"))
         try:
             parsed_payload = self._validate_payload(spec, payload)
+            start_event = WorkflowTraceEvent(
+                node=name,
+                attempt=attempt,
+                decision="start",
+                phase="tool:request",
+            )
+            start_event = start_event.model_copy(
+                update={
+                    "detail_refs": self._record_tool_payload(
+                        spec,
+                        parsed_payload,
+                        event_id=start_event.event_id,
+                    )
+                }
+            )
+            self._record(start_event)
             denied = self._denied_side_effects(spec, context)
             if denied:
                 elapsed_ms = int((time.monotonic() - start) * 1000)
                 error = f"Capability side effects denied by safety policy: {', '.join(denied)}"
+                rejected = CapabilityResult(
+                    status="rejected",
+                    error=error,
+                    metadata={"denied_side_effects": denied},
+                )
+                rejected_event_id = str(uuid.uuid4())
                 self._record(
                     WorkflowTraceEvent(
                         node=name,
@@ -301,13 +334,18 @@ class CapabilityRuntime:
                         error=error,
                         elapsed_ms=elapsed_ms,
                         metadata={"denied_side_effects": denied},
+                        phase="tool:result",
+                        severity="error",
+                        event_id=rejected_event_id,
+                        detail_refs=self._record_tool_result(
+                            spec,
+                            rejected,
+                            error=error,
+                            event_id=rejected_event_id,
+                        ),
                     )
                 )
-                return CapabilityResult(
-                    status="rejected",
-                    error=error,
-                    metadata={"denied_side_effects": denied},
-                )
+                return rejected
             if spec.kind in {"agent", "external"}:
                 check_budget_before_call(spec.kind, name)
             result = handler(context, parsed_payload)
@@ -318,6 +356,7 @@ class CapabilityRuntime:
                     result = await result
             output = self._normalize_result(spec, result)
             elapsed_ms = int((time.monotonic() - start) * 1000)
+            result_event_id = str(uuid.uuid4())
             self._record(
                 WorkflowTraceEvent(
                     node=name,
@@ -325,6 +364,18 @@ class CapabilityRuntime:
                     decision=output.status,
                     artifacts=[artifact.artifact_id for artifact in output.artifacts],
                     elapsed_ms=elapsed_ms,
+                    phase="tool:result",
+                    severity="error" if output.status in {"failed", "rejected"} or output.error else "info",
+                    event_id=result_event_id,
+                    detail_refs=[
+                        *self._record_tool_result(
+                            spec,
+                            output,
+                            error=output.error,
+                            event_id=result_event_id,
+                        ),
+                        *self._record_artifact_previews(spec, output, event_id=result_event_id),
+                    ],
                 )
             )
             return output
@@ -332,6 +383,7 @@ class CapabilityRuntime:
             error = str(exc) or exc.__class__.__name__
             elapsed_ms = int((time.monotonic() - start) * 1000)
             decision = getattr(exc, "decision", None) or "failed"
+            error_event_id = str(uuid.uuid4())
             self._record(
                 WorkflowTraceEvent(
                     node=name,
@@ -339,12 +391,110 @@ class CapabilityRuntime:
                     decision=decision,
                     error=error,
                     elapsed_ms=elapsed_ms,
+                    phase="tool:result",
+                    severity="error",
+                    event_id=error_event_id,
+                    detail_refs=self._record_tool_error(
+                        spec,
+                        decision=decision,
+                        error=error,
+                        event_id=error_event_id,
+                    ),
                 )
             )
             return CapabilityResult(status="failed", error=error)
 
     def _record(self, event: WorkflowTraceEvent) -> None:
         self.trace_sink.record(event)
+
+    def _record_tool_payload(self, spec: CapabilitySpec, payload: Any, event_id: str | None = None) -> list[str]:
+        event_id = event_id or str(uuid.uuid4())
+        detail = self.observation.record_detail(
+            event_id=event_id,
+            kind="tool_payload",
+            payload={
+                "capability": spec.name,
+                "kind": spec.kind,
+                "payload": payload,
+            },
+        )
+        return [detail.detail_id] if detail else []
+
+    def _record_tool_result(
+        self,
+        spec: CapabilitySpec,
+        output: CapabilityResult,
+        *,
+        error: str | None = None,
+        event_id: str | None = None,
+    ) -> list[str]:
+        event_id = event_id or str(uuid.uuid4())
+        artifact_refs = [
+            {
+                "artifact_id": artifact.artifact_id,
+                "kind": artifact.kind,
+                "owner_node": artifact.owner_node or spec.name,
+                "source": artifact.source,
+            }
+            for artifact in output.artifacts
+        ]
+        detail = self.observation.record_detail(
+            event_id=event_id,
+            kind="tool_result",
+            payload={
+                "capability": spec.name,
+                "kind": spec.kind,
+                "status": output.status,
+                "output": output.output,
+                "error": output.error,
+                "artifact_refs": artifact_refs,
+                "metadata": output.metadata,
+            },
+        )
+        return [detail.detail_id] if detail else []
+
+    def _record_tool_error(
+        self,
+        spec: CapabilitySpec,
+        *,
+        decision: str,
+        error: str,
+        event_id: str | None = None,
+    ) -> list[str]:
+        event_id = event_id or str(uuid.uuid4())
+        detail = self.observation.record_detail(
+            event_id=event_id,
+            kind="tool_result",
+            payload={
+                "capability": spec.name,
+                "kind": spec.kind,
+                "status": decision,
+                "error": error,
+            },
+        )
+        return [detail.detail_id] if detail else []
+
+    def _record_artifact_previews(
+        self,
+        spec: CapabilitySpec,
+        output: CapabilityResult,
+        *,
+        event_id: str | None = None,
+    ) -> list[str]:
+        event_id = event_id or str(uuid.uuid4())
+        detail_refs: list[str] = []
+        for artifact in output.artifacts:
+            detail = self.observation.record_detail(
+                event_id=event_id,
+                kind="artifact_preview",
+                payload={
+                    "capability": spec.name,
+                    "artifact": artifact,
+                },
+            )
+            if detail:
+                detail_refs.append(detail.detail_id)
+        return detail_refs
 
     @staticmethod
     def _validate_payload(spec: CapabilitySpec, payload: Any) -> Any:
@@ -491,24 +641,38 @@ def format_trace_events(
             if len(rendered) > max_value_len:
                 rendered = rendered[: max_value_len] + "…"
             lines.append(f"   • {key}: {rendered}")
-    if usage is not None:
-        # Absent is not unknown: render the notional segment only when subscription events exist.
-        has_subscription = any(
-            getattr(event, "cost_class", "metered") == "subscription_notional"
-            for event in usage.events
-        )
-        notional_segment = (
-            f" / notional {_format_trace_cost(usage.notional_usd)}" if has_subscription else ""
-        )
-        lines.append(
-            f"— {usage.text_call_count} text / {usage.image_call_count} image / "
-            f"{usage.tool_call_count} tool calls, {usage.total_tokens} tokens, "
-            f"metered {_format_trace_cost(usage.metered_usd)}{notional_segment}"
-        )
+    footer = _format_trace_usage_footer(usage) if usage is not None else None
+    if footer is not None:
+        lines.append(footer)
     text = "\n".join(lines)
     if len(text) > max_total_len:
-        text = text[: max_total_len] + "\n…(trace truncated)"
+        if footer is None:
+            text = text[: max_total_len] + "\n…(trace truncated)"
+        else:
+            suffix = "\n…(trace truncated)\n" + footer
+            body_budget = max_total_len - len(suffix)
+            if body_budget > 0:
+                body = "\n".join(lines[:-1])
+                text = body[:body_budget].rstrip() + suffix
+            else:
+                text = suffix[-max_total_len:]
     return text
+
+
+def _format_trace_usage_footer(usage: WorkflowUsageSummary) -> str:
+    # Absent is not unknown: render the notional segment only when subscription events exist.
+    has_subscription = any(
+        getattr(event, "cost_class", "metered") == "subscription_notional"
+        for event in usage.events
+    )
+    notional_segment = (
+        f" / notional {_format_trace_cost(usage.notional_usd)}" if has_subscription else ""
+    )
+    return (
+        f"— {usage.text_call_count} text / {usage.image_call_count} image / "
+        f"{usage.tool_call_count} tool calls, {usage.total_tokens} tokens, "
+        f"metered {_format_trace_cost(usage.metered_usd)}{notional_segment}"
+    )
 
 
 def _format_trace_cost(value: Any) -> str:

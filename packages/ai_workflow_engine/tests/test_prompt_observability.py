@@ -8,7 +8,7 @@ from langchain_core.prompts import PromptTemplate
 
 from ai_workflow_engine import build_observation_graph, observation_graph_to_html
 from ai_workflow_engine.engine import InMemoryDetailSink
-from ai_workflow_engine.llm_protocol import ChatMessage, LLMRequest, LLMResponse
+from ai_workflow_engine.llm_protocol import ChatMessage, LLMRequest, LLMResponse, ToolCallRequest
 from ai_workflow_engine.prompt_capture import PromptCapturingLLMClient
 from ai_workflow_engine.viz import render_prompt_manifest
 from ai_workflow_engine.vision import ImageInput
@@ -60,7 +60,7 @@ def test_prompt_capturing_client_requires_shared_detail_sink():
         PromptCapturingLLMClient(inner, _CollectSink())
 
 
-async def test_prompt_capturing_client_records_digest_detail_then_delegates_by_default():
+async def test_prompt_capturing_client_records_compact_trace_without_pseudo_detail_by_default():
     sink = _CollectSink()
     details = InMemoryDetailSink()
     seen = {}
@@ -82,24 +82,20 @@ async def test_prompt_capturing_client_records_digest_detail_then_delegates_by_d
     # delegates unchanged
     assert response.text == "ok"
     assert seen["request"] is request
-    # recorded exactly one prompt event, labelled by node
-    assert len(sink.events) == 1
+    # recorded prompt + response events, labelled by node
+    assert len(sink.events) == 2
     event = sink.events[0]
     assert event.decision == "llm:prompt"
     assert event.node == "ask"
-    # default is digest-only: prompt text is not in the compact trace event
+    # default is compact trace only: prompt text is not in the event and no SHA-only detail is created.
     blob = event.model_dump_json()
     assert "prompt_digest" in blob
     assert "hello world" not in blob
     assert "be terse" not in blob
     assert "RAW_SECRET_BYTES" not in blob
     assert event.phase == "llm:request"
-    assert event.detail_refs
-    detail = details.details[0]
-    assert detail.detail_id == event.detail_refs[0]
-    assert detail.redaction_state == "digest_only"
-    assert detail.digest == event.metadata["prompt_digest"]
-    assert detail.text is None
+    assert event.detail_refs == []
+    assert details.details == []
 
 
 @pytest.mark.unit
@@ -131,3 +127,81 @@ async def test_prompt_capturing_client_can_capture_full_text_in_detail_only():
     assert event.detail_refs[0] in graph.details
     html = observation_graph_to_html(definition, graph)
     assert "hello world" in html
+
+
+async def test_prompt_capturing_client_records_llm_response_compact_trace_by_default():
+    sink = _CollectSink()
+    details = InMemoryDetailSink()
+    expected = LLMResponse(
+        text="model answer with SECRET",
+        model="unit-model",
+        output_tokens=7,
+        total_tokens=11,
+        tool_calls=[ToolCallRequest(call_id="call-1", name="lookup", arguments={"q": "SECRET"})],
+    )
+
+    async def inner(_request: LLMRequest) -> LLMResponse:
+        return expected
+
+    client = PromptCapturingLLMClient(inner, sink, detail_sink=details)
+    response = await client(
+        LLMRequest(messages=[ChatMessage(role="user", content="hello")], metadata={"agent_node": "ask"})
+    )
+
+    assert response is expected
+    response_event = sink.events[1]
+    assert response_event.decision == "llm:response"
+    assert response_event.phase == "llm:response"
+    assert response_event.detail_refs == []
+    assert details.details == []
+    blob = response_event.model_dump_json()
+    assert "model answer" not in blob
+    assert "SECRET" not in blob
+
+
+async def test_prompt_capturing_client_captures_response_text_in_detail_only():
+    sink = _CollectSink()
+    details = InMemoryDetailSink()
+
+    async def inner(_request: LLMRequest) -> LLMResponse:
+        return LLMResponse(text="visible answer")
+
+    client = PromptCapturingLLMClient(inner, sink, detail_sink=details, capture_text=True)
+    await client(LLMRequest(messages=[ChatMessage(role="user", content="hello")]))
+
+    response_event = sink.events[1]
+    response_detail = details.details[1]
+    assert "visible answer" not in response_event.model_dump_json()
+    assert "visible answer" in response_detail.text
+    assert response_detail.json_value["text"] == "visible answer"
+    assert response_detail.redaction_state == "none"
+
+
+async def test_prompt_capturing_client_records_error_response_then_reraises():
+    sink = _CollectSink()
+    details = InMemoryDetailSink()
+
+    class ModelDown(RuntimeError):
+        pass
+
+    expected = ModelDown("model unavailable")
+
+    async def inner(_request: LLMRequest) -> LLMResponse:
+        raise expected
+
+    client = PromptCapturingLLMClient(inner, sink, detail_sink=details, capture_text=True)
+
+    with pytest.raises(ModelDown) as raised:
+        await client(LLMRequest(messages=[ChatMessage(role="user", content="hello")]))
+
+    assert raised.value is expected
+    response_event = sink.events[1]
+    response_detail = details.details[1]
+    assert response_event.decision == "llm:response"
+    assert response_event.phase == "llm:response"
+    assert response_event.severity == "error"
+    assert response_event.error == "model unavailable"
+    assert response_event.detail_refs == [response_detail.detail_id]
+    assert response_detail.kind == "llm_response"
+    assert response_detail.redaction_state == "none"
+    assert response_detail.json_value["error"] == "model unavailable"

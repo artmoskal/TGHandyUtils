@@ -6,6 +6,7 @@ import pytest
 from pydantic import BaseModel
 
 from ai_workflow_engine import (
+    InMemoryDetailSink,
     LLMRequest,
     LLMResponse,
     StructuredLLMNode,
@@ -99,6 +100,33 @@ async def test_two_steps_use_their_declared_profiles_and_trace_proves_it():
     assert bindings["weak_step"]["model_used"] == "qwen2.5vl:3b"
     assert bindings["strong_step"]["model_profile_requested"] == "strong_planner"
     assert bindings["strong_step"]["model_used"] == "gpt-5.5"
+
+
+async def test_factory_structured_llm_node_emits_observation_details_without_wrapper():
+    details = InMemoryDetailSink()
+    node = _factory_node("observed_factory_node")
+
+    async def observed(ctx, payload):
+        return await node.run({"what": "observable work"})
+
+    engine = (
+        WorkflowEngineBuilder()
+        .with_detail_sink(details)
+        .with_detail_text_capture()
+        .register_capability("observed", observed, kind="llm")
+        .register_workflow(WorkflowBuilder("observed_factory").step("observed").build())
+        .build()
+    )
+
+    result = await engine.run("observed_factory", {})
+
+    assert result.status == "completed"
+    prompt_detail = next(detail for detail in details.details if detail.kind == "rendered_prompt")
+    response_detail = next(detail for detail in details.details if detail.kind == "llm_response")
+    assert prompt_detail.redaction_state == "none"
+    assert response_detail.redaction_state == "none"
+    assert "observable work" in (prompt_detail.text or "")
+    assert '"note": "done"' in (response_detail.text or "")
 
 
 async def test_absent_model_profile_keeps_default_behavior():

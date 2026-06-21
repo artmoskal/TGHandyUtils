@@ -7,6 +7,8 @@ from ai_workflow_engine import (
     AgentCapability,
     FullReplayMemory,
     ImageEvictingMemory,
+    InMemoryDetailSink,
+    InMemoryTraceSink,
     LLMAgentPlanner,
     LLMRequest,
     LLMResponse,
@@ -14,6 +16,8 @@ from ai_workflow_engine import (
     ToolCallRequest,
     ToolSpec,
     WEAK_MODEL_CLEANER,
+    WorkflowBuilder,
+    WorkflowEngineBuilder,
     build_llm_agent_capability,
     render_full_replay_messages,
 )
@@ -376,6 +380,99 @@ def test_full_replay_memory_matches_direct_history_renderer_byte_for_byte():
     assert via_memory[-1].tool_results[0].images[0].fingerprint() == direct[-1].tool_results[0].images[0].fingerprint()
 
 
+async def test_llm_agent_planner_capture_off_records_no_pseudo_detail():
+    trace = InMemoryTraceSink()
+    details = InMemoryDetailSink()
+    client = ScriptedLLM(LLMResponse(text='{"caption": "done"}'))
+    planner = _planner(client, trace_sink=trace, detail_sink=details)
+    context = _context()
+
+    with workflow_usage_scope(WorkflowUsageContext(context.run_context, context.usage_summary, WorkflowBudget())):
+        decision = await planner.next_step(
+            context,
+            AgentRunRequest(prompt="SECRET prompt", allowed_tools=[]),
+            [],
+        )
+
+    assert decision.action == "finish"
+    event = next(item for item in trace.events if item.phase == "memory:projection")
+    assert event.detail_refs == []
+    assert event.metadata["memory_mode"] == "FullReplayMemory"
+    assert event.metadata["message_count"] == 2
+    assert details.details == []
+    assert "SECRET prompt" not in event.model_dump_json()
+
+
+async def test_llm_agent_planner_memory_projection_full_capture_fingerprints_images():
+    trace = InMemoryTraceSink()
+    details = InMemoryDetailSink()
+    client = ScriptedLLM(LLMResponse(text='{"caption": "done"}'))
+    planner = _planner(
+        client,
+        trace_sink=trace,
+        detail_sink=details,
+        capture_detail_text=True,
+    )
+    context = _context()
+    history = [
+        AgentToolStep(
+            call=AgentToolCall(tool_name="screenshot", payload={}, rationale="capture"),
+            status="accepted",
+            output=ImageInput(
+                source="base64",
+                data="c2VjcmV0LWJ5dGVz",
+                media_type="image/png",
+                role="screenshot",
+            ),
+        )
+    ]
+
+    with workflow_usage_scope(WorkflowUsageContext(context.run_context, context.usage_summary, WorkflowBudget())):
+        decision = await planner.next_step(
+            context,
+            AgentRunRequest(prompt="Inspect image.", allowed_tools=[]),
+            history,
+        )
+
+    assert decision.action == "finish"
+    detail = next(item for item in details.details if item.kind == "memory_projection")
+    assert detail.redaction_state == "none"
+    assert detail.text is not None
+    assert "c2VjcmV0LWJ5dGVz" not in detail.text
+    assert "fingerprint" in detail.text
+
+
+async def test_llm_agent_planner_records_prompt_and_response_details_when_full_capture_enabled():
+    trace = InMemoryTraceSink()
+    details = InMemoryDetailSink()
+    client = ScriptedLLM(LLMResponse(text='{"caption": "done"}', model="unit-agent", total_tokens=5))
+    planner = _planner(
+        client,
+        trace_sink=trace,
+        detail_sink=details,
+        capture_detail_text=True,
+    )
+    context = _context()
+
+    with workflow_usage_scope(WorkflowUsageContext(context.run_context, context.usage_summary, WorkflowBudget())):
+        decision = await planner.next_step(
+            context,
+            AgentRunRequest(prompt="Agent prompt", allowed_tools=[]),
+            [],
+        )
+
+    assert decision.action == "finish"
+    kinds = [detail.kind for detail in details.details]
+    assert "rendered_prompt" in kinds
+    assert "llm_response" in kinds
+    prompt_detail = next(detail for detail in details.details if detail.kind == "rendered_prompt")
+    response_detail = next(detail for detail in details.details if detail.kind == "llm_response")
+    assert prompt_detail.redaction_state == "none"
+    assert response_detail.redaction_state == "none"
+    assert "Agent prompt" in (prompt_detail.text or "")
+    assert '"caption": "done"' in (response_detail.text or "")
+
+
 def test_image_evicting_memory_keeps_recent_image_refs_and_audits_evicted_turns():
     old_ref = EvidenceRef(
         ref_id="shot-old",
@@ -683,6 +780,29 @@ async def test_build_llm_agent_capability_joins_the_shared_trace_sink():
     assert result.status in ("accepted", "partial")
     assert any(e.node == "probe_tool" and e.decision == "start" for e in shared_sink.events)
     assert any(e.node == "probe_tool" and e.decision == "accepted" for e in shared_sink.events)
+
+
+def test_engine_rejects_agent_capability_with_private_detail_runtime():
+    async def scripted_llm(_request: LLMRequest) -> LLMResponse:
+        return LLMResponse(text='{"done": true}')
+
+    registry = CapabilityRegistry()
+    private_runtime = CapabilityRuntime(registry)
+    capability = build_llm_agent_capability(
+        scripted_llm,
+        registry,
+        allowed_tools=[],
+        runtime=private_runtime,
+    )
+
+    with pytest.raises(ValueError, match="observability sink mismatch"):
+        (
+            WorkflowEngineBuilder()
+            .with_detail_sink(InMemoryDetailSink())
+            .register_capability_spec(capability.spec, capability)
+            .register_workflow(WorkflowBuilder("agent_private_sink").step(capability.spec.name).build())
+            .build()
+        )
 
 
 async def test_agent_request_metadata_passes_through_to_llm_callable():

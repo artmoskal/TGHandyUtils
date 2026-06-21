@@ -1,18 +1,21 @@
 # Engine Observability — Implementation Plan (buildable spec for codex)
 
-Status: buildable PLAN, but not execution-ready until the sequencing/preflight items in §0 are closed.
+Status: historical implementation plan; superseded by the accepted R0-R6 rework and implemented
+before `engine-v0.5.0` (see §8 closeout and
+`2026-06-21-observability-finish-plan.md`). API-backed Anki validation was run on 2026-06-21.
 Created: 2026-06-21 02:12:44 WEST
 Scope: `packages/ai_workflow_engine` — observation event/detail contract, projector, renderers, and the
 runtime viewer definition. Rationale + discussion: `2026-06-21-engine-observability-design.md` (read it
 for the "why"; this doc is the "what/how"). Permanent home after build: a new engine
 `docs/observability.md` + spec §Observability (Track U, user-approved).
 
-## 0. Prerequisites & sequencing (READ FIRST)
-- **This is post-tag work.** Per the design doc's Implementation Stance, do NOT start until the engine
-  memory work is committed and tagged and the 90-file product/engine megapile is untangled
-  (`2026-06-20-engine-review-followups.md`). Observability must not pile onto that uncommitted tree.
-- **Land on a clean base, in its own commits.** This is an engine-only feature; it must not be braided
-  with the product DI refactor (Track P).
+## 0. Prerequisites & sequencing (historical)
+- **Superseded by user approval on 2026-06-21.** This plan originally treated observability as post-tag
+  work. Artem explicitly approved the R0-R6 rework before the engine tag, and that accepted plan is now
+  the controlling record.
+- **Commit boundary still applies.** Keep observability in scoped engine/viewer/product-Anki
+  integration commits and do not sweep unrelated product DI refactor or generated review artifacts into
+  the release.
 - **Scope — DECIDED (Artem, 2026-06-21 02:17:10 WEST): build ALL phases O0–O5** (D-obs-2 "do all").
   The live viewer (O4) is **in scope** as a **separate standalone artifact** (D-obs-1), not engine core
   and not embedded in a product. `phase`/`severity`/`run_id` are **in scope from O0** (D-obs-3 — the
@@ -20,15 +23,15 @@ for the "why"; this doc is the "what/how"). Permanent home after build: a new en
 - **Milestone (D-obs-3):** observability ships in the **"larger build"** and must be **done + validated
   on the Anki generation workflow** before Anki testing (see Gate O-Anki). The immediate engine-memory
   tag for MageQA is a *separate, earlier* milestone — observability rides the larger build, not that tag.
-- **Code-grounded preflight before O0/O4:** codex verified the current code on 2026-06-21. Two seams
-  need explicit implementation choices:
-  - `run_id` propagation is not automatic today. Current state has two context ids:
-    `engine_context.run_context.workflow_id` is seeded from the workflow definition id, while
-    `WorkflowRunner` creates a per-run UUID at `workflow_context.workflow_id` for usage/logging. Most
-    `WorkflowTraceEvent`s are emitted by capability/node code through `TraceSink` without automatic
-    run-context enrichment. O0.4 must add a small trace-enrichment seam or another explicit context
-    propagation mechanism; do not assume adding a field alone threads it everywhere, and do not use the
-    definition id as the viewer run id.
+- **Code-grounded preflight before O0/O4:** codex verified the current code on 2026-06-21; Claude
+  corrected one stale root-cause claim later the same day. Two seams need explicit implementation
+  choices:
+  - `run_id` propagation into trace events is implemented and uses a per-run UUID: `builder.py`
+    creates `run_context.workflow_id` from `goal.metadata["run_id"]` or `uuid4()`, and
+    `_enrich_trace_event()` copies that value into `WorkflowTraceEvent.run_id`. The earlier concern
+    that this field reused the workflow definition id was false; the definition id is carried as
+    `workflow_type`. Remaining multi-run work is not ID generation; it is viewer/projector filtering,
+    detail scoping, and run-local result traces.
   - live usage delivery is not present today. Usage is accumulated in `WorkflowUsageSummary` and logged
     from `usage.record_usage_event`; only trace events have `TraceSink`/`AsyncQueueTraceSink`.
     O1 can project usage post-run from `WorkflowRunResult.usage`; O4 live cost updates require a
@@ -48,9 +51,12 @@ for the "why"; this doc is the "what/how"). Permanent home after build: a new en
    a parallel `ObservationEvent` (would duplicate node/attempt/decision/metadata). [agreed; supersedes
    the design doc's `ObservationEvent` block.]
 4. **Byte-free.** Raw image/audio/video bytes never enter trace OR detail records — fingerprints,
-   digests, or `artifact_id` only. (Matches the existing engine privacy stance + `PromptCapturingLLMClient`.)
-5. **Heavy/private payloads behind detail refs**, gated by privacy + an explicit debug-capture flag.
-   The default trace payload stays small.
+   digests, or `artifact_id` only. This is a binary/log-usability rule, not a license to replace
+   ordinary text/JSON observability with hashes.
+5. **Compact trace, full-fidelity detail.** Heavy payloads live behind `detail_refs`, not inside trace
+   metadata. When explicit internal investigation capture is enabled, details store the full byte-free
+   source (`text`/`json_value`) plus digest. Digest-only is reserved for capture-disabled,
+   export/redaction, or explicit product-policy modes; it is not the internal debug default.
 6. **Backward compatible.** Existing `TraceSink` consumers and `WorkflowTraceEvent` fields keep working;
    all new fields are optional with safe defaults.
 7. **Generic by default.** Renderers tolerate unknown `phase`/detail `kind` and display generically, so
@@ -70,18 +76,21 @@ Add, all optional/defaulted (backward compatible):
 - `event_id: str = Field(default_factory=lambda: str(uuid4()))` — stable id for detail correlation.
 - `detail_refs: list[str] = []` — ids of `ObservationDetail` records attached to this event.
 - **(O0, in scope — D-obs-3)** `phase: Optional[str] = None` — lifecycle classifier
-  (`workflow:start|node:start|llm:request|tool:request|node:decision|artifact:created|node:end|
-  workflow:end|error`); `severity: Literal["debug","info","warning","error"] = "info"`;
+  (`workflow:start|node:start|llm:request|llm:response|tool:request|tool:result|planner:output|
+  memory:projection|node:decision|artifact:created|node:end|workflow:end|error`);
+  `severity: Literal["debug","info","warning","error"] = "info"`;
   `run_id: Optional[str] = None` (multi-run persistence demux for the separate viewer artifact).
 Keep `WorkflowUsageEvent` unchanged.
 
 ### 2.2 New `ObservationDetail` (`models.py`)
-Heavy/private payload behind a ref:
+Expandable payload behind a ref:
 `detail_id`, `event_id` (links to the trace event), `kind`
 (`rendered_prompt|llm_response|tool_payload|tool_result|artifact_preview|planner_output|memory_projection`),
 `privacy` (`public|internal|confidential|secret`), `redaction_state` (`none|redacted|digest_only`),
 `content_type`, `text: str|None`, `json: dict|None`, `artifact_id: str|None`, `digest: str|None`.
-Invariant: no raw media bytes — `artifact_id`/`digest` only for binary.
+Invariant: no raw media bytes — `artifact_id`/`digest` only for binary. For internal investigation
+capture, `redaction_state="none"` and `text`/`json` are populated with the byte-free source. The digest
+is correlation/integrity metadata, not the investigation payload.
 
 ### 2.3 New `DetailSink` (`engine/capabilities.py`, mirrors `TraceSink`)
 `Protocol` + `InMemoryDetailSink` + `JsonlDetailSink`. `record(detail: ObservationDetail) -> None`.
@@ -104,7 +113,8 @@ usage/details and unknown phase/kind.
 Change WHAT it records (keep the API): emit a compact `WorkflowTraceEvent`
 (`phase="llm:request"`, summary, `metadata={template_id?, model, input_tokens_estimate, prompt_digest}`)
 + an `ObservationDetail(kind="rendered_prompt", privacy=..., redaction_state=...)` whose full `text` is
-populated only when debug capture is explicitly enabled (else `digest_only`). Stays byte-free.
+populated when internal debug capture is explicitly enabled. With capture disabled, do not present a
+SHA-only record as useful drill-down. Stays byte-free.
 
 ## 3. Phases, tasks (2–4h), AC, tests
 
@@ -134,10 +144,12 @@ populated only when debug capture is explicitly enabled (else `digest_only`). St
 
 ### Phase O2 — Migrate prompt capture to event + detail
 - **O2.1 (3-4h)** `PromptCapturingLLMClient` emits compact event + `ObservationDetail(rendered_prompt)`;
-  full text gated by an explicit `capture_text: bool` (default False → digest_only).
-  AC: byte-free; with `capture_text=False` only a digest is stored; with `True` full text in the detail,
-  never in the trace event; existing wrapper tests adapted.
-- **Gate O2:** `test_prompt_observability.py` updated + green; no raw bytes; default is digest-only.
+  full text gated by an explicit `capture_text: bool`.
+  AC: byte-free; with `capture_text=True`, full rendered prompt text is in the detail and never in the
+  trace event; with `False`, compact trace metadata/digest remains but the UI must not imply full
+  drill-down exists; existing wrapper tests adapted.
+- **Gate O2:** `test_prompt_observability.py` updated + green; no raw bytes; full text only appears
+  under explicit capture.
 
 ### Phase O3 — Static renderers over ObservationGraph
 - **O3.1 (3-4h)** `workflow_to_mermaid`/`workflow_to_html` accept an `ObservationGraph` overlay
@@ -172,24 +184,27 @@ versioned separately, depending only on the engine's public observability contra
 - **Gate O4:** engine-side contract test green (`./test.sh`); the viewer artifact has its own harness and
   ships separately from the engine.
 
-### Phase O5 — Privacy/redaction policy + permanent docs
-- **O5.1 (2-3h)** Enforce privacy defaults: details default `digest_only`; `confidential`/`secret`
-  require explicit opt-in; raw media → artifact/digest. AC: default run leaks no full prompt text.
+### Phase O5 — Retention/export policy + permanent docs
+- **O5.1 (2-3h)** Enforce detail-capture policy: internal investigation capture stores full byte-free
+  source plus digest; disabled capture does not masquerade as useful drill-down; product/export
+  redaction is an explicit projection or policy. Raw media → artifact/digest always. AC: ordinary trace
+  events stay compact; investigation details are full-fidelity when enabled; export/redaction behavior
+  is explicit and tested if implemented.
 - **O5.2 (2-4h, USER-APPROVED)** Migrate durable docs (Track U): new `docs/observability.md` +
   spec §Observability. AC: docs state engine-vs-consumer split, the contract, and the debug-gate.
-- **Gate O5:** privacy tests green; permanent-doc edits only after explicit user approval.
+- **Gate O5:** capture/retention tests green; permanent-doc edits only after explicit user approval.
 
 ### Gate O-Anki — larger-build validation on the REAL Anki workflow (the done-trigger, D-obs-3)
 Observability is "done" for the larger build only when it is demonstrated end-to-end on the live Anki
 generation workflow (`services/content/anki_generation_graph.py`, which already runs on the engine).
 - **O-Anki.1 (2-3h)** Run the Anki workflow with trace + usage + detail capture enabled; assert the
   projector produces an `ObservationGraph` with the Anki nodes, their decisions, per-node usage/cost, and
-  `rendered_prompt` details (digest by default, full text when debug-enabled). Byte-free verified.
+  `rendered_prompt` details (full byte-free source when debug-enabled). Byte-free verified.
 - **O-Anki.2 (2-3h)** Point the separate `ai_workflow_viewer` at a live Anki run; confirm levels 0–4
   render (topology → timeline → cost → prompts/outputs) and update live.
-- **Gate O-Anki (milestone):** static + live viewer both show a real Anki run correctly; no raw bytes in
-  trace/detail/JSONL; default capture leaks no full prompt text. This gate = observability ready for
-  Anki testing in the larger build.
+- **Gate O-Anki (milestone):** static + live viewer both show a real Anki run correctly; no raw media
+  bytes in trace/detail/JSONL; internal debug capture exposes full byte-free prompt/output/tool
+  details. This gate = observability ready for Anki testing in the larger build.
 
 ## 4. Viewer Definition (all planning attributes)
 **Purpose:** drill from a topology view into per-node execution, cost, prompts, and outputs — live or
@@ -200,22 +215,24 @@ post-hoc. **Engine ships the data; the live server/UI is a consumer.**
 | L0 Topology | nodes, transition policies, branch labels, fanout/subworkflow/evaluate/planner shapes; active node; terminal status | `WorkflowDefinition` + trace status | O3 (static) / O4 (live) |
 | L1 Timeline | per-node attempts, branch decisions, retry/retrace/fallback/fast-forward, elapsed, severity | trace events | O1/O3 |
 | L2 Calls & cost | capability/tool calls, artifact ids, usage tokens + cost (metered vs notional), memory projection names | usage events + trace | O1/O3 |
-| L3 Prompt/output | expandable rendered prompt + LLM output, tool payload/result | `ObservationDetail` via `detail_refs` (debug-enabled) | O2/O4 |
-| L4 Raw investigation | full payloads, artifact previews | details, gated by privacy/debug | O4/O5 |
+| L3 Prompt/output | expandable rendered prompt + LLM output, tool payload/result | `ObservationDetail` via `detail_refs` (debug-enabled, full byte-free source) | O2/O4 |
+| L4 Raw investigation | full payloads, artifact previews | details, full byte-free source under internal capture; redaction only as explicit product/export policy | O4/O5 |
 
 **Live-update mechanics (O4):** engine emits trace events through `TraceSink`/`JsonlTraceSink`/
 `AsyncQueueTraceSink`; detail records travel through the new `DetailSink`; usage remains a separate
 stream and needs the O4.0 decision if live cost updates are required. The **separate
 `ai_workflow_viewer` artifact** consumes those streams → browser updates node state incrementally →
-detail panes lazy-load `detail_ref` payloads on expand. **Tech:** static = self-contained HTML + CDN
+detail panes lazy-load `detail_ref` payloads on expand. Internal capture details must contain the raw
+byte-free source, not only digests. **Tech:** static = self-contained HTML + CDN
 Mermaid (engine-side, as today); live = the **separate `ai_workflow_viewer` package/app** (SSE/WS server
 reading queues/JSONL, plus a JS client). **Interactions:** click node → L1/L2; expand → L3 (if debug);
-expand raw → L4 (if privacy allows). **Non-goals:** token streaming is NOT an engine feature (BYO LLM
+expand raw → L4 (full byte-free source under internal capture; redacted/export views are separate
+projections). **Non-goals:** token streaming is NOT an engine feature (BYO LLM
 client concern); the **engine** ships no HTTP server — that lives in the viewer artifact.
 
 ## 5. Test strategy
 - **Free/default (`./test.sh unit`):** all O0–O3 + O5.1 — model validation, sink round-trips, projector
-  over recorded fixtures, renderer golden outputs, byte-free/privacy assertions, backward-compat. New
+  over recorded fixtures, renderer golden outputs, byte-free/full-fidelity assertions, backward-compat. New
   files: `tests/test_observability.py`, extend `tests/test_prompt_observability.py`, `tests/test_viz*`.
 - **Gated/consumer:** O4.2 live SSE/UI lives in the consumer repo with its own harness — not in engine
   default suite.
@@ -226,7 +243,7 @@ client concern); the **engine** ships no HTTP server — that lives in the viewe
 - **R1 — two event types creep:** if anyone reintroduces `ObservationEvent`, kill it — extend
   `WorkflowTraceEvent`. (Invariant 3.)
 - **R2 — fat events:** keep full prompt/output in details, never inline in trace metadata by default
-  (O2 migration). The current `PromptCapturingLLMClient` inline-text behavior is debug-only until O2.
+  (O2 migration). Do not "solve" fat events by storing only SHA digests in investigation details.
 - **R3 — engine scope creep into a web server:** the live server/UI is consumer-side (invariant 8).
 - **R4 — cycle:** `observability.py` must import only models/workflow (+ capabilities for sinks), never
   executor — keep it a leaf projector.
@@ -247,5 +264,53 @@ client concern); the **engine** ships no HTTP server — that lives in the viewe
 
 No open **architecture** decisions remain on this plan: one trace event type, separate usage stream,
 detail refs for heavy/private payloads, separate viewer artifact. Remaining execution gates before code:
-land on a clean post-tag base, close the `run_id` propagation and live-usage delivery preflights above,
-confirm the viewer artifact location/harness before O4.2, then build O0→O5 + viewer and pass Gate O-Anki.
+land on a clean post-tag base, close the live-usage delivery preflight above, keep the corrected
+per-run-id understanding from §0, confirm the viewer artifact location/harness before O4.2, then build
+O0→O5 + viewer and pass Gate O-Anki.
+
+## 8. Codex Implementation Closeout (2026-06-21 12:08:06 WEST)
+
+Status: OG0-O6 implemented and unit-gated; static Gate O-Anki product-graph proof completed.
+
+Resolved in code:
+- `llm_response` capture now records success and error details linked from `llm:response` events.
+- Tool payload/result, planner output, memory projection, and artifact preview producers now use shared
+  observation-detail helpers instead of copy-pasted digest/detail logic.
+- `WorkflowRunResult.trace` is run-local. The shared sink can still hold multiple runs, but result
+  envelopes no longer feed prior runs into static observation graphs.
+- `ObservationDetail.run_id` is stamped at capture time; the projector renders only details referenced
+  by selected-run events, and the JSONL viewer fails loudly if a multi-run source is opened without a
+  selected `run_id`.
+- Generic byte-free projection now walks nested Pydantic fields, so full memory capture fingerprints
+  nested `ImageInput` values instead of serializing base64 image payloads.
+- Byte-free projection also fingerprints base64/data-URI strings and binary-looking string fields.
+- Tool payload/result/artifact details are attached to the normal capability start/result trace events,
+  avoiding duplicate timeline rows. **Superseded correction:** the implemented "hard digest-only"
+  behavior is not the accepted internal investigation contract; capture-enabled internal details must
+  be full byte-free source plus digest, with any product/export redaction handled explicitly outside
+  the core debug view.
+- `AnkiGenerationGraph` accepts an optional shared `detail_sink` plus explicit full-detail capture,
+  passes both to the engine runtime, and includes resolved details in `last_observation_graph()`.
+- `test-results/anki-observation.html` was generated from the real engine-backed Anki workflow shape
+  with mocked card extraction; it shows 26 nodes, 43 timeline rows, and 26 resolved `tool_payload` /
+  `tool_result` details.
+
+Test evidence:
+- Focused observability/viewer wrapper: `154 passed`.
+- Focused observability/engine/agent/Anki wrapper after Claude bug pass: `181 passed`.
+- Rework gates via wrapper: R1 `16 passed`; R2 `119 passed`; R3 `45 passed`; R4 `14 passed`;
+  R5 free Anki `57 passed`; R5 paid Anki `1 passed`; R6 broad unit `785 passed, 144 deselected`.
+- Commands were run via `./test.sh` only.
+
+Validated after the rework:
+- **Gate O-Anki API/live:** the paid provider-backed Anki observation test ran with
+  `ALLOW_PAID_TESTS=1` through `./test.sh` and produced
+  `infra/test-results/anki-runtime-observation.html`.
+- **SSE/live cursor hardening:** current viewer polling is acceptable as a debug stub; production live
+  streaming still needs per-file offsets or stable event/detail-id cursors.
+- **Middle redaction mode:** a future `redacted` export/investigation projection can be added when a
+  named consumer needs useful prompt/output text without full persistence. It must not replace the
+  full-fidelity internal debug capture contract.
+- **Static `workflow_to_html()` / Mermaid label escaping:** runtime observation HTML escapes the Mermaid
+  block; the older static workflow renderer still needs a separate viz-hardening pass if generated or
+  untrusted labels are fed into it.

@@ -58,6 +58,7 @@ from services.content.anki_image_prompt_policy import AnkiImagePromptPolicy, Ima
 from ai_workflow_engine.engine import (
     CapabilityRegistry,
     CapabilityRuntime,
+    DetailSink,
     InMemoryTraceSink,
     RuntimePlanCompiler,
     WorkflowRunner,
@@ -129,6 +130,8 @@ class AnkiGenerationGraph:
         style_reference_images: Optional[Sequence[str]] = None,
         style_reference_version: str = "",
         generated_media_root: str = DEFAULT_GENERATED_MEDIA_ROOT,
+        detail_sink: Optional[DetailSink] = None,
+        capture_observation_detail_text: bool = False,
     ):
         self.anki_card_service = anki_card_service
         self.runner = runner or WorkflowRunner(config=getattr(anki_card_service, "config", None))
@@ -169,8 +172,15 @@ class AnkiGenerationGraph:
         self.style_reference_version = style_reference_version
         self.generated_media_root = generated_media_root
         self.capability_trace_sink = InMemoryTraceSink()
+        self.detail_sink = detail_sink
+        self.capture_observation_detail_text = capture_observation_detail_text
         self.capability_registry = CapabilityRegistry()
-        self.capability_runtime = CapabilityRuntime(self.capability_registry, self.capability_trace_sink)
+        self.capability_runtime = CapabilityRuntime(
+            self.capability_registry,
+            self.capability_trace_sink,
+            detail_sink=self.detail_sink,
+            capture_detail_text=self.capture_observation_detail_text,
+        )
         self.last_run_state: Optional[AnkiGraphState] = None
         self.last_run_result: Any = None
         # The Anki workflow now runs on the reusable executable engine (no product-owned graph).
@@ -261,7 +271,12 @@ class AnkiGenerationGraph:
         trace_events = list(self.last_run_state.get("trace", []))
         trace_events.extend(getattr(self.last_run_result, "trace", []) or [])
         usage_summary = getattr(self.last_run_result, "usage", None)
-        return build_observation_graph(definition, trace_events, usage_summary or ())
+        return build_observation_graph(
+            definition,
+            trace_events,
+            usage_summary or (),
+            self._observation_details(),
+        )
 
     def save_last_observation_html(self, path: str, *, title: Optional[str] = None) -> str:
         """Write a static inspection page for the most recent Anki run."""
@@ -366,12 +381,19 @@ class AnkiGenerationGraph:
         engine = WorkflowEngine(
             registry=self.capability_registry,
             trace_sink=self.capability_trace_sink,
+            detail_sink=self.detail_sink,
+            capture_detail_text=self.capture_observation_detail_text,
         )
         # Reuse the product runner so usage budget + recursion handling track app config.
         engine.executor.runner = self.runner
         engine.register_workflow(self._anki_workflow_definition(), profile=self._workflow_profile())
         self._workflow_engine = engine
         return engine
+
+    def _observation_details(self) -> list[Any]:
+        if self.detail_sink is None:
+            return []
+        return list(getattr(self.detail_sink, "details", []) or [])
 
     def _workflow_profile(self) -> WorkflowProfile:
         config = getattr(self.anki_card_service, "config", None)
@@ -485,42 +507,171 @@ class AnkiGenerationGraph:
         from ai_workflow_engine.workflow import END, Transition, WorkflowDefinition, WorkflowNode
 
         steps = [
-            "parse_directives", "plan_image_assets", "plan_card_type",
-            "prepare_text_scenario", "prepare_cloze_scenario", "prepare_visual_scenario",
-            "validate_text_scenario", "validate_cloze_scenario", "validate_visual_scenario",
-            "generate_image", "generate_voice", "render_text_or_cloze", "render_visual",
-            "validate_rendered_cards", "evaluate_rendered_cards", "repair_rendered_cards",
-            "fallback_to_text", "package_cards",
+            (
+                "parse_directives",
+                "Parse message directives",
+                "Parse message directives. Extract user flags, remove control text, and normalize Anki constraints.",
+            ),
+            (
+                "plan_image_assets",
+                "Plan image usage",
+                "Plan image usage. Decide whether uploaded media is ignored, reused, referenced, or generated.",
+            ),
+            (
+                "plan_card_type",
+                "Plan card type and count",
+                "Plan card type and count. Choose basic, cloze, or visual cards before scenario work starts.",
+            ),
+            (
+                "prepare_text_scenario",
+                "Prepare basic-card scenario",
+                "Prepare basic-card scenario. Build the source and guidance used by the text renderer.",
+            ),
+            (
+                "prepare_cloze_scenario",
+                "Prepare cloze scenario",
+                "Prepare cloze scenario. Build deletion strategy and source guidance for cloze cards.",
+            ),
+            (
+                "prepare_visual_scenario",
+                "Prepare visual scenario",
+                "Prepare visual scenario. Build visual-card structure and media requirements.",
+            ),
+            (
+                "validate_text_scenario",
+                "Validate basic-card scenario",
+                "Validate basic-card scenario. Check that text-card planning is renderable.",
+            ),
+            (
+                "validate_cloze_scenario",
+                "Validate cloze scenario",
+                "Validate cloze scenario. Check that cloze planning is renderable.",
+            ),
+            (
+                "validate_visual_scenario",
+                "Validate visual scenario",
+                "Validate visual scenario. Check visual-card planning and media needs.",
+            ),
+            (
+                "generate_image",
+                "Generate image asset",
+                "Generate image asset. Create local visual media when the plan requires new imagery.",
+            ),
+            (
+                "generate_voice",
+                "Generate voice asset",
+                "Generate voice asset. Add pronunciation audio when language-voice directives request it.",
+            ),
+            (
+                "render_text_or_cloze",
+                "Render basic or cloze cards",
+                "Render basic or cloze cards. Materialize final Anki card text from the selected scenario.",
+            ),
+            (
+                "render_visual",
+                "Render visual cards",
+                "Render visual cards. Materialize final Anki cards with planned visual media.",
+            ),
+            (
+                "validate_rendered_cards",
+                "Validate rendered cards",
+                "Validate rendered cards. Ensure cards exist and have usable front/back content.",
+            ),
+            (
+                "evaluate_rendered_cards",
+                "Evaluate final quality",
+                "Evaluate final quality. Ask the quality evaluator whether to accept, retry, repair, or fallback.",
+            ),
+            (
+                "repair_rendered_cards",
+                "Prepare render repair",
+                "Prepare render repair. Feed evaluator guidance back into the next render attempt.",
+            ),
+            (
+                "fallback_to_text",
+                "Fallback to text cards",
+                "Fallback to text cards. Produce a safe basic-card set when richer paths fail.",
+            ),
+            (
+                "package_cards",
+                "Package cards",
+                "Package cards. Write the final Anki package artifacts for delivery.",
+            ),
         ]
         branches = {
             "route_card_kind": {
-                "basic": "prepare_text_scenario",
-                "cloze": "prepare_cloze_scenario",
-                "visual_basic": "prepare_visual_scenario",
+                "title": "Choose card type branch",
+                "description": "Choose card type branch. Sends the run to basic, cloze, or visual scenario preparation.",
+                "labels": {
+                    "basic": ("prepare_text_scenario", "Use ordinary front/back cards."),
+                    "cloze": ("prepare_cloze_scenario", "Use cloze-deletion cards."),
+                    "visual_basic": ("prepare_visual_scenario", "Use visual cards."),
+                },
             },
             "route_text_validation": {
-                "valid": "render_text_or_cloze", "retry": "prepare_text_scenario", "fallback": "fallback_to_text",
+                "title": "Route basic-card validation",
+                "description": "Route basic-card validation. Continue, retry planning, or fall back to safer text cards.",
+                "labels": {
+                    "valid": ("render_text_or_cloze", "Scenario can render."),
+                    "retry": ("prepare_text_scenario", "Revise the basic-card scenario."),
+                    "fallback": ("fallback_to_text", "Stop retrying and build safe text cards."),
+                },
             },
             "route_cloze_validation": {
-                "valid": "render_text_or_cloze", "retry": "prepare_cloze_scenario", "fallback": "fallback_to_text",
+                "title": "Route cloze validation",
+                "description": "Route cloze validation. Continue, retry planning, or fall back to safer text cards.",
+                "labels": {
+                    "valid": ("render_text_or_cloze", "Scenario can render."),
+                    "retry": ("prepare_cloze_scenario", "Revise the cloze scenario."),
+                    "fallback": ("fallback_to_text", "Stop retrying and build safe text cards."),
+                },
             },
             "route_visual_validation": {
-                "render": "render_visual", "generate": "generate_image",
-                "retry": "prepare_visual_scenario", "fallback": "fallback_to_text",
+                "title": "Route visual validation",
+                "description": "Route visual validation. Render, generate media, retry planning, or fall back.",
+                "labels": {
+                    "render": ("render_visual", "Visual scenario is ready to render."),
+                    "generate": ("generate_image", "Generate required visual media first."),
+                    "retry": ("prepare_visual_scenario", "Revise the visual scenario."),
+                    "fallback": ("fallback_to_text", "Stop visual path and build safe text cards."),
+                },
             },
-            "route_image_generation": {"valid": "render_visual", "fallback": "fallback_to_text"},
-            "route_rendered_validation": {"valid": "evaluate_rendered_cards", "fallback": "fallback_to_text"},
+            "route_image_generation": {
+                "title": "Route image generation result",
+                "description": "Route image generation result. Continue with visual rendering or fall back.",
+                "labels": {
+                    "valid": ("render_visual", "Generated media is ready."),
+                    "fallback": ("fallback_to_text", "Generated media failed or was unavailable."),
+                },
+            },
+            "route_rendered_validation": {
+                "title": "Route rendered-card validation",
+                "description": "Route rendered-card validation. Continue to quality evaluation or fall back.",
+                "labels": {
+                    "valid": ("evaluate_rendered_cards", "Rendered cards are structurally usable."),
+                    "fallback": ("fallback_to_text", "Rendered cards are unusable; fall back."),
+                },
+            },
             "route_quality_evaluation": {
-                "valid": "package_cards",
-                "retry_card_plan": "plan_card_type",
-                "repair_render": "repair_rendered_cards",
-                "retry_text_scenario": "prepare_text_scenario",
-                "retry_cloze_scenario": "prepare_cloze_scenario",
-                "retry_visual_scenario": "prepare_visual_scenario",
-                "fallback": "fallback_to_text",
+                "title": "Route quality decision",
+                "description": "Route quality decision. Accept, repair, retry an earlier planner, or fall back.",
+                "labels": {
+                    "valid": ("package_cards", "Quality accepted; package cards."),
+                    "retry_card_plan": ("plan_card_type", "Return to card-set planning."),
+                    "repair_render": ("repair_rendered_cards", "Repair the current rendered card set."),
+                    "retry_text_scenario": ("prepare_text_scenario", "Return to basic-card scenario planning."),
+                    "retry_cloze_scenario": ("prepare_cloze_scenario", "Return to cloze scenario planning."),
+                    "retry_visual_scenario": ("prepare_visual_scenario", "Return to visual scenario planning."),
+                    "fallback": ("fallback_to_text", "Use safe fallback cards."),
+                },
             },
             "route_render_repair": {
-                "render_text_or_cloze": "render_text_or_cloze", "render_visual": "render_visual",
+                "title": "Route render repair",
+                "description": "Route render repair. Send repaired state to the right renderer.",
+                "labels": {
+                    "render_text_or_cloze": ("render_text_or_cloze", "Re-render text or cloze cards."),
+                    "render_visual": ("render_visual", "Re-render visual cards."),
+                },
             },
         }
         sequential = [
@@ -543,9 +694,28 @@ class AnkiGenerationGraph:
             ("fallback_to_text", "validate_rendered_cards"),
             ("package_cards", END),
         ]
-        nodes = [WorkflowNode(id=name, kind="step", capability=name) for name in steps]
+        nodes = [
+            WorkflowNode(
+                id=name,
+                kind="step",
+                capability=name,
+                title=title,
+                description=description,
+            )
+            for name, title, description in steps
+        ]
         for bid, bmap in branches.items():
-            nodes.append(WorkflowNode(id=bid, kind="branch", decider=bid, branches=dict(bmap)))
+            labels = bmap["labels"]
+            nodes.append(
+                WorkflowNode(
+                    id=bid,
+                    kind="branch",
+                    decider=bid,
+                    branches={label: target for label, (target, _description) in labels.items()},
+                    title=bmap["title"],
+                    description=bmap["description"],
+                )
+            )
         # Machine-level pre-set gates on every loop-closing label: a SAFETY NET strictly above
         # the product deciders' own stop logic (deciders halt first; the gate catches runaway).
         loop_bounds = {
@@ -566,11 +736,12 @@ class AnkiGenerationGraph:
         }
         transitions = [Transition(source=src, target=tgt) for src, tgt in sequential]
         for bid, bmap in branches.items():
-            for label, tgt in bmap.items():
+            for label, (tgt, transition_description) in bmap["labels"].items():
                 transitions.append(
                     Transition(
                         source=bid, target=tgt, label=label, policy="decision",
                         max_traversals=loop_bounds.get((bid, label)),
+                        description=transition_description,
                     )
                 )
         return WorkflowDefinition(

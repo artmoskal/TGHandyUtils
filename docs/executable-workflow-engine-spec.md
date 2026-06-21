@@ -478,7 +478,7 @@ requires a deliberate, user-approved decision — never drift:
 | Presentation-builder pack, MCP tool-suite packs | Named in the L2 vision | When the project materializes |
 | `ANKI_*` env alias bridge sunset | config-architecture CFG-8 transition bridge | Pi `.env` migrated by aws_deploy |
 | `test.sh` `-k "a or b"` word-split bug | Workaround = paths/single tokens | Next time someone touches test.sh |
-| Done & closed | Media/voice → `ai_workflow_tools.media` (v0.4.0) · `workflow_capability` adapter · durable resume · planner depth ≥2 · executor split · `AgentRunRequest.metadata` passthrough (v0.4.1) · T1 memory seam/store · canonical memory modes · S0 non-default memory replay proof · `validate_graph`/`build_definition_from_artifact` decomposition · `_images_from_output` fail-loud complexity cleanup | — |
+| Done & closed | Media/voice → `ai_workflow_tools.media` (v0.4.0) · `workflow_capability` adapter · durable resume · planner depth ≥2 · executor split · `AgentRunRequest.metadata` passthrough (v0.4.1) · T1 memory seam/store · canonical memory modes · S0 non-default memory replay proof · `validate_graph`/`build_definition_from_artifact` decomposition · `_images_from_output` fail-loud complexity cleanup · runtime observability graph + full byte-free detail capture (v0.5.0) | — |
 
 ## 13. STATUS — EXISTS vs INTENDED (read this before building on a promise)
 | Area | Status |
@@ -490,6 +490,7 @@ requires a deliberate, user-approved decision — never drift:
 | Flow-as-data v1 (authored step/branch/evaluate) + recursion firewall + bounded planning | **[BUILT]** |
 | Self-describing machine cards + capability catalog | **[BUILT]** |
 | Budgets/cost-honesty, trace sinks, model binding, scheduling/cancellation, evidence refs | **[BUILT]** |
+| Runtime observability graph/detail capture | **[BUILT]** — compact trace events + linked full byte-free details when internal capture is enabled; usage ledger remains separate |
 | L1 executors: LangChain, plain-callable, console (`claude -p`/`codex exec`) | **[BUILT]** |
 | Universal worker-contract seam (§5) | **[PARTIAL]** — principle live; adapter DTOs stay specialized |
 | Workflow memory T1 (§0/§12) | **[BUILT/PARTIAL]** — `AgentMemory`, `FullReplayMemory`, `ImageEvictingMemory`, `MemoryStore`, `MemoryNamespace(product, tenant, subject, kind)`, `InMemoryMemoryStore`; scope is bounded-agent prompt projection + deterministic store contract |
@@ -501,8 +502,7 @@ requires a deliberate, user-approved decision — never drift:
 
 ## Appendix A — Implementation history & changelog (historical; not current-stage instructions)
 *Preserved for provenance. The current truth is §0–§13 above; this records how it got there and the
-original build order (released through v0.4.1, with later working-tree memory/validator updates
-recorded in §12/§13 until a new tag is cut).*
+original build order (released through v0.5.0).*
 
 **§6 authoring/state-machine rounds (2026-06-12):**
 - *Round 2 — combined AI/state-machine core:* first-class `Transition(source,target,label,policy,
