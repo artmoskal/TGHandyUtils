@@ -107,6 +107,14 @@ mid-run. But the engine should keep `WorkflowTraceEvent` and `WorkflowUsageEvent
 
 Near-term, keep `WorkflowTraceEvent` working and add only small, compatible structure when needed:
 
+> **[claude] RESOLVED (2026-06-21 02:12:44 WEST): the `ObservationEvent` block below is SUPERSEDED.**
+> Per the open-questions agreement, we do NOT add a parallel `ObservationEvent` — we **extend
+> `WorkflowTraceEvent`** with `event_id` + `detail_refs` (+ optional `phase` / `severity` / `run_id`
+> when the viewer needs them), and keep `WorkflowUsageEvent` separate. `ObservationDetail` (the second
+> block) stays. The buildable contract + phases + viewer definition live in
+> `2026-06-21-engine-observability-implementation-plan.md`. The block below is kept only as the
+> field-shape reference for what folds into `WorkflowTraceEvent`.
+
 ```python
 class ObservationEvent(BaseModel):
     run_id: str
@@ -267,13 +275,14 @@ Recommended now:
 
 Recommended when observability becomes an implementation epic:
 
-1. Define `ObservationEvent` and `ObservationDetail` or an equivalent minimal detail-ref extension to
-   `WorkflowTraceEvent`.
-2. Add severity/event-level mapping as a documented contract.
-3. Add a detail sink/store with explicit privacy and redaction policy.
-4. Add a projector: `WorkflowDefinition + events + details -> ObservationGraph`.
-5. Add Mermaid/HTML/live renderers over `ObservationGraph`.
-6. Migrate prompt capture to emit compact event plus `rendered_prompt` detail record.
+1. Extend `WorkflowTraceEvent` with `event_id`, `detail_refs`, and the agreed viewer fields
+   (`phase`, `severity`, `run_id`) instead of introducing a parallel `ObservationEvent`.
+2. Add `ObservationDetail` plus a detail sink/store with explicit privacy and redaction policy.
+3. Add a projector: `WorkflowDefinition + trace events + usage events + details -> ObservationGraph`.
+4. Add Mermaid/HTML/live renderers over `ObservationGraph`.
+5. Migrate prompt capture to emit compact event plus `rendered_prompt` detail record.
+6. Before implementation, spike the two code-grounded seams: `run_id` propagation into trace events and
+   live usage-event delivery. Today trace has sinks/queues; usage is a separate summary/logger stream.
 
 ## Open Questions For Claude
 
@@ -348,6 +357,16 @@ observability/prompt module before export?
 
 ## Current Recommendation
 
-For the immediate engine work: do not broaden scope. Treat observability graph/UI as a future epic.
-Before that epic starts, settle the event/detail contract above with Claude and the user, then implement
-it behind the existing sink/projector pattern.
+Sequencing: the observability implementation is a later epic after the memory/tag handoff unless Artem
+explicitly moves it earlier. The one-event-type contract is settled now: extend `WorkflowTraceEvent`,
+keep `WorkflowUsageEvent` separate, and store heavy/private payloads behind `ObservationDetail` refs.
+
+[codex] readiness review (2026-06-21): the contract direction is sound, but implementation must not assume
+two things that the code does not yet provide. First, current state has two context ids:
+`engine_context.run_context.workflow_id` is seeded from the workflow definition id, while
+`WorkflowRunner` creates a per-run UUID at `workflow_context.workflow_id` for usage/logging. Trace events
+are emitted through `TraceSink` without automatic enrichment from either context, so the live-view
+`run_id` must be threaded deliberately and must not accidentally reuse the definition id. Second, usage
+events are accumulated in `WorkflowUsageSummary` and logged, but there is no `UsageSink`/async queue
+equivalent to `TraceSink`. The build plan must include those as preflight decisions before live
+multi-run viewing or live cost updates.
