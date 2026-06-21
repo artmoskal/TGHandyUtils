@@ -13,7 +13,7 @@ class TestHandlerImports:
         """Test importing main commands."""
         with patch.dict('sys.modules', {
             'bot': Mock(router=Mock()),
-            'core.container': Mock(container=Mock()),
+            'composition.container': Mock(container=Mock()),
             'keyboards.recipient': Mock(),
             'core.logging': Mock(get_logger=Mock(return_value=Mock())),
             'helpers.ui_helpers': Mock(),
@@ -27,7 +27,7 @@ class TestHandlerImports:
         """Test importing task commands."""
         with patch.dict('sys.modules', {
             'bot': Mock(router=Mock()),
-            'core.container': Mock(container=Mock()),
+            'composition.container': Mock(container=Mock()),
             'states.task_states': Mock(),
             'core.logging': Mock(get_logger=Mock(return_value=Mock())),
             'helpers.ui_helpers': Mock()
@@ -39,7 +39,7 @@ class TestHandlerImports:
         """Test importing settings commands."""
         with patch.dict('sys.modules', {
             'bot': Mock(router=Mock()),
-            'core.container': Mock(container=Mock()),
+            'composition.container': Mock(container=Mock()),
             'keyboards.settings': Mock(),
             'core.logging': Mock(get_logger=Mock(return_value=Mock())),
             'helpers.ui_helpers': Mock()

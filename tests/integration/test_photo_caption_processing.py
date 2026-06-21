@@ -54,8 +54,8 @@ class TestPhotoCaptionProcessing:
         return message
     
     @pytest.mark.asyncio
-    @patch('core.container.container.recipient_service')
-    @patch('core.initialization.services.get_image_processing_service')
+    @patch('composition.container.container.recipient_service')
+    @patch('composition.initialization.services.get_image_processing_service')
     async def test_photo_with_caption_processing(self, mock_image_service_factory, 
                                                mock_recipient_service_factory, 
                                                mock_message_with_photo_caption):
@@ -94,8 +94,8 @@ class TestPhotoCaptionProcessing:
             # The actual behavior is tested by checking mock calls
     
     @pytest.mark.asyncio
-    @patch('core.container.container.recipient_service')
-    @patch('core.initialization.services.get_image_processing_service')
+    @patch('composition.container.container.recipient_service')
+    @patch('composition.initialization.services.get_image_processing_service')
     async def test_document_with_caption_processing(self, mock_image_service_factory,
                                                   mock_recipient_service_factory,
                                                   mock_message_with_document_caption):
@@ -129,7 +129,7 @@ class TestPhotoCaptionProcessing:
             mock_image_service.process_image_message.assert_called_once()
     
     @pytest.mark.asyncio
-    @patch('core.container.container.recipient_service')
+    @patch('composition.container.container.recipient_service')
     async def test_photo_without_caption_still_works(self, mock_recipient_service_factory,
                                                     mock_message_with_photo_caption):
         """Test that photos without captions still work."""
@@ -140,7 +140,7 @@ class TestPhotoCaptionProcessing:
         mock_recipient_service.get_enabled_recipients.return_value = [Mock()]
         mock_recipient_service_factory.return_value = mock_recipient_service
         
-        with patch('core.initialization.services.get_image_processing_service') as mock_image_service_factory:
+        with patch('composition.initialization.services.get_image_processing_service') as mock_image_service_factory:
             mock_image_service = Mock()
             mock_image_service.process_image_message = AsyncMock(return_value={
                 'extracted_text': 'Some code',

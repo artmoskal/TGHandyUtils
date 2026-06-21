@@ -28,8 +28,12 @@ def test_intent_resolver_override_wins():
 
 @pytest.mark.unit
 def test_router_maps_intents_to_processors():
-    from services.content.router import get_processor
+    from services.content.router import configure_processors, get_processor
     from services.content.reminder_processor import ReminderProcessor
+    configure_processors({
+        Intent.REMINDER: lambda: ReminderProcessor(),
+        Intent.ANKI: lambda: AnkiProcessor(Mock()),
+    })
     assert isinstance(get_processor(Intent.REMINDER), ReminderProcessor)
     assert isinstance(get_processor(Intent.ANKI), AnkiProcessor)
 
@@ -277,17 +281,7 @@ async def test_reminder_processor_delegates_to_engine_and_replies(monkeypatch):
     parsing = _FakeParsing({"title": "Call Bob", "due_time": "2026-06-20T09:00:00Z"})
     task_svc = _FakeTaskSvc(ServiceResult.success_with_data("✅ created", {"add_actions": []}))
 
-    fake_services = Mock()
-    fake_services.get_parsing_service.return_value = parsing
-    monkeypatch.setattr("core.initialization.services", fake_services)
-
-    fake_container = Mock()
-    fake_container.recipient_task_service.return_value = task_svc
-    fake_container.recipient_service.return_value = Mock()
-    monkeypatch.setattr("core.container.container", fake_container)
-
     handle = AsyncMock()
-    monkeypatch.setattr("handlers_modular.base.handle_task_creation_response", handle)
 
     message = Mock()
     message.reply = AsyncMock()
@@ -301,7 +295,12 @@ async def test_reminder_processor_delegates_to_engine_and_replies(monkeypatch):
         location="Lisbon",
     )
 
-    result = await ReminderProcessor().process(ctx)
+    result = await ReminderProcessor(
+        parsing_service=parsing,
+        task_service=task_svc,
+        recipient_service=Mock(),
+        task_creation_responder=handle,
+    ).process(ctx)
 
     assert result.success
     handle.assert_awaited_once()
@@ -328,20 +327,11 @@ async def test_reminder_processor_no_default_recipients_shows_picker(monkeypatch
     parsing = _FakeParsing({"title": "T", "due_time": "2026-06-20T09:00:00Z"})
     task_svc = _FakeTaskSvc(ServiceResult.failure("NO_DEFAULT_RECIPIENTS"))
 
-    fake_services = Mock()
-    fake_services.get_parsing_service.return_value = parsing
-    monkeypatch.setattr("core.initialization.services", fake_services)
-
     recipient_service = Mock()
     recipient_service.is_recipient_ui_enabled.return_value = True
     recipient_service.get_enabled_recipients.return_value = [Mock(id=5, name="Me", platform_type="todoist")]
-    fake_container = Mock()
-    fake_container.recipient_task_service.return_value = task_svc
-    fake_container.recipient_service.return_value = recipient_service
-    fake_container.task_repository.return_value.create.return_value = 99
-    monkeypatch.setattr("core.container.container", fake_container)
-    monkeypatch.setattr("helpers.ui_helpers.format_platform_button", lambda *a, **k: "Add to Me")
-    monkeypatch.setattr("keyboards.recipient.get_post_task_actions_keyboard", lambda actions: "KB")
+    task_repo = Mock()
+    task_repo.create.return_value = 99
 
     message = Mock()
     message.reply = AsyncMock()
@@ -351,7 +341,15 @@ async def test_reminder_processor_no_default_recipients_shows_picker(monkeypatch
         message=message, thread_content=[("U", "x")], user_id=7, owner_name="A", location=None
     )
 
-    result = await ReminderProcessor().process(ctx)
+    result = await ReminderProcessor(
+        parsing_service=parsing,
+        task_service=task_svc,
+        recipient_service=recipient_service,
+        task_repository=task_repo,
+        task_creation_responder=AsyncMock(),
+        platform_button_formatter=lambda *a, **k: "Add to Me",
+        post_task_keyboard_factory=lambda actions: "KB",
+    ).process(ctx)
 
     assert not result.success
     args, kwargs = message.reply.call_args
@@ -367,15 +365,6 @@ async def test_reminder_processor_create_exception_replies_generic_error(monkeyp
         def create_task_for_recipients(self, **kwargs):
             raise RuntimeError("todoist down")
 
-    fake_services = Mock()
-    fake_services.get_parsing_service.return_value = parsing
-    monkeypatch.setattr("core.initialization.services", fake_services)
-
-    fake_container = Mock()
-    fake_container.recipient_task_service.return_value = _BoomTaskSvc()
-    fake_container.recipient_service.return_value = Mock()
-    monkeypatch.setattr("core.container.container", fake_container)
-
     message = Mock()
     message.reply = AsyncMock()
     message.chat = Mock(id=1)
@@ -384,7 +373,12 @@ async def test_reminder_processor_create_exception_replies_generic_error(monkeyp
         message=message, thread_content=[("U", "x")], user_id=7, owner_name="A", location=None
     )
 
-    result = await ReminderProcessor().process(ctx)
+    result = await ReminderProcessor(
+        parsing_service=parsing,
+        task_service=_BoomTaskSvc(),
+        recipient_service=Mock(),
+        task_creation_responder=AsyncMock(),
+    ).process(ctx)
 
     assert not result.success
     # engine swallows the capability exception -> create_result None -> generic error (parity)

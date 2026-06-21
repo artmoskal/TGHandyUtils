@@ -4,7 +4,7 @@ from typing import Callable, Any, Awaitable
 from aiogram import BaseMiddleware
 from aiogram.types import Message, CallbackQuery
 
-from core.container import container
+from composition.container import container
 from core.logging import get_logger
 
 logger = get_logger(__name__)

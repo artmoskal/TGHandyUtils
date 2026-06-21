@@ -22,7 +22,7 @@ def initialize_bot():
     """Initialize bot with proper configuration."""
     global bot
     if bot is None:
-        from core.initialization import services
+        from composition.initialization import services
         config = services.get_config()
         
         if not config.TELEGRAM_BOT_TOKEN or config.TELEGRAM_BOT_TOKEN == 'dummy_token_for_testing':

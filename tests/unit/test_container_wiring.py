@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 from dependency_injector import providers
 
-from core.container import ApplicationContainer
+from composition.container import ApplicationContainer
 
 
 def _fake_config():

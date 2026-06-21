@@ -3,7 +3,7 @@
 import pytest
 from datetime import datetime, timedelta
 
-from core.container import container
+from composition.container import container
 from models.user import User
 from models.auth_request import AuthRequest
 

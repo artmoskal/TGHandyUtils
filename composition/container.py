@@ -1,11 +1,11 @@
-"""Clean dependency injection container - recipient system only."""
+"""Application dependency injection composition root."""
 
 from dependency_injector import containers, providers
 from dependency_injector.wiring import Provide, inject
 
 from core.interfaces import (IConfig, ITaskRepository, IParsingService, 
                             IOpenAIService, IVoiceProcessingService, IImageProcessingService,
-                            IUserPreferencesRepository, IAuthRequestRepository)
+                            IUserPreferencesRepository, IAuthRequestRepository, Intent)
 from config import Config
 from database.connection import DatabaseManager
 from database.repositories import TaskRepository
@@ -38,6 +38,10 @@ from services.oauth_state_manager import OAuthStateManager
 from services.google_oauth_service import GoogleOAuthService
 from services.sharing_service import SharingService
 from services.user_service import UserService
+from services.content.router import configure_processors
+from helpers.ui_helpers import format_platform_button
+from helpers.task_responses import handle_task_creation_response
+from keyboards.recipient import get_post_task_actions_keyboard
 
 
 def _config_attr(config_obj, name: str, default):
@@ -155,14 +159,6 @@ class ApplicationContainer(containers.DeclarativeContainer):
         style_reference_version=config.provided.ANKI_STYLE_REFERENCE_VERSION
     )
 
-    # Content-processing seam: intent -> processor (see services/content/router.py)
-    reminder_processor = providers.Factory(ReminderProcessor)
-    anki_processor = providers.Factory(
-        AnkiProcessor,
-        anki_card_service=anki_card_service,
-        preferences_repo=user_preferences_repository,
-        anki_graph=anki_generation_graph
-    )
     intent_classifier = providers.Factory(
         IntentClassifier,
         config=config
@@ -183,6 +179,24 @@ class ApplicationContainer(containers.DeclarativeContainer):
         RecipientTaskService,
         task_repo=task_repository,
         recipient_service=recipient_service
+    )
+
+    # Content-processing seam: intent -> processor (see services/content/router.py)
+    reminder_processor = providers.Factory(
+        ReminderProcessor,
+        parsing_service=parsing_service,
+        task_service=recipient_task_service,
+        recipient_service=recipient_service,
+        task_repository=task_repository,
+        task_creation_responder=handle_task_creation_response,
+        platform_button_formatter=format_platform_button,
+        post_task_keyboard_factory=get_post_task_actions_keyboard,
+    )
+    anki_processor = providers.Factory(
+        AnkiProcessor,
+        anki_card_service=anki_card_service,
+        preferences_repo=user_preferences_repository,
+        anki_graph=anki_generation_graph
     )
     
     
@@ -211,7 +225,8 @@ class ApplicationContainer(containers.DeclarativeContainer):
     google_oauth_service = providers.Factory(
         GoogleOAuthService,
         client_id=config.provided.GOOGLE_CLIENT_ID,
-        client_secret=config.provided.GOOGLE_CLIENT_SECRET
+        client_secret=config.provided.GOOGLE_CLIENT_SECRET,
+        oauth_state_manager=oauth_state_manager,
     )
     
     # User service
@@ -231,3 +246,8 @@ class ApplicationContainer(containers.DeclarativeContainer):
 
 # Global container instance
 container = ApplicationContainer()
+
+configure_processors({
+    Intent.REMINDER: container.reminder_processor,
+    Intent.ANKI: container.anki_processor,
+})

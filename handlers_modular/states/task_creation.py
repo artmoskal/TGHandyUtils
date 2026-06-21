@@ -6,7 +6,7 @@ from aiogram.fsm.context import FSMContext
 
 from bot import router
 from states.recipient_states import RecipientState
-from core.container import container
+from composition.container import container
 from models.task import TaskCreate
 from core.logging import get_logger
 from helpers.error_messages import ErrorMessages
@@ -29,7 +29,7 @@ async def handle_task_creation(message: Message, state: FSMContext):
         selected_recipients = state_data.get('selected_recipients', [])
         
         # Parse task description using AI to extract task details and timing
-        from core.initialization import services
+        from composition.initialization import services
         parsing_service = services.get_parsing_service()
         
         try:
@@ -106,7 +106,7 @@ async def handle_task_creation(message: Message, state: FSMContext):
         await state.clear()
         
         # Send response
-        from handlers_modular.base import handle_task_creation_response
+        from helpers.task_responses import handle_task_creation_response
         await handle_task_creation_response(message, success, feedback, actions)
         
     except Exception as e:

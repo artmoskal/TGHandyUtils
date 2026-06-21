@@ -1,0 +1,88 @@
+# import-linter contracts for TGHandyUtils
+# Encodes the architecture documented in ARCHITECTURE.md.
+# Run with:  lint-imports
+# These are read-only checks; they never modify code.
+#
+# Layer intent (outer -> inner): handlers_modular -> services -> database -> models,
+# with core (interfaces/DI) + helpers as inner utilities, platforms as integrations
+# called by services, and packages/ai_workflow_engine kept domain-neutral.
+# The DI composition root (`composition/`) legitimately wires every layer, so it
+# is deliberately NOT placed in the linear spine to avoid false positives.
+
+[importlinter]
+include_external_packages = True
+root_packages =
+    handlers_modular
+    services
+    platforms
+    database
+    models
+    core
+    composition
+    helpers
+    packages
+
+# --- 1. Clean-architecture spine -------------------------------------------------
+# Higher layers may import lower ones, never the reverse.
+[importlinter:contract:spine]
+name = Clean architecture spine (handlers -> services -> database -> models)
+type = layers
+layers =
+    handlers_modular
+    services
+    database
+    models
+
+# --- 2. Data layer must not call upward (repository pattern) ----------------------
+[importlinter:contract:database-no-upward]
+name = Database (data access) must not import business/delivery layers
+type = forbidden
+source_modules =
+    database
+forbidden_modules =
+    services
+    handlers_modular
+    platforms
+
+# --- 3. Models are pure data -----------------------------------------------------
+[importlinter:contract:models-pure]
+name = Models must not import infrastructure or higher layers
+type = forbidden
+source_modules =
+    models
+forbidden_modules =
+    services
+    database
+    platforms
+    handlers_modular
+
+# --- 4. Platform integrations must not call upward -------------------------------
+[importlinter:contract:platforms-no-upward]
+name = Platform integrations must not import delivery/business layers
+type = forbidden
+source_modules =
+    platforms
+forbidden_modules =
+    handlers_modular
+    services
+
+# --- 5. Workflow engine stays domain-neutral -------------------------------------
+# Per ARCHITECTURE.md: the engine core must not grow product-specific (Telegram,
+# Todoist, Trello, etc.) or app-layer logic, and must not depend on its sibling
+# tool pack. Products register capabilities; the engine does not import them.
+[importlinter:contract:engine-domain-neutral]
+name = ai_workflow_engine must stay domain-neutral (no product/app/tooling imports)
+type = forbidden
+source_modules =
+    packages.ai_workflow_engine
+forbidden_modules =
+    aiogram
+    handlers_modular
+    services
+    platforms
+    database
+    models
+    core
+    composition
+    helpers
+    packages.ai_workflow_tools

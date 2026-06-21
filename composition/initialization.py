@@ -1,7 +1,7 @@
 """Application initialization and dependency injection setup."""
 
 from dependency_injector.wiring import inject, Provide
-from core.container import ApplicationContainer, container
+from composition.container import ApplicationContainer, container
 from core.interfaces import IParsingService, IConfig, IOpenAIService, IVoiceProcessingService, IImageProcessingService
 from services.recipient_task_service import RecipientTaskService
 from services.recipient_service import RecipientService
@@ -10,7 +10,7 @@ from services.recipient_service import RecipientService
 def wire_application():
     """Wire the application modules with the DI container."""
     container.wire(modules=[
-        "core.initialization",
+        "composition.initialization",
         "telegram_handlers"
     ])
     

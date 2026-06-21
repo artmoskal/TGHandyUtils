@@ -45,8 +45,8 @@ class TestScreenshotProcessingSimple:
         ]
         
         # Mock both services completely at the module level
-        with patch('core.container.container') as mock_container, \
-             patch('core.initialization.services.get_parsing_service') as mock_parsing_service:
+        with patch('composition.container.container') as mock_container, \
+             patch('composition.initialization.services.get_parsing_service') as mock_parsing_service:
             
             # Setup parsing service
             mock_parsing = Mock()
@@ -97,8 +97,8 @@ class TestScreenshotProcessingSimple:
             ("User", "urgent task", sample_screenshot_data)
         ]
         
-        with patch('core.container.container') as mock_container, \
-             patch('core.initialization.services.get_parsing_service') as mock_parsing_service:
+        with patch('composition.container.container') as mock_container, \
+             patch('composition.initialization.services.get_parsing_service') as mock_parsing_service:
             
             # Setup parsing service to fail
             mock_parsing = Mock()
@@ -139,7 +139,7 @@ class TestScreenshotProcessingSimple:
         ]
         
         # Force an exception
-        with patch('core.initialization.services.get_parsing_service', side_effect=Exception("Service error")):
+        with patch('composition.initialization.services.get_parsing_service', side_effect=Exception("Service error")):
             
             # Should not raise exception, should handle gracefully
             await process_thread_with_photos(

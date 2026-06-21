@@ -4,7 +4,7 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 from aiogram.fsm.context import FSMContext
 
 from bot import router  # Use the global router like other command modules
-from core.container import container
+from composition.container import container
 from core.logging import get_logger
 from states.recipient_states import RecipientState
 from states.sharing_states import SharingState, AuthRequestState
@@ -216,7 +216,7 @@ async def send_auth_request_notification(auth_request_id: int, requester_name: s
             [InlineKeyboardButton(text="❌ Decline", callback_data=f"decline_auth_{auth_request_id}")]
         ])
         
-        from core.container import container
+        from composition.container import container
         bot = container.bot()
         
         await bot.send_message(
@@ -420,7 +420,7 @@ async def handle_auth_credentials_input(message: Message, state: FSMContext):
 async def notify_auth_request_completed(auth_request, authenticator_name: str):
     """Notify requester that authentication is complete."""
     try:
-        from core.container import container
+        from composition.container import container
         bot = container.bot()
         
         await bot.send_message(

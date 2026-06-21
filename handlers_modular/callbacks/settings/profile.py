@@ -6,7 +6,7 @@ from aiogram.fsm.context import FSMContext
 from bot import router
 from states.recipient_states import RecipientState
 from keyboards.recipient import get_profile_settings_keyboard
-from core.container import container
+from composition.container import container
 from core.logging import get_logger
 
 logger = get_logger(__name__)

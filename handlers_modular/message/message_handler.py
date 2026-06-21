@@ -58,7 +58,7 @@ async def handle_voice_message(message: Message, state: FSMContext, bot: Bot):
         with _message_threads_lock:
             pending_messages = message_threads[user_id].copy() if user_id in message_threads else []
         
-        from core.initialization import services
+        from composition.initialization import services
         voice_service = services.get_voice_processing_service()
         
         # Show processing message
@@ -121,7 +121,7 @@ async def handle_voice_message(message: Message, state: FSMContext, bot: Bot):
 async def process_user_input_with_photo(text: str, user_id: int, message_obj: Message, state: FSMContext, bot: Bot) -> bool:
     """Process user input with photo attachment - handles image to text conversion."""
     try:
-        from core.container import container
+        from composition.container import container
         from services.content import overrides
         recipient_service = container.recipient_service()
 
@@ -148,7 +148,7 @@ async def process_user_input_with_photo(text: str, user_id: int, message_obj: Me
         extracted_text = ""
         summary = ""
         
-        from core.initialization import services
+        from composition.initialization import services
         image_service = services.get_image_processing_service()
         
         if message_obj.photo:

@@ -11,7 +11,7 @@ from aiogram.types import Message
 from aiogram.fsm.context import FSMContext
 
 from bot import router
-from core.container import container
+from composition.container import container
 from core.interfaces import Intent
 from core.logging import get_logger
 from helpers.error_messages import ErrorMessages

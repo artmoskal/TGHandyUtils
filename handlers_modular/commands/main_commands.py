@@ -7,7 +7,7 @@ from aiogram.fsm.context import FSMContext
 
 from bot import router
 from keyboards.recipient import get_recipient_management_keyboard
-from core.container import container
+from composition.container import container
 from core.logging import get_logger
 from helpers.ui_helpers import escape_markdown
 

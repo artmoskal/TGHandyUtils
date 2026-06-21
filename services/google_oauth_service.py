@@ -9,7 +9,8 @@ from core.exceptions import OAuthError
 logger = get_logger(__name__)
 
 class GoogleOAuthService:
-    def __init__(self, client_id: str, client_secret: str):
+    def __init__(self, client_id: str, client_secret: str, oauth_state_manager=None):
+        self.oauth_state_manager = oauth_state_manager
         if not client_id or not client_secret:
             self.configured = False
             logger.warning("Google OAuth credentials not configured")
@@ -31,11 +32,10 @@ class GoogleOAuthService:
         """Generate OAuth URL for manual code entry."""
         if not self.configured:
             raise OAuthError("Google OAuth service not configured")
-            
-        from core.container import container
-        
-        oauth_state_manager = container.oauth_state_manager()
-        state = oauth_state_manager.create_pending_request(user_id)
+        if self.oauth_state_manager is None:
+            raise OAuthError("OAuth state manager not configured")
+
+        state = self.oauth_state_manager.create_pending_request(user_id)
         
         flow = Flow.from_client_config(
             self.client_secrets_config,

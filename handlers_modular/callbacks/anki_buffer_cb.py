@@ -7,7 +7,7 @@ from aiogram.types import CallbackQuery, FSInputFile
 from aiogram.fsm.context import FSMContext
 
 from bot import router
-from core.container import container
+from composition.container import container
 from core.logging import get_logger
 from services.content import anki_buffer
 

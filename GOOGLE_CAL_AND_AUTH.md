@@ -55,17 +55,16 @@ This document provides a detailed, step-by-step implementation plan for integrat
       import json
       from typing import Optional
       from google_auth_oauthlib.flow import Flow
-      from core.container import container
 
       class GoogleOAuthService:
-          def __init__(self, client_secrets_config: dict):
+          def __init__(self, client_secrets_config: dict, oauth_state_manager):
               self.client_secrets_config = client_secrets_config
+              self.oauth_state_manager = oauth_state_manager
               self.scopes = ['https://www.googleapis.com/auth/calendar']
 
           def get_authorization_url(self, user_id: int) -> str:
               """Generate OAuth URL for manual code entry."""
-              oauth_state_manager = container.oauth_state_manager()
-              state = oauth_state_manager.create_pending_request(user_id)
+              state = self.oauth_state_manager.create_pending_request(user_id)
               
               flow = Flow.from_client_config(
                   self.client_secrets_config,
@@ -175,7 +174,7 @@ This document provides a detailed, step-by-step implementation plan for integrat
       # oauth_server.py
       from aiohttp import web
       import asyncio
-      from core.container import container
+      from composition.container import container
 
       async def start_oauth_server():
           """Start OAuth callback server as part of main process."""

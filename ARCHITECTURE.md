@@ -45,19 +45,52 @@ TGHandyUtils/
 
 The reusable workflow work lives under `packages/` and is intentionally split by responsibility:
 
-- `packages/ai_workflow_engine` is the implementation-agnostic core. It owns workflow declaration and
-  execution, branch/fan-out/evaluator/retrace/fallback mechanics, planner artifacts, bounded agent
-  episodes, replay, usage/budget accounting, side-effect gates, traces, checkpoints, scheduling, and
-  human clarification. Products register capabilities and workflow definitions; they do not import
-  LangGraph or hand-roll orchestration loops.
+Architecture source of truth: `docs/executable-workflow-engine-spec.md`. This section summarizes the
+binding spec for TGHandyUtils contributors; if the two disagree, the binding spec wins.
+
+- `packages/ai_workflow_engine` is the implementation-agnostic, domain-neutral core. It owns
+  workflow declaration and execution, branch/fan-out/evaluator/retrace/fallback mechanics, planner
+  artifacts, bounded agent episodes, replay, usage/budget accounting, side-effect gates, traces,
+  checkpoints, scheduling, human clarification, artifact/evidence references, capability
+  registration, policy/secrets plumbing, and the T1 workflow-memory seam. Products
+  register capabilities and workflow definitions; they do not import LangGraph or hand-roll
+  orchestration loops.
 - `packages/ai_workflow_tools` is the first sibling tool library. It owns provider/CLI-specific
   runtime details for `claude -p` and `codex exec`: CLI-agent workspace runs, MCP config env,
   staged `input_assets` fingerprints, artifact salvage and `new_artifact_count`, and
   `ConsoleLLMClient` for simple text-to-JSON structured nodes.
 
 Engine core should not grow product-specific browser, camera, Telegram, Todoist, Trello, or CLI flag
-logic. Add those as tools packages, workflow packs, or product capabilities on the stable engine
-seams.
+logic. Reusable modality complexity belongs in tool packs (CLI/browser agents, TTS/STT, image
+generation, video producer/analyzer, OCR, VLM frame analysis). Product-family logic belongs in
+domain packs such as Todoist, Anki, GoPro, or MageQA.
+
+North star: the same engine must make trivial flows cheap and complex flows possible. A Todoist task
+can be a one-step workflow with minimal setup; Anki, GoPro video/pipeline planning, and MageQA
+QA-session planning can opt into planners, fan-out, bounded agents, subworkflows, workflow memory,
+evidence, scheduling, and retrace. The target workflow-memory model is not only conversation
+history: it should carry scoped, evidence-linked facts about retries, discoveries, failed branches,
+artifacts, evaluator decisions, and what worked or failed across runs when agents or subworkflows
+explicitly request it.
+New architecture should preserve that gradient instead of creating a simple engine and a separate
+complex engine. T1 workflow memory is shipped for bounded agent prompt projection
+(`FullReplayMemory`, `ImageEvictingMemory`) plus the `MemoryStore` /
+`MemoryNamespace(product, tenant, subject, kind)` / `InMemoryMemoryStore` contract;
+durable/semantic stores and broader workflow/project memory policies remain deferred.
+
+The engine is also not a simplistic "LLM node" DAG. Deterministic Python, API LLMs, local models,
+`claude -p`, `codex exec`, CLI/browser agents, media tools, humans, and subworkflows are all workers
+behind the same capability contract. The executor owns invocation context, schema/output
+validation, branch-label enforcement, budgets, side-effect gates, trace, artifact/evidence metadata,
+retry/retrace/fallback, and declared memory scope. Products register workers and domain schemas; they
+do not write hidden orchestration loops around them.
+
+Generated process authoring has two stages. Current `FlowArtifact` is constrained flow-as-data over
+registered capabilities; the planned small expansion is authorable fan-out, registered subworkflows,
+and explicit data mapping while preserving the no-planner/no-tool-registration firewall. Full
+arbitrary generated pipelines (`ProcessArtifact` / `FlowArtifact` v2) are future-stage only and
+require explicit Artem approval after T2 memory/storage needs, artifact/evidence storage, and the
+smaller authoring expansion prove functional.
 
 ## 🔄 Request Flow
 

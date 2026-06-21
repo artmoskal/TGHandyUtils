@@ -5,10 +5,12 @@ ReminderGenerationGraph (parse -> create, with engine-owned trace + usage/budget
 processor owns only the Telegram delivery (success reply, no-default-recipient picker, error
 replies) — mirroring how AnkiProcessor owns delivery after its graph runs.
 
-Collaborators are still resolved via the global container + service locator at call time, so
-existing tests (which patch those points) keep working; the resolved services are handed straight
-into the graph's leaf capabilities, which call them verbatim.
+Collaborators and delivery callbacks are supplied by the composition root. This module must not
+import handler or container modules; those are outer-layer wiring details.
 """
+
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from core.interfaces import IContentProcessor, ProcessingContext, ServiceResult
 from core.logging import get_logger
@@ -16,27 +18,47 @@ from models.task import TaskCreate
 from services.content.reminder_generation_graph import ReminderGenerationGraph
 from services.content.thread_assembly import assemble_thread
 
-# NOTE: handlers_modular.base / helpers.ui_helpers / core.container are imported lazily inside
-# process() on purpose. This module is imported by core.container, and those modules import
-# core.container back (via the handlers package) - importing them at module top creates a cycle.
-
 logger = get_logger(__name__)
+
+TaskCreationResponder = Callable[[Any, bool, str | None, dict[str, Any] | None], Awaitable[None]]
+PlatformButtonFormatter = Callable[[str, str, str], str]
+PostTaskKeyboardFactory = Callable[[dict[str, list[dict[str, str]]]], Any]
 
 
 class ReminderProcessor(IContentProcessor):
     """Create a task/reminder from assembled content (the default behaviour)."""
 
-    async def process(self, ctx: ProcessingContext) -> ServiceResult:
-        # Imported lazily to avoid a core.container <-> reminder_processor import cycle.
-        # Tests patch core.container.container, which this picks up at call time.
-        from core.container import container
-        from handlers_modular.base import handle_task_creation_response
-        from helpers.ui_helpers import format_platform_button
+    def __init__(
+        self,
+        *,
+        parsing_service=None,
+        task_service=None,
+        recipient_service=None,
+        task_repository=None,
+        task_creation_responder: TaskCreationResponder | None = None,
+        platform_button_formatter: PlatformButtonFormatter | None = None,
+        post_task_keyboard_factory: PostTaskKeyboardFactory | None = None,
+    ) -> None:
+        self.parsing_service = parsing_service
+        self.task_service = task_service
+        self.recipient_service = recipient_service
+        self.task_repository = task_repository
+        self.task_creation_responder = task_creation_responder
+        self.platform_button_formatter = platform_button_formatter
+        self.post_task_keyboard_factory = post_task_keyboard_factory
 
+    async def process(self, ctx: ProcessingContext) -> ServiceResult:
         message = ctx.message
         owner_name = ctx.owner_name
         owner_id = ctx.user_id
         try:
+            if self.parsing_service is None or self.task_service is None:
+                raise RuntimeError("ReminderProcessor requires parsing_service and task_service")
+            if self.recipient_service is None:
+                raise RuntimeError("ReminderProcessor requires recipient_service")
+            if self.task_creation_responder is None:
+                raise RuntimeError("ReminderProcessor requires task_creation_responder")
+
             concatenated_content, screenshot_data = assemble_thread(ctx.thread_content)
 
             logger.info(
@@ -44,14 +66,7 @@ class ReminderProcessor(IContentProcessor):
                 f"and screenshot: {screenshot_data is not None}"
             )
 
-            # Resolve collaborators at call time (preserves test patch-points), then run the
-            # parse -> create workflow on the engine.
-            from core.initialization import services
-            parsing_service = services.get_parsing_service()
-            task_service = container.recipient_task_service()
-            recipient_service = container.recipient_service()
-
-            graph = ReminderGenerationGraph(parsing_service, task_service)
+            graph = ReminderGenerationGraph(self.parsing_service, self.task_service)
             graph_result = await graph.run(
                 content=concatenated_content,
                 owner_id=owner_id,
@@ -81,7 +96,7 @@ class ReminderProcessor(IContentProcessor):
 
             if not success:
                 if feedback == "NO_DEFAULT_RECIPIENTS":
-                    ui_enabled = recipient_service.is_recipient_ui_enabled(owner_id)
+                    ui_enabled = self.recipient_service.is_recipient_ui_enabled(owner_id)
                     if not ui_enabled:
                         from helpers.message_templates import format_ui_disabled_message
                         await message.reply(
@@ -94,8 +109,12 @@ class ReminderProcessor(IContentProcessor):
                     return ServiceResult.failure("Cannot create task")
 
                 # Create a temporary task in database first, then show recipient buttons
-                task_repo = container.task_repository()
-                task_id = task_repo.create(
+                if self.task_repository is None:
+                    raise RuntimeError("ReminderProcessor requires task_repository for recipient picker")
+                if self.platform_button_formatter is None or self.post_task_keyboard_factory is None:
+                    raise RuntimeError("ReminderProcessor requires recipient picker UI callbacks")
+
+                task_id = self.task_repository.create(
                     user_id=owner_id,
                     chat_id=message.chat.id,
                     message_id=message.message_id,
@@ -104,20 +123,23 @@ class ReminderProcessor(IContentProcessor):
                 )
 
                 if task_id:
-                    recipients = recipient_service.get_enabled_recipients(owner_id)
-                    from keyboards.recipient import get_post_task_actions_keyboard
+                    recipients = self.recipient_service.get_enabled_recipients(owner_id)
 
                     add_actions = []
                     for recipient in recipients:
                         add_actions.append({
-                            "text": format_platform_button(recipient.platform_type, recipient.name, "Add to"),
+                            "text": self.platform_button_formatter(
+                                recipient.platform_type,
+                                recipient.name,
+                                "Add to",
+                            ),
                             "callback_data": f"add_task_to_{recipient.id}_{task_id}",
                             "recipient_id": str(recipient.id),
                             "recipient_name": recipient.name
                         })
 
                     actions = {"add_actions": add_actions, "remove_actions": []}
-                    keyboard = get_post_task_actions_keyboard(actions)
+                    keyboard = self.post_task_keyboard_factory(actions)
 
                     await message.reply(
                         f"✅ **Task Created**\n\n"
@@ -133,7 +155,7 @@ class ReminderProcessor(IContentProcessor):
                 return ServiceResult.failure("No default recipients")
 
             # Use unified response handler
-            await handle_task_creation_response(message, success, feedback, actions)
+            await self.task_creation_responder(message, success, feedback, actions)
             return ServiceResult.success_with_data(feedback, actions)
 
         except Exception as e:

@@ -18,7 +18,7 @@ import core.logging as real_core_logging
 # Mock the imports before importing handlers
 with patch.dict('sys.modules', {
     'bot': Mock(router=mock_router),
-    'core.container': Mock(),
+    'composition.container': Mock(),
     'keyboards.recipient': Mock(
         get_main_menu_keyboard=Mock(return_value=Mock()),
         get_settings_main_keyboard=Mock(return_value=Mock()),

@@ -5,7 +5,7 @@ from aiogram.types import CallbackQuery
 from aiogram.fsm.context import FSMContext
 
 from bot import router
-from core.container import container
+from composition.container import container
 from core.logging import get_logger
 from models.task import TaskCreate
 from helpers.error_messages import ErrorMessages
@@ -141,7 +141,7 @@ async def confirm_transcription(callback_query: CallbackQuery, state: FSMContext
         location = user_prefs.location if user_prefs else None
         
         # Parse the transcribed text to create a proper task
-        from core.initialization import services
+        from composition.initialization import services
         parsing_service = services.get_parsing_service()
         
         parsed_task_dict = await asyncio.to_thread(
@@ -198,7 +198,7 @@ async def confirm_transcription(callback_query: CallbackQuery, state: FSMContext
             voice_processing[user_id] = False
         
         # Send response
-        from handlers_modular.base import handle_task_creation_response
+        from helpers.task_responses import handle_task_creation_response
         await handle_task_creation_response(callback_query.message, success, feedback, actions)
         
     except Exception as e:

@@ -1,7 +1,7 @@
 """Service access utilities for handlers."""
 
 from typing import Optional
-from core.container import container
+from composition.container import container
 from core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -32,7 +32,7 @@ class ServiceFactory:
     def get_parsing_service():
         """Get parsing service from container."""
         try:
-            from core.initialization import services
+            from composition.initialization import services
             return services.get_parsing_service()
         except Exception as e:
             logger.error(f"Failed to get parsing service: {e}")

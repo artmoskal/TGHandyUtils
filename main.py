@@ -8,7 +8,7 @@ import sys
 import time
 from bot import dp, initialize_bot
 from scheduler import task_scheduler
-from core.initialization import wire_application, unwire_application, services
+from composition.initialization import wire_application, unwire_application, services
 from core.logging import get_logger
 
 logger = get_logger(__name__)

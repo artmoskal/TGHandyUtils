@@ -1,0 +1,36 @@
+source_roots = ["."]
+forbid_circular_dependencies = true
+
+[[modules]]
+path = "composition"
+depends_on = ["database", "core", "services", "helpers"]
+[[modules]]
+path = "core"
+depends_on = [ "models"]
+[[modules]]
+path = "database"
+depends_on = ["models", "core"]
+[[modules]]
+path = "handlers_modular"
+depends_on = ["helpers", "core", "platforms", "utils", "states", "models", "services", "composition"]
+[[modules]]
+path = "helpers"
+depends_on = ["models", "core"]
+[[modules]]
+path = "models"
+depends_on = []
+[[modules]]
+path = "platforms"
+depends_on = ["core", "helpers"]
+[[modules]]
+path = "services"
+depends_on = ["core", "database", "helpers", "models", "platforms"]
+[[modules]]
+path = "states"
+depends_on = []
+[[modules]]
+path = "tests"
+depends_on = ["utils", "helpers", "core", "database", "models", "handlers_modular", "platforms", "services", "composition"]
+[[modules]]
+path = "utils"
+depends_on = ["core"]

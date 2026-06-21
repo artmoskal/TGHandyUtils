@@ -10,7 +10,7 @@ from keyboards.recipient import (
     get_recipient_management_keyboard,
     get_recipient_selection_keyboard
 )
-from core.container import container
+from composition.container import container
 from core.logging import get_logger
 
 logger = get_logger(__name__)

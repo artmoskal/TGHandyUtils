@@ -4,7 +4,7 @@ import asyncio
 from typing import List, Tuple, Optional
 from aiogram.types import Message
 
-from core.container import container
+from composition.container import container
 from core.interfaces import Intent, ProcessingContext
 from core.logging import get_logger
 from services.content.router import get_processor

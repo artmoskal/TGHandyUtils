@@ -25,7 +25,7 @@ try:
     # Message handlers
     from handlers_modular.message.threading_handler import process_user_input
     from handlers_modular.message.message_handler import handle_message
-    from handlers_modular.base import handle_task_creation_response
+    from helpers.task_responses import handle_task_creation_response
     
     # Callback handlers
     from handlers_modular.callbacks.recipient import management  # Recipient management callbacks

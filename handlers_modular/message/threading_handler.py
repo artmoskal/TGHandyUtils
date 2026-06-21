@@ -8,7 +8,7 @@ from collections import defaultdict
 from aiogram.types import Message
 from aiogram.fsm.context import FSMContext
 
-from core.container import container
+from composition.container import container
 from core.logging import get_logger
 from helpers.error_messages import ErrorMessages
 

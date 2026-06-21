@@ -13,7 +13,7 @@ from database.repositories import TaskRepository
 from database.unified_recipient_repository import UnifiedRecipientRepository
 from models.task import TaskCreate
 from scheduler import _check_and_process_due_tasks, _process_task_reminder, _send_reminder
-from core.container import ApplicationContainer
+from composition.container import ApplicationContainer
 
 
 class TestSchedulerDatabaseIntegration:
@@ -148,7 +148,7 @@ class TestSchedulerDatabaseIntegration:
         )
         
         # Mock the container to use our test repositories
-        with patch('core.initialization.services') as mock_services:
+        with patch('composition.initialization.services') as mock_services:
             mock_task_service = AsyncMock()
             mock_task_service.task_repo = task_repo
             mock_services.get_recipient_task_service.return_value = mock_task_service
@@ -201,7 +201,7 @@ class TestSchedulerDatabaseIntegration:
         task = task_repo.get_by_id(task_id)
         
         # Mock the notification service and bot
-        with patch('core.container.container') as mock_container:
+        with patch('composition.container.container') as mock_container:
             
             # Mock recipient service to return notifications enabled
             mock_recipient_service = AsyncMock()
@@ -215,7 +215,7 @@ class TestSchedulerDatabaseIntegration:
             scheduler.bot = mock_bot
             
             # Mock the task service for deletion
-            with patch('core.initialization.services') as mock_services:
+            with patch('composition.initialization.services') as mock_services:
                 mock_task_service = AsyncMock()
                 mock_task_service.task_repo = task_repo
                 mock_services.get_recipient_task_service.return_value = mock_task_service
@@ -262,7 +262,7 @@ class TestSchedulerDatabaseIntegration:
         task = task_repo.get_by_id(task_id)
         
         # Mock dependencies
-        with patch('core.container.container') as mock_container:
+        with patch('composition.container.container') as mock_container:
             
             mock_recipient_service = AsyncMock()
             mock_recipient_service.are_telegram_notifications_enabled.return_value = True

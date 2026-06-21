@@ -20,12 +20,41 @@ Are you tired of manually creating tasks in Todoist after every chat with your f
 
 This repo also contains reusable workflow packages under `packages/`:
 
-- `packages/ai_workflow_engine`: product-neutral orchestration core for typed workflow definitions,
-  fan-out, evaluator retrace, planner artifacts, bounded agents, replay, budgets, side-effect gates,
-  traces, checkpoints, scheduling, and human clarification.
+Architecture source of truth: `docs/executable-workflow-engine-spec.md`. This README is only a
+short summary of that binding spec.
+
+- `packages/ai_workflow_engine`: product-neutral, domain-neutral engine core for typed workflow
+  definitions, fan-out, evaluator retrace, planner artifacts, bounded agents, replay, budgets,
+  side-effect gates, traces, checkpoints, scheduling, human clarification, artifact/evidence
+  references, capability registration, policy gates, and the T1 workflow-memory seam.
 - `packages/ai_workflow_tools`: sibling tool library for CLI-agent episodes and console LLM calls over
   `claude -p` / `codex exec`, including MCP config env, `input_assets` fingerprint provenance,
   artifact salvage, `new_artifact_count`, and subscription-notional cost reporting.
+
+The north star is one pluggable engine across the complexity gradient: a simple Todoist/reminder flow
+should stay a tiny workflow, while Anki, GoPro video/pipeline planning, and MageQA QA-session
+planning can opt into planners, fan-out, bounded agents, evidence, workflow memory, scheduling, and
+retrace without creating a second runtime.
+
+"Core" here means domain-neutral, not artificially tiny. Universal workflow services such as memory,
+artifact references, replay, policy gates, and evaluation belong in the engine as opt-in mechanics;
+CLI/browser agents, TTS/STT, image generation, video analysis, OCR, and VLM processing belong in
+reusable modality packs; Todoist, Anki, GoPro, and MageQA logic belongs in domain packs.
+Workflow memory is shipped only at the T1 agent-prompt layer: `AgentMemory`, `FullReplayMemory`,
+`ImageEvictingMemory`, and the `MemoryStore`/`MemoryNamespace(product, tenant, subject, kind)` /
+`InMemoryMemoryStore` contract. Durable/semantic stores, compacting/windowed/structured memory
+policies, and broader workflow/project memory remain deferred until a named consumer proves the need.
+
+Workers are universal behind the capability contract, not special "LLM nodes": Python functions,
+API/local models, `claude -p`, `codex exec`, CLI/browser agents, media tools, humans, and
+subworkflows all return normalized results while the engine owns validation, branch enforcement,
+budgets, trace, artifacts, retry/retrace/fallback, and declared memory scope.
+
+Generated process authoring is staged: current `FlowArtifact` covers constrained
+step/branch/evaluate flows; the near-term expansion is fan-out, registered subworkflows, and explicit
+data mapping. Full arbitrary generated pipelines are future-stage only and require explicit Artem
+approval after the smaller scope, T2 memory/storage needs, and artifact/evidence storage prove
+functional.
 
 Day-to-day validation is Docker-backed:
 
@@ -33,12 +62,15 @@ Day-to-day validation is Docker-backed:
 ./test.sh unit -- --cov-fail-under=0 -q
 ```
 
-Package release gates:
+Package release gates normally run through the root wrapper:
 
 ```bash
-packages/ai_workflow_engine/scripts/standalone_test.sh
-packages/ai_workflow_tools/scripts/standalone_test.sh
+./test.sh unit -- packages/ai_workflow_engine/tests/ --cov-fail-under=0 -q
+./test.sh unit -- packages/ai_workflow_tools/tests/ --cov-fail-under=0 -q
 ```
+
+The package-local `standalone_test.sh` scripts are release-owner clean-venv checks, not the normal
+contributor path.
 
 ## 🚀 How it Works
 

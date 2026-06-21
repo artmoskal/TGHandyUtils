@@ -5,7 +5,7 @@ import html
 from datetime import datetime, timezone
 from dateutil import parser
 
-from core.initialization import services
+from composition.initialization import services
 from core.logging import get_logger
 from core.exceptions import DatabaseError
 
@@ -94,7 +94,7 @@ async def _send_reminder(task):
     """
     # Check user's notification preferences
     try:
-        from core.container import container
+        from composition.container import container
         recipient_service = container.recipient_service()
         telegram_notifications = recipient_service.are_telegram_notifications_enabled(task.user_id)
     except Exception:

@@ -6,7 +6,7 @@ from aiogram.fsm.context import FSMContext
 from bot import router
 from states.recipient_states import RecipientState
 from keyboards.recipient import get_platform_selection_keyboard
-from core.container import container
+from composition.container import container
 from core.logging import get_logger
 from models.parameter_objects import RecipientCreationData, SharedRecipientCreationData
 from helpers.ui_helpers import escape_markdown

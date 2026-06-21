@@ -12,7 +12,7 @@ from keyboards.recipient import (
     get_trello_configuration_keyboard,
     get_recipient_selection_keyboard
 )
-from core.container import container
+from composition.container import container
 from core.logging import get_logger
 from helpers.ui_helpers import escape_markdown
 
@@ -418,7 +418,7 @@ async def handle_configure_recipient(callback_query: CallbackQuery, state: FSMCo
 async def _handle_google_calendar_oauth(callback_query: CallbackQuery, state: FSMContext):
     """Handle Google Calendar OAuth flow."""
     try:
-        from core.container import container
+        from composition.container import container
         from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
         
         # Get Google OAuth service
