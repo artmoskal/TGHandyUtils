@@ -17,6 +17,7 @@ from ai_workflow_engine.observability_capture import (
     langchain_response_payload,
     llm_request_payload,
     llm_response_payload,
+    mark_engine_worker_observed,
 )
 from ai_workflow_engine.parsing import STRUCTURED_REPAIR_PROMPT
 from ai_workflow_engine.usage import WorkflowBudgetExceeded, invoke_metered_chat
@@ -254,7 +255,9 @@ class StructuredLLMNode:
         from ai_workflow_engine.usage import check_budget_before_call, check_images_per_call
         from ai_workflow_engine.usage import check_input_tokens_per_call, estimate_text_tokens
 
-        request_metadata = {"model_profile": profile.model_dump()} if profile is not None else {}
+        request_metadata = mark_engine_worker_observed(
+            {"model_profile": profile.model_dump()} if profile is not None else {}
+        )
         last_error = ""
         for attempt in range(1, 2 + self.max_repair_rounds):
             try:

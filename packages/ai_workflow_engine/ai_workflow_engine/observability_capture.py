@@ -22,6 +22,7 @@ from ai_workflow_engine.models import (
 
 logger = logging.getLogger(__name__)
 CaptureMode = Literal["off", "full"]
+ENGINE_WORKER_OBSERVED_METADATA_KEY = "_ai_workflow_engine_worker_observed"
 
 _BINARY_FIELD_MARKERS = (
     "base64",
@@ -110,6 +111,17 @@ class ObservationCapture:
             capture_text=True,
             privacy=privacy,
         )
+
+
+def mark_engine_worker_observed(metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Mark an LLM request as already observed by an engine-owned worker."""
+
+    return {**(metadata or {}), ENGINE_WORKER_OBSERVED_METADATA_KEY: True}
+
+
+def is_engine_worker_observed_request(request: Any) -> bool:
+    metadata = getattr(request, "metadata", {}) or {}
+    return bool(metadata.get(ENGINE_WORKER_OBSERVED_METADATA_KEY))
 
 
 def record_observation(

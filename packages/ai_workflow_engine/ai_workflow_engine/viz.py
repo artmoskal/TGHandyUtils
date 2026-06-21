@@ -189,8 +189,10 @@ def render_prompt_manifest(definition: WorkflowDefinition, registry: Any) -> str
     For each node it reports the resolved ``effective_capability`` and, when the registered handler
     exposes them, its prompt templates: a ``StructuredLLMNode``'s ``prompt`` / ``static_prompt`` /
     ``dynamic_prompt`` and an agent capability's planner ``system_prompt``. Deterministic, tool, or
-    dynamically-rendered capabilities are reported as having no static prompt — there is nothing to
-    show until run time, for which use ``ai_workflow_engine.prompt_capture.PromptCapturingLLMClient``.
+    dynamically-rendered capabilities are reported as having no static prompt. Engine-owned LLM workers
+    emit runtime prompt/response observations themselves; use
+    ``ai_workflow_engine.prompt_capture.PromptCapturingLLMClient`` only for external/BYO LLM calls that
+    run outside those workers.
     """
 
     lines = [f"# Prompt manifest: {definition.workflow_id}", ""]

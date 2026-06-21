@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from ai_workflow_engine import (
     InMemoryDetailSink,
+    InMemoryTraceSink,
     LLMRequest,
     LLMResponse,
     StructuredLLMNode,
@@ -14,6 +15,8 @@ from ai_workflow_engine import (
     WorkflowEngineBuilder,
 )
 from ai_workflow_engine.models import ModelProfile
+from ai_workflow_engine.observability_capture import ENGINE_WORKER_OBSERVED_METADATA_KEY
+from ai_workflow_engine.prompt_capture import PromptCapturingLLMClient
 
 pytestmark = pytest.mark.unit
 
@@ -127,6 +130,73 @@ async def test_factory_structured_llm_node_emits_observation_details_without_wra
     assert response_detail.redaction_state == "none"
     assert "observable work" in (prompt_detail.text or "")
     assert '"note": "done"' in (response_detail.text or "")
+
+
+async def test_factory_structured_llm_node_emits_compact_trace_when_detail_capture_off():
+    node = _factory_node("compact_factory_node")
+
+    async def observed(ctx, payload):
+        return await node.run({"what": "compact work"})
+
+    engine = (
+        WorkflowEngineBuilder()
+        .register_capability("observed", observed, kind="llm")
+        .register_workflow(WorkflowBuilder("compact_factory").step("observed").build())
+        .build()
+    )
+
+    result = await engine.run("compact_factory", {})
+
+    assert result.status == "completed"
+    llm_events = [event for event in result.trace if event.phase in {"llm:request", "llm:response"}]
+    assert [event.phase for event in llm_events] == ["llm:request", "llm:response"]
+    assert [event.detail_refs for event in llm_events] == [[], []]
+    blob = "\n".join(event.model_dump_json() for event in llm_events)
+    assert "compact work" not in blob
+    assert "prompt_digest" in blob
+    assert "response_digest" in blob
+
+
+async def test_structured_llm_node_with_prompt_capture_wrapper_does_not_double_emit():
+    trace = InMemoryTraceSink()
+    details = InMemoryDetailSink()
+    seen_metadata = []
+
+    async def inner(request: LLMRequest) -> LLMResponse:
+        seen_metadata.append(dict(request.metadata))
+        return LLMResponse(text='{"note": "done"}', model="wrapped-unit", total_tokens=3)
+
+    wrapped = PromptCapturingLLMClient(inner, trace, detail_sink=details, capture_text=True)
+    node = StructuredLLMNode(
+        name="wrapped_worker_node",
+        config=SimpleNamespace(WORKFLOW_DEFAULT_MODEL="default-model"),
+        output_model=Step,
+        prompt_template="Do {what}.",
+        input_variables=["what"],
+        llm=wrapped,
+    )
+
+    async def observed(ctx, payload):
+        return await node.run({"what": "wrapped work"})
+
+    engine = (
+        WorkflowEngineBuilder()
+        .with_trace_sink(trace)
+        .with_detail_sink(details)
+        .with_detail_text_capture()
+        .register_capability("observed", observed, kind="llm")
+        .register_workflow(WorkflowBuilder("wrapped_worker").step("observed").build())
+        .build()
+    )
+
+    result = await engine.run("wrapped_worker", {})
+
+    assert result.status == "completed"
+    assert seen_metadata[0][ENGINE_WORKER_OBSERVED_METADATA_KEY] is True
+    llm_events = [event for event in result.trace if event.phase in {"llm:request", "llm:response"}]
+    assert [event.phase for event in llm_events] == ["llm:request", "llm:response"]
+    llm_details = [detail for detail in details.details if detail.kind in {"rendered_prompt", "llm_response"}]
+    assert [detail.kind for detail in llm_details] == ["rendered_prompt", "llm_response"]
 
 
 async def test_absent_model_profile_keeps_default_behavior():

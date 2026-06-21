@@ -635,6 +635,8 @@ def format_trace_events(
         if event.error:
             lines.append(f"   ⚠ {event.error}")
         for key, value in (event.metadata or {}).items():
+            if _omit_trace_metadata_key(key):
+                continue
             if value in (None, "", [], {}):
                 continue
             rendered = str(value).replace("\n", " ")
@@ -657,6 +659,24 @@ def format_trace_events(
             else:
                 text = suffix[-max_total_len:]
     return text
+
+
+_TRACE_METADATA_OMIT_KEYS = {
+    "detail_kind",
+    "detail_digest",
+    "prompt_digest",
+    "response_digest",
+    "projection_digest",
+    "plan_digest",
+    "run_id",
+    "workflow_id",
+    "workflow_type",
+    "user_id",
+}
+
+
+def _omit_trace_metadata_key(key: str) -> bool:
+    return key in _TRACE_METADATA_OMIT_KEYS or key.startswith("_ai_workflow_engine_")
 
 
 def _format_trace_usage_footer(usage: WorkflowUsageSummary) -> str:

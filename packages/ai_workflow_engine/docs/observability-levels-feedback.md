@@ -47,8 +47,9 @@ The main producers are engine-owned:
 - `StructuredLLMNode` emits rendered prompt and LLM response details at the call site, including
   clients built through `llm_factory`.
 - `LLMAgentPlanner` emits memory projection, rendered prompt, and LLM response details.
-- `PromptCapturingLLMClient` remains a bring-your-own adapter for external `LLMCallable` clients,
-  but products should prefer engine-worker capture when using engine LLM nodes/agents.
+- `PromptCapturingLLMClient` remains a bring-your-own adapter for external `LLMCallable` calls.
+  Do not wrap clients passed into engine-owned LLM nodes/agents; those workers self-capture and mark
+  their requests so the wrapper delegates without double-emitting.
 
 ## Viewer
 

@@ -9,6 +9,7 @@ from langchain_core.prompts import PromptTemplate
 from ai_workflow_engine import build_observation_graph, observation_graph_to_html
 from ai_workflow_engine.engine import InMemoryDetailSink
 from ai_workflow_engine.llm_protocol import ChatMessage, LLMRequest, LLMResponse, ToolCallRequest
+from ai_workflow_engine.observability_capture import mark_engine_worker_observed
 from ai_workflow_engine.prompt_capture import PromptCapturingLLMClient
 from ai_workflow_engine.viz import render_prompt_manifest
 from ai_workflow_engine.vision import ImageInput
@@ -95,6 +96,29 @@ async def test_prompt_capturing_client_records_compact_trace_without_pseudo_deta
     assert "RAW_SECRET_BYTES" not in blob
     assert event.phase == "llm:request"
     assert event.detail_refs == []
+    assert details.details == []
+
+
+async def test_prompt_capturing_client_skips_requests_already_observed_by_engine_worker():
+    sink = _CollectSink()
+    details = InMemoryDetailSink()
+    seen = {}
+
+    async def inner(request: LLMRequest) -> LLMResponse:
+        seen["request"] = request
+        return LLMResponse(text="ok")
+
+    client = PromptCapturingLLMClient(inner, sink, detail_sink=details, capture_text=True)
+    request = LLMRequest(
+        messages=[ChatMessage(role="user", content="hello")],
+        metadata=mark_engine_worker_observed({"agent_node": "worker"}),
+    )
+
+    response = await client(request)
+
+    assert response.text == "ok"
+    assert seen["request"] is request
+    assert sink.events == []
     assert details.details == []
 
 

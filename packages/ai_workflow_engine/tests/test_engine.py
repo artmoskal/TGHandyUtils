@@ -3010,6 +3010,41 @@ def test_format_trace_events_preserves_usage_footer_when_trace_is_truncated():
     assert "notional $0.0200" in text
 
 
+def test_format_trace_events_omits_observation_noise_to_keep_domain_decisions_visible():
+    from ai_workflow_engine import format_trace_events
+    from ai_workflow_engine.models import WorkflowTraceEvent
+
+    events = [
+        WorkflowTraceEvent(
+            node=f"llm_{index}",
+            decision="llm:request",
+            metadata={
+                "detail_kind": "rendered_prompt",
+                "detail_digest": "x" * 64,
+                "prompt_digest": "x" * 64,
+                "workflow_id": "wf-hidden",
+                "output_model": "UsefulModel",
+            },
+        )
+        for index in range(4)
+    ]
+    events.append(
+        WorkflowTraceEvent(
+            node="collect_axis",
+            decision="artifacts_salvaged",
+            metadata={"new_artifact_count": 1},
+        )
+    )
+
+    text = format_trace_events(events, title="Trace", max_total_len=900)
+
+    assert "artifacts_salvaged" in text
+    assert "new_artifact_count: 1" in text
+    assert "detail_digest" not in text
+    assert "prompt_digest" not in text
+    assert "wf-hidden" not in text
+
+
 async def test_executor_runs_external_process_step():
     # §4 node type: external process/script/tool — a step bound to ExternalProcessCapability,
     # executed by the engine (side-effect gated by the profile).

@@ -21,6 +21,7 @@ from ai_workflow_engine import (
     build_llm_agent_capability,
     render_full_replay_messages,
 )
+from ai_workflow_engine._runtime_state import observation_capture_scope
 from ai_workflow_engine.engine.capabilities import CapabilityRegistry, CapabilityRuntime
 from ai_workflow_engine.models import (
     AgentRunRequest,
@@ -35,6 +36,7 @@ from ai_workflow_engine.models import (
     WorkflowRunContext,
     WorkflowUsageSummary,
 )
+from ai_workflow_engine.observability_capture import ObservationCapture
 from ai_workflow_engine.usage import WorkflowBudget, WorkflowBudgetExceeded, WorkflowUsageContext
 from ai_workflow_engine.usage import workflow_usage_scope
 from ai_workflow_engine.vision import ImageInput
@@ -471,6 +473,30 @@ async def test_llm_agent_planner_records_prompt_and_response_details_when_full_c
     assert response_detail.redaction_state == "none"
     assert "Agent prompt" in (prompt_detail.text or "")
     assert '"caption": "done"' in (response_detail.text or "")
+
+
+async def test_llm_agent_planner_prefers_ambient_observation_capture():
+    ambient_trace = InMemoryTraceSink()
+    ambient_details = InMemoryDetailSink()
+    client = ScriptedLLM(LLMResponse(text='{"caption": "done"}', model="unit-agent", total_tokens=5))
+    planner = _planner(client)  # private planner capture is off; ambient run capture should win.
+    context = _context()
+    capture = ObservationCapture(ambient_trace, detail_sink=ambient_details, mode="full")
+
+    with observation_capture_scope(capture):
+        with workflow_usage_scope(WorkflowUsageContext(context.run_context, context.usage_summary, WorkflowBudget())):
+            decision = await planner.next_step(
+                context,
+                AgentRunRequest(prompt="Ambient prompt", allowed_tools=[]),
+                [],
+            )
+
+    assert decision.action == "finish"
+    kinds = [detail.kind for detail in ambient_details.details]
+    assert "memory_projection" in kinds
+    assert "rendered_prompt" in kinds
+    assert "llm_response" in kinds
+    assert any(event.phase == "llm:request" for event in ambient_trace.events)
 
 
 def test_image_evicting_memory_keeps_recent_image_refs_and_audits_evicted_turns():
