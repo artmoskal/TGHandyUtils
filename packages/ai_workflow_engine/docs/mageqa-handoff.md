@@ -9,17 +9,13 @@
 > factory/seam; a direct provider client (e.g. `OpenAI(...)`) is an explicit escape hatch for non-chat
 > needs (audio) only — otherwise you lose observability, cost accounting, and model-swap.
 
-Status: **engine implemented and ready for adoption** (2026-06-12). The `WorkflowDefinition` /
-`WorkflowExecutor` / DI layer this doc previously waited on is live and proven (Anki migrated +
-live-tested; one `WorkflowExecutor` runs the product-neutral examples, including site-audit fan-out
-and the fake-backed three-axis pilot). The first sibling tools package, `ai_workflow_tools`, now
-ships CLI-agent and console-LLM support for `claude -p` / `codex exec`.
-Current working-tree delta (2026-06-21): after the v0.4.x guide text, the engine also has the T1
-memory seam (`AgentMemory`, `FullReplayMemory`, `ImageEvictingMemory`, `MemoryStore`,
-`MemoryNamespace(product, tenant, subject, kind)`, `InMemoryMemoryStore`), canonical memory modes
-`full_replay` / `image_evicting`, and the non-default memory snapshot/resume determinism test.
-Durable/semantic memory, FlowArtifact v1.5, ProcessArtifact/v2, and browser/no-API executors are
-still deferred. Consumers should still move tag-to-tag; do not track the live branch implicitly.
+Status: **ready for adoption — pin `engine-v0.6.0`** and build a wheel; never track the live branch.
+The `WorkflowDefinition` / `WorkflowExecutor` / DI layer is live and proven (Anki runs on it in
+production; the product-neutral examples include site-audit fan-out and the three-axis pilot). The
+sibling `ai_workflow_tools` package ships CLI-agent + console-LLM support (`claude -p` / `codex exec`)
+and the media pack. See **"What v0.6 gives you"** at the end for the full capability list.
+Not in v0.6 (deferred): durable/semantic memory beyond the `MemoryStore` seam, FlowArtifact v1.5,
+ProcessArtifact/v2, browser/no-API executors.
 Source needs: `/Users/artemm/PycharmProjects/MageQA/docs/17-qa-orchestrator-architecture.md`,
 `/Users/artemm/PycharmProjects/MageQA/docs/14-agentic-tester-architecture.md`.
 
@@ -283,112 +279,46 @@ examples: `ai_workflow_engine/examples.py` (`build_demo_engine`, `SiteAuditPack`
 
 ---
 
-## What's new since this guide's examples were written (engine-completion delta, 2026-06-12)
+## What v0.6 gives you
 
-Implemented and gate-verified (commits up to `b014268`+):
-- **Multi-turn + tool-calling LLM protocol** (`ChatMessage`/`ToolSpec`/`ToolCallRequest`/`ToolResult`
-  on `LLMRequest/LLMResponse`) and a **shipped agent brain**: `LLMAgentPlanner` (screenshot→vision
-  loop, budget per turn, structured finish with repair) + `ReplayPlanner` (freeze a recorded episode
-  into a rigid, zero-LLM regression). Wire one line: `build_llm_agent_capability(llm, engine.registry,
-  allowed_tools=[...], runtime=engine.runtime)` — pass the engine runtime so episode traces join the
-  same sink.
-- **CLI worker economics** (`ai_workflow_tools`): `CliAgentCapability` (claude_p / codex_exec flavors,
-  MCP config incl. `env`, workspace salvage→`EvidenceRef`s, `new_artifact_count`,
-  `input_assets` staged + fingerprinted into the episode record) and `ConsoleLLMClient` (plain
-  text→JSON over a subscription CLI behind structured nodes).
-- **Budget matrix** (`max_worker_calls`, per-call input/output token, image, and USD caps — all
-  Optional) and **honest cost classes**: `metered` vs `subscription_notional`; `cost_known=false`
-  instead of phantom $0; the notional total renders only when subscription events exist.
-- **Per-call output-token overflow records `truncated_by_budget` on the usage event and the run
-  CONTINUES** (the output is already paid for); hard stops remain `max_worker_calls` + USD caps.
-- **Live trace sinks**: `CallbackTraceSink`, `AsyncQueueTraceSink` (drop-oldest, never blocks the
-  run), `TeeTraceSink` (live + JSONL together).
-- **The three-axis pilot** (rigid/semi-rigid/flexible execution × set-composition × freeze-to-replay)
-  lives at `ai_workflow_tools.pilots.run_toy_three_axis_site_audit_pilot` — read it as the canonical
-  end-to-end recipe; its test proves the replay run makes ZERO LLM calls.
-- Your completion spec (engine-completion-spec.md) is fully implemented — WP1–WP7 plus review items AC-R3…R6; adoption can start at the pilot + the §7.5 console quickstart in the tools README.
+The full capability set in `engine-v0.6.0` (older tags are unsupported — no deltas to track):
 
-**Also landed 2026-06-12 (later — all additive, no breaking changes):**
-- **Flow-as-data**: `await engine.run_authored_flow(FlowArtifact(...), payload)` — an LLM can emit
-  a constrained workflow (steps/branches/gates), validated exhaustively before compiling, run on
-  the same rails. AI-authored flows cannot contain planners/flow-authors (recursion firewall).
-- **Bounded recursive planning**: `.plan(..., max_plan_depth=2, max_total_planned_tasks=32)` —
-  planned tasks may themselves be planners, depth pre-set to 1 (flat) unless you opt in; cumulative
-  task budget caps total work across all levels.
-- **Parallel sub-workflows**: `engine.register_workflow_capability("run_child", "child_flow")` then
-  `.fanout(..., capability="run_child")` — child workflows in parallel with failure isolation.
-- **Visualizer**: `ai_workflow_viewer.workflow_to_mermaid(defn, result)` /
-  `ai_workflow_viewer.save_workflow_html(...)` — the state
-  machine as a diagram, with executed-path overlay (status colors, ✓ on taken transitions).
-
-## v0.2.0 migration (tag `engine-v0.2.0` = 8d58f88, 2026-06-12) — upgrade window OPEN
-
-Retag → rebuild wheel → run your suite (719/213/21 green at the tag). Expected work:
-
-1. **Builder-based code: nothing breaks.**
-2. Raw-definition construction/introspection only: `WorkflowDefinition.edges` →
-   `.transitions`, `WorkflowEdge` → `Transition` (`conditional` → `policy`).
-3. Any branch label that closes a loop now REQUIRES a pre-set gate:
-   `.branch(..., bounds={"label": N}, exhausted={"label": "escape"})` — ungated cycles fail
-   validation loudly by design. Audit re-check loops MUST declare their bounds (this replaces
-   "loop until the recursion limit kills it" with a declared, traced gate).
-
-Most relevant for MageQA packs: durable suspend/resume for long audits
-(`result.snapshot` + `engine.resume`, budgets cumulative across halves); `register_guard`
-for deterministic routing in QC gates (zero LLM cost, `decision_policy` traced); authored
-bounded loops in flow-as-data (`FlowNodeSpec.branch_bounds`/`branch_exhausted`).
-
-## v0.3.0 delta (additive — upgrading from v0.2.0 needs NO code changes)
-
-Self-describing machine: declare label semantics once (`.branch(..., describe={...})`), let
-deciders receive their legal moves + live gate budgets via `inject_machine=True`
-(`context.metadata["machine"]`), and feed your flow-author prompts with
-`render_capability_catalog(engine.registry, allowed)` instead of hand-maintained tool lists.
-`render_machine_card(definition, node_id, state)` is available standalone for debugging and UIs.
-
-### How to use it (MageQA)
-
-```python
-# 1) QC re-check loops: bounds + semantics declared together; the gate budget is VISIBLE
-#    to the judging LLM, so "one more pass?" decisions are made knowing what remains.
-.branch(
-    "qc_gate",
-    {"recheck": "run_checks", "pass": "report", "fail": "escalate"},
-    bounds={"recheck": 2},
-    exhausted={"recheck": "escalate"},
-    describe={
-        "recheck": "findings borderline — run the checks once more",
-        "pass":    "all findings verified — produce the report",
-        "fail":    "verification failed — escalate to a human",
-    },
-    inject_machine=True,
-)
-
-# 2) The judge capability sees its legal moves with live budgets:
-def judge(context, payload):
-    card = context.metadata["machine"]   # "- recheck -> run_checks — ... [gate: 1 of 2 remaining]"
-    ...
-
-# 3) Deterministic QC gates without an LLM call (severity thresholds, count checks):
-engine.register_guard("qc_gate", lambda p: "fail" if p.criticals else "pass")
-
-# 4) Builder-pack authoring prompts: engine-generated capability catalog with the firewall
-#    stated inline (planner/flow-author caps are marked NOT-AUTHORABLE):
-from ai_workflow_engine import render_capability_catalog
-catalog = render_capability_catalog(engine.registry, allowed_side_effects=allowed)
-
-# 5) Authored flows self-describe the same way:
-FlowNodeSpec(kind="branch", id="qc_gate", branches={...},
-             branch_bounds={"recheck": 2}, describe={"recheck": "borderline — once more"})
-```
-
-Pairing with v0.2.0: long audits still suspend/resume via `result.snapshot` + `engine.resume`;
-the card's live counts come from the same counters the snapshot preserves, so a resumed judge
-sees the loop budget it already spent before suspension.
-
-## v0.4.0 delta
-
-Media generation (image/voice) now lives in `ai_workflow_tools.media`: the engine remains
-domain/provider-neutral while modality-specific providers live in tool packs. `vision`/image-input
-stays in the engine as LLM protocol. Breaking ONLY for direct media imports — none in your current
-integration. Install `ai-workflow-tools[media]` if you adopt the media pack.
+- **Agent brain + LLM protocol.** Multi-turn, tool-calling protocol (`ChatMessage`/`ToolSpec`/
+  `ToolCallRequest`/`ToolResult`); a shipped `LLMAgentPlanner` (screenshot→vision loop, per-turn
+  budget, structured finish with repair) and `ReplayPlanner` (freeze a recorded episode into a
+  zero-LLM regression). One-line wire: `build_llm_agent_capability(llm, engine.registry,
+  allowed_tools=[...], runtime=engine.runtime)`.
+- **CLI worker economics** (`ai_workflow_tools`): `CliAgentCapability` (`claude_p`/`codex_exec`, MCP
+  config incl. `env`, workspace salvage→`EvidenceRef`s, `new_artifact_count`, fingerprinted
+  `input_assets`) and `ConsoleLLMClient` (text→JSON over a subscription CLI behind structured nodes).
+  The three-axis pilot (`ai_workflow_tools.pilots.run_toy_three_axis_site_audit_pilot`) is the
+  canonical end-to-end recipe; its test proves the replay run makes ZERO LLM calls.
+- **Budget + honest cost.** `max_worker_calls`, per-call token/image/USD caps (all Optional);
+  `metered` vs `subscription_notional` (`cost_known=false`, never phantom $0); per-call output
+  overflow records `truncated_by_budget` and the run continues; hard stops are `max_worker_calls` +
+  USD caps.
+- **Self-describing machine.** Declare label semantics once (`.branch(..., describe={...})`); deciders
+  get their legal moves + live gate budgets via `inject_machine=True` (`context.metadata["machine"]`).
+  Any branch label that closes a loop REQUIRES a pre-set gate (`bounds={"label": N}`,
+  `exhausted={"label": "escape"}`) — ungated cycles fail validation loudly. Zero-LLM routing via
+  `engine.register_guard(...)` (traced `decision_policy`). Feed flow-author prompts with
+  `render_capability_catalog(engine.registry, allowed)`.
+- **Flow-as-data + planning.** `engine.run_authored_flow(FlowArtifact(...), payload)` — an LLM emits a
+  constrained workflow (steps/branches/gates), validated before compiling, run on the same rails (no
+  nested planners/flow-authors — recursion firewall). Bounded recursive planning (`.plan(...,
+  max_plan_depth=, max_total_planned_tasks=)`); parallel sub-workflows
+  (`register_workflow_capability` + `.fanout(..., capability="run_child")`, failure-isolated).
+- **Durable suspend/resume + memory.** Long runs suspend/resume via `result.snapshot` +
+  `engine.resume` (budgets cumulative). Cross-run memory via the `MemoryStore` seam
+  (`MemoryNamespace`, `MemoryRecord`, `InMemoryMemoryStore`; bring your own sqlite for durability).
+- **Media** (`ai_workflow_tools.media`): image/voice providers live in tool packs; the engine stays
+  provider-neutral (`vision`/image-input stays in the engine as LLM protocol). Install
+  `ai-workflow-tools[media]`.
+- **Observability — log→bundle→viewer.** A run appends durable events to a per-run bundle
+  (`observations/<run_id>/{trace,details,usage}.jsonl` + `meta.json` + `definition.json`); nothing is
+  rendered in the hot path. The separate **`ai_workflow_viewer`** package reads bundles (via
+  `EventSource`/`FileEventSource`) and builds every view on demand — the state-machine diagram
+  (`workflow_to_mermaid` / `save_workflow_html`), the observation graph + timeline
+  (`save_observation_html`), and a run chooser / JSON-detail server (`JsonlObservationViewer` /
+  `serve_viewer`). Capture has an off-switch; bundle dir defaults to `data/observations` (override
+  `OBSERVATION_DIR`). The disk bundle is transport #1 — swappable to a bus/live consumer later.

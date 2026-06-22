@@ -9,17 +9,13 @@
 > factory/seam; a direct provider client (e.g. `OpenAI(...)`) is an explicit escape hatch for non-chat
 > needs (audio) only — otherwise you lose observability, cost accounting, and model-swap.
 
-Status: **engine implemented and ready for adoption** (2026-06-12). The `WorkflowDefinition` /
-`WorkflowExecutor` / DI layer this doc previously waited on is live and proven (Anki migrated +
-live-tested; one `WorkflowExecutor` runs the product-neutral examples). The first sibling tools
-package, `ai_workflow_tools`, now ships CLI-agent and console-LLM support for `claude -p` /
-`codex exec`.
-Current working-tree delta (2026-06-21): after the v0.4.x guide text, the engine also has the T1
-memory seam (`AgentMemory`, `FullReplayMemory`, `ImageEvictingMemory`, `MemoryStore`,
-`MemoryNamespace(product, tenant, subject, kind)`, `InMemoryMemoryStore`), canonical memory modes
-`full_replay` / `image_evicting`, and the non-default memory snapshot/resume determinism test.
-Durable/semantic memory, FlowArtifact v1.5, ProcessArtifact/v2, and browser/no-API executors are
-still deferred. Consumers should still move tag-to-tag; do not track the live branch implicitly.
+Status: **ready for adoption — pin `engine-v0.6.0`** and build a wheel; never track the live branch.
+The `WorkflowDefinition` / `WorkflowExecutor` / DI layer is live and proven (Anki runs on it in
+production; one `WorkflowExecutor` runs the product-neutral examples). The sibling `ai_workflow_tools`
+package ships CLI-agent + console-LLM support (`claude -p` / `codex exec`) and the media pack. See
+**"What v0.6 gives you"** at the end for the full capability list.
+Not in v0.6 (deferred): durable/semantic memory beyond the `MemoryStore` seam, FlowArtifact v1.5,
+ProcessArtifact/v2, browser/no-API executors.
 Source needs: `/Users/artemm/PycharmProjects/gopro-streaming/docs/architecture/workflow-execution-engine-requirements.md`,
 `/Users/artemm/PycharmProjects/gopro-streaming/docs/universal_event_descriptor/HOME_INVENTORY_CASE.md`.
 
@@ -231,109 +227,53 @@ import from `ai_workflow_tools.cli_agents`: `CliAgentCapability`, `CliAgentReque
 
 ---
 
-## What's new since this guide's examples were written (engine-completion delta, 2026-06-12)
+## What v0.6 gives you
 
-Implemented and gate-verified (commits up to `b014268`+):
-- **Multi-turn + tool-calling LLM protocol** (`ChatMessage`/`ToolSpec`/`ToolCallRequest`/`ToolResult`
-  on `LLMRequest/LLMResponse`) and a **shipped agent brain**: `LLMAgentPlanner` (screenshot→vision
-  loop, budget per turn, structured finish with repair) + `ReplayPlanner` (freeze a recorded episode
-  into a rigid, zero-LLM regression). Wire one line: `build_llm_agent_capability(llm, engine.registry,
-  allowed_tools=[...], runtime=engine.runtime)` — pass the engine runtime so episode traces join the
-  same sink.
-- **CLI worker economics** (`ai_workflow_tools`): `CliAgentCapability` (claude_p / codex_exec flavors,
-  MCP config incl. `env`, workspace salvage→`EvidenceRef`s, `new_artifact_count`,
-  `input_assets` staged + fingerprinted into the episode record) and `ConsoleLLMClient` (plain
-  text→JSON over a subscription CLI behind structured nodes).
-- **Budget matrix** (`max_worker_calls`, per-call input/output token, image, and USD caps — all
-  Optional) and **honest cost classes**: `metered` vs `subscription_notional`; `cost_known=false`
-  instead of phantom $0; the notional total renders only when subscription events exist.
-- **Per-call output-token overflow records `truncated_by_budget` on the usage event and the run
-  CONTINUES** (the output is already paid for); hard stops remain `max_worker_calls` + USD caps.
-- **Live trace sinks**: `CallbackTraceSink`, `AsyncQueueTraceSink` (drop-oldest, never blocks the
-  run), `TeeTraceSink` (live + JSONL together).
-- **The three-axis pilot** (rigid/semi-rigid/flexible execution × set-composition × freeze-to-replay)
-  lives at `ai_workflow_tools.pilots.run_toy_three_axis_site_audit_pilot` — read it as the canonical
-  end-to-end recipe; its test proves the replay run makes ZERO LLM calls.
-- Reminder (threading contract): one `WorkflowExecutor` ↔ one event loop; sidecar threads marshal via `asyncio.run_coroutine_threadsafe(engine.run(...), engine_loop)`.
+The full capability set in `engine-v0.6.0` (older tags are unsupported — no deltas to track):
 
-**Also landed 2026-06-12 (later — all additive, no breaking changes):**
-- **Flow-as-data**: `await engine.run_authored_flow(FlowArtifact(...), payload)` — an LLM can emit
-  a constrained workflow (steps/branches/gates), validated exhaustively before compiling, run on
-  the same rails. AI-authored flows cannot contain planners/flow-authors (recursion firewall).
-- **Bounded recursive planning**: `.plan(..., max_plan_depth=2, max_total_planned_tasks=32)` —
-  planned tasks may themselves be planners, depth pre-set to 1 (flat) unless you opt in; cumulative
-  task budget caps total work across all levels.
-- **Parallel sub-workflows**: `engine.register_workflow_capability("run_child", "child_flow")` then
-  `.fanout(..., capability="run_child")` — child workflows in parallel with failure isolation.
-- **Visualizer**: `ai_workflow_viewer.workflow_to_mermaid(defn, result)` /
-  `ai_workflow_viewer.save_workflow_html(...)` — the state
-  machine as a diagram, with executed-path overlay (status colors, ✓ on taken transitions).
+- **Agent brain + LLM protocol.** Multi-turn, tool-calling protocol (`ChatMessage`/`ToolSpec`/
+  `ToolCallRequest`/`ToolResult`); a shipped `LLMAgentPlanner` (screenshot→vision loop, per-turn
+  budget, structured finish with repair) and `ReplayPlanner` (freeze a recorded episode into a
+  zero-LLM regression). One-line wire: `build_llm_agent_capability(llm, engine.registry,
+  allowed_tools=[...], runtime=engine.runtime)`.
+- **CLI worker economics** (`ai_workflow_tools`): `CliAgentCapability` (`claude_p`/`codex_exec`, MCP
+  config incl. `env`, workspace salvage→`EvidenceRef`s, `new_artifact_count`, fingerprinted
+  `input_assets`) and `ConsoleLLMClient` (text→JSON over a subscription CLI behind structured nodes).
+  The three-axis pilot (`ai_workflow_tools.pilots.run_toy_three_axis_site_audit_pilot`) is the
+  canonical end-to-end recipe; its test proves the replay run makes ZERO LLM calls.
+- **Budget + honest cost.** `max_worker_calls`, per-call token/image/USD caps (all Optional);
+  `metered` vs `subscription_notional` (`cost_known=false`, never phantom $0); per-call output
+  overflow records `truncated_by_budget` and the run continues; hard stops are `max_worker_calls` +
+  USD caps.
+- **Self-describing machine.** Declare label semantics once (`.branch(..., describe={...})`); deciders
+  get their legal moves + live gate budgets via `inject_machine=True` (`context.metadata["machine"]`).
+  Any branch label that closes a loop REQUIRES a pre-set gate (`bounds={"label": N}`,
+  `exhausted={"label": "escape"}`) — ungated cycles fail validation loudly. Zero-LLM routing via
+  `engine.register_guard(...)` (traced `decision_policy`). Feed the S1 goal-compiler prompt with
+  `render_capability_catalog(engine.registry, allowed)` (side effects outside the allow-list marked
+  DENIED, AI-writers NOT-AUTHORABLE); `render_machine_card(definition, node_id)` renders any state
+  standalone for dashboards.
+- **Flow-as-data + planning.** `engine.run_authored_flow(FlowArtifact(...), payload)` — an LLM emits a
+  constrained workflow (steps/branches/gates), validated before compiling, run on the same rails (no
+  nested planners/flow-authors — recursion firewall). Bounded recursive planning (`.plan(...,
+  max_plan_depth=, max_total_planned_tasks=)`); parallel sub-workflows
+  (`register_workflow_capability` + `.fanout(..., capability="run_child")`, failure-isolated).
+- **Durable suspend/resume + memory.** Long runs suspend/resume via `result.snapshot` +
+  `engine.resume(snapshot, event)` — works **cross-process** for ask-location clarification (payloads
+  must be JSON-serializable); `model_dump_json()` round-trips the machine for goal-compiler storage.
+  Cross-run memory via the `MemoryStore` seam (`MemoryNamespace`, `MemoryRecord`,
+  `InMemoryMemoryStore`; bring your own sqlite for durability).
+- **Media** (`ai_workflow_tools.media`): image/voice providers live in tool packs; the engine stays
+  provider-neutral (`vision`/image-input stays in the engine as LLM protocol). Install
+  `ai-workflow-tools[media]`.
+- **Observability — log→bundle→viewer.** A run appends durable events to a per-run bundle
+  (`observations/<run_id>/{trace,details,usage}.jsonl` + `meta.json` + `definition.json`); nothing is
+  rendered in the hot path. The separate **`ai_workflow_viewer`** package reads bundles (via
+  `EventSource`/`FileEventSource`) and builds every view on demand — the state-machine diagram
+  (`workflow_to_mermaid` / `save_workflow_html`), the observation graph + timeline
+  (`save_observation_html`), and a run chooser / JSON-detail server (`JsonlObservationViewer` /
+  `serve_viewer`). Capture has an off-switch; bundle dir defaults to `data/observations` (override
+  `OBSERVATION_DIR`). The disk bundle is transport #1 — swappable to a bus/live consumer later.
 
-## v0.2.0 migration (tag `engine-v0.2.0` = 8d58f88, 2026-06-12) — upgrade window OPEN
-
-Retag → rebuild wheel → run your suite (719/213/21 green at the tag). Expected work:
-
-1. **Builder-based code (all current GoPro integration): nothing breaks.**
-2. Raw-definition construction/introspection only: `WorkflowDefinition.edges` →
-   `.transitions`, `WorkflowEdge` → `Transition` (`conditional` → `policy`).
-3. Any branch label that closes a loop now REQUIRES a pre-set gate:
-   `.branch(..., bounds={"label": N}, exhausted={"label": "escape"})` — ungated cycles fail
-   validation loudly by design. If the S1 goal-compiler emits loops, it must emit bounds.
-
-Earmarked for GoPro (your ACK list, all landed): `engine.resume(snapshot, event)` for
-ask-location clarification across processes (payloads must be JSON-serializable for the
-cross-process path); `register_guard` for deterministic zero-LLM gates;
-`model_dump_json()` round-trip for goal-compiler machine storage.
-
-## v0.3.0 delta (additive — upgrading from v0.2.0 needs NO code changes)
-
-Self-describing machine: declare label semantics once (`.branch(..., describe={...})`), let
-deciders receive their legal moves + live gate budgets via `inject_machine=True`
-(`context.metadata["machine"]`), and feed your flow-author prompts with
-`render_capability_catalog(engine.registry, allowed)` instead of hand-maintained tool lists.
-`render_machine_card(definition, node_id, state)` is available standalone for debugging and UIs.
-
-### How to use it (GoPro)
-
-```python
-# 1) Declare label semantics ONCE in the machine — stop maintaining them in decider prompts.
-.branch(
-    "evidence_quality_gate",
-    {"enough": "extract_items", "ambiguous": "ask_location", "bad": "fallback_or_fail"},
-    describe={
-        "enough":    "frames clearly show distinct items to inventory",
-        "ambiguous": "items visible but location/context unclear — ask the user",
-        "bad":       "footage unusable (dark/blurred) — fall back or fail",
-    },
-    inject_machine=True,   # this node's decider receives its legal moves at call time
-)
-
-# 2) The decider reads the card — labels, semantics, LIVE gate budgets — from metadata:
-def decide(context, payload):
-    card = context.metadata["machine"]
-    # e.g. "- retry -> select_evidence — ... [gate: 1 of 2 remaining]"
-    prompt = f"{card}\n\nEvidence:\n{payload}\n\nReturn exactly one label."
-    ...
-
-# 3) Zero-LLM routing where a predicate suffices (decision_policy='deterministic' in trace):
-engine.register_guard("evidence_quality_gate", lambda p: "enough" if p.frames else "bad")
-
-# 4) S1 goal-compiler: feed the author prompt the engine-generated catalog, not a hand list —
-#    side effects outside the allow-list are marked (DENIED), AI-writers marked NOT-AUTHORABLE:
-from ai_workflow_engine import render_capability_catalog
-catalog = render_capability_catalog(engine.registry, allowed_side_effects=allowed)
-
-# 5) Debugging / dashboards: render any state's moves standalone:
-from ai_workflow_engine import render_machine_card
-print(render_machine_card(definition, "evidence_quality_gate"))
-```
-
-Pairing with v0.2.0: when the compiler authors loops, emit `branch_bounds` + `describe` together —
-the card then shows navigators exactly how much loop budget remains before the gate trips.
-
-## v0.4.0 delta
-
-Media generation (image/voice) now lives in `ai_workflow_tools.media`: the engine remains
-domain/provider-neutral while modality-specific providers live in tool packs. `vision`/image-input
-stays in the engine as LLM protocol. Breaking ONLY for direct media imports — none in your current
-integration. Install `ai-workflow-tools[media]` if you adopt the media pack.
+**GoPro threading contract:** one `WorkflowExecutor` ↔ one event loop; sidecar threads marshal via
+`asyncio.run_coroutine_threadsafe(engine.run(...), engine_loop)`.
