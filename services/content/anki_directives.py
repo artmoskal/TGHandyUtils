@@ -15,6 +15,11 @@ from typing import Optional, Tuple
 
 _TAG_RE = re.compile(r"\[i(?:\s+([^\]]+))?\]", re.IGNORECASE)
 _CLOSE_TAG_RE = re.compile(r"\[i\]", re.IGNORECASE)
+# Only a message that is ENTIRELY a speaker prefix (e.g. "Name:") is dropped. We deliberately do NOT
+# strip "Name: <content>" speaker prefixes from the source: multi-speaker dialogues need the speaker
+# context, and removing it here would lose who-said-what. Keeping the sender out of the *card* is the
+# LLM's job at the prompt level (the planner/render prompts must ignore speaker labels), NOT a
+# deterministic strip here. (Design decision, Artem 2026-06-22 — do not "fix" by stripping.)
 _SPEAKER_PREFIX_ONLY_RE = re.compile(r"^(?:[^:\n]{1,80}:\s*)+$")
 
 HELP_TEXT = (

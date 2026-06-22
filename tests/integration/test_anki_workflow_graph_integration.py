@@ -25,6 +25,7 @@ from services.content.anki_scenario_planners import (
 from services.content.anki_quality_evaluator import AnkiRenderedCardEvaluator
 from services.content.anki_source import build_content_source
 from ai_workflow_engine.engine import InMemoryDetailSink
+from ai_workflow_viewer import JsonlObservationViewer, build_observation_graph
 from ai_workflow_tools.media.image_generation import OpenAIImageGenerator
 
 pytestmark = pytest.mark.integration
@@ -87,6 +88,7 @@ def _production_graph(
         generated_media_root=str(tmp_path / "generated_media"),
         detail_sink=detail_sink,
         capture_observation_detail_text=capture_observation_detail_text,
+        observation_bundle_dir=str(tmp_path / "observations"),
     )
 
 
@@ -238,7 +240,11 @@ async def test_anki_workflow_real_observation_graph_html(tmp_path):
     rendered = await graph.run(source)
 
     assert rendered.cards
-    observation = graph.last_observation_graph()
+    bundle_path = graph.last_observation_bundle_path()
+    assert bundle_path
+    viewer = JsonlObservationViewer.from_run_bundle(bundle_path, title="Anki runtime observation (paid)")
+    run = viewer.source.read()
+    observation = build_observation_graph(run.definition, run.trace_events, run.usage_events, run.details, run_id=run.run_id)
     assert observation.run_id
     assert observation.details
     assert any(detail.kind == "tool_payload" for detail in observation.details.values())
@@ -246,12 +252,7 @@ async def test_anki_workflow_real_observation_graph_html(tmp_path):
     assert any(entry.phase == "tool:request" and entry.decision == "start" for entry in observation.timeline)
     assert all(entry.decision != "tool:payload" for entry in observation.timeline)
 
-    target = Path(os.getenv("ANKI_OBSERVATION_HTML", "/app/test-results/anki-runtime-observation.html"))
-    html_path = graph.save_last_observation_html(
-        str(target),
-        title="Anki runtime observation (paid)",
-    )
-    html = Path(html_path).read_text(encoding="utf-8")
+    html = viewer.html()
     assert "Anki runtime observation (paid)" in html
     assert "Open all details" in html
     assert "tool_payload" in html

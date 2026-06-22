@@ -36,7 +36,7 @@ class AnkiRenderedCardEvaluator:
         self.config = config
         self.inspect_images = inspect_images
         self._node = StructuredLLMNode(
-            name="anki_quality_evaluator",
+            name="evaluate_rendered_cards",
             config=config,
             output_model=RenderedCardEvaluation,
             static_prompt_template=self._STATIC_PROMPT,

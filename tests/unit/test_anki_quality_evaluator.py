@@ -49,6 +49,7 @@ async def test_quality_evaluator_accepts_valid_cards():
     llm = FakeLLM([_accepted_json()])
     evaluator = AnkiRenderedCardEvaluator(FakeConfig(), llm=llm)
 
+    assert evaluator._node.name == "evaluate_rendered_cards"
     result = await evaluator.evaluate(
         ContentSource(content="A valve controls flow.", user_id=10),
         AnkiDirectiveConstraints(),

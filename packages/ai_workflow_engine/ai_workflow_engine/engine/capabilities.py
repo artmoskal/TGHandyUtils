@@ -53,6 +53,9 @@ class DetailSink(Protocol):
     def record(self, detail: ObservationDetail) -> None:
         """Store one detail record."""
 
+    def clear(self) -> None:
+        """Drop buffered detail records when the sink supports run-local retention."""
+
 
 class InMemoryTraceSink:
     """Simple trace sink suitable for tests and short in-process runs."""
@@ -72,6 +75,9 @@ class InMemoryDetailSink:
 
     def record(self, detail: ObservationDetail) -> None:
         self.details.append(detail)
+
+    def clear(self) -> None:
+        self.details.clear()
 
 
 class JsonlTraceSink:
@@ -98,6 +104,9 @@ class JsonlDetailSink:
         with self.path.open("a", encoding="utf-8") as fh:
             fh.write(detail.model_dump_json(by_alias=True))
             fh.write("\n")
+
+    def clear(self) -> None:
+        self.path.write_text("", encoding="utf-8")
 
 
 class CallbackTraceSink:
@@ -181,6 +190,14 @@ class AsyncQueueDetailSink:
                 self.dropped += 1
         self.queue.put_nowait(detail)
 
+    def clear(self) -> None:
+        while True:
+            try:
+                self.queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            self.queue.task_done()
+
 
 class TeeTraceSink:
     """Fan each trace event out to multiple sinks."""
@@ -202,6 +219,12 @@ class TeeDetailSink:
     def record(self, detail: ObservationDetail) -> None:
         for sink in self.sinks:
             sink.record(detail)
+
+    def clear(self) -> None:
+        for sink in self.sinks:
+            clear = getattr(sink, "clear", None)
+            if callable(clear):
+                clear()
 
 
 class CapabilityRegistry:

@@ -156,7 +156,10 @@ class ApplicationContainer(containers.DeclarativeContainer):
             config.provided.ANKI_STYLE_CHARACTER_REFERENCE_IMAGE,
             config.provided.ANKI_STYLE_DESIGN_REFERENCE_IMAGE,
         ),
-        style_reference_version=config.provided.ANKI_STYLE_REFERENCE_VERSION
+        style_reference_version=config.provided.ANKI_STYLE_REFERENCE_VERSION,
+        capture_observation_detail_text=config.provided.ANKI_OBSERVATION_CAPTURE,
+        observation_bundle_dir=config.provided.ANKI_OBSERVATION_DIR,
+        observation_retention_limit=config.provided.ANKI_OBSERVATION_HISTORY_LIMIT,
     )
 
     intent_classifier = providers.Factory(

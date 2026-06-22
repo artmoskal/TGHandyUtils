@@ -10,10 +10,9 @@ from ai_workflow_engine import (
     WorkflowBuilder,
     WorkflowEngineBuilder,
     WorkflowValidationError,
-    workflow_to_html,
-    workflow_to_mermaid,
 )
 from ai_workflow_engine.models import CapabilityResult, CapabilitySpec, SafetyPolicy, WorkflowProfile
+from ai_workflow_viewer import workflow_to_html, workflow_to_mermaid
 
 pytestmark = pytest.mark.unit
 

@@ -9,9 +9,10 @@ services:
       - .:/app
       - ./data:/app/data
     environment:
-      - PYTHONPATH=/app
+      - PYTHONPATH=/app:/app/packages/ai_workflow_engine:/app/packages/ai_workflow_tools:/app/packages/ai_workflow_viewer
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - LLM_BASE_URL=${LLM_BASE_URL:-}
       - TODOIST_API_TOKEN=${TODOIST_API_TOKEN:-}
       - TRELLO_API_KEY=${TRELLO_API_KEY:-}
       - TRELLO_TOKEN=${TRELLO_TOKEN:-}

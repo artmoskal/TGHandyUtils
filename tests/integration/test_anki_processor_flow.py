@@ -308,7 +308,7 @@ async def test_anki_processor_caption_can_show_usage_summary():
     usage = WorkflowUsageSummary(
         events=[
             WorkflowUsageEvent(
-                node="anki_card_renderer",
+                node="render_text_or_cloze",
                 model="unit-model",
                 input_tokens=100,
                 output_tokens=20,
@@ -341,7 +341,7 @@ async def test_anki_processor_caption_can_show_usage_summary():
         assert "AI usage:" in caption
         assert "node" in caption
         assert "cache" in caption
-        assert "anki_card_renderer" in caption
+        assert "render_text_or_cloze" in caption
         assert "txt" in caption
         assert "$0.0012" in caption
         assert "total: 1 text, 0 image, 100 in, 0 cached, 20 out, metered $0.0012" in caption

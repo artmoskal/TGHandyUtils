@@ -7,7 +7,9 @@ import json
 import logging
 from pathlib import Path
 import re
-from typing import Any, Literal
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Any, Iterator, Literal
 
 from pydantic import BaseModel
 
@@ -22,7 +24,10 @@ from ai_workflow_engine.models import (
 
 logger = logging.getLogger(__name__)
 CaptureMode = Literal["off", "full"]
-ENGINE_WORKER_OBSERVED_METADATA_KEY = "_ai_workflow_engine_worker_observed"
+_ENGINE_WORKER_OBSERVATION_ACTIVE: ContextVar[bool] = ContextVar(
+    "engine_worker_observation_active",
+    default=False,
+)
 
 _BINARY_FIELD_MARKERS = (
     "base64",
@@ -113,15 +118,19 @@ class ObservationCapture:
         )
 
 
-def mark_engine_worker_observed(metadata: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Mark an LLM request as already observed by an engine-owned worker."""
+@contextmanager
+def engine_worker_observation_scope() -> Iterator[None]:
+    """Mark the current call stack as already observed by an engine-owned LLM worker."""
 
-    return {**(metadata or {}), ENGINE_WORKER_OBSERVED_METADATA_KEY: True}
+    token = _ENGINE_WORKER_OBSERVATION_ACTIVE.set(True)
+    try:
+        yield
+    finally:
+        _ENGINE_WORKER_OBSERVATION_ACTIVE.reset(token)
 
 
-def is_engine_worker_observed_request(request: Any) -> bool:
-    metadata = getattr(request, "metadata", {}) or {}
-    return bool(metadata.get(ENGINE_WORKER_OBSERVED_METADATA_KEY))
+def is_engine_worker_observation_active() -> bool:
+    return _ENGINE_WORKER_OBSERVATION_ACTIVE.get()
 
 
 def record_observation(
@@ -153,15 +162,14 @@ def record_observation(
     try:
         run_context = current_workflow_run_context()
         run_id = str(run_context.workflow_id) if run_context and run_context.workflow_id else None
-        safe_payload = byte_free(payload)
-        digest = payload_digest(safe_payload)
-        event_metadata = {
-            "detail_kind": kind,
-            "detail_digest": digest,
-            **(metadata or {}),
-        }
-        if digest_metadata_key:
-            event_metadata[digest_metadata_key] = digest
+        event_metadata = {"detail_kind": kind, **(metadata or {})}
+        detail = None
+        if detail_sink is not None and capture_text:
+            safe_payload = byte_free(payload)
+            digest = payload_digest(safe_payload)
+            event_metadata["detail_digest"] = digest
+            if digest_metadata_key:
+                event_metadata[digest_metadata_key] = digest
         event_metadata = byte_free(event_metadata)
         event = WorkflowTraceEvent(
             node=node,
@@ -173,7 +181,6 @@ def record_observation(
             run_id=run_id,
             severity=severity,
         )
-        detail = None
         if detail_sink is not None and capture_text:
             detail = _build_observation_detail(
                 event_id=event.event_id,

@@ -15,7 +15,6 @@ from ai_workflow_engine import (
     WorkflowEngineBuilder,
 )
 from ai_workflow_engine.models import ModelProfile
-from ai_workflow_engine.observability_capture import ENGINE_WORKER_OBSERVED_METADATA_KEY
 from ai_workflow_engine.prompt_capture import PromptCapturingLLMClient
 
 pytestmark = pytest.mark.unit
@@ -153,8 +152,9 @@ async def test_factory_structured_llm_node_emits_compact_trace_when_detail_captu
     assert [event.detail_refs for event in llm_events] == [[], []]
     blob = "\n".join(event.model_dump_json() for event in llm_events)
     assert "compact work" not in blob
-    assert "prompt_digest" in blob
-    assert "response_digest" in blob
+    assert "prompt_digest" not in blob
+    assert "response_digest" not in blob
+    assert "detail_digest" not in blob
 
 
 async def test_structured_llm_node_with_prompt_capture_wrapper_does_not_double_emit():
@@ -192,7 +192,7 @@ async def test_structured_llm_node_with_prompt_capture_wrapper_does_not_double_e
     result = await engine.run("wrapped_worker", {})
 
     assert result.status == "completed"
-    assert seen_metadata[0][ENGINE_WORKER_OBSERVED_METADATA_KEY] is True
+    assert all(not key.startswith("_ai_workflow_engine_") for key in seen_metadata[0])
     llm_events = [event for event in result.trace if event.phase in {"llm:request", "llm:response"}]
     assert [event.phase for event in llm_events] == ["llm:request", "llm:response"]
     llm_details = [detail for detail in details.details if detail.kind in {"rendered_prompt", "llm_response"}]

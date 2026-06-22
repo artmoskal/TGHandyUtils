@@ -14,7 +14,13 @@ from typing import Any, Iterable, Literal, Optional, Protocol
 
 from langchain_core.messages import BaseMessage
 
+from ai_workflow_engine._runtime_state import current_observation_capture
 from ai_workflow_engine.models import WorkflowRunContext, WorkflowUsageEvent, WorkflowUsageSummary
+from ai_workflow_engine.observability_capture import (
+    is_engine_worker_observation_active,
+    langchain_messages_payload,
+    langchain_response_payload,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -314,6 +320,8 @@ def check_images_per_call(image_count: int, node: str) -> None:
 def record_usage_event(event: WorkflowUsageEvent) -> None:
     context = current_usage_context()
     if context:
+        if event.run_id is None:
+            event.run_id = context.run_context.workflow_id
         event.metadata.setdefault("run_id", context.run_context.workflow_id)
         event.metadata.setdefault("workflow_id", context.run_context.workflow_id)
         event.metadata.setdefault("workflow_type", context.run_context.workflow_type)
@@ -341,15 +349,24 @@ def invoke_metered_chat(
     notional_usd: Optional[float] = None,
 ) -> Any:
     """Invoke a LangChain chat model and record usage metadata when the provider returns it."""
-    if config is not None and not getattr(config, "WORKFLOW_USAGE_TRACKING_ENABLED", True):
-        return llm.invoke(list(messages))
     message_list = list(messages)
+    if config is not None and not getattr(config, "WORKFLOW_USAGE_TRACKING_ENABLED", True):
+        _record_metered_chat_request(node, message_list, attempt, model, metadata)
+        try:
+            output = llm.invoke(message_list)
+        except Exception as exc:
+            _record_metered_chat_error(node, exc, attempt, model, metadata)
+            raise
+        _record_metered_chat_response(node, output, attempt, model, metadata)
+        return output
     check_input_tokens_per_call(estimate_text_tokens(message_list), node)
     check_budget_before_call("chat", node)
+    _record_metered_chat_request(node, message_list, attempt, model, metadata)
     start = time.monotonic()
     try:
         output = llm.invoke(message_list)
         elapsed_ms = int((time.monotonic() - start) * 1000)
+        _record_metered_chat_response(node, output, attempt, model, metadata)
         record_usage_event(
             _usage_event_from_chat_output(
                 output,
@@ -366,6 +383,7 @@ def invoke_metered_chat(
         return output
     except Exception as exc:
         elapsed_ms = int((time.monotonic() - start) * 1000)
+        _record_metered_chat_error(node, exc, attempt, model, metadata)
         record_usage_event(
             WorkflowUsageEvent(
                 operation="chat",
@@ -381,6 +399,97 @@ def invoke_metered_chat(
             )
         )
         raise
+
+
+def _record_metered_chat_request(
+    node: str,
+    messages: list[BaseMessage],
+    attempt: int,
+    model: str,
+    metadata: Optional[dict[str, Any]],
+) -> None:
+    capture = current_observation_capture()
+    if capture is None or is_engine_worker_observation_active():
+        return
+    capture.record(
+        node=node,
+        attempt=attempt,
+        decision="llm:request",
+        phase="llm:request",
+        kind="rendered_prompt",
+        payload=langchain_messages_payload(messages),
+        metadata=_metered_chat_observation_metadata(model, metadata),
+        digest_metadata_key="prompt_digest",
+    )
+
+
+def _record_metered_chat_response(
+    node: str,
+    output: Any,
+    attempt: int,
+    model: str,
+    metadata: Optional[dict[str, Any]],
+) -> None:
+    capture = current_observation_capture()
+    if capture is None or is_engine_worker_observation_active():
+        return
+    capture.record(
+        node=node,
+        attempt=attempt,
+        decision="llm:response",
+        phase="llm:response",
+        kind="llm_response",
+        payload=langchain_response_payload(output, text=_output_text(output)),
+        metadata=_metered_chat_observation_metadata(model, metadata),
+        digest_metadata_key="response_digest",
+    )
+
+
+def _record_metered_chat_error(
+    node: str,
+    exc: Exception,
+    attempt: int,
+    model: str,
+    metadata: Optional[dict[str, Any]],
+) -> None:
+    capture = current_observation_capture()
+    if capture is None or is_engine_worker_observation_active():
+        return
+    error = str(exc) or exc.__class__.__name__
+    capture.record(
+        node=node,
+        attempt=attempt,
+        decision="llm:response",
+        phase="llm:response",
+        kind="llm_response",
+        payload={"error_type": exc.__class__.__name__, "error": error},
+        severity="error",
+        error=error,
+        metadata={
+            **_metered_chat_observation_metadata(model, metadata),
+            "error_type": exc.__class__.__name__,
+        },
+        digest_metadata_key="response_digest",
+    )
+
+
+def _metered_chat_observation_metadata(
+    model: str,
+    metadata: Optional[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "transport": "langchain",
+        "model": model,
+        "metered_chat": True,
+        **(metadata or {}),
+    }
+
+
+def _output_text(output: Any) -> str:
+    content = getattr(output, "content", output)
+    if isinstance(content, str):
+        return content
+    return str(content)
 
 
 def record_image_usage(

@@ -7,9 +7,27 @@ import pytest
 
 from core.interfaces import ProcessingContext
 from models.anki import AnkiCard
+from models.anki_workflow import ImageAssetPlan, RenderedCardSet
 from services.content.anki_directives import parse_directives
 from services.content import anki_buffer
 from services.content.anki_processor import AnkiProcessor
+
+
+def _fake_image_graph(service):
+    class FakeGraph:
+        last_run_state = {}
+
+        async def run(self, source, message=None):
+            return RenderedCardSet(
+                cards=service.extract_cards(source.content),
+                image_asset_plan=ImageAssetPlan(
+                    image_role="reuse_user_image",
+                    candidate_back_images=[0],
+                    rationale="Use uploaded image on the answer side.",
+                ),
+            )
+
+    return FakeGraph()
 
 
 # ---- directive parsing ----
@@ -196,7 +214,7 @@ async def test_anki_processor_embeds_image_on_back_by_default():
         user_id=uid, owner_name="U", location=None,
     )
 
-    result = await AnkiProcessor(svc).process(ctx)
+    result = await AnkiProcessor(svc, anki_graph=_fake_image_graph(svc)).process(ctx)
     assert result.success
 
     # media_files passed (4th positional arg) and image embedded on the answer (back)

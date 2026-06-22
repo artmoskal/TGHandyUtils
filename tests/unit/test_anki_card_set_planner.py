@@ -42,6 +42,7 @@ async def test_card_set_planner_returns_validated_plan():
     llm = FakeLLM([_valid_plan_json()])
     planner = AnkiCardSetPlanner(FakeConfig(), llm=llm)
 
+    assert planner._node.name == "plan_card_type"
     plan = await planner.plan(
         ContentSource(content="A valve controls flow", user_id=10),
         AnkiDirectiveConstraints(),

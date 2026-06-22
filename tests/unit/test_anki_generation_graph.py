@@ -17,6 +17,7 @@ from models.anki_workflow import (
 from ai_workflow_tools.media.image_models import GeneratedImage
 from ai_workflow_tools.media.voice_generation import GeneratedVoiceAudio
 from ai_workflow_engine.engine import InMemoryDetailSink
+from ai_workflow_viewer import JsonlObservationViewer, build_observation_graph
 from services.content.anki_generation_graph import AnkiGenerationGraph
 from services.content.anki_source import build_content_source
 from services.content.anki_directives import parse_directives
@@ -135,6 +136,11 @@ class CapturingRunner:
                 )
             }
         }
+
+
+class FailingRunner:
+    async def run(self, *_args, **_kwargs):
+        raise RuntimeError("runner exploded")
 
 
 @pytest.mark.unit
@@ -272,6 +278,7 @@ async def test_graph_nodes_run_through_generic_capability_runtime(tmp_path):
         svc,
         detail_sink=details,
         capture_observation_detail_text=True,
+        observation_bundle_dir=str(tmp_path / "observations"),
     )
 
     rendered = await graph.run(source)
@@ -283,20 +290,21 @@ async def test_graph_nodes_run_through_generic_capability_runtime(tmp_path):
     assert "generate_image" in graph.last_run_state["runtime_plan"].capability_names
     assert graph.capability_registry.get("generate_image")[0].side_effects == ["external_call", "local_write"]
     assert graph.capability_registry.get("package_cards")[0].side_effects == ["local_write"]
-    assert any(event.node == "parse_directives" and event.decision == "accepted" for event in graph.capability_trace_sink.events)
-    assert any(event.node == "package_cards" and event.decision == "accepted" for event in graph.capability_trace_sink.events)
-    observation = graph.last_observation_graph()
+    bundle_path = graph.last_observation_bundle_path()
+    assert bundle_path
+    viewer = JsonlObservationViewer.from_run_bundle(bundle_path, title="Anki generation observation")
+    run = viewer.source.read()
+    assert any(event.node == "parse_directives" and event.decision == "accepted" for event in run.trace_events)
+    assert any(event.node == "package_cards" and event.decision == "accepted" for event in run.trace_events)
+    observation = build_observation_graph(run.definition, run.trace_events, run.usage_events, run.details, run_id=run.run_id)
     assert observation.workflow_id == "anki_generation"
     assert observation.run_id
     assert observation.nodes["package_cards"].status == "completed"
-    assert details.details
+    assert not details.details
     assert observation.details
     assert all(ref in observation.details for event in observation.timeline for ref in event.detail_refs)
     assert "Valve diagram" in "\n".join(detail.text or "" for detail in observation.details.values())
-    html_target = tmp_path / "anki-observation.html"
-    html_path = graph.save_last_observation_html(str(html_target))
-    html = html_target.read_text(encoding="utf-8")
-    assert html_path == str(html_target)
+    html = viewer.html()
     assert "Anki generation observation" in html
     assert "flowchart TD" in html
     assert "Investigation Graph" in html
@@ -305,6 +313,49 @@ async def test_graph_nodes_run_through_generic_capability_runtime(tmp_path):
     assert "package_cards" in html
     assert "tool_payload" in html
     assert "Valve diagram" in html
+
+
+@pytest.mark.unit
+def test_observation_bundle_runtime_is_scoped_per_run(tmp_path):
+    svc = Mock()
+    graph = AnkiGenerationGraph(
+        svc,
+        capture_observation_detail_text=True,
+        observation_bundle_dir=str(tmp_path / "observations"),
+    )
+
+    bundle_1 = graph._open_observation_bundle("run-1")
+    engine_1 = graph._engine(bundle_1)
+    bundle_2 = graph._open_observation_bundle("run-2")
+    engine_2 = graph._engine(bundle_2)
+
+    assert bundle_1 is not None
+    assert bundle_2 is not None
+    assert engine_1 is not engine_2
+    assert engine_1.runtime.trace_sink.inner is bundle_1.trace_sink
+    assert engine_2.runtime.trace_sink.inner is bundle_2.trace_sink
+    assert engine_1.detail_sink is bundle_1.detail_sink
+    assert engine_2.detail_sink is bundle_2.detail_sink
+    assert engine_1.executor.runner is not engine_2.executor.runner
+
+
+@pytest.mark.unit
+async def test_observation_bundle_is_finalized_when_engine_run_fails(tmp_path):
+    svc = Mock()
+    source = build_content_source([("U", "Valve diagram")], user_id=10, owner_name="U")
+    graph = AnkiGenerationGraph(
+        svc,
+        runner=FailingRunner(),
+        observation_bundle_dir=str(tmp_path / "observations"),
+    )
+
+    with pytest.raises(RuntimeError, match="runner exploded"):
+        await graph.run(source)
+
+    bundle_path = graph.last_observation_bundle_path()
+    assert bundle_path
+    viewer = JsonlObservationViewer.from_run_bundle(bundle_path, title="Failed Anki observation")
+    assert viewer.source.read().meta["status"] == "failed"
 
 
 @pytest.mark.unit

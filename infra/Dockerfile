@@ -17,6 +17,7 @@ RUN mkdir -p /app/data/db /app/data/logs
 COPY ./environment.yml /app/environment.yml
 COPY ./packages/ai_workflow_engine /app/packages/ai_workflow_engine
 COPY ./packages/ai_workflow_tools /app/packages/ai_workflow_tools
+COPY ./packages/ai_workflow_viewer /app/packages/ai_workflow_viewer
 
 # Create the Conda environment and install dependencies from environment.yml
 RUN mamba env create -f environment.yml

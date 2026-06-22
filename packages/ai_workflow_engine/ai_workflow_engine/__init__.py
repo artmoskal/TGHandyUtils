@@ -1,6 +1,6 @@
 """Reusable AI workflow engine package."""
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 from ai_workflow_engine.engine import (
     AgentCapability,
@@ -124,14 +124,14 @@ from ai_workflow_engine.planning import PlanArtifact, PlanTask, render_plan
 from ai_workflow_engine.prompt_capture import PromptCapturingLLMClient
 from ai_workflow_engine.snapshot import MachineSnapshot
 from ai_workflow_engine.flow_authoring import FlowArtifact, FlowNodeSpec, build_definition_from_artifact, render_capability_catalog
-from ai_workflow_engine.observability import (
-    ObservationGraph,
-    ObservationNode,
-    ObservationTimelineEntry,
-    build_observation_graph,
-    observation_graph_to_html,
-    render_runtime_timeline,
-    save_observation_html,
+from ai_workflow_engine.observation_bundle import (
+    ObservationRunBundle,
+    ObservationSequence,
+    SequencedDetailSink,
+    SequencedTraceSink,
+    SequencedUsageSink,
+    open_observation_run_bundle,
+    prune_observation_bundles,
 )
 from ai_workflow_engine.usage import (
     AsyncQueueUsageSink,
@@ -140,7 +140,7 @@ from ai_workflow_engine.usage import (
     TeeUsageSink,
     UsageSink,
 )
-from ai_workflow_engine.viz import save_workflow_html, workflow_to_html, workflow_to_mermaid
+from ai_workflow_engine.viz import render_prompt_manifest
 from ai_workflow_engine.workflow import (
     END,
     BranchDecision,
@@ -232,9 +232,8 @@ __all__ = [
     "TeeTraceSink",
     "ModelProfile",
     "ObservationDetail",
-    "ObservationGraph",
-    "ObservationNode",
-    "ObservationTimelineEntry",
+    "ObservationRunBundle",
+    "ObservationSequence",
     "RuntimePlan",
     "RuntimePlanCompiler",
     "SessionState",
@@ -311,16 +310,15 @@ __all__ = [
     "UsageSink",
     "InMemoryUsageSink",
     "JsonlUsageSink",
+    "SequencedDetailSink",
+    "SequencedTraceSink",
+    "SequencedUsageSink",
     "AsyncQueueUsageSink",
     "TeeUsageSink",
-    "build_observation_graph",
-    "observation_graph_to_html",
-    "render_runtime_timeline",
-    "save_observation_html",
+    "open_observation_run_bundle",
+    "prune_observation_bundles",
     "FlowArtifact",
     "FlowNodeSpec",
     "build_definition_from_artifact",
-    "workflow_to_mermaid",
-    "workflow_to_html",
-    "save_workflow_html",
+    "render_prompt_manifest",
 ]

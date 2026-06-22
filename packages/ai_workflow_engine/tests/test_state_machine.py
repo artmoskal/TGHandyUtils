@@ -270,7 +270,7 @@ async def test_suspension_captures_a_complete_machine_snapshot():
     assert snapshot.node_status["ask"] == "requires_user_input"
     assert snapshot.node_results  # position is complete, not a stub
 
-    from ai_workflow_engine import workflow_to_mermaid
+    from ai_workflow_viewer import workflow_to_mermaid
 
     diagram = workflow_to_mermaid(engine.workflows["clarify_machine"], result)
     assert "class n_ask susp;" in diagram  # suspended state rendered distinctly

@@ -21,6 +21,7 @@ from ai_workflow_engine.workflow import END, WorkflowDefinition
 
 class ObservationTimelineEntry(BaseModel):
     event_id: str
+    timestamp: str = ""
     node: str
     attempt: int = 1
     phase: Optional[str] = None
@@ -101,6 +102,7 @@ def build_observation_graph(
         graph.timeline.append(
             ObservationTimelineEntry(
                 event_id=event.event_id,
+                timestamp=event.timestamp,
                 node=event.node,
                 attempt=event.attempt,
                 phase=event.phase or _infer_phase(event),
@@ -147,7 +149,8 @@ def render_runtime_timeline(graph: ObservationGraph) -> str:
     if graph.run_id:
         lines.append(f"run_id: {graph.run_id}")
     for index, item in enumerate(graph.timeline, start=1):
-        head = f"{index}. {item.node}"
+        time_label = _timestamp_label(item.timestamp)
+        head = f"{index}. {time_label} {item.node}" if time_label else f"{index}. {item.node}"
         if item.phase:
             head += f" [{item.phase}]"
         if item.decision:
@@ -174,7 +177,7 @@ def observation_graph_to_html(
 ) -> str:
     """Render a self-contained static runtime graph with Mermaid plus timeline/detail panes."""
 
-    from ai_workflow_engine.viz import workflow_to_mermaid
+    from ai_workflow_viewer.viz import workflow_to_mermaid
 
     title_text = title or f"Workflow observation: {definition.workflow_id}"
     mermaid = workflow_to_mermaid(definition, observation_graph=graph)
@@ -227,7 +230,7 @@ def observation_graph_to_html(
 <section id="timeline">
 <h2>Timeline</h2>
 <table>
-<thead><tr><th>#</th><th>Node</th><th>Phase</th><th>Decision</th><th>Severity</th><th>Elapsed</th><th>Details / Error</th></tr></thead>
+<thead><tr><th>#</th><th>Time</th><th>Node</th><th>Phase</th><th>Decision</th><th>Severity</th><th>Elapsed</th><th>Details / Error</th></tr></thead>
 <tbody>{timeline_rows}</tbody>
 </table>
 </section>
@@ -279,9 +282,30 @@ details.observation-detail { border: 1px solid #d9e2ec; border-radius: 6px; padd
 details.observation-detail + details.observation-detail { margin-top: 8px; }
 summary { cursor: pointer; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+dialog.observation-dialog { border: 1px solid #9fb3c8; border-radius: 8px; width: min(1040px, 92vw); max-height: 86vh; padding: 0; box-shadow: 0 20px 45px rgba(15, 23, 42, 0.28); }
+dialog.observation-dialog::backdrop { background: rgba(15, 23, 42, 0.35); }
+.dialog-header { display: flex; justify-content: space-between; gap: 10px; align-items: center; padding: 12px 14px; border-bottom: 1px solid #d9e2ec; background: #f8fafc; }
+.dialog-title { font-weight: 700; overflow-wrap: anywhere; }
+.dialog-body { max-height: calc(86vh - 58px); overflow: auto; padding: 14px; }
+.detail-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+.copy-status { font-size: 12px; color: #166534; }
 .status-completed { color: #166534; font-weight: 600; }
 .status-failed { color: #b91c1c; font-weight: 600; }
 .status-running { color: #92400e; font-weight: 600; }
+.json-tree { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12px; line-height: 1.5; }
+.json-tree summary { cursor: pointer; list-style: none; }
+.json-tree summary::-webkit-details-marker { display: none; }
+.json-tree summary::before { content: "\\25B8 "; color: #6e7781; }
+.json-tree details[open] > summary::before { content: "\\25BE "; }
+.j-children { margin-left: 12px; border-left: 1px solid #eef1f4; padding-left: 8px; }
+.j-item { white-space: pre-wrap; overflow-wrap: anywhere; }
+.j-key { color: #0550ae; }
+.j-str { color: #0a7d22; }
+.j-num { color: #953800; }
+.j-bool { color: #8250df; }
+.j-null { color: #6e7781; }
+.j-bracket, .j-colon, .j-comma { color: #57606a; }
+.j-count { color: #6e7781; font-size: 11px; }
 """
 
 
@@ -511,6 +535,8 @@ def _node_view(
 def _event_view(event: ObservationTimelineEntry) -> dict[str, Any]:
     return {
         "event_id": event.event_id,
+        "timestamp": event.timestamp,
+        "timestamp_label": _timestamp_label(event.timestamp),
         "phase": event.phase or "",
         "decision": event.decision or "",
         "severity": event.severity,
@@ -849,6 +875,32 @@ def _rich_graph_js() -> str:
     }
   }
 
+  function jsonNode(value) {
+    if (value === null) return '<span class="j-null">null</span>';
+    const t = typeof value;
+    if (t === "number") return `<span class="j-num">${value}</span>`;
+    if (t === "boolean") return `<span class="j-bool">${value}</span>`;
+    if (t === "string") return `<span class="j-str">${escapeHtml(JSON.stringify(value))}</span>`;
+    if (Array.isArray(value)) {
+      if (!value.length) return '<span class="j-bracket">[]</span>';
+      const items = value.map((v, i) => `<div class="j-item">${jsonNode(v)}${i < value.length - 1 ? '<span class="j-comma">,</span>' : ''}</div>`).join("");
+      return `<details open><summary><span class="j-bracket">[</span> <span class="j-count">${value.length}</span></summary><div class="j-children">${items}</div><span class="j-bracket">]</span></details>`;
+    }
+    if (t === "object") {
+      const keys = Object.keys(value);
+      if (!keys.length) return '<span class="j-bracket">{}</span>';
+      const items = keys.map((k, i) => `<div class="j-item"><span class="j-key">${escapeHtml(JSON.stringify(k))}</span><span class="j-colon">: </span>${jsonNode(value[k])}${i < keys.length - 1 ? '<span class="j-comma">,</span>' : ''}</div>`).join("");
+      return `<details open><summary><span class="j-bracket">{</span> <span class="j-count">${keys.length}</span></summary><div class="j-children">${items}</div><span class="j-bracket">}</span></details>`;
+    }
+    return escapeHtml(String(value));
+  }
+
+  function jsonTreeHtml(text) {
+    if (!text) return "";
+    try { return `<div class="json-tree">${jsonNode(JSON.parse(text))}</div>`; }
+    catch (e) { return `<pre>${escapeHtml(text)}</pre>`; }
+  }
+
   function detailHtml(detail) {
     const rawLink = detail.anchor
       ? `<a href="#${escapeHtml(detail.anchor)}" data-open-detail="${escapeHtml(detail.anchor)}">open in raw list</a>`
@@ -864,13 +916,14 @@ def _rich_graph_js() -> str:
         ${detail.digest ? `<div class="detail-digest">digest ${escapeHtml(detail.digest)}</div>` : ""}
         <details class="raw-toggle">
           <summary>Raw ${escapeHtml(detail.content_type || "detail")}</summary>
-          <pre>${escapeHtml(detail.body || "")}</pre>
+          ${jsonTreeHtml(detail.body || "")}
         </details>
       </div>`;
   }
 
   function eventHtml(event) {
     const bits = [
+      event.timestamp_label || event.timestamp || "",
       event.phase || "event",
       event.decision ? `→ ${event.decision}` : "",
       event.elapsed_ms == null ? "" : `${event.elapsed_ms} ms`,
@@ -990,6 +1043,37 @@ def _rich_graph_js() -> str:
     });
   });
 
+  document.querySelectorAll("[data-open-dialog]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const dialog = document.getElementById(button.dataset.openDialog);
+      if (dialog && typeof dialog.showModal === "function") dialog.showModal();
+    });
+  });
+
+  document.querySelectorAll("[data-close-dialog]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const dialog = button.closest("dialog");
+      if (dialog) dialog.close();
+    });
+  });
+
+  document.querySelectorAll("[data-copy-target]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const target = document.getElementById(button.dataset.copyTarget);
+      if (!target) return;
+      try {
+        await navigator.clipboard.writeText(target.textContent || "");
+        const status = button.parentElement?.querySelector(".copy-status");
+        if (status) {
+          status.textContent = "copied";
+          window.setTimeout(() => { status.textContent = ""; }, 1200);
+        }
+      } catch (_error) {
+        window.prompt("Copy detail payload", target.textContent || "");
+      }
+    });
+  });
+
   renderEdges();
   const firstObserved = data.nodes.find((node) => node.raw_status !== "not_started") || data.nodes[0];
   if (firstObserved) selectNode(firstObserved.id);
@@ -1019,6 +1103,8 @@ def _usage_iter(
 
 
 def _usage_run_id(event: WorkflowUsageEvent) -> str | None:
+    if event.run_id:
+        return str(event.run_id)
     if not event.metadata:
         return None
     run_id = event.metadata.get("run_id") or event.metadata.get("workflow_id")
@@ -1105,6 +1191,15 @@ def _usage_label(node: ObservationNode) -> str:
     return " / ".join(parts) if parts else "-"
 
 
+def _timestamp_label(timestamp: str) -> str:
+    if not timestamp:
+        return ""
+    if len(timestamp) >= 19 and timestamp[10] == "T":
+        suffix = "Z" if timestamp.endswith("Z") else ""
+        return f"{timestamp[11:19]}{suffix}"
+    return timestamp
+
+
 def _timeline_row(item: ObservationTimelineEntry, details: Mapping[str, ObservationDetail]) -> str:
     detail_bits = []
     for ref in item.detail_refs:
@@ -1122,6 +1217,7 @@ def _timeline_row(item: ObservationTimelineEntry, details: Mapping[str, Observat
     return (
         "<tr>"
         f"<td>{html.escape(item.event_id[:8])}</td>"
+        f'<td title="{html.escape(item.timestamp)}">{html.escape(_timestamp_label(item.timestamp) or "-")}</td>'
         f"<td><code>{html.escape(item.node)}</code></td>"
         f"<td>{html.escape(item.phase or '-')}</td>"
         f"<td>{html.escape(item.decision or '-')}</td>"
@@ -1133,14 +1229,37 @@ def _timeline_row(item: ObservationTimelineEntry, details: Mapping[str, Observat
 
 
 def _detail_row(detail: ObservationDetail) -> str:
-    body = detail.text or detail.digest or ""
-    if not body and detail.json_value:
-        body = str(detail.json_value)
+    body = _detail_body(detail)
     digest = f" digest={detail.digest}" if detail.digest else ""
+    detail_dom_id = _dom_id("detail", detail.detail_id)
+    dialog_id = _dom_id("detail_dialog", detail.detail_id)
+    raw_id = _dom_id("detail_raw", detail.detail_id)
     return (
-        f'<details class="observation-detail" id="{html.escape(_dom_id("detail", detail.detail_id), quote=True)}">'
+        f'<details class="observation-detail" id="{html.escape(detail_dom_id, quote=True)}">'
         f"<summary><code>{html.escape(detail.detail_id)}</code> {html.escape(detail.kind)} "
         f"({html.escape(detail.redaction_state)}){html.escape(digest)}</summary>"
+        '<div class="detail-actions">'
+        f'<button type="button" data-open-dialog="{html.escape(dialog_id, quote=True)}">Expand</button>'
+        f'<button type="button" data-copy-target="{html.escape(raw_id, quote=True)}">Copy raw</button>'
+        '<span class="copy-status" aria-live="polite"></span>'
+        "</div>"
         f"<pre>{html.escape(body)}</pre>"
+        f'<dialog class="observation-dialog" id="{html.escape(dialog_id, quote=True)}">'
+        '<div class="dialog-header">'
+        f'<div class="dialog-title">{html.escape(detail.kind)} · <code>{html.escape(detail.detail_id)}</code></div>'
+        '<button type="button" data-close-dialog>Close</button>'
+        "</div>"
+        '<div class="dialog-body">'
+        f'<pre id="{html.escape(raw_id, quote=True)}">{html.escape(body)}</pre>'
+        "</div>"
+        "</dialog>"
         "</details>"
     )
+
+
+def _detail_body(detail: ObservationDetail) -> str:
+    if detail.json_value is not None:
+        return json.dumps(detail.json_value, indent=2, sort_keys=True, default=str)
+    if detail.text:
+        return detail.text
+    return detail.digest or ""

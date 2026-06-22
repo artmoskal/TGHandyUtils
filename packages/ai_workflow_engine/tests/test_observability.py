@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
+from langchain_core.messages import HumanMessage
 
 from ai_workflow_engine import (
     InMemoryTraceSink,
@@ -16,13 +18,12 @@ from ai_workflow_engine import (
     WorkflowRunner,
     WorkflowTraceEvent,
     WorkflowUsageEvent,
-    build_observation_graph,
-    observation_graph_to_html,
-    render_runtime_timeline,
 )
 from ai_workflow_engine.engine import InMemoryDetailSink, JsonlDetailSink
 from ai_workflow_engine.observability_capture import byte_free
-from ai_workflow_engine.usage import record_usage_event
+from ai_workflow_engine.observation_bundle import open_observation_run_bundle, prune_observation_bundles
+from ai_workflow_engine.usage import invoke_metered_chat, record_usage_event
+from ai_workflow_viewer import build_observation_graph, observation_graph_to_html, render_runtime_timeline
 
 pytestmark = pytest.mark.unit
 
@@ -55,6 +56,33 @@ def test_detail_jsonl_sink_round_trips_alias_shape(tmp_path):
     row = json.loads(path.read_text().splitlines()[0])
     assert row["event_id"] == "event-1"
     assert row["json"] is None
+
+
+def test_in_memory_detail_sink_clear_drops_buffered_details():
+    memory = InMemoryDetailSink()
+    memory.record(ObservationDetail(event_id="event-1", kind="tool_payload"))
+
+    memory.clear()
+
+    assert memory.details == []
+
+
+def test_observation_bundle_prune_skips_unfinalized_runs(tmp_path):
+    definition = WorkflowBuilder("bundle_prune").step("node").build()
+    old = open_observation_run_bundle(tmp_path, "old")
+    old.finalize(definition, status="completed")
+    new = open_observation_run_bundle(tmp_path, "new")
+    new.finalize(definition, status="completed")
+    active = open_observation_run_bundle(tmp_path, "active")
+
+    prune_observation_bundles(tmp_path, 1)
+
+    assert active.path.exists()
+    finalized = [
+        path for path in tmp_path.iterdir()
+        if path.is_dir() and (path / "meta.json").exists()
+    ]
+    assert len(finalized) == 1
 
 
 async def test_engine_trace_events_are_enriched_with_distinct_run_ids():
@@ -205,6 +233,7 @@ def test_observation_graph_projects_trace_usage_details_and_renders_html():
     )
     prompt_event = WorkflowTraceEvent(
         node="plan",
+        timestamp="2026-06-21T20:00:01Z",
         decision="llm:prompt",
         phase="llm:request",
         detail_refs=["detail-1"],
@@ -237,7 +266,9 @@ def test_observation_graph_projects_trace_usage_details_and_renders_html():
     assert graph.nodes["plan"].metered_usd == 0.01
     assert graph.nodes["plan"].notional_usd is None
     assert graph.nodes["plan"].detail_refs == ["detail-1"]
+    assert graph.timeline[0].timestamp == "2026-06-21T20:00:01Z"
     assert "llm:request" in render_runtime_timeline(graph)
+    assert "20:00:01Z" in render_runtime_timeline(graph)
     html = observation_graph_to_html(definition, graph)
     assert "Investigation Graph" in html
     assert "Plan cards" in html
@@ -252,6 +283,51 @@ def test_observation_graph_projects_trace_usage_details_and_renders_html():
     assert "metered $0.0100" in html
     assert "abc123" in html
     assert "full prompt text" in html
+    assert "20:00:01Z" in html
+
+
+async def test_invoke_metered_chat_records_prompt_response_details_for_direct_calls():
+    details = InMemoryDetailSink()
+
+    class DirectLLM:
+        def invoke(self, messages):
+            return SimpleNamespace(
+                content="rendered answer",
+                usage_metadata={"input_tokens": 4, "output_tokens": 2, "total_tokens": 6},
+                response_metadata={"model_name": "direct-unit"},
+            )
+
+    async def render(ctx, payload):
+        output = invoke_metered_chat(
+            DirectLLM(),
+            [HumanMessage(content="render prompt input")],
+            node="render",
+            model="direct-unit",
+            metadata={"producer": "unit"},
+            config=SimpleNamespace(WORKFLOW_USAGE_TRACKING_ENABLED=True),
+        )
+        return {"text": output.content}
+
+    engine = (
+        WorkflowEngineBuilder()
+        .with_detail_sink(details)
+        .with_detail_text_capture()
+        .register_capability("render", render, kind="llm")
+        .register_workflow(WorkflowBuilder("direct_metered").step("render").build())
+        .build()
+    )
+
+    result = await engine.run("direct_metered", {})
+
+    assert result.status == "completed"
+    llm_events = [
+        event for event in result.trace if event.node == "render" and event.phase in {"llm:request", "llm:response"}
+    ]
+    assert [event.phase for event in llm_events] == ["llm:request", "llm:response"]
+    assert all(event.detail_refs for event in llm_events)
+    detail_text = "\n".join(detail.text or "" for detail in details.details)
+    assert "render prompt input" in detail_text
+    assert "rendered answer" in detail_text
 
 
 def test_observation_graph_keeps_metered_and_notional_costs_separate():

@@ -6,14 +6,14 @@ from types import SimpleNamespace
 import pytest
 from langchain_core.prompts import PromptTemplate
 
-from ai_workflow_engine import build_observation_graph, observation_graph_to_html
 from ai_workflow_engine.engine import InMemoryDetailSink
 from ai_workflow_engine.llm_protocol import ChatMessage, LLMRequest, LLMResponse, ToolCallRequest
-from ai_workflow_engine.observability_capture import mark_engine_worker_observed
+from ai_workflow_engine.observability_capture import engine_worker_observation_scope
 from ai_workflow_engine.prompt_capture import PromptCapturingLLMClient
 from ai_workflow_engine.viz import render_prompt_manifest
 from ai_workflow_engine.vision import ImageInput
 from ai_workflow_engine.workflow import WorkflowBuilder
+from ai_workflow_viewer import build_observation_graph, observation_graph_to_html
 
 pytestmark = pytest.mark.unit
 
@@ -88,9 +88,11 @@ async def test_prompt_capturing_client_records_compact_trace_without_pseudo_deta
     event = sink.events[0]
     assert event.decision == "llm:prompt"
     assert event.node == "ask"
-    # default is compact trace only: prompt text is not in the event and no SHA-only detail is created.
+    # default is compact trace only: prompt text is not in the event, payload hashes are not computed,
+    # and no SHA-only detail is created.
     blob = event.model_dump_json()
-    assert "prompt_digest" in blob
+    assert "prompt_digest" not in blob
+    assert "detail_digest" not in blob
     assert "hello world" not in blob
     assert "be terse" not in blob
     assert "RAW_SECRET_BYTES" not in blob
@@ -99,7 +101,7 @@ async def test_prompt_capturing_client_records_compact_trace_without_pseudo_deta
     assert details.details == []
 
 
-async def test_prompt_capturing_client_skips_requests_already_observed_by_engine_worker():
+async def test_prompt_capturing_client_skips_when_engine_worker_observation_is_active():
     sink = _CollectSink()
     details = InMemoryDetailSink()
     seen = {}
@@ -111,10 +113,11 @@ async def test_prompt_capturing_client_skips_requests_already_observed_by_engine
     client = PromptCapturingLLMClient(inner, sink, detail_sink=details, capture_text=True)
     request = LLMRequest(
         messages=[ChatMessage(role="user", content="hello")],
-        metadata=mark_engine_worker_observed({"agent_node": "worker"}),
+        metadata={"agent_node": "worker"},
     )
 
-    response = await client(request)
+    with engine_worker_observation_scope():
+        response = await client(request)
 
     assert response.text == "ok"
     assert seen["request"] is request

@@ -108,6 +108,24 @@ def _float_setting(name: str, default: float = 0.0) -> float:
     return float(_setting(name, default))
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        logging.warning("Invalid %s=%r; using %s", name, raw, default)
+        return default
+
+
 class Config(IConfig):
     """Centralized configuration management."""
     
@@ -116,6 +134,9 @@ class Config(IConfig):
     
     # OpenAI Configuration
     OPENAI_API_KEY: str = os.getenv('OPENAI_API_KEY', '')
+    # Optional OpenAI-compatible base URL (e.g. ollama at http://host:11434/v1) for local/offline
+    # testing. When set, create_chat_llm points the chat client here and skips the OpenAI key/cache.
+    LLM_BASE_URL: str = os.getenv('LLM_BASE_URL', '')
     GEMINI_API_KEY: str = os.getenv('GEMINI_API_KEY', '')
     # Optional OpenAI prompt-cache routing hint. Prompt layout remains provider-neutral; this only
     # improves cache affinity for OpenAI-backed chat calls.
@@ -213,6 +234,12 @@ class Config(IConfig):
     WORKFLOW_MAX_ESTIMATED_USD_PER_RUN: float = _float_setting('workflow_max_estimated_usd_per_run', 0)
     # Optional JSON: {"model-name": {"input_per_1m": 0.1, "output_per_1m": 0.4}}
     WORKFLOW_MODEL_PRICE_OVERRIDES_JSON: str = str(_setting('workflow_model_price_overrides_json', ''))
+    ANKI_OBSERVATION_CAPTURE: bool = _env_bool('ANKI_OBSERVATION_CAPTURE', True)
+    ANKI_OBSERVATION_DIR: str = os.getenv(
+        'ANKI_OBSERVATION_DIR',
+        os.getenv('OBSERVATION_DIR', 'data/observations'),
+    )
+    ANKI_OBSERVATION_HISTORY_LIMIT: int = max(0, _env_int('ANKI_OBSERVATION_HISTORY_LIMIT', 100))
     
     # Database Configuration
     DATABASE_PATH: str = os.getenv('DATABASE_PATH', 'data/db/tasks.db')

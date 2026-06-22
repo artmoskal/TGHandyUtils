@@ -60,6 +60,7 @@ async def test_text_scenario_planner_returns_rendering_guidance():
     )
     planner = TextScenarioPlanner(FakeConfig(), llm=llm)
 
+    assert planner._node.name == "prepare_text_scenario"
     scenario = await planner.plan(
         ContentSource(content="A valve controls flow in a pipe.", user_id=10),
         AnkiDirectiveConstraints(),
@@ -116,6 +117,7 @@ async def test_cloze_scenario_planner_retries_bad_json_and_requires_targets():
     )
     planner = ClozeScenarioPlanner(FakeConfig(), llm=llm)
 
+    assert planner._node.name == "prepare_cloze_scenario"
     scenario = await planner.plan(
         ContentSource(content="The pump exports three Na+ and imports two K+.", user_id=10),
         AnkiDirectiveConstraints(card_type="cloze"),
@@ -175,6 +177,7 @@ async def test_visual_scenario_planner_returns_prompt_and_layout():
     )
     planner = VisualScenarioPlanner(FakeConfig(), llm=llm)
 
+    assert planner._node.name == "prepare_visual_scenario"
     scenario = await planner.plan(
         ContentSource(content="Air flows faster over a curved wing, lowering pressure above it.", user_id=10),
         AnkiDirectiveConstraints(),

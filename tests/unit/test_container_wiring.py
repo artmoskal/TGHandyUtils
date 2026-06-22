@@ -30,6 +30,9 @@ def _fake_config():
         ANKI_STYLE_CHARACTER_REFERENCE_IMAGE="assets/anki/character.png",
         ANKI_STYLE_DESIGN_REFERENCE_IMAGE="assets/anki/design.png",
         ANKI_STYLE_REFERENCE_VERSION="ppla-test",
+        ANKI_OBSERVATION_CAPTURE=True,
+        ANKI_OBSERVATION_DIR="test-results/observations",
+        ANKI_OBSERVATION_HISTORY_LIMIT=100,
     )
 
 

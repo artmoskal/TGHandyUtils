@@ -6,6 +6,7 @@ import pytest
 
 from core.interfaces import Intent, ProcessingContext
 from models.anki import AnkiCard
+from models.anki_workflow import ImageAssetPlan, RenderedCardSet
 from services.content.intent_resolver import IntentResolver
 from services.content.anki_processor import (
     AnkiProcessor,
@@ -14,6 +15,23 @@ from services.content.anki_processor import (
     _build_delivery_messages,
     _format_preview,
 )
+
+
+def _fake_anki_graph(service, *, rendered: RenderedCardSet | None = None, image_plan: ImageAssetPlan | None = None):
+    class FakeGraph:
+        last_run_state = {}
+
+        async def run(self, source, message=None):
+            if rendered is not None:
+                return rendered
+            cards = service.extract_cards(source.content)
+            return RenderedCardSet(
+                cards=cards,
+                image_asset_plan=image_plan
+                or ImageAssetPlan(image_role="ignore_media", rationale="No image needed"),
+            )
+
+    return FakeGraph()
 
 
 @pytest.mark.unit
@@ -30,12 +48,30 @@ def test_intent_resolver_override_wins():
 def test_router_maps_intents_to_processors():
     from services.content.router import configure_processors, get_processor
     from services.content.reminder_processor import ReminderProcessor
+    svc = Mock()
     configure_processors({
         Intent.REMINDER: lambda: ReminderProcessor(),
-        Intent.ANKI: lambda: AnkiProcessor(Mock()),
+        Intent.ANKI: lambda: AnkiProcessor(svc, anki_graph=_fake_anki_graph(svc)),
     })
     assert isinstance(get_processor(Intent.REMINDER), ReminderProcessor)
     assert isinstance(get_processor(Intent.ANKI), AnkiProcessor)
+
+
+@pytest.mark.unit
+def test_anki_processor_requires_injected_graph():
+    with pytest.raises(ValueError, match="requires an injected AnkiGenerationGraph"):
+        AnkiProcessor(Mock())
+
+
+@pytest.mark.unit
+def test_container_anki_graph_enables_runtime_observation():
+    from composition.container import ApplicationContainer
+
+    graph = ApplicationContainer().anki_generation_graph()
+
+    assert graph.capture_observation_detail_text is True
+    assert graph.observation_bundle_dir
+    assert graph.detail_sink is None
 
 
 @pytest.mark.unit
@@ -59,7 +95,7 @@ async def test_anki_processor_delivers_document():
         location=None,
     )
 
-    result = await AnkiProcessor(svc).process(ctx)
+    result = await AnkiProcessor(svc, anki_graph=_fake_anki_graph(svc)).process(ctx)
 
     assert result.success
     svc.extract_cards.assert_called_once()
@@ -90,7 +126,7 @@ async def test_anki_processor_uses_configured_deck_name():
         message=message, thread_content=[("U", "vocab")], user_id=1, owner_name="U", location=None
     )
 
-    await AnkiProcessor(svc, preferences_repo=repo).process(ctx)
+    await AnkiProcessor(svc, preferences_repo=repo, anki_graph=_fake_anki_graph(svc)).process(ctx)
 
     # deck name passed positionally to build_package(cards, deck_name)
     assert svc.build_package.call_args.args[1] == "Languages::Spanish"
@@ -109,7 +145,7 @@ async def test_anki_processor_cloze_preview_shows_hidden_span():
     ctx = ProcessingContext(
         message=message, thread_content=[("U", "paris france")], user_id=771, owner_name="U", location=None
     )
-    await AnkiProcessor(svc).process(ctx)
+    await AnkiProcessor(svc, anki_graph=_fake_anki_graph(svc)).process(ctx)
 
     caption = message.reply_document.call_args.kwargs["caption"]
     assert "(cloze)" in caption
@@ -156,7 +192,7 @@ async def test_anki_processor_empty_content_replies_error():
         location=None,
     )
 
-    result = await AnkiProcessor(svc).process(ctx)
+    result = await AnkiProcessor(svc, anki_graph=_fake_anki_graph(svc)).process(ctx)
 
     assert not result.success
     svc.extract_cards.assert_not_called()

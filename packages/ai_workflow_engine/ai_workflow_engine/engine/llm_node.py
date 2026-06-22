@@ -13,11 +13,11 @@ from langchain_core.prompts import PromptTemplate
 
 from ai_workflow_engine._runtime_state import current_observation_capture
 from ai_workflow_engine.observability_capture import (
+    engine_worker_observation_scope,
     langchain_messages_payload,
     langchain_response_payload,
     llm_request_payload,
     llm_response_payload,
-    mark_engine_worker_observed,
 )
 from ai_workflow_engine.parsing import STRUCTURED_REPAIR_PROMPT
 from ai_workflow_engine.usage import WorkflowBudgetExceeded, invoke_metered_chat
@@ -255,9 +255,7 @@ class StructuredLLMNode:
         from ai_workflow_engine.usage import check_budget_before_call, check_images_per_call
         from ai_workflow_engine.usage import check_input_tokens_per_call, estimate_text_tokens
 
-        request_metadata = mark_engine_worker_observed(
-            {"model_profile": profile.model_dump()} if profile is not None else {}
-        )
+        request_metadata = {"model_profile": profile.model_dump()} if profile is not None else {}
         last_error = ""
         for attempt in range(1, 2 + self.max_repair_rounds):
             try:
@@ -285,7 +283,8 @@ class StructuredLLMNode:
                 check_budget_before_call("chat", self.name)
                 self._record_callable_request(request, attempt, profile)
                 try:
-                    response = await self.llm(request)
+                    with engine_worker_observation_scope():
+                        response = await self.llm(request)
                 except Exception as exc:
                     self._record_llm_error(attempt, exc, profile, transport="plain_callable")
                     raise
@@ -357,15 +356,16 @@ class StructuredLLMNode:
                 model_name = profile.model if profile is not None else self._model_name()
                 self._record_langchain_request(messages, attempt, profile)
                 try:
-                    output = invoke_metered_chat(
-                        self._llm_for_profile(profile),
-                        messages,
-                        node=self.name,
-                        model=model_name,
-                        attempt=attempt,
-                        metadata={"output_model": self.output_model.__name__, **(usage_metadata or {})},
-                        config=self.config,
-                    )
+                    with engine_worker_observation_scope():
+                        output = invoke_metered_chat(
+                            self._llm_for_profile(profile),
+                            messages,
+                            node=self.name,
+                            model=model_name,
+                            attempt=attempt,
+                            metadata={"output_model": self.output_model.__name__, **(usage_metadata or {})},
+                            config=self.config,
+                        )
                 except Exception as exc:
                     self._record_llm_error(attempt, exc, profile, transport="langchain")
                     raise

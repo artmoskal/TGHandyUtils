@@ -29,7 +29,7 @@ class AnkiCardSetPlanner:
     def __init__(self, config: IConfig, llm: Optional[Any] = None):
         self.config = config
         self._node = StructuredLLMNode(
-            name="anki_card_set_planner",
+            name="plan_card_type",
             config=config,
             output_model=CardBuildPlan,
             static_prompt_template=self._STATIC_PROMPT,

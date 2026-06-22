@@ -21,9 +21,9 @@ from ai_workflow_engine.models import AgentRunRequest, AgentStepDecision, AgentT
 from ai_workflow_engine.models import CapabilitySpec, EvidenceRef
 from ai_workflow_engine.observability_capture import (
     ObservationCapture,
+    engine_worker_observation_scope,
     llm_request_payload,
     llm_response_payload,
-    mark_engine_worker_observed,
 )
 from ai_workflow_engine.usage import check_budget_before_call, check_images_per_call, check_input_tokens_per_call
 from ai_workflow_engine.usage import estimate_text_tokens
@@ -91,7 +91,7 @@ class LLMAgentPlanner:
             llm_request = LLMRequest(
                 messages=messages,
                 tools=active_tools,
-                metadata=mark_engine_worker_observed({
+                metadata={
                     # Per-run passthrough: the consumer's AgentRunRequest.metadata reaches the
                     # LLMCallable (e.g. an on_token sink / session id for per-call TTS routing in a
                     # voice brain). Engine observability keys are applied AFTER so they always win.
@@ -100,12 +100,13 @@ class LLMAgentPlanner:
                     "workflow_id": context.run_context.workflow_id,
                     "workflow_type": context.run_context.workflow_type,
                     "repair_round": repair_round,
-                }),
+                },
             )
             self._check_turn_budget(llm_request)
             self._record_llm_request(llm_request, history, repair_round)
             try:
-                response = await self.llm(llm_request)
+                with engine_worker_observation_scope():
+                    response = await self.llm(llm_request)
             except Exception as exc:
                 self._record_llm_error(llm_request, history, repair_round, exc)
                 raise

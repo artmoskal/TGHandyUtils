@@ -19,7 +19,6 @@ from core.logging import get_logger
 from services.anki_card_service import AnkiCardService, DEFAULT_DECK_NAME
 from services.content.thread_assembly import assemble_thread, collect_screenshots
 from services.content.anki_directives import parse_directives, HELP_TEXT
-from services.content.anki_generation_graph import AnkiGenerationGraph
 from services.content.anki_source import build_content_source
 from services.content import anki_buffer
 from ai_workflow_engine.usage import format_usage_summary
@@ -29,8 +28,6 @@ logger = get_logger(__name__)
 BUFFER_MEDIA_DIR = "data/temp_cache/anki"
 TELEGRAM_DOCUMENT_CAPTION_LIMIT = 1024
 TELEGRAM_TEXT_MESSAGE_LIMIT = 4096
-
-
 _IMG_RE = re.compile(r"<img\b[^>]*\bsrc=[\"']?([^\"'>\s]+)", re.IGNORECASE)
 _BR_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)
 
@@ -242,7 +239,9 @@ class AnkiProcessor(IContentProcessor):
     def __init__(self, anki_card_service: AnkiCardService, preferences_repo=None, anki_graph=None):
         self.anki_card_service = anki_card_service
         self.preferences_repo = preferences_repo
-        self.anki_graph = anki_graph or AnkiGenerationGraph(anki_card_service)
+        if anki_graph is None:
+            raise ValueError("AnkiProcessor requires an injected AnkiGenerationGraph")
+        self.anki_graph = anki_graph
 
     def _deck_name(self, user_id: int) -> str:
         if self.preferences_repo:

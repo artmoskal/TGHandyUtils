@@ -171,7 +171,7 @@ class AnkiCardService:
         output = invoke_metered_chat(
             self.llm,
             [SystemMessage(content=system_text), HumanMessage(content=user_text)],
-            node="anki_card_renderer",
+            node="render_text_or_cloze",
             model=self._model_name(),
             metadata={"card_type": "render"},
             config=self.config,

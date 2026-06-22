@@ -1,9 +1,13 @@
 # MageQA — AI Workflow Engine Usage Guide
 
-> **FREEZE NOTICE (2026-06-12):** pin tag `engine-v0.1.0` and build a wheel from it — the live
-> branch is under authorized breaking changes (state-machine round, lands as `engine-v0.2.0`).
-> Read `working-against-the-freeze.md` (same folder) for the pin/upgrade protocol and the exact
-> v0.2.0 change list BEFORE wiring anything.
+> **PIN (2026-06-22):** pin tag `engine-v0.6.0` and build a wheel from it. The consumer model is
+> breaking-allowed tag-to-tag — do NOT track the live branch. v0.6.0 adds cross-run memory
+> (`memory.py`), observability as **log→bundle→viewer** (HTML renderers MOVED OUT of the engine into
+> the separate `ai_workflow_viewer` package — breaking for anyone importing the old engine renderers),
+> and the off-mode observation-cost fix.
+> **One-door rule for consumers:** construct model clients through your product's shared LLM
+> factory/seam; a direct provider client (e.g. `OpenAI(...)`) is an explicit escape hatch for non-chat
+> needs (audio) only — otherwise you lose observability, cost accounting, and model-swap.
 
 Status: **engine implemented and ready for adoption** (2026-06-12). The `WorkflowDefinition` /
 `WorkflowExecutor` / DI layer this doc previously waited on is live and proven (Anki migrated +
@@ -313,7 +317,8 @@ Implemented and gate-verified (commits up to `b014268`+):
   task budget caps total work across all levels.
 - **Parallel sub-workflows**: `engine.register_workflow_capability("run_child", "child_flow")` then
   `.fanout(..., capability="run_child")` — child workflows in parallel with failure isolation.
-- **Visualizer**: `workflow_to_mermaid(defn, result)` / `save_workflow_html(...)` — the state
+- **Visualizer**: `ai_workflow_viewer.workflow_to_mermaid(defn, result)` /
+  `ai_workflow_viewer.save_workflow_html(...)` — the state
   machine as a diagram, with executed-path overlay (status colors, ✓ on taken transitions).
 
 ## v0.2.0 migration (tag `engine-v0.2.0` = 8d58f88, 2026-06-12) — upgrade window OPEN

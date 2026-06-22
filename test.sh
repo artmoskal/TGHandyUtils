@@ -194,7 +194,7 @@ run_tests() {
             $PYTEST_MARKER \
             --log-cli-level=DEBUG \
             --log-cli-format='%(asctime)s [%(levelname)s] %(name)s - %(message)s' \
-            --cov=services --cov=ai_workflow_engine --cov=ai_workflow_tools --cov=platforms --cov=database --cov=models --cov=core \
+            --cov=services --cov=ai_workflow_engine --cov=ai_workflow_tools --cov=ai_workflow_viewer --cov=platforms --cov=database --cov=models --cov=core \
             --cov-report=term-missing \
             --cov-report=html:/app/test-results/$coverage_html_dir \
             --cov-report=xml:/app/test-results/coverage$coverage_suffix.xml \
@@ -215,7 +215,7 @@ if [ -n "$BATCH_SIZE" ]; then
     
     TEST_FILES=$(docker-compose -f docker-compose.test.yml run --rm -e RUNNING_IN_DOCKER=1 bot-test bash -c "
         cd /app && \
-        python -m pytest tests packages/ai_workflow_engine/tests packages/ai_workflow_tools/tests $MARKER_FILTER -q | grep '::' | cut -d':' -f1 | sort -u
+        python -m pytest tests packages/ai_workflow_engine/tests packages/ai_workflow_tools/tests packages/ai_workflow_viewer/tests $MARKER_FILTER -q | grep '::' | cut -d':' -f1 | sort -u
     " 2>/dev/null | grep -v "^$")
     
     # Convert to array
@@ -292,7 +292,7 @@ else
         TEST_TARGET=""
     else
         # No specific files: run the product suite plus package-local suites
-        TEST_TARGET="tests/ packages/ai_workflow_engine/tests/ packages/ai_workflow_tools/tests/"
+        TEST_TARGET="tests/ packages/ai_workflow_engine/tests/ packages/ai_workflow_tools/tests/ packages/ai_workflow_viewer/tests/"
     fi
     
     if run_tests "$TEST_TARGET" ""; then

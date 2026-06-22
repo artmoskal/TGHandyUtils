@@ -9,8 +9,8 @@ images are reduced to fingerprints, so raw media never enters the trace.
 This is the runtime counterpart to :func:`ai_workflow_engine.viz.render_prompt_manifest` (the static
 "what prompts will this workflow use" view). Because the engine's LLM seam is the ``LLMCallable``
 protocol, decorating external clients is the idiomatic, additive way to add this. Do not wrap a client
-that is passed into an engine-owned LLM worker; those requests are marked and the wrapper skips them to
-avoid duplicate prompt/response events.
+that is passed into an engine-owned LLM worker; calls made from those workers run under an internal
+observation scope, and the wrapper skips them to avoid duplicate prompt/response events.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from ai_workflow_engine.engine.capabilities import DetailSink, TraceSink
 from ai_workflow_engine.llm_protocol import LLMRequest, LLMResponse
 from ai_workflow_engine.models import PrivacyLevel
 from ai_workflow_engine.observability_capture import (
-    is_engine_worker_observed_request,
+    is_engine_worker_observation_active,
     llm_request_payload,
     llm_response_payload,
     record_observation,
@@ -33,10 +33,12 @@ class PromptCapturingLLMClient:
 
     Drop-in: it *is* an ``LLMCallable`` (``async __call__(request) -> LLMResponse``); it records
     request and response ``WorkflowTraceEvent`` records plus linked ``ObservationDetail`` records, then
-    returns the inner response unchanged. The trace events carry only digests/counts; the detail sink
-    carries optional prompt/response bodies with image **fingerprints only** — never raw image data. The
-    node label and workflow ids are read from ``request.metadata``. Use this for custom/BYO LLM calls,
-    not clients passed into engine-owned LLM workers such as ``StructuredLLMNode`` or
+    returns the inner response unchanged. With detail capture enabled, trace events carry digests/counts
+    and the detail sink carries optional prompt/response bodies with image **fingerprints only** —
+    never raw image data. When detail capture is disabled, compact trace events are still emitted
+    without payload hashing.
+    The node label and workflow ids are read from ``request.metadata``. Use this for custom/BYO LLM
+    calls, not clients passed into engine-owned LLM workers such as ``StructuredLLMNode`` or
     ``LLMAgentPlanner``::
 
         engine = WorkflowEngineBuilder().with_detail_sink(InMemoryDetailSink()).build()
@@ -48,7 +50,7 @@ class PromptCapturingLLMClient:
 
     The trace event and detail record must land in shared run sinks so graph drill-down can resolve
     ``detail_refs``. A private detail sink is intentionally not created. If an engine-owned worker has
-    already marked the request as observed, this wrapper delegates without recording.
+    already observed the current call, this wrapper delegates without recording.
     """
 
     def __init__(
@@ -69,7 +71,7 @@ class PromptCapturingLLMClient:
         self._privacy = privacy
 
     async def __call__(self, request: LLMRequest) -> LLMResponse:
-        if is_engine_worker_observed_request(request):
+        if is_engine_worker_observation_active():
             return await self._inner(request)
         self._record_request(request)
         try:

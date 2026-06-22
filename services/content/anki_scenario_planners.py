@@ -28,13 +28,14 @@ class _ScenarioPlannerBase:
         self,
         config: IConfig,
         model_cls: type,
+        node_name: str,
         static_prompt: str,
         dynamic_prompt: str,
         llm: Optional[Any] = None,
     ):
         self.config = config
         self._node = StructuredLLMNode(
-            name=self.__class__.__name__,
+            name=node_name,
             config=config,
             output_model=model_cls,
             static_prompt_template=static_prompt,
@@ -126,7 +127,14 @@ class TextScenarioPlanner(_ScenarioPlannerBase):
     _PROMPT = _STATIC_PROMPT + "\n" + _DYNAMIC_PROMPT
 
     def __init__(self, config: IConfig, llm: Optional[Any] = None):
-        super().__init__(config, TextCardScenario, self._STATIC_PROMPT, self._DYNAMIC_PROMPT, llm=llm)
+        super().__init__(
+            config,
+            TextCardScenario,
+            "prepare_text_scenario",
+            self._STATIC_PROMPT,
+            self._DYNAMIC_PROMPT,
+            llm=llm,
+        )
 
     async def plan(
         self,
@@ -144,7 +152,14 @@ class ClozeScenarioPlanner(_ScenarioPlannerBase):
     _PROMPT = _STATIC_PROMPT + "\n" + _DYNAMIC_PROMPT
 
     def __init__(self, config: IConfig, llm: Optional[Any] = None):
-        super().__init__(config, ClozeCardScenario, self._STATIC_PROMPT, self._DYNAMIC_PROMPT, llm=llm)
+        super().__init__(
+            config,
+            ClozeCardScenario,
+            "prepare_cloze_scenario",
+            self._STATIC_PROMPT,
+            self._DYNAMIC_PROMPT,
+            llm=llm,
+        )
 
     async def plan(
         self,
@@ -167,7 +182,14 @@ class VisualScenarioPlanner(_ScenarioPlannerBase):
     _PROMPT = _STATIC_PROMPT + "\n" + _DYNAMIC_PROMPT
 
     def __init__(self, config: IConfig, llm: Optional[Any] = None):
-        super().__init__(config, VisualCardScenario, self._STATIC_PROMPT, self._DYNAMIC_PROMPT, llm=llm)
+        super().__init__(
+            config,
+            VisualCardScenario,
+            "prepare_visual_scenario",
+            self._STATIC_PROMPT,
+            self._DYNAMIC_PROMPT,
+            llm=llm,
+        )
 
     async def plan(
         self,

@@ -41,11 +41,7 @@ from ai_workflow_engine.models import (
 from ai_workflow_tools.media.image_models import ImageGenerationRequest
 from ai_workflow_tools.media.voice_generation import VoiceGenerationRequest
 from ai_workflow_engine.models import WorkflowGoal, WorkflowTraceEvent, WorkflowUsageSummary
-from ai_workflow_engine.observability import (
-    ObservationGraph,
-    build_observation_graph,
-    save_observation_html,
-)
+from ai_workflow_engine.observation_bundle import ObservationRunBundle, open_observation_run_bundle
 from services.anki_card_service import AnkiCardService
 from services.content.anki_directives import parse_directives
 from services.content.anki_renderers import (
@@ -57,7 +53,6 @@ from services.content.anki_renderers import (
 from services.content.anki_image_prompt_policy import AnkiImagePromptPolicy, ImagePromptContext
 from ai_workflow_engine.engine import (
     CapabilityRegistry,
-    CapabilityRuntime,
     DetailSink,
     InMemoryTraceSink,
     RuntimePlanCompiler,
@@ -132,9 +127,12 @@ class AnkiGenerationGraph:
         generated_media_root: str = DEFAULT_GENERATED_MEDIA_ROOT,
         detail_sink: Optional[DetailSink] = None,
         capture_observation_detail_text: bool = False,
+        observation_bundle_dir: Optional[str] = None,
+        observation_retention_limit: Optional[int] = None,
     ):
         self.anki_card_service = anki_card_service
-        self.runner = runner or WorkflowRunner(config=getattr(anki_card_service, "config", None))
+        self.runner = runner
+        self._runner_config = getattr(anki_card_service, "config", None)
         self.card_set_planner = card_set_planner
         self.text_scenario_planner = text_scenario_planner
         self.cloze_scenario_planner = cloze_scenario_planner
@@ -174,18 +172,15 @@ class AnkiGenerationGraph:
         self.capability_trace_sink = InMemoryTraceSink()
         self.detail_sink = detail_sink
         self.capture_observation_detail_text = capture_observation_detail_text
+        self.observation_bundle_dir = observation_bundle_dir
+        self.observation_retention_limit = observation_retention_limit
         self.capability_registry = CapabilityRegistry()
-        self.capability_runtime = CapabilityRuntime(
-            self.capability_registry,
-            self.capability_trace_sink,
-            detail_sink=self.detail_sink,
-            capture_detail_text=self.capture_observation_detail_text,
-        )
         self.last_run_state: Optional[AnkiGraphState] = None
         self.last_run_result: Any = None
+        self.last_observation_bundle: Optional[ObservationRunBundle] = None
         # The Anki workflow now runs on the reusable executable engine (no product-owned graph).
-        self._workflow_engine = None
         self._capabilities_registered = False
+        self._register_workflow_capabilities()
 
     @staticmethod
     def _normalize_style_reference_images(style_reference_images: Sequence[Any]) -> list[str]:
@@ -202,9 +197,11 @@ class AnkiGenerationGraph:
         return normalized
 
     async def run(self, source: ContentSource, message: Any = None) -> RenderedCardSet:
-        engine = self._engine()
-        runtime_plan = self._runtime_plan_for_source(source)
+        self._clear_observation_details()
         run_id = str(uuid.uuid4())
+        bundle = self._open_observation_bundle(run_id)
+        engine = self._engine(bundle)
+        runtime_plan = self._runtime_plan_for_source(source)
         goal = WorkflowGoal(
             workflow_type="anki_generation",
             objective="Generate focused Anki flashcards from Telegram content",
@@ -243,16 +240,21 @@ class AnkiGenerationGraph:
             "workflow_goal": goal,
             "workflow_context": run_context,
         }
-        result = await engine.run(
-            "anki_generation",
-            initial_state,
-            goal=goal,
-            recursion_fallback=self._engine_recursion_fallback,
-            recursion_limit=self._graph_recursion_limit(),
-        )
+        try:
+            result = await engine.run(
+                "anki_generation",
+                initial_state,
+                goal=goal,
+                recursion_fallback=self._engine_recursion_fallback,
+                recursion_limit=self._graph_recursion_limit(),
+            )
+        except Exception:
+            self._finalize_observation_bundle(bundle, engine, None, status="failed")
+            raise
         self.last_run_result = result
         final_state = result.output if isinstance(result.output, dict) else {}
         self.last_run_state = final_state
+        self._finalize_observation_bundle(bundle, engine, result)
         rendered = final_state.get("rendered")
         if not rendered:
             raise ParsingError("Anki graph produced no rendered cards")
@@ -261,35 +263,10 @@ class AnkiGenerationGraph:
             rendered = rendered.model_copy(update={"usage_summary": usage_summary})
         return rendered
 
-    def last_observation_graph(self) -> ObservationGraph:
-        """Project the most recent Anki run into the engine's generic observation graph."""
+    def last_observation_bundle_path(self) -> Optional[str]:
+        """Return the most recent durable observation bundle path, when enabled."""
 
-        if self.last_run_state is None or self.last_run_result is None:
-            raise RuntimeError("AnkiGenerationGraph has no completed run to observe")
-        engine = self._engine()
-        definition = engine.workflows["anki_generation"]
-        trace_events = list(self.last_run_state.get("trace", []))
-        trace_events.extend(getattr(self.last_run_result, "trace", []) or [])
-        usage_summary = getattr(self.last_run_result, "usage", None)
-        return build_observation_graph(
-            definition,
-            trace_events,
-            usage_summary or (),
-            self._observation_details(),
-        )
-
-    def save_last_observation_html(self, path: str, *, title: Optional[str] = None) -> str:
-        """Write a static inspection page for the most recent Anki run."""
-
-        engine = self._engine()
-        definition = engine.workflows["anki_generation"]
-        graph = self.last_observation_graph()
-        return save_observation_html(
-            definition,
-            graph,
-            path,
-            title=title or "Anki generation observation",
-        )
+        return str(self.last_observation_bundle.path) if self.last_observation_bundle else None
 
     def _engine_recursion_fallback(self, wrapper_state: Dict[str, Any], exc: Exception) -> Dict[str, Any]:
         """Adapt the product recursion fallback to the engine's wrapper state shape.
@@ -364,36 +341,83 @@ class AnkiGenerationGraph:
             + (4 * self.max_voice_generations_per_run)
         )
 
-    def _engine(self):
-        """Build (once) the executable workflow engine that runs the Anki workflow.
+    def _engine(self, bundle: Optional[ObservationRunBundle]):
+        """Build the executable workflow engine for one Anki run.
 
         Orchestration (node dispatch, branching, retry/retrace cycles, fallback, side-effect/budget
         policy, trace) is owned by the reusable engine. This class contributes only the domain
         capabilities, the routing decisions, and the declarative workflow shape — no graph wiring.
         """
 
-        if self._workflow_engine is not None:
-            return self._workflow_engine
-
         from ai_workflow_engine import WorkflowEngine
 
         self._register_workflow_capabilities()
+        trace_sink = bundle.trace_sink if bundle is not None else self.capability_trace_sink
+        detail_sink = bundle.detail_sink if bundle is not None else self.detail_sink
+        usage_sink = bundle.usage_sink if bundle is not None else None
         engine = WorkflowEngine(
             registry=self.capability_registry,
-            trace_sink=self.capability_trace_sink,
-            detail_sink=self.detail_sink,
+            trace_sink=trace_sink,
+            detail_sink=detail_sink,
             capture_detail_text=self.capture_observation_detail_text,
+            usage_sink=usage_sink,
+            config=self._runner_config,
         )
-        # Reuse the product runner so usage budget + recursion handling track app config.
-        engine.executor.runner = self.runner
+        if self.runner is not None:
+            # Test hook/custom runner: do not mutate shared runner state here. Production runs use
+            # the per-engine runner above so usage sinks and budgets stay run-local.
+            engine.executor.runner = self.runner
         engine.register_workflow(self._anki_workflow_definition(), profile=self._workflow_profile())
-        self._workflow_engine = engine
         return engine
+
+    def _open_observation_bundle(self, run_id: str) -> Optional[ObservationRunBundle]:
+        if not self.observation_bundle_dir:
+            self.last_observation_bundle = None
+            return None
+        try:
+            bundle = open_observation_run_bundle(
+                self.observation_bundle_dir,
+                run_id,
+                retention_limit=self.observation_retention_limit,
+            )
+        except Exception:
+            logger.exception("Failed to open Anki observation bundle for run %s", run_id)
+            self.last_observation_bundle = None
+            return None
+        self.last_observation_bundle = bundle
+        return bundle
+
+    def _finalize_observation_bundle(
+        self,
+        bundle: Optional[ObservationRunBundle],
+        engine: Any,
+        result: Any,
+        *,
+        status: Optional[str] = None,
+    ) -> None:
+        if bundle is None:
+            return
+        try:
+            bundle.finalize(
+                engine.workflows["anki_generation"],
+                status=status or getattr(result, "status", "unknown"),
+                usage=getattr(result, "usage", None) if result is not None else None,
+            )
+        except Exception:
+            logger.exception("Failed to finalize Anki observation bundle for run %s", bundle.run_id)
 
     def _observation_details(self) -> list[Any]:
         if self.detail_sink is None:
             return []
         return list(getattr(self.detail_sink, "details", []) or [])
+
+    def _clear_observation_details(self) -> None:
+        self.capability_trace_sink.events.clear()
+        if self.detail_sink is None:
+            return
+        clear = getattr(self.detail_sink, "clear", None)
+        if callable(clear):
+            clear()
 
     def _workflow_profile(self) -> WorkflowProfile:
         config = getattr(self.anki_card_service, "config", None)

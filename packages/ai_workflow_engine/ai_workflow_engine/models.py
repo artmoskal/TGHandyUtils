@@ -5,6 +5,7 @@ but use these goal/trace/artifact records so workflow execution is observable an
 """
 
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -60,6 +61,10 @@ EvaluationAction = Literal[
 WorkflowStepAction = Literal["invoke", "finish", "fail", "ask_user"]
 ClarificationStatus = Literal["answered", "pending", "provisional"]
 AgentStepAction = Literal["tool", "finish", "fail"]
+
+
+def _utc_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 class WorkflowGoal(BaseModel):
@@ -229,6 +234,8 @@ class AgentRunResult(BaseModel):
 
 class WorkflowTraceEvent(BaseModel):
     node: str
+    timestamp: str = Field(default_factory=_utc_timestamp)
+    sequence: Optional[int] = None
     attempt: int = 1
     decision: Optional[str] = None
     error: Optional[str] = None
@@ -250,6 +257,7 @@ class ObservationDetail(BaseModel):
     detail_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     event_id: str
     run_id: Optional[str] = None
+    sequence: Optional[int] = None
     kind: ObservationDetailKind
     privacy: PrivacyLevel = "internal"
     redaction_state: ObservationRedactionState = "digest_only"
@@ -273,6 +281,8 @@ class WorkflowUsageEvent(BaseModel):
     operation: Literal["chat", "image", "tool"] = "chat"
     cost_class: Literal["metered", "subscription_notional"] = "metered"
     node: str
+    run_id: Optional[str] = None
+    sequence: Optional[int] = None
     model: str = ""
     attempt: int = 1
     input_tokens: int = 0
