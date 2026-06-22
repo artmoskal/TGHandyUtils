@@ -4,7 +4,6 @@ from typing import Optional, Dict, Any
 from datetime import datetime, timezone, timedelta
 import zoneinfo
 
-from langchain_openai import ChatOpenAI
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -13,7 +12,7 @@ from models.task import TaskCreate
 from core.interfaces import IParsingService, IConfig, IUserPreferencesRepository
 from core.exceptions import ParsingError
 from core.logging import get_logger
-from services.openai_cache import openai_prompt_cache_kwargs
+from services.llm_factory import create_chat_llm
 from ai_workflow_engine.prompt_loader import load_prompt_template
 from ai_workflow_engine.usage import invoke_metered_chat
 
@@ -22,8 +21,6 @@ logger = get_logger(__name__)
 class ParsingService(IParsingService):
     """Service for parsing text into structured task data."""
 
-    _FIXED_TEMPERATURE_PREFIXES = ("gpt-5", "o1", "o3", "o4")
-    
     # Class variable to track token usage across all instances
     _token_usage = {
         "prompt_tokens": 0,
@@ -39,17 +36,8 @@ class ParsingService(IParsingService):
         if not config.OPENAI_API_KEY:
             raise ValueError("OpenAI API key is required for parsing service")
         
-        model = self._model_name()
-        llm_params = {
-            "model": model,
-            "openai_api_key": config.OPENAI_API_KEY,
-        }
-        if not model.startswith(self._FIXED_TEMPERATURE_PREFIXES):
-            llm_params["temperature"] = 0.0  # Maximum precision for mathematical calculations.
-        cache_kwargs = openai_prompt_cache_kwargs(config, model=model)
-        if cache_kwargs:
-            llm_params["model_kwargs"] = cache_kwargs
-        self.llm = ChatOpenAI(**llm_params)
+        # Temperature/cache/base-url handled centrally by the factory (0.0 = max precision).
+        self.llm = create_chat_llm(config, model=self._model_name(), temperature=0.0)
         
         self.parser = PydanticOutputParser(pydantic_object=TaskCreate)
         self.prompt_template = self._create_prompt_template()

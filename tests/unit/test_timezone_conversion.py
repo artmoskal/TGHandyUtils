@@ -38,7 +38,7 @@ class TestTimezoneConversionUnit:
     def parsing_service(self, mock_config):
         """Create parsing service with mocked dependencies."""
         # Mock the ChatOpenAI to avoid actual API calls
-        with patch('services.parsing_service.ChatOpenAI'):
+        with patch('services.parsing_service.create_chat_llm'):
             return ParsingService(mock_config)
     
     def test_get_timezone_offset_cascais_with_factory_users(self, parsing_service):

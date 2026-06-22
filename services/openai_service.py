@@ -3,13 +3,13 @@
 import base64
 import time
 from typing import BinaryIO
-from openai import AsyncOpenAI
 
 from core.exceptions import TranscriptionError
 from core.logging import get_logger
 from core.interfaces import IOpenAIService
 from ai_workflow_engine.models import WorkflowUsageEvent
 from services.openai_cache import openai_prompt_cache_kwargs
+from services.llm_factory import create_openai_client
 from ai_workflow_engine.usage import check_budget_before_call, estimate_cost_usd, record_usage_event
 
 logger = get_logger(__name__)
@@ -38,7 +38,7 @@ class OpenAIService(IOpenAIService):
         if not self.api_key:
             raise ValueError("OpenAI API key is required")
         
-        self.client = AsyncOpenAI(api_key=self.api_key)
+        self.client = create_openai_client(self.config, api_key=self.api_key)
     
     async def transcribe_audio(self, audio_data: BinaryIO) -> str:
         """Transcribe audio data using OpenAI Whisper.

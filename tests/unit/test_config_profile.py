@@ -120,6 +120,9 @@ def test_application_config_direct_env_reads_are_secrets_or_deployment_knobs():
         "LOG_LEVEL",
         "LOG_FORMAT",
         "LOG_FILE",
+        "ANKI_OBSERVATION_DIR",
+        "OBSERVATION_DIR",
+        "LLM_BASE_URL",
     }
 
     assert direct_env_keys == allowed
