@@ -33,6 +33,7 @@ from ai_workflow_engine.engine.scheduler import WorkflowScheduler
 from ai_workflow_engine.model_binding import model_profile_scope
 from ai_workflow_engine.node_services import ExecutorNodeServices, NodeExecutionServices
 from ai_workflow_engine.nodes import NODE_HANDLERS
+from ai_workflow_engine.run_session import WorkflowRunSession
 from ai_workflow_engine._runtime_state import CONTEXT, RUNNING_PAYLOAD, observation_capture_scope
 from ai_workflow_engine.models import (
     CapabilityContext,
@@ -208,6 +209,8 @@ class WorkflowExecutor:
         compiled = self.compile(definition)
         limit = recursion_limit or self._recursion_limit(definition, context)
         graph_config = {"recursion_limit": limit}
+        # H2: one session per run — the single home for run identity + usage aggregation.
+        session = WorkflowRunSession(workflow_id=definition.workflow_id, context=context)
         # Top-level run: WorkflowRunner installs the usage/budget scope + lifecycle logging.
         with observation_capture_scope(self.runtime.observation):
             final_state = await self.runner.run(
@@ -217,8 +220,11 @@ class WorkflowExecutor:
                 goal=context.goal,
                 graph_config=graph_config,
                 recursion_fallback=recursion_fallback,
+                session=session,
             )
-        return self._envelope(definition, final_state)
+        envelope = self._envelope(definition, final_state)
+        session.close(envelope.status)
+        return envelope
 
     async def _run_inner(
         self,
@@ -309,6 +315,10 @@ class WorkflowExecutor:
         restored_usage = (
             WorkflowUsageSummary.model_validate(snapshot.usage) if snapshot.usage else None
         )
+        # H2: resume rebuilds the session from the snapshot — budgets stay cumulative.
+        session = WorkflowRunSession(
+            workflow_id=definition.workflow_id, context=context, usage_summary=restored_usage
+        )
         with observation_capture_scope(self.runtime.observation):
             final_state = await self.runner.run(
                 compiled,
@@ -316,9 +326,11 @@ class WorkflowExecutor:
                 workflow_type=context.goal.workflow_type,
                 goal=context.goal,
                 graph_config={"recursion_limit": self._recursion_limit(definition, context)},
-                usage_summary=restored_usage,
+                session=session,
             )
-        return self._envelope(definition, final_state)
+        envelope = self._envelope(definition, final_state)
+        session.close(envelope.status)
+        return envelope
 
     def _with_replay(self, node: WorkflowNode, fn: Callable[[Dict[str, Any]], Awaitable[Dict[str, Any]]]):
         """Resume fast-forward: while a restored run replays, completed nodes no-op (recorded

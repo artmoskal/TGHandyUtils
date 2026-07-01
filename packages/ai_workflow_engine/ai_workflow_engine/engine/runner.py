@@ -39,30 +39,37 @@ class WorkflowRunner:
             Callable[[Dict[str, Any], Exception], Dict[str, Any] | Awaitable[Dict[str, Any]]]
         ] = None,
         usage_summary: Optional[WorkflowUsageSummary] = None,
+        session: Optional[Any] = None,
     ) -> Dict[str, Any]:
         effective_type = workflow_type or (goal.workflow_type if goal else None)
         if not effective_type:
             raise ValueError("workflow_type or goal.workflow_type is required")
 
         engine_context = initial_state.get("engine_context")
-        engine_run_context = getattr(engine_context, "run_context", None)
-        run_id = (
-            getattr(engine_run_context, "workflow_id", None)
-            or (goal.metadata.get("run_id") if goal else None)
-            or str(uuid.uuid4())
-        )
-        ctx = WorkflowRunContext(
-            workflow_id=str(run_id),
-            workflow_type=effective_type,
-            goal_id=goal.goal_id if goal else None,
-            delivery_target=goal.delivery_target if goal else None,
-            user_id=user_id if user_id is not None else (goal.user_id if goal else None),
-            metadata={**(goal.metadata if goal else {}), **(metadata or {})},
-        )
+        if session is not None:
+            # H2: the run session is the single home for per-run identity + usage — no
+            # re-derivation here, so a session's run can never disagree with itself.
+            ctx = session.run_context
+            usage_summary = session.usage_summary
+        else:
+            engine_run_context = getattr(engine_context, "run_context", None)
+            run_id = (
+                getattr(engine_run_context, "workflow_id", None)
+                or (goal.metadata.get("run_id") if goal else None)
+                or str(uuid.uuid4())
+            )
+            ctx = WorkflowRunContext(
+                workflow_id=str(run_id),
+                workflow_type=effective_type,
+                goal_id=goal.goal_id if goal else None,
+                delivery_target=goal.delivery_target if goal else None,
+                user_id=user_id if user_id is not None else (goal.user_id if goal else None),
+                metadata={**(goal.metadata if goal else {}), **(metadata or {})},
+            )
+            # A caller-provided summary seeds the scope (resume: budgets cumulative).
+            usage_summary = usage_summary if usage_summary is not None else WorkflowUsageSummary()
         state = dict(initial_state)
         state["workflow_context"] = ctx
-        # A caller-provided summary seeds the scope (resume: budgets cumulative across halves).
-        usage_summary = usage_summary if usage_summary is not None else WorkflowUsageSummary()
         state["usage_summary"] = usage_summary
         if goal:
             state["workflow_goal"] = goal
