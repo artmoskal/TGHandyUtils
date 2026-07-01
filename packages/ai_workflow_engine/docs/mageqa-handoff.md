@@ -5,9 +5,9 @@
 > (`memory.py`), observability as **log→bundle→viewer** (HTML renderers MOVED OUT of the engine into
 > the separate `ai_workflow_viewer` package — breaking for anyone importing the old engine renderers),
 > and the off-mode observation-cost fix.
-> **One-door rule for consumers:** construct model clients through your product's shared LLM
-> factory/seam; a direct provider client (e.g. `OpenAI(...)`) is an explicit escape hatch for non-chat
-> needs (audio) only — otherwise you lose observability, cost accounting, and model-swap.
+> **One-door rule for consumers:** construct provider clients only through sanctioned factory/adapter
+> modules. A direct provider client in workflow code is a reviewed allow-list entry, not a local
+> shortcut — otherwise you lose observability, cost accounting, and model-swap.
 
 Status: **ready for adoption — pin `engine-v0.6.0`** and build a wheel; never track the live branch.
 The `WorkflowDefinition` / `WorkflowExecutor` / DI layer is live and proven (Anki runs on it in
@@ -56,6 +56,26 @@ result = await engine.run("audit_site", SiteAuditInput(url="https://example.test
 
 No MageQA-owned supervisor loop, fan-out loop, retry/deepen loop, or trace/budget runtime. The guard
 `test_examples_contain_no_product_orchestration_loops` fails the build if a pack hand-rolls those.
+
+---
+
+## 1a. Adopter contract AC
+
+Before MageQA treats the engine integration as ready, run these checks in the MageQA repo:
+
+- **No product orchestration loop:** audit workflow packs declare `WorkflowDefinition`s and register
+  capabilities; they do not hand-roll retry, retrace, fan-out, scheduler, or side-effect/budget loops
+  around the engine.
+- **One provider door:** `OpenAI`, `AsyncOpenAI`, `ChatOpenAI`, browser/CLI provider clients, and other
+  paid/provider SDKs are constructed only in sanctioned MageQA factory/adapter modules.
+- **Closed run-state statuses:** dashboard/API/orchestrator projections use engine statuses or a
+  MageQA enum mapped deterministically from them. Ad-hoc progress states such as `ok`, `done`,
+  `empty`, or `hollow` must fail schema/projection tests.
+- **Suspend/resume remains engine-owned:** human review or blocked states use engine
+  `requires_user_input`/snapshot paths instead of a separate MageQA wait loop.
+
+Reference MageQA test shape: enum rejects ad-hoc statuses; engine result maps to deterministic
+transition; failed/partial/blocked states remain visible and never collapse to silent-empty output.
 
 ---
 

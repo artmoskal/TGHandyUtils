@@ -2,10 +2,11 @@
 
 Status: target architecture
 Owner: Artem
-Last updated: 2026-06-08
+Last updated: 2026-07-01
 
-Current Anki/workflow acceptance criteria and validation evidence are tracked in
-`docs/anki-acceptance-criteria.md`.
+Binding source of truth: `docs/executable-workflow-engine-spec.md`. This file is the design overview;
+if it conflicts with the binding spec, the binding spec wins. Current Anki/workflow acceptance
+criteria and validation evidence are tracked in `docs/anki-acceptance-criteria.md`.
 
 Related project documents:
 
@@ -55,6 +56,11 @@ WorkflowDefinition + WorkflowGoal + WorkflowProfile + registered capabilities/ad
 
 The target developer experience is closer to a typed, LLM-focused n8n/LangGraph/DI runtime than to
 a helper library. Product code fills contracts; it must not build a mini-engine around primitives.
+
+Current status note (2026-07-01): the binding spec records declare/wire/run core mechanics as built,
+with the master all-workload no-product-loop proof still partial. Treat older "primitive kit" or
+"WorkflowDefinition missing" wording in historical docs as superseded by
+`docs/executable-workflow-engine-spec.md`.
 
 ## Engine Soul
 
@@ -159,6 +165,46 @@ It should feel like a small framework for agentic product workflows:
 - artifacts, cost, prompt/cache metadata, branches, rejected outputs, and fallback reasons are
   visible in trace instead of being hidden inside product code.
 
+## Contract Guardrails
+
+The framework stays universal through a small number of load-bearing guards. The rule is narrow:
+each important seam gets one declared contract and one fail-build guard. Do not replace this with
+pervasive linting, a required base-class hierarchy, or product-wide style policing.
+
+External product-to-engine guards:
+
+- **One provider door:** provider clients are constructed only in named sanctioned modules. Today
+  that means `services/llm_factory.py` for shared product LLM/raw OpenAI clients and
+  `packages/ai_workflow_tools/ai_workflow_tools/media/image_generation.py` for the reusable image
+  provider adapter. New construction sites require a reviewed allow-list entry.
+- **No product orchestration loop:** products declare workflows and register capabilities; they do
+  not hand-roll `StateGraph`, retry/retrace, fan-out, scheduler, branch, or side-effect/budget loops
+  around the engine.
+- **Declared run-state statuses:** engine-facing and dashboard/API projections use the engine status
+  vocabulary, or a product enum with an explicit deterministic mapping. Runtime normalization is not
+  enough because adopter projections can drift outside the engine path.
+
+Internal engine guards:
+
+- **Engine does not import products:** `ai_workflow_engine` remains product-neutral.
+- **Executor/node boundary:** after the `NodeExecutionServices` refactor, node handlers depend on a
+  narrow service protocol and the executor<->nodes cycle is forbidden.
+- **Injected machine descriptions:** when legal routes are injected into a branch/decision prompt,
+  every legal label must have a description; missing labels fail validation instead of producing an
+  opaque machine card.
+
+The engine should ship canonical enums and reusable guard templates, but adopter repos must run the
+product-facing checks on their own packs and projections.
+
+**Enriched decisions — the supported recipe (decided 2026-07-01, supersedes a `transition_branch`
+primitive):** when a decision needs situation-specific enrichment ("retry — and change THIS") or an
+evolving in-run scratchpad, do not reach for a new node kind. Use a judgment `step` whose output
+carries the full judgment (verdict + rationale + instructions/odds) followed by a `branch`/guard that
+routes on it — outputs already flow forward, stay validated, and replay cleanly. `evaluate` covers
+repair loops (criticism flows into the retry); authored subflows cover dynamic sub-processes. A richer
+transition primitive is reconsidered only when a real consumer has ≥2 hand-written judgment-step+branch
+pairs and the two-node shape demonstrably hurts (then: envelope first, state-patch last).
+
 Low-level scripts and tools are explicitly allowed. They become architecture only after they are
 registered as capabilities with typed inputs/outputs, limits, trace, and failure semantics. A Python
 script that optimizes a calendar, a browser agent that audits a page, a frame sampler that inspects
@@ -224,13 +270,11 @@ This boundary is not an excuse to keep 90% of implementation client-side. Produc
 what a capability means in their domain; the engine runs, traces, limits, retries, evaluates, and
 connects capabilities under a shared control model.
 
-Current implementation note: the committed package has real reusable primitives and the Anki flow
-uses several of them, but the engine is not finished by this contract. The missing central piece is
-a first-class `WorkflowDefinition`/`WorkflowBuilder` plus `WorkflowExecutor`/`WorkflowEngine.run`
-that executes workflow blocks end-to-end. Anki still owns its concrete graph topology inside
-`AnkiGenerationGraph`; the toy GoPro/MageQA/calendar examples still contain product-side sequencing
-glue. Those are acceptable as the current base only if the polish milestone moves that sequencing
-into the executable workflow harness.
+Current implementation note: the binding spec is authoritative for built vs partial status. As of
+2026-07-01, `WorkflowDefinition`/`WorkflowBuilder`, `WorkflowExecutor`, and `WorkflowEngine.run` are
+the declared runtime path. The remaining architecture-completion claim is narrower: keep proving that
+every product pack uses that path instead of product-side orchestration, and keep the all-workload
+same-executor/no-product-loop gates explicit.
 
 ## Library Boundary
 
@@ -608,6 +652,23 @@ These are architectural gates, not optional implementation hygiene:
   architecture work unless Artem explicitly approves it.
 
 The implementation plan converts these into tests and acceptance gates.
+
+## Architecture Health Backlog
+
+These are accepted framework-hardening tasks, not product blockers unless a direct bug appears:
+
+1. **H1 executor/node service boundary.** Extract a `NodeExecutionServices` protocol so node handlers
+   use a narrow service surface instead of the full executor. Then enforce the executor/node
+   coupling guard.
+2. **H2 run-session lifecycle.** Separate long-lived engine application state from per-run session
+   state: run id, observation bundle, usage scope, trace/detail sinks, checkpoint/resume metadata.
+   Keep `engine.run(...)` as the public API first.
+3. **H3 usage/accounting split.** Split budget gates, usage-event recording, provider usage
+   extraction, pricing, token estimation, and usage rendering while preserving `usage.py`
+   compatibility exports through the next tag.
+
+Sequence: H0 baseline, H1, guard batch, H2, H3, H4 verification/cleanup. External product-facing
+guards can land in parallel because they are check-only; the executor/node cycle guard waits for H1.
 
 ## Non-Goals
 

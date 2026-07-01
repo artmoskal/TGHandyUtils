@@ -1,8 +1,9 @@
 # Workflow Engine — Implementation Plan
 
-Status: **implementation in progress, rebaselined 2026-06-08** (Claude-authored 2026-06-07;
-Codex-expanded phase/task split and AC gates; PF1 fixed; reusable runtime primitives and
-YAML/profile config loading implemented and tested; executable workflow harness still missing)
+Status: **historical implementation plan + active hardening backlog**. The current built/partial/
+future status lives in `docs/executable-workflow-engine-spec.md`; if this file conflicts with that
+binding spec, the binding spec wins. This file preserves implementation provenance and carries the
+current task-sized hardening sequence.
 Owner: Artem
 Parent architecture: `docs/workflow-engine-architecture.md`
 Rationale + fit analysis: `docs/_discussion/2026-06-07-workflow-engine-extraction.md`
@@ -21,6 +22,21 @@ Claude implementation handoff:
 - **D3 (trace):** a strong `TraceSink` abstraction with swappable concrete impls (in-memory +
   file/JSONL shipped; SQLite optional); products select/swap or supply their own. No single
   hard-owned store. Quality bar: good enough that MageQA could replace `ProcessingTrace` with it.
+
+## Current planning note (2026-07-01)
+
+The original Phase 0-10 plan below is retained for provenance. Current engine work should be scoped
+from the binding spec plus this active hardening track:
+
+0. H0 baseline through repo-approved test wrappers.
+1. H1 executor/node service boundary.
+2. Contract guard batch: executor/node cycle guard after H1, plus product-facing guard templates.
+3. H2 run-session lifecycle.
+4. H3 usage/accounting split.
+5. H4 verify, commit, tag, and cleanup.
+
+Do not restart old phases because an old paragraph says a shipped component is missing. Verify
+current status in `docs/executable-workflow-engine-spec.md` first.
 
 ## Rebaseline — executable workflow engine contract (settled 2026-06-08)
 
@@ -469,6 +485,91 @@ needs it.
 Phase 10 AC gate: product-level durable resume is real if implemented; otherwise docs continue to
 describe checkpoint stores as implemented but restart recovery as product-specific/unproven.
 
+## Framework hardening track (settled 2026-07-01)
+
+These tasks polish the engine as a framework. They are not required before MageQA builds its spine
+unless a direct bug appears.
+
+### H0 - Baseline
+
+Goal: start the hardening wave from a known-green state.
+
+- **H0.1** Run the repo-approved unit wrapper and record the count/result. AC: `./test.sh unit` green
+  or a named pre-existing failure is recorded before code changes.
+
+### H1 - Executor/node service boundary
+
+Goal: node handlers depend on a narrow service protocol, not the full executor object.
+
+- **H1.1** Define `NodeExecutionServices` and an executor-backed adapter. AC: existing tests green;
+  no behavior change.
+- **H1.2** Move `step` handlers to the protocol. AC: step/scheduling tests green.
+- **H1.3** Move `branch` and `evaluate` handlers. AC: branch/evaluate/retrace/replan tests green.
+- **H1.4** Move `fanout`, `planner`, `subworkflow`, and `human` handlers. AC:
+  planner/fanout/human/subworkflow tests green.
+- **H1.5** Remove the lazy executor<->nodes import path and add the coupling guard. AC: cycle check
+  either passes or documents only unrelated accepted cycles.
+
+### Contract guard batch
+
+Goal: make the main product/engine seams fail loudly when bypassed.
+
+- **G-int1 engine does not import products.** Add/keep a forbidden-import guard for
+  `ai_workflow_engine` importing product packages.
+- **G-int2 no executor<->nodes cycle.** Land after H1.
+- **G-ext1 one provider door.** Add a construction-site allow-list guard. Current sanctioned modules:
+  `services/llm_factory.py` and
+  `packages/ai_workflow_tools/ai_workflow_tools/media/image_generation.py`.
+- **G-ext2 no product orchestration loop.** Keep the existing examples guard and provide an adopter
+  template for product packs.
+- **G-ext3 declared run-state statuses.** Ship canonical status vocabulary/template tests; adopters
+  run projection/schema guards in their repos.
+- **G-desc injected-machine descriptions.** When `inject_machine=True`, every legal branch/decision
+  label must have a `describe` entry. AC: workflow validation fails with the missing labels; existing
+  flows either already describe injected labels or are updated in the same task.
+
+Implementation tooling: prefer plain pytest source-inspection/AST tests for these guards, matching
+the existing no-product-loop guard and avoiding new static-tool dependencies. Use tach/import-linter
+only if a concrete seam cannot be enforced with source tests.
+
+### H2 - Run-session lifecycle
+
+Goal: separate long-lived engine application state from per-run state.
+
+- **H2.1** Add internal `WorkflowRunSession`. AC: no public API change; tests green.
+- **H2.2** Thread session through executor/runner scopes. AC: run/resume/usage tests green.
+- **H2.3** Move observation bundle/detail/usage ownership to the session. AC: two concurrent fake
+  runs cannot cross-contaminate trace/detail/usage/bundle data.
+- **H2.4** Document long-lived vs per-run fields in code docs. AC: public docs remain accurate.
+
+### H3 - Usage/accounting split
+
+Goal: keep cost honesty while making accounting code easier to extend.
+
+- **H3.1** Extract budget models/gates into `budget.py`. AC: budget tests green; imports preserved.
+- **H3.2** Extract usage context/sinks/event recording into `usage_events.py`. AC: usage scope tests
+  green.
+- **H3.3** Extract provider metadata and pricing. AC: provider/cost tests green.
+- **H3.4** Extract rendering/token heuristics. AC: formatting/token tests green.
+
+Rule: preserve `ai_workflow_engine.usage` compatibility exports through the next tag. A pure internal
+reorg should not break consumers.
+
+### H4 - Verify, commit, tag, cleanup
+
+Goal: close the hardening wave with reproducible evidence and no transient-doc drift.
+
+- **H4.1** Run full `./test.sh unit` or batch wrappers if needed. AC: green or explicitly documented
+  pre-existing failure.
+- **H4.2** Run the manual Anki smoke scenario against the wave code. AC: card delivered, observation
+  bundle exists under `data/observations/<run_id>/`, viewer can render it, usage/cost remains visible.
+- **H4.3** Commit logical units after owner confirmation; do not push from the local machine. Suggested
+  units: docs/guardrails, H1+guards, H2, H3.
+- **H4.4** Tag recommendation after green verification: `engine-v0.6.1` unless a public API change
+  forces a larger version step.
+- **H4.5** Delete migrated transient discussion docs after their durable content is in permanent docs
+  and `docs/_discussion/README.md` points to the remaining active sources.
+
 ## Guard / falsifier tests to add (from review)
 
 1. Recursion-limit: input that exhausts every retry branch → graceful fallback, no
@@ -479,12 +580,17 @@ describe checkpoint stores as implemented but restart recovery as product-specif
 5. Profile-neutrality: a toy `WorkflowProfile` compiles with zero Anki/MageQA/GoPro field names.
 6. Interface-only drift: every new protocol/abstract type has at least one runtime implementation or
    toy adapter before the phase can pass.
-7. Raw-call guard: no direct OpenAI/Gemini/ElevenLabs/subprocess/browser-agent call from product
-   workflow code unless it goes through a registered capability or approved adapter.
+7. Raw-call/provider-door guard: no direct OpenAI/Gemini/ElevenLabs/subprocess/browser-agent call from
+   product workflow code unless it goes through a registered capability or approved provider adapter.
+   Provider SDK construction is allowed only in named sanctioned modules.
 8. Silent-degradation guard: fallback/partial result without failed step, criticism/reason, fail
    mode, and user-visible effect fails validation.
 9. Calendar-builder falsifier: a toy workload that overbooks the user's week must be rejected and
    retraced/replanned, not accepted as a plausible-looking schedule.
+10. Adopter status-projection guard: dashboard/API/orchestrator projections use engine statuses or an
+    explicit mapped product enum; ad-hoc progress labels fail schema tests.
+11. Injected-machine description guard: every `inject_machine=True` branch/decision has descriptions
+    for all legal labels; missing descriptions fail at build/validation time.
 
 ## Open / next
 
@@ -492,9 +598,9 @@ describe checkpoint stores as implemented but restart recovery as product-specif
   implemented and validated: capability runtime, runtime plans, trace/checkpoint sinks, human
   clarification, supervisor loop, agent/subprocess wrappers, external adapter, fan-out, scheduler
   modes, uncertainty result envelope, and evaluator retry/retrace/fallback controller.
-- Current package/Anki milestone is validated by the evidence above and is ready for MageQA/GoPro
-  review as an internal package, but it is not yet ready for deep MageQA/GoPro adoption under the
-  executable-engine contract because `WorkflowDefinition`/`WorkflowExecutor` is still missing.
+- Current built/partial status is maintained in `docs/executable-workflow-engine-spec.md`, not in this
+  historical plan body.
+- Next framework-polish work is H0 -> H1 -> guard batch -> H2 -> H3 -> H4.
 - Downstream adoption work: optional external `[media]` packaging cleanup, product restart/replay
   policy wiring, and real MageQA/GoPro repo adoption with production adapters. These should be
   driven by the receiving project rather than hidden inside TGHandyUtils.

@@ -74,6 +74,16 @@ The platform is an implementation-agnostic workflow engine plus a set of tool li
   same capability contract: declared input/output schemas, policy, budget, trace, artifact/evidence,
   and normalized `CapabilityResult` semantics. The engine owns validation, retry/retrace/fallback,
   state transitions, and branch-label enforcement around every worker.
+- **Decisions are RPG scenes (the goblin rule).** At every decision state the decider — LLM or
+  deterministic — receives, as data generated from the machine itself, the current state PLUS the full
+  set of legal outgoing transitions with their descriptions and live gate budgets ("you are in a
+  forest, you have a stick, there is a goblin — fight / flee / negotiate, each explained, retries
+  remaining shown"). Never a hand-maintained option list in a prompt. Two channels, by design: stable
+  option *semantics* live on the transition (`describe` — data, so the machine stays serializable and
+  replayable); situation-specific *expansions* (costs, odds, predicted consequences — "fight: lose
+  ~5hp, 60% the goblin is gone") are computed facts produced by an upstream assess step and carried in
+  the payload the decider already receives. A transition description must never become code or a
+  callable.
 - **Failures are loud.** Missing capabilities, denied side effects, and exhausted budgets produce
   explicit failures and trace events.
 
@@ -123,6 +133,23 @@ agent, a browser bridge, or a video tool must mean registering a capability/clie
 a product-side orchestration loop or a special node class that bypasses validation. Simple flows can
 leave artifacts, memory, agents, and planners disabled; complex GoPro/MageQA flows opt into them
 under the same executor.
+
+## Contract guardrails for consumers
+
+Products should treat these as framework rules, not local style preferences:
+
+- **One provider door.** Construct provider clients only in sanctioned factory/adapter modules. In
+  this repo today, those are `services/llm_factory.py` and
+  `ai_workflow_tools.media.image_generation`. Product workflow code should not create raw provider
+  clients beside the engine path; doing so bypasses model selection, budget, trace, usage, and
+  observability. Add a new construction site only as an explicit reviewed allow-list entry.
+- **No product orchestration loop.** Product packs declare workflows and register capabilities; they
+  do not hand-write retry, retrace, branch, fan-out, scheduling, or side-effect/budget loops around
+  `runtime.invoke(...)`.
+- **Declared statuses.** Capability results use `accepted`, `rejected`, `partial`, or `failed`;
+  workflow-level projections use the engine statuses or a product enum mapped deterministically from
+  them. Dashboard/API labels like `done`, `ok`, or `empty` are domain presentation only, not hidden
+  engine states.
 
 ## Memory Status And Modes
 
@@ -215,6 +242,6 @@ rendered in the hot path. The separate **`ai_workflow_viewer`** package reads bu
 `serve_viewer`). Capture has an off-switch; the bundle dir defaults to `data/observations` (override
 `OBSERVATION_DIR`). The disk bundle is transport #1 — the design stays swappable to a bus/live consumer.
 
-**One door for model calls (consumers):** construct model clients through your product's shared LLM
-factory; a direct provider client is an explicit escape hatch for non-chat needs (audio) only —
-otherwise you lose observability, cost accounting, and model-swap.
+**One door for model calls (consumers):** construct model clients through sanctioned factory/adapter
+modules. A direct provider client in workflow/product code is a reviewed escape hatch, not the
+default; otherwise you lose observability, cost accounting, and model-swap.

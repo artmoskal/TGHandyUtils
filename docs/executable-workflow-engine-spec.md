@@ -87,6 +87,62 @@ If the answer is not an unconditional **YES** (proven by Test A + Test B in §9)
 master A+B gate remains open until §9 Test A all-four-workload same-executor proof and §9 Test B
 static/runtime no-product-loop proof are cited here.]
 
+## 1a. LOAD-BEARING SEAMS AND CONTRACT GUARDS
+The engine stays universal only if its important seams are both narrow and enforced. The rule is:
+every load-bearing seam gets a declared contract and one fail-build guard. Do **not** replace this
+with pervasive style linting, broad product-code policing, a mandatory base class tree, or a giant
+unified invocation object.
+
+External seams, product -> engine:
+
+1. **One provider door.** Model/provider clients are constructed only in sanctioned provider
+   construction modules. Today the allow-list is:
+   - `services/llm_factory.py` for product LLM/chat and raw OpenAI clients used by shared product
+     services;
+   - `packages/ai_workflow_tools/ai_workflow_tools/media/image_generation.py` for the reusable image
+     provider adapter.
+
+   A new provider-construction module is an explicit reviewed decision. Product workflow code must
+   not create its own `OpenAI`, `AsyncOpenAI`, `ChatOpenAI`, Gemini, ElevenLabs, browser, or CLI
+   provider client in a way that bypasses model/profile selection, usage, budget, timeout, trace, and
+   observability. This guard is intentionally a named allow-list, not a vague "chat vs non-chat"
+   distinction, because the same SDK client class can serve several APIs.
+
+2. **No product orchestration loop.** Product packs declare `WorkflowDefinition`s and register
+   capabilities. They do not implement their own `StateGraph`, conditional edges, runtime-invoke
+   retry loops, fan-out schedulers, retrace loops, or side-effect/budget enforcement around the
+   engine. The existing no-product-loop guard is the template; adopter repos must run the same kind of
+   guard on their workflow packs.
+
+3. **Declared run-state statuses.** Engine results and adopter projections must use the engine status
+   vocabulary or an explicit product-domain enum with a deterministic mapping from engine statuses.
+   Capability-level statuses are `accepted`, `rejected`, `partial`, and `failed`; workflow-level
+   statuses include `completed`, `partial`, `failed`, and `requires_user_input`. Adopter dashboards,
+   APIs, and orchestrator projections must not invent ambiguous progress states such as `ok`, `done`,
+   `empty`, or `hollow` unless those are product-domain labels mapped from the engine result. This
+   guard is not redundant with runtime normalization: the runtime can normalize only data that enters
+   the engine, while product projections can drift outside it.
+
+Internal seams:
+
+1. **Engine does not import products.** `ai_workflow_engine` remains product-neutral and must not
+   import TGHandyUtils, Anki, MageQA, GoPro, Telegram, browser-dashboard, or other product packages.
+2. **Executor and node handlers do not depend on each other cyclically.** The executor exposes a
+   narrow node-service protocol; node handlers depend on that protocol, not executor internals. This
+   guard is enforced after the `NodeExecutionServices` refactor lands.
+3. **Injected machine context is complete.** If a branch/decision capability receives legal routes via
+   `inject_machine=True`, every legal output label must have a human-readable `describe` entry.
+   Missing descriptions fail workflow validation and name the undescribed labels. This is scoped to
+   injected-machine branches for the hardening wave; expanding it to every branch requires a separate
+   reviewed decision.
+
+Guard ownership:
+
+- the binding rules live in this spec;
+- the engine package may ship reusable guard helpers/templates and canonical enums;
+- each adopter repo must run the relevant guards on its own packs/projections, because the engine repo
+  cannot prove external product code never bypasses the framework.
+
 ## 2. CENTERPIECE — DI / builder wiring (the constructor)
 The whole value is that **building a new flow is trivial and orchestration-free.** Treat
 `WorkflowBuilder` as a **constructor** other flows reuse. This is the exact target developer
@@ -407,6 +463,10 @@ Every gate is a **test that must exist and pass**, not prose. No proving test �
 - **J. Universal worker replacement.** One workflow node is tested with ≥2 worker families (e.g.
   deterministic fake + `LLMCallable`, or structured LLM + console client) while the graph/transition
   logic stays unchanged; malformed output/branch/artifact cases fail loudly through the same path.
+- **K. Contract-guard proof.** The §1a guards are enforced where they can fail usefully:
+  sanctioned provider-construction allow-list, product no-orchestration-loop guard, adopter
+  status-projection/schema guard, engine-import-product guard, injected-machine description
+  completeness guard, and executor/node cycle guard after the `NodeExecutionServices` boundary exists.
 - Plus standing enforcement from `docs/workflow-engine-acceptance-criteria.md`: DOD-1 (no stubs),
   DOD-6 (flag-don't-downgrade), DOD-10 (no interface-only), DOD-12 (no silent fallback), per-capability
   uniform AC.
@@ -477,6 +537,9 @@ requires a deliberate, user-approved decision — never drift:
 | Image+reference+QC → L2 pack | Production-proven inside Anki product code | 2nd consumer (§11 #4 bar) |
 | Presentation-builder pack, MCP tool-suite packs | Named in the L2 vision | When the project materializes |
 | `ANKI_*` env alias bridge sunset | config-architecture CFG-8 transition bridge | Pi `.env` migrated by aws_deploy |
+| H1 internal seam hardening: `NodeExecutionServices` | Accepted framework-health cleanup | Refactor node handlers to depend on a narrow service protocol, then enforce no executor<->nodes cycle |
+| H2 run-session lifecycle | Accepted framework-health cleanup | Introduce internal `WorkflowRunSession`; keep public `engine.run(...)`; prove concurrent runs isolate trace/detail/usage/bundle state |
+| H3 usage/accounting split | Accepted framework-health cleanup | Split budget gates, usage events, provider extraction, pricing, token estimation, and rendering while preserving `usage.py` compatibility exports through the next tag |
 | `test.sh` `-k "a or b"` word-split bug | Workaround = paths/single tokens | Next time someone touches test.sh |
 | Done & closed | Media/voice → `ai_workflow_tools.media` (v0.4.0) · `workflow_capability` adapter · durable resume · planner depth ≥2 · executor split · `AgentRunRequest.metadata` passthrough (v0.4.1) · T1 memory seam/store · canonical memory modes · S0 non-default memory replay proof · `validate_graph`/`build_definition_from_artifact` decomposition · `_images_from_output` fail-loud complexity cleanup · runtime observability graph + full byte-free detail capture (v0.5.0) | — |
 
@@ -493,6 +556,7 @@ requires a deliberate, user-approved decision — never drift:
 | Runtime observability graph/detail capture | **[BUILT]** — compact trace events + linked full byte-free details when internal capture is enabled; usage ledger remains separate |
 | L1 executors: LangChain, plain-callable, console (`claude -p`/`codex exec`) | **[BUILT]** |
 | Universal worker-contract seam (§5) | **[PARTIAL]** — principle live; adapter DTOs stay specialized |
+| Contract guard program (§1a/§9K) | **[PARTIAL]** — no-product-loop and product-neutrality guards exist; provider allow-list, adopter status-projection guard template, source-inspection import/coupling guards, injected-machine description guard, and post-H1 executor/node cycle guard remain to implement |
 | Workflow memory T1 (§0/§12) | **[BUILT/PARTIAL]** — `AgentMemory`, `FullReplayMemory`, `ImageEvictingMemory`, `MemoryStore`, `MemoryNamespace(product, tenant, subject, kind)`, `InMemoryMemoryStore`; scope is bounded-agent prompt projection + deterministic store contract |
 | Workflow memory T2/T3 (§0/§12) | **[INTENDED/deferred]** — durable/semantic backends, windowed/structured/compacting policies, LangGraphStore adapter, planner/subworkflow/project scopes |
 | FlowArtifact v1.5 (authorable fanout/subworkflow) | **[INTENDED]** |
