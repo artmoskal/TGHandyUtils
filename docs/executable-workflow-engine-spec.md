@@ -534,6 +534,7 @@ requires a deliberate, user-approved decision — never drift:
 | `FlowArtifact` v1.5 (authorable fanout/subworkflow + io-mapping) | [INTENDED] §6 — additive, small | After memory/artifact contracts solid + GoPro need |
 | `ProcessArtifact` / FlowArtifact v2 | **[FUTURE / discuss-later — KEPT]** §6 endgame | Separate spec + explicit approval after v1.5 |
 | Worker-contract seam tightening | **[PARTIAL]** §5 principle live; literal envelope unification is rejected for now | Add adapter metadata only when a concrete feature needs it: memory scope, artifact expectations, cost/timeout policy, validation hooks |
+| PromptRenderer/Jinja prompt refs | Valid small next slice after H1 | Add `PromptRef`/`PromptRenderer` with strict `{var}` default and Jinja as one renderer; fail loudly on path escape/missing variables; keep raw templates compatible; no transition/state-patch work in that slice |
 | Image+reference+QC → L2 pack | Production-proven inside Anki product code | 2nd consumer (§11 #4 bar) |
 | Presentation-builder pack, MCP tool-suite packs | Named in the L2 vision | When the project materializes |
 | `ANKI_*` env alias bridge sunset | config-architecture CFG-8 transition bridge | Pi `.env` migrated by aws_deploy |

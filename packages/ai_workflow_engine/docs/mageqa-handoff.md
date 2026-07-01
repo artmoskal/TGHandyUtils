@@ -1,6 +1,6 @@
 # MageQA — AI Workflow Engine Usage Guide
 
-> **PIN (2026-06-22):** pin tag `engine-v0.6.0` and build a wheel from it. The consumer model is
+> **PIN (2026-07-01):** pin tag `engine-v0.6.1` and build a wheel from it. The consumer model is
 > breaking-allowed tag-to-tag — do NOT track the live branch. v0.6.0 adds cross-run memory
 > (`memory.py`), observability as **log→bundle→viewer** (HTML renderers MOVED OUT of the engine into
 > the separate `ai_workflow_viewer` package — breaking for anyone importing the old engine renderers),
@@ -9,11 +9,11 @@
 > modules. A direct provider client in workflow code is a reviewed allow-list entry, not a local
 > shortcut — otherwise you lose observability, cost accounting, and model-swap.
 
-Status: **ready for adoption — pin `engine-v0.6.0`** and build a wheel; never track the live branch.
+Status: **ready for adoption — pin `engine-v0.6.1`** and build a wheel; never track the live branch.
 The `WorkflowDefinition` / `WorkflowExecutor` / DI layer is live and proven (Anki runs on it in
 production; the product-neutral examples include site-audit fan-out and the three-axis pilot). The
 sibling `ai_workflow_tools` package ships CLI-agent + console-LLM support (`claude -p` / `codex exec`)
-and the media pack. See **"What v0.6 gives you"** at the end for the full capability list.
+and the media pack. See **"What v0.6.1 gives you"** at the end for the full capability list.
 Not in v0.6 (deferred): durable/semantic memory beyond the `MemoryStore` seam, FlowArtifact v1.5,
 ProcessArtifact/v2, browser/no-API executors.
 Source needs: `/Users/artemm/PycharmProjects/MageQA/docs/17-qa-orchestrator-architecture.md`,
@@ -299,9 +299,9 @@ examples: `ai_workflow_engine/examples.py` (`build_demo_engine`, `SiteAuditPack`
 
 ---
 
-## What v0.6 gives you
+## What v0.6.1 gives you
 
-The full capability set in `engine-v0.6.0` (older tags are unsupported — no deltas to track):
+The full capability set in `engine-v0.6.1` (older tags are unsupported — no deltas to track):
 
 - **Agent brain + LLM protocol.** Multi-turn, tool-calling protocol (`ChatMessage`/`ToolSpec`/
   `ToolCallRequest`/`ToolResult`); a shipped `LLMAgentPlanner` (screenshot→vision loop, per-turn
@@ -316,11 +316,11 @@ The full capability set in `engine-v0.6.0` (older tags are unsupported — no de
 - **Budget + honest cost.** `max_worker_calls`, per-call token/image/USD caps (all Optional);
   `metered` vs `subscription_notional` (`cost_known=false`, never phantom $0); per-call output
   overflow records `truncated_by_budget` and the run continues; hard stops are `max_worker_calls` +
-  USD caps.
+  USD caps. Accounting is split into focused modules (budget / pricing / provider_usage / usage_events / usage_rendering) behind the stable `ai_workflow_engine.usage` facade — public imports unchanged.
 - **Self-describing machine.** Declare label semantics once (`.branch(..., describe={...})`); deciders
   get their legal moves + live gate budgets via `inject_machine=True` (`context.metadata["machine"]`).
   Any branch label that closes a loop REQUIRES a pre-set gate (`bounds={"label": N}`,
-  `exhausted={"label": "escape"}`) — ungated cycles fail validation loudly. Zero-LLM routing via
+  `exhausted={"label": "escape"}`) — ungated cycles fail validation loudly. **Validation now requires a `describe` entry for EVERY decision label on an `inject_machine=True` branch** (the goblin rule): an option the navigator cannot understand fails the build loudly instead of producing an opaque machine card. Zero-LLM routing via
   `engine.register_guard(...)` (traced `decision_policy`). Feed flow-author prompts with
   `render_capability_catalog(engine.registry, allowed)`.
 - **Flow-as-data + planning.** `engine.run_authored_flow(FlowArtifact(...), payload)` — an LLM emits a
@@ -334,6 +334,15 @@ The full capability set in `engine-v0.6.0` (older tags are unsupported — no de
 - **Media** (`ai_workflow_tools.media`): image/voice providers live in tool packs; the engine stays
   provider-neutral (`vision`/image-input stays in the engine as LLM protocol). Install
   `ai-workflow-tools[media]`.
+- **Hardened seams + per-run isolation.** Contract guards ship with the engine repo and are
+  mutation-verified: one provider door (construction only in sanctioned factory/adapter modules),
+  no product orchestration loop, closed run-state vocabulary, engine-imports-no-products, and the
+  executor/node boundary (`NodeExecutionServices` — node handlers are testable against a fake
+  services object; see `tests/test_contract_guards.py` for the guard style to copy). Every run gets
+  its own internal run session: concurrent runs on ONE engine are isolation-tested
+  (trace/usage/detail partition by run id), resume rebuilds the session without re-executing
+  completed nodes, and an attached observation bundle finalizes with the run's terminal status —
+  failed runs included.
 - **Observability — log→bundle→viewer.** A run appends durable events to a per-run bundle
   (`observations/<run_id>/{trace,details,usage}.jsonl` + `meta.json` + `definition.json`); nothing is
   rendered in the hot path. The separate **`ai_workflow_viewer`** package reads bundles (via

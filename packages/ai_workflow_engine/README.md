@@ -5,7 +5,7 @@ Reusable, executable AI workflow builder/runtime.
 Architecture source of truth: `docs/executable-workflow-engine-spec.md` at the repo root. This
 README is a package summary; if it conflicts with the binding spec, the binding spec wins.
 
-> **Status: `engine-v0.6.0` is the current release — pin it, build a wheel, don't track the live
+> **Status: `engine-v0.6.1` is the current release — pin it, build a wheel, don't track the live
 > branch.** Older tags are unsupported. Declare (`WorkflowBuilder`) + wire (`WorkflowEngine.from_config`)
 > + run (`await engine.run(...)`); branch, fan-out/gather, planner plans, evaluator
 > retry/retrace/replan/fallback, subworkflows, human clarification, scheduling/cancellation, per-node
@@ -18,7 +18,7 @@ README is a package summary; if it conflicts with the binding spec, the binding 
 
 ```python
 # Pin the tag + install (git + subdirectory; no PyPI):
-#   pip install "ai-workflow-engine @ git+https://<repo>@engine-v0.6.0#subdirectory=packages/ai_workflow_engine"
+#   pip install "ai-workflow-engine @ git+https://<repo>@engine-v0.6.1#subdirectory=packages/ai_workflow_engine"
 from ai_workflow_engine import WorkflowBuilder, WorkflowEngine
 
 flow = (WorkflowBuilder("my_flow")
@@ -206,11 +206,11 @@ low overhead.
 
 ## Capabilities
 
-The full set in `engine-v0.6.0` (older tags are unsupported):
+The full set in `engine-v0.6.1` (older tags are unsupported):
 
 - **Declare + run.** `WorkflowBuilder` (step / branch / evaluate / fanout / plan / subworkflow /
   human), `WorkflowEngine.from_config` (DI for models/budget/safety), `await engine.run(...)`. A branch
-  label that closes a loop requires a pre-set gate (`bounds=`/`exhausted=`) — ungated cycles fail loudly.
+  label that closes a loop requires a pre-set gate (`bounds=`/`exhausted=`) — ungated cycles fail loudly. An `inject_machine=True` branch additionally requires a `describe` entry for every decision label (goblin rule) — undescribed options fail validation.
 - **Bring your own LLM client.** Any `async def __call__(request: LLMRequest) -> LLMResponse` is a
   first-class `llm=` for the structured nodes — no LangChain wrapper needed (direct Ollama/HTTP works).
 - **Weak-model hardening.** `StructuredLLMNode(..., pre_parse=WEAK_MODEL_CLEANER, max_repair_rounds=N)`
@@ -230,6 +230,17 @@ The full set in `engine-v0.6.0` (older tags are unsupported):
   memory via the `MemoryStore` seam (bring your own sqlite for durability).
 - **Media** lives in `ai_workflow_tools.media` (image/voice); the engine stays provider-neutral
   (`vision`/image-input stays in the engine as LLM protocol).
+
+## Hardened seams (contract guards + run isolation)
+
+Mutation-verified guards ship in the engine tests: one provider door, no product orchestration
+loop, closed run-state vocabulary, engine-imports-no-products, and the executor/node boundary
+(`NodeExecutionServices` — handlers run against a fake services object in tests). Each run gets an
+internal run session: concurrent runs on one engine are isolation-tested (trace/usage/detail
+partition by run id), resume rebuilds without re-executing completed nodes, and an attached
+observation bundle finalizes with the run's terminal status, failures included. Usage accounting
+is split (budget/pricing/provider/events/rendering) behind the stable `ai_workflow_engine.usage`
+facade.
 
 ## Observability — log → bundle → viewer
 
