@@ -1,13 +1,12 @@
-# Discussion Workspace
+# Discussion workspace (transient inter-agent coordination)
 
-Superseded coordination artifacts:
+Active topics:
+- `2026-06-27-dynamic-transition-and-prompt-rendering-review.md` — transition half RESOLVED
+  (deferred; recipe migrated to `docs/workflow-engine-architecture.md`); the **prompt-rendering
+  (PromptRef/Jinja) half is still open** — separate feature awaiting scheduling.
+- `2026-07-01-hardening-wave-plan.md` — wave implemented + tagged; delete after the owner's
+  morning Anki smoke passes.
 
-- `2026-06-07-workflow-engine-extraction.md` - workflow engine extraction, TGHandyUtils/Anki fit,
-  MageQA fit, GoPro/universal-descriptor fit, cross-project source links, and regression plan.
-- `2026-06-07-anki-on-engine-and-test-strategy.md` - Anki-on-engine capability mapping and test/AC
-  strategy.
-
-These files are transient coordination artifacts. Durable outcomes have been migrated into
-`docs/workflow-engine-architecture.md`, `docs/workflow-engine-implementation-plan.md`,
-`docs/workflow-engine-config-architecture.md`, `docs/workflow-engine-acceptance-criteria.md`, and
-`docs/anki-acceptance-criteria.md`. Prefer those permanent docs when implementation details conflict.
+Cleanup rule: durable outcomes migrate to permanent docs (`docs/workflow-engine-architecture.md`,
+`docs/workflow-engine-implementation-plan.md`, engine README/handoffs); topic files delete when
+resolved. Do not commit transient topic files.
