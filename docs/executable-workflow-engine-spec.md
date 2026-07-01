@@ -128,13 +128,13 @@ Internal seams:
 1. **Engine does not import products.** `ai_workflow_engine` remains product-neutral and must not
    import TGHandyUtils, Anki, MageQA, GoPro, Telegram, browser-dashboard, or other product packages.
 2. **Executor and node handlers do not depend on each other cyclically.** The executor exposes a
-   narrow node-service protocol; node handlers depend on that protocol, not executor internals. This
-   guard is enforced after the `NodeExecutionServices` refactor lands.
+   narrow node-service protocol; node handlers depend on that protocol, not executor internals.
+   **[BUILT v0.6.1]** — the `NodeExecutionServices` boundary is live and the cycle guard is enforced.
 3. **Injected machine context is complete.** If a branch/decision capability receives legal routes via
    `inject_machine=True`, every legal output label must have a human-readable `describe` entry.
-   Missing descriptions fail workflow validation and name the undescribed labels. This is scoped to
-   injected-machine branches for the hardening wave; expanding it to every branch requires a separate
-   reviewed decision.
+   Missing descriptions fail workflow validation and name the undescribed labels. **[BUILT v0.6.1]**,
+   scoped to injected-machine branches; expanding it to every branch requires a separate reviewed
+   decision.
 
 Guard ownership:
 
@@ -466,7 +466,9 @@ Every gate is a **test that must exist and pass**, not prose. No proving test �
 - **K. Contract-guard proof.** The §1a guards are enforced where they can fail usefully:
   sanctioned provider-construction allow-list, product no-orchestration-loop guard, adopter
   status-projection/schema guard, engine-import-product guard, injected-machine description
-  completeness guard, and executor/node cycle guard after the `NodeExecutionServices` boundary exists.
+  completeness guard, and the executor/node cycle guard on the `NodeExecutionServices` boundary
+  (all engine-side guards shipped + mutation-verified in v0.6.1; adopter-repo guards remain
+  consumer-owned).
 - Plus standing enforcement from `docs/workflow-engine-acceptance-criteria.md`: DOD-1 (no stubs),
   DOD-6 (flag-don't-downgrade), DOD-10 (no interface-only), DOD-12 (no silent fallback), per-capability
   uniform AC.
@@ -534,15 +536,12 @@ requires a deliberate, user-approved decision — never drift:
 | `FlowArtifact` v1.5 (authorable fanout/subworkflow + io-mapping) | [INTENDED] §6 — additive, small | After memory/artifact contracts solid + GoPro need |
 | `ProcessArtifact` / FlowArtifact v2 | **[FUTURE / discuss-later — KEPT]** §6 endgame | Separate spec + explicit approval after v1.5 |
 | Worker-contract seam tightening | **[PARTIAL]** §5 principle live; literal envelope unification is rejected for now | Add adapter metadata only when a concrete feature needs it: memory scope, artifact expectations, cost/timeout policy, validation hooks |
-| PromptRenderer/Jinja prompt refs | Valid small next slice after H1 | Add `PromptRef`/`PromptRenderer` with strict `{var}` default and Jinja as one renderer; fail loudly on path escape/missing variables; keep raw templates compatible; no transition/state-patch work in that slice |
+| PromptRenderer/Jinja prompt refs | Valid small next slice (H1 landed — unblocked) | Add `PromptRef`/`PromptRenderer` with strict `{var}` default and Jinja as one renderer; fail loudly on path escape/missing variables; keep raw templates compatible; no transition/state-patch work in that slice |
 | Image+reference+QC → L2 pack | Production-proven inside Anki product code | 2nd consumer (§11 #4 bar) |
 | Presentation-builder pack, MCP tool-suite packs | Named in the L2 vision | When the project materializes |
 | `ANKI_*` env alias bridge sunset | config-architecture CFG-8 transition bridge | Pi `.env` migrated by aws_deploy |
-| H1 internal seam hardening: `NodeExecutionServices` | Accepted framework-health cleanup | Refactor node handlers to depend on a narrow service protocol, then enforce no executor<->nodes cycle |
-| H2 run-session lifecycle | Accepted framework-health cleanup | Introduce internal `WorkflowRunSession`; keep public `engine.run(...)`; prove concurrent runs isolate trace/detail/usage/bundle state |
-| H3 usage/accounting split | Accepted framework-health cleanup | Split budget gates, usage events, provider extraction, pricing, token estimation, and rendering while preserving `usage.py` compatibility exports through the next tag |
 | `test.sh` `-k "a or b"` word-split bug | Workaround = paths/single tokens | Next time someone touches test.sh |
-| Done & closed | Media/voice → `ai_workflow_tools.media` (v0.4.0) · `workflow_capability` adapter · durable resume · planner depth ≥2 · executor split · `AgentRunRequest.metadata` passthrough (v0.4.1) · T1 memory seam/store · canonical memory modes · S0 non-default memory replay proof · `validate_graph`/`build_definition_from_artifact` decomposition · `_images_from_output` fail-loud complexity cleanup · runtime observability graph + full byte-free detail capture (v0.5.0) | — |
+| Done & closed | Media/voice → `ai_workflow_tools.media` (v0.4.0) · `workflow_capability` adapter · durable resume · planner depth ≥2 · executor split · `AgentRunRequest.metadata` passthrough (v0.4.1) · T1 memory seam/store · canonical memory modes · S0 non-default memory replay proof · `validate_graph`/`build_definition_from_artifact` decomposition · `_images_from_output` fail-loud complexity cleanup · runtime observability graph + full byte-free detail capture (v0.5.0) · H1 `NodeExecutionServices` boundary + contract guard batch · H2 `WorkflowRunSession` per-run lifecycle · H3 usage/accounting split behind the `usage` facade (v0.6.1, 823 tests + real-model smoke) | — |
 
 ## 13. STATUS — EXISTS vs INTENDED (read this before building on a promise)
 | Area | Status |
