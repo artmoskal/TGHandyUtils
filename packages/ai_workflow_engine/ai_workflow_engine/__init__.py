@@ -164,6 +164,7 @@ from ai_workflow_engine.executor import (
     WorkflowExecutor,
     WorkflowRunResult,
 )
+from ai_workflow_engine.node_services import NodeExecutionServices, NodeSchedulingServices
 from ai_workflow_engine.builder import (
     WorkflowEngine,
     WorkflowEngineBuilder,
@@ -188,7 +189,9 @@ __all__ = [
     "WorkflowValidationError",
     "CapabilityBindingError",
     "NodeExecutionState",
+    "NodeExecutionServices",
     "NodeResult",
+    "NodeSchedulingServices",
     "UnsupportedNodeError",
     "WorkflowExecutor",
     "WorkflowRunResult",

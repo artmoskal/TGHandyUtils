@@ -1,7 +1,7 @@
 """Step-node handler: capability dispatch, retries, scheduling/cancellation, policy denial.
 
-Mechanical split of the executor god-file (spec §2c#5). Functions take the
-``WorkflowExecutor`` as ``executor`` and share its runtime/trace/record infrastructure.
+Mechanical split of the executor god-file (spec §2c#5). Handlers receive a narrow
+``NodeExecutionServices`` boundary object (``services``) — never the executor itself.
 """
 from __future__ import annotations
 import asyncio
@@ -12,26 +12,26 @@ from ai_workflow_engine.workflow import WorkflowDefinition, WorkflowNode
 from ai_workflow_engine._runtime_state import CONTEXT
 
 
-def build_step_node(executor, definition: WorkflowDefinition, node: WorkflowNode):
+def build_step_node(services, definition: WorkflowDefinition, node: WorkflowNode):
     capability = node.capability or node.id
 
     async def step_fn(state: Dict[str, Any]) -> Dict[str, Any]:
         context: CapabilityContext = state[CONTEXT]
-        payload = executor._node_input(state, node)
+        payload = services.node_input(state, node)
 
         # Engine-owned pre-invocation gate: forbidden side effect / raw-media export /
         # budget exhaustion are blocked BEFORE the handler runs (fail-closed, traced).
-        denial = _policy_denial(executor, node, capability, state, context)
+        denial = _policy_denial(services, node, capability, state, context)
         if denial:
             rejected = CapabilityResult(
                 status="rejected",
                 error=f"denied by policy: {', '.join(denial)}",
                 metadata={"denied": denial},
             )
-            executor.runtime.trace_sink.record(
+            services.runtime.trace_sink.record(
                 WorkflowTraceEvent(node=node.id, decision="denied", error=rejected.error, metadata={"denied": denial})
             )
-            return executor._record(
+            return services.record(
                 state, node, rejected, attempts=1, input_payload=payload, force_status="failed", error=rejected.error
             )
 
@@ -42,14 +42,14 @@ def build_step_node(executor, definition: WorkflowDefinition, node: WorkflowNode
         if sched is not None and sched.backend_key:
             lane = sched.backend_key
             run_id = uuid.uuid4().hex
-            decision = executor.scheduler.submit(key=lane, run_id=run_id, payload=payload, policy=sched)
+            decision = services.scheduling.submit(key=lane, run_id=run_id, payload=payload, policy=sched)
             schedule_metadata = {
                 "lane": lane,
                 "reason": decision.reason,
                 "run_id": run_id,
                 "previous_run_id": decision.previous_run_id,
             }
-            executor.runtime.trace_sink.record(
+            services.runtime.trace_sink.record(
                 WorkflowTraceEvent(
                     node=node.id,
                     decision=f"schedule:{decision.action}",
@@ -62,12 +62,12 @@ def build_step_node(executor, definition: WorkflowDefinition, node: WorkflowNode
                     error=f"scheduling {decision.action}: {decision.reason}",
                     metadata={"scheduling": decision.action, "lane": lane},
                 )
-                return executor._record(
+                return services.record(
                     state, node, denied, attempts=1, input_payload=payload,
                     force_status="failed", error=denied.error,
                 )
             if decision.action == "cancel_previous":
-                cancel_error = await _cancel_previous_scheduled_run(executor, 
+                cancel_error = await _cancel_previous_scheduled_run(services, 
                     lane=lane,
                     previous_run_id=decision.previous_run_id,
                     superseding_run_id=run_id,
@@ -79,28 +79,28 @@ def build_step_node(executor, definition: WorkflowDefinition, node: WorkflowNode
                         error=cancel_error,
                         metadata={"scheduling": "cancel_previous", "lane": lane},
                     )
-                    return executor._record(
+                    return services.record(
                         state, node, denied, attempts=1, input_payload=payload,
                         force_status="failed", error=cancel_error,
                     )
-                if executor.scheduler.active_run_id(lane) != run_id:
+                if services.scheduling.active_run_id(lane) != run_id:
                     superseded = CapabilityResult(
                         status="failed",
                         error=f"scheduling superseded: run {run_id} was not promoted",
                         metadata={"scheduling": "superseded", "lane": lane, "run_id": run_id},
                     )
-                    return executor._record(
+                    return services.record(
                         state, node, superseded, attempts=1, input_payload=payload,
                         force_status="failed", error=superseded.error,
                     )
-                executor.runtime.trace_sink.record(
+                services.runtime.trace_sink.record(
                     WorkflowTraceEvent(
                         node=node.id,
                         decision="schedule:promote",
                         metadata={"lane": lane, "run_id": run_id, "after_run_id": decision.previous_run_id},
                     )
                 )
-            result = await _invoke_scheduled_bound(executor, 
+            result = await _invoke_scheduled_bound(services, 
                 node=node,
                 capability=capability,
                 payload=payload,
@@ -112,11 +112,11 @@ def build_step_node(executor, definition: WorkflowDefinition, node: WorkflowNode
                 definition=definition,
             )
             if result.status == "rejected":
-                return executor._record(
+                return services.record(
                     state, node, result, attempts=1, input_payload=payload,
                     force_status="failed", error=result.error or "rejected by policy",
                 )
-            return executor._record(state, node, result, attempts=1, input_payload=payload)
+            return services.record(state, node, result, attempts=1, input_payload=payload)
 
         attempt_base = state.get("attempts", {}).get(node.id, 0)
         max_attempts = node.retry.max_attempts if node.retry else 1
@@ -124,21 +124,21 @@ def build_step_node(executor, definition: WorkflowDefinition, node: WorkflowNode
         attempts = 0
         for offset in range(max_attempts):
             attempts = attempt_base + offset + 1
-            result = await executor._invoke_bound(node, capability, payload, context, state, attempt=attempts, definition=definition)
+            result = await services.invoke_bound(node, capability, payload, context, state, attempt=attempts, definition=definition)
             if result.status != "failed":
                 break
         if result.status == "rejected":
             # Runtime-level denial (defense in depth) is also fail-closed.
-            return executor._record(
+            return services.record(
                 state, node, result, attempts=attempts, input_payload=payload,
                 force_status="failed", error=result.error or "rejected by policy",
             )
-        return executor._record(state, node, result, attempts=attempts, input_payload=payload)
+        return services.record(state, node, result, attempts=attempts, input_payload=payload)
 
     return step_fn
 
 async def _invoke_scheduled_bound(
-    executor,
+    services,
     *,
     node: WorkflowNode,
     capability: str,
@@ -152,30 +152,28 @@ async def _invoke_scheduled_bound(
 ) -> CapabilityResult:
     current_task = asyncio.current_task()
     if current_task is not None:
-        executor._scheduled_tasks[lane] = (run_id, current_task)
+        services.scheduling.register_task(lane, run_id, current_task)
     try:
-        result = await executor._invoke_bound(node, capability, payload, context, state, attempt=attempt, definition=definition)
-        superseded_by = executor._scheduled_cancellations.pop((lane, run_id), None)
+        result = await services.invoke_bound(node, capability, payload, context, state, attempt=attempt, definition=definition)
+        superseded_by = services.scheduling.pop_superseded(lane, run_id)
         if superseded_by:
-            return _cancelled_scheduled_result(executor, 
+            return _cancelled_scheduled_result(services, 
                 node=node, lane=lane, run_id=run_id, superseded_by=superseded_by
             )
         return result
     except asyncio.CancelledError:
-        superseded_by = executor._scheduled_cancellations.pop((lane, run_id), None)
+        superseded_by = services.scheduling.pop_superseded(lane, run_id)
         if not superseded_by:
             raise
-        return _cancelled_scheduled_result(executor, 
+        return _cancelled_scheduled_result(services, 
             node=node, lane=lane, run_id=run_id, superseded_by=superseded_by
         )
     finally:
-        registered = executor._scheduled_tasks.get(lane)
-        if registered is not None and registered[0] == run_id:
-            executor._scheduled_tasks.pop(lane, None)
-        executor.scheduler.complete(key=lane, run_id=run_id)
+        services.scheduling.unregister_task(lane, run_id)
+        services.scheduling.complete(key=lane, run_id=run_id)
 
 async def _cancel_previous_scheduled_run(
-    executor,
+    services,
     *,
     lane: str,
     previous_run_id: Optional[str],
@@ -184,14 +182,14 @@ async def _cancel_previous_scheduled_run(
 ) -> Optional[str]:
     if not previous_run_id:
         return f"scheduling cancel_previous had no previous run for lane {lane}"
-    registered = executor._scheduled_tasks.get(lane)
+    registered = services.scheduling.registered_task(lane)
     if registered is None or registered[0] != previous_run_id:
         # The previous worker already exited (its finally freed the slot and may have promoted
         # us) — there is nothing left to cancel. This is success for our purposes; the
         # promotion check downstream decides whether this run proceeds or is superseded.
         # Treating it as an error here would fail a possibly-already-promoted run without
         # ever releasing its slot, leaving the lane permanently stuck.
-        executor.runtime.trace_sink.record(
+        services.runtime.trace_sink.record(
             WorkflowTraceEvent(
                 node=node.id,
                 decision="schedule:cancel_skipped",
@@ -204,8 +202,8 @@ async def _cancel_previous_scheduled_run(
         )
         return None
     _run_id, task = registered
-    executor._scheduled_cancellations[(lane, previous_run_id)] = superseding_run_id
-    executor.runtime.trace_sink.record(
+    services.scheduling.mark_superseded(lane, previous_run_id, superseding_run_id)
+    services.runtime.trace_sink.record(
         WorkflowTraceEvent(
             node=node.id,
             decision="schedule:cancel_request",
@@ -223,7 +221,7 @@ async def _cancel_previous_scheduled_run(
         # Expected terminal state: the previous task ended cancelled. Scheduled nodes convert
         # engine-owned cancellation into a failed node record themselves; what matters here is
         # only that the worker has truly exited before promotion.
-        executor.runtime.trace_sink.record(
+        services.runtime.trace_sink.record(
             WorkflowTraceEvent(
                 node=node.id,
                 decision="schedule:cancel_confirmed",
@@ -233,11 +231,11 @@ async def _cancel_previous_scheduled_run(
     finally:
         # The cancelled run normally consumes its marker; if it exited through a path that
         # could not (already past its pop points), clean up so the dict cannot accumulate.
-        executor._scheduled_cancellations.pop((lane, previous_run_id), None)
+        services.scheduling.pop_superseded(lane, previous_run_id)
     return None
 
 def _cancelled_scheduled_result(
-    executor,
+    services,
     *,
     node: WorkflowNode,
     lane: str,
@@ -245,7 +243,7 @@ def _cancelled_scheduled_result(
     superseded_by: str,
 ) -> CapabilityResult:
     error = f"cancelled: superseded by {superseded_by}"
-    executor.runtime.trace_sink.record(
+    services.runtime.trace_sink.record(
         WorkflowTraceEvent(
             node=node.id,
             decision="schedule:cancelled",
@@ -265,7 +263,7 @@ def _cancelled_scheduled_result(
     )
 
 def _policy_denial(
-    executor,
+    services,
     node: WorkflowNode,
     capability: str,
     state: Dict[str, Any],
@@ -277,7 +275,7 @@ def _policy_denial(
     if plan is None:
         return []
     try:
-        spec, _handler = executor.runtime.registry.get(capability)
+        spec, _handler = services.runtime.registry.get(capability)
     except KeyError:
         return []  # missing capability is surfaced by pre-flight, not here
     # The profile's allowed_side_effects is the deployment ceiling. A node may never exceed it.

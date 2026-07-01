@@ -8,7 +8,19 @@ from ai_workflow_engine.nodes.evaluate import build_evaluate_node
 from ai_workflow_engine.nodes.subworkflow import build_subworkflow_node
 from ai_workflow_engine.nodes.human import build_human_node
 
+# Kind -> handler table consumed by the executor (single registration point).
+NODE_HANDLERS = {
+    "step": build_step_node,
+    "branch": build_branch_node,
+    "fanout": build_fanout_node,
+    "evaluate": build_evaluate_node,
+    "subworkflow": build_subworkflow_node,
+    "human": build_human_node,
+    "planner": build_planner_node,
+}
+
 __all__ = [
+    "NODE_HANDLERS",
     "build_step_node",
     "build_branch_node",
     "build_fanout_node",

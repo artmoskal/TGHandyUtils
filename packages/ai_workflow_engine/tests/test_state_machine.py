@@ -546,7 +546,7 @@ async def test_inject_machine_gives_decider_the_live_card():
             "polish_gate",
             {"again": "draft", "done": "finish"},
             bounds={"again": 2},
-            describe={"again": "polish more"},
+            describe={"again": "polish more", "done": "draft is good — finish"},
             inject_machine=True,
         )
         .step("finish")

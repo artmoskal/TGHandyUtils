@@ -344,7 +344,36 @@ class WorkflowDefinition(BaseModel):
         errors.extend(_validate_node_shapes(self.nodes, known, nodes_by_id))
         errors.extend(_validate_transitions(self.transitions, nodes_by_id, known))
         errors.extend(_validate_cycle_gates(ids, self.transitions, known))
+        errors.extend(_validate_injected_machine_descriptions(self.nodes, self.transitions))
         return errors
+
+
+def _validate_injected_machine_descriptions(
+    nodes: List[WorkflowNode], transitions: List["Transition"]
+) -> List[str]:
+    """The goblin rule made physical: a branch that injects its machine card must describe
+    EVERY legal decision label — an option the navigator cannot understand is a validation
+    error, not an opaque menu entry."""
+
+    errors: List[str] = []
+    for node in nodes:
+        if node.kind != "branch" or not node.inject_machine:
+            continue
+        undescribed = sorted(
+            t.label
+            for t in transitions
+            if t.source == node.id
+            and t.policy == "decision"
+            and t.label
+            and not t.description.strip()
+        )
+        if undescribed:
+            errors.append(
+                f"branch '{node.id}' has inject_machine=True but no describe for label(s): "
+                f"{', '.join(undescribed)} — every legal label must carry a description "
+                f"for the machine card"
+            )
+    return errors
 
 
 def _first_nodes_by_id(nodes: List[WorkflowNode]) -> Dict[str, WorkflowNode]:

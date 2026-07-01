@@ -1,7 +1,7 @@
 """Evaluate-node handler: evaluator gates with retry/retrace/replan/fallback policies.
 
-Mechanical split of the executor god-file (spec §2c#5). Functions take the
-``WorkflowExecutor`` as ``executor`` and share its runtime/trace/record infrastructure.
+Mechanical split of the executor god-file (spec §2c#5). Handlers receive a narrow
+``NodeExecutionServices`` boundary object (``services``) — never the executor itself.
 """
 from __future__ import annotations
 
@@ -13,15 +13,15 @@ from ai_workflow_engine.workflow import Fallback, Replan, Retrace, Retry, Workfl
 from ai_workflow_engine._runtime_state import CONTEXT, RUNNING_PAYLOAD
 
 
-def build_evaluate_node(executor, definition: WorkflowDefinition, node: WorkflowNode):
+def build_evaluate_node(services, definition: WorkflowDefinition, node: WorkflowNode):
     evaluator = node.evaluator or node.id
 
     async def evaluate_fn(state: Dict[str, Any]) -> Dict[str, Any]:
         context: CapabilityContext = state[CONTEXT]
-        evaluated_payload = executor._node_input(state, node)
+        evaluated_payload = services.node_input(state, node)
         attempt = state.get("attempts", {}).get(node.id, 0) + 1
-        eval_result = await executor._invoke_bound(node, evaluator, evaluated_payload, context, state, attempt=attempt, definition=definition)
-        decision = _eval_decision(executor, node, eval_result)
+        eval_result = await services.invoke_bound(node, evaluator, evaluated_payload, context, state, attempt=attempt, definition=definition)
+        decision = _eval_decision(node, eval_result)
         counters = dict(
             state.get("eval_counters", {}).get(
                 node.id, {"retry": 0, "retrace": 0, "replan": 0}
@@ -30,7 +30,7 @@ def build_evaluate_node(executor, definition: WorkflowDefinition, node: Workflow
         counters.setdefault("retry", 0)
         counters.setdefault("retrace", 0)
         counters.setdefault("replan", 0)
-        effect = await _apply_eval(executor, node, decision, counters, context, definition, state, evaluated_payload)
+        effect = await _apply_eval(services, node, decision, counters, context, definition, state, evaluated_payload)
 
         cap_status = (
             "accepted"
@@ -43,7 +43,7 @@ def build_evaluate_node(executor, definition: WorkflowDefinition, node: Workflow
             artifacts=effect.get("artifacts", []),
             error=effect.get("error"),
         )
-        update = executor._record(
+        update = services.record(
             state,
             node,
             combined,
@@ -58,7 +58,7 @@ def build_evaluate_node(executor, definition: WorkflowDefinition, node: Workflow
         update[RUNNING_PAYLOAD] = effect["output"]
         if effect["status"] == "requires_user_input":
             update["status"] = "requires_user_input"
-        executor.runtime.trace_sink.record(
+        services.runtime.trace_sink.record(
             WorkflowTraceEvent(
                 node=node.id,
                 attempt=attempt,
@@ -77,7 +77,7 @@ def build_evaluate_node(executor, definition: WorkflowDefinition, node: Workflow
 
     return evaluate_fn
 
-def _eval_decision(executor, node: WorkflowNode, eval_result: CapabilityResult) -> EvaluationDecision:
+def _eval_decision(node: WorkflowNode, eval_result: CapabilityResult) -> EvaluationDecision:
     from ai_workflow_engine.workflow import Fallback, Replan, Retrace, Retry
 
     output = eval_result.output
@@ -116,7 +116,7 @@ def _criticism_from(eval_result: CapabilityResult) -> Optional[CriticismEnvelope
     return None
 
 async def _apply_eval(
-    executor,
+    services,
     node: WorkflowNode,
     decision: EvaluationDecision,
     counters: Dict[str, int],
@@ -160,7 +160,7 @@ async def _apply_eval(
         return {"route": "accept", "status": "accepted", "output": evaluated_payload}
     if action in ("retry_capability", "repair"):
         counters["retry"] += 1
-        pred = executor._sequential_predecessor(definition, node.id)
+        pred = services.sequential_predecessor(definition, node.id)
         base = state.get("node_inputs", {}).get(pred, evaluated_payload)
         return {"route": "retry", "status": "rejected", "output": _with_criticism(base, decision.criticism), "error": decision.rationale}
     if action == "retrace_to":
@@ -184,7 +184,7 @@ async def _apply_eval(
         }
     if action == "fallback":
         target = decision.target_capability or node.fallback_capability
-        fb = await executor.runtime.invoke(target, _with_criticism(evaluated_payload, decision.criticism), context)
+        fb = await services.runtime.invoke(target, _with_criticism(evaluated_payload, decision.criticism), context)
         if fb.status == "failed":
             return {"route": "halt", "status": "failed", "output": evaluated_payload, "error": fb.error or "fallback failed"}
         return {

@@ -1,7 +1,7 @@
 """Branch-node handler: decider invocation, pre-set loop gates, transition trace.
 
-Mechanical split of the executor god-file (spec §2c#5). Functions take the
-``WorkflowExecutor`` as ``executor`` and share its runtime/trace/record infrastructure.
+Mechanical split of the executor god-file (spec §2c#5). Handlers receive a narrow
+``NodeExecutionServices`` boundary object (``services``) — never the executor itself.
 """
 from __future__ import annotations
 from typing import Any, Dict, Optional
@@ -10,7 +10,7 @@ from ai_workflow_engine.workflow import BranchDecision, WorkflowDefinition, Work
 from ai_workflow_engine._runtime_state import CONTEXT, RUNNING_PAYLOAD
 
 
-def build_branch_node(executor, definition: WorkflowDefinition, node: WorkflowNode):
+def build_branch_node(services, definition: WorkflowDefinition, node: WorkflowNode):
     decider = node.decider or node.capability or node.id
     gates = {
         t.label: t
@@ -20,13 +20,13 @@ def build_branch_node(executor, definition: WorkflowDefinition, node: WorkflowNo
 
     async def branch_fn(state: Dict[str, Any]) -> Dict[str, Any]:
         context: CapabilityContext = state[CONTEXT]
-        payload = executor._node_input(state, node)
+        payload = services.node_input(state, node)
         attempt = state.get("attempts", {}).get(node.id, 0) + 1
-        result = await executor._invoke_bound(node, decider, payload, context, state, attempt=attempt, definition=definition)
+        result = await services.invoke_bound(node, decider, payload, context, state, attempt=attempt, definition=definition)
         label = _extract_label(result)
         valid = label in node.branches
         try:
-            decision_policy = executor.runtime.registry.get(decider)[0].kind
+            decision_policy = services.runtime.registry.get(decider)[0].kind
         except Exception:
             decision_policy = None
 
@@ -53,7 +53,7 @@ def build_branch_node(executor, definition: WorkflowDefinition, node: WorkflowNo
             else:
                 counts[key] = seen + 1
         failed = (not valid) or taken == "__halt__"
-        update = executor._record(
+        update = services.record(
             state,
             node,
             result,
@@ -72,7 +72,7 @@ def build_branch_node(executor, definition: WorkflowDefinition, node: WorkflowNo
         # A branch is a routing decision, not a transform: the running payload passes through
         # unchanged so the selected downstream node sees the real data, not the decision.
         update[RUNNING_PAYLOAD] = payload
-        executor.runtime.trace_sink.record(
+        services.runtime.trace_sink.record(
             WorkflowTraceEvent(
                 node=node.id,
                 attempt=attempt,
@@ -82,7 +82,7 @@ def build_branch_node(executor, definition: WorkflowDefinition, node: WorkflowNo
             )
         )
         if exhausted_gate is not None:
-            executor.runtime.trace_sink.record(
+            services.runtime.trace_sink.record(
                 WorkflowTraceEvent(
                     node=node.id,
                     decision="transition:exhausted",
@@ -95,7 +95,7 @@ def build_branch_node(executor, definition: WorkflowDefinition, node: WorkflowNo
                 )
             )
         elif valid:
-            executor.runtime.trace_sink.record(
+            services.runtime.trace_sink.record(
                 WorkflowTraceEvent(
                     node=node.id,
                     decision="transition:taken",

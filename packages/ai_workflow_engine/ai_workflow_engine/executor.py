@@ -31,6 +31,8 @@ from ai_workflow_engine.engine.capabilities import (
 from ai_workflow_engine.engine.runner import WorkflowRunner
 from ai_workflow_engine.engine.scheduler import WorkflowScheduler
 from ai_workflow_engine.model_binding import model_profile_scope
+from ai_workflow_engine.node_services import ExecutorNodeServices, NodeExecutionServices
+from ai_workflow_engine.nodes import NODE_HANDLERS
 from ai_workflow_engine._runtime_state import CONTEXT, RUNNING_PAYLOAD, observation_capture_scope
 from ai_workflow_engine.models import (
     CapabilityContext,
@@ -143,7 +145,8 @@ class WorkflowRunResult(BaseModel):
 
 
 # A node handler builds and returns a coroutine function for one node in one workflow.
-NodeHandler = Callable[["WorkflowExecutor", WorkflowDefinition, WorkflowNode], Callable[[Dict[str, Any]], Awaitable[Dict[str, Any]]]]
+# Handlers receive the narrow NodeExecutionServices boundary, never the executor itself.
+NodeHandler = Callable[[NodeExecutionServices, WorkflowDefinition, WorkflowNode], Callable[[Dict[str, Any]], Awaitable[Dict[str, Any]]]]
 
 
 class WorkflowExecutor:
@@ -172,20 +175,11 @@ class WorkflowExecutor:
         # ModelProfile registry for declarative per-node model binding (set by WorkflowEngine).
         self.model_profiles: Dict[str, Any] = {}
         self._compiled: Dict[str, Any] = {}
+        # The narrow boundary handed to node handlers (executor internals stay private).
+        self._node_services: NodeExecutionServices = ExecutorNodeServices(self)
         # Node-kind handler table. Kinds present here are *implemented*; any valid-but-absent
         # kind fails loudly (never silently downgraded). Phases register more kinds.
-        # Lazy import breaks the executor<->nodes cycle (nodes import executor's state keys).
-        from ai_workflow_engine import nodes as _nodes
-
-        self._handlers: Dict[str, NodeHandler] = {
-            "step": _nodes.build_step_node,
-            "branch": _nodes.build_branch_node,
-            "fanout": _nodes.build_fanout_node,
-            "evaluate": _nodes.build_evaluate_node,
-            "subworkflow": _nodes.build_subworkflow_node,
-            "human": _nodes.build_human_node,
-            "planner": _nodes.build_planner_node,
-        }
+        self._handlers: Dict[str, NodeHandler] = dict(NODE_HANDLERS)
 
     # ---------------------------------------------------------------- public API
     def supported_kinds(self) -> set[str]:
@@ -400,7 +394,7 @@ class WorkflowExecutor:
                 raise UnsupportedNodeError(
                     f"node '{node.id}' kind '{node.kind}' is not supported by this executor"
                 )
-            graph.add_node(node.id, self._with_replay(node, handler(self, definition, node)))
+            graph.add_node(node.id, self._with_replay(node, handler(self._node_services, definition, node)))
 
         graph.add_edge(START, definition.entry)
         for node in definition.nodes:

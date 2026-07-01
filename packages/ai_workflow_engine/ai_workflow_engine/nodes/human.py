@@ -1,7 +1,7 @@
 """Human-node handler: clarification waits, suspension, resume-event injection.
 
-Mechanical split of the executor god-file (spec §2c#5). Functions take the
-``WorkflowExecutor`` as ``executor`` and share its runtime/trace/record infrastructure.
+Mechanical split of the executor god-file (spec §2c#5). Handlers receive a narrow
+``NodeExecutionServices`` boundary object (``services``) — never the executor itself.
 """
 from __future__ import annotations
 from typing import Any, Dict
@@ -10,12 +10,12 @@ from ai_workflow_engine.workflow import WorkflowDefinition, WorkflowNode
 from ai_workflow_engine._runtime_state import CONTEXT
 
 
-def build_human_node(executor, definition: WorkflowDefinition, node: WorkflowNode):
+def build_human_node(services, definition: WorkflowDefinition, node: WorkflowNode):
     capability = node.capability or node.id
 
     async def human_fn(state: Dict[str, Any]) -> Dict[str, Any]:
         context: CapabilityContext = state[CONTEXT]
-        payload = executor._node_input(state, node)
+        payload = services.node_input(state, node)
         resume_event = state.get("resume_event")
         if (
             resume_event is not None
@@ -27,7 +27,7 @@ def build_human_node(executor, definition: WorkflowDefinition, node: WorkflowNod
             context = context.model_copy(
                 update={"metadata": {**context.metadata, "resume_event": resume_event}}
             )
-        result = await executor.runtime.invoke(capability, payload, context)
+        result = await services.runtime.invoke(capability, payload, context)
         response = result.output
         clarification_status = getattr(response, "status", None)
         # answered -> continue with the value; provisional -> continue (partial); pending -> pause.
@@ -44,13 +44,13 @@ def build_human_node(executor, definition: WorkflowDefinition, node: WorkflowNod
             output=response,
             error=result.error,
         )
-        update = executor._record(
+        update = services.record(
             state, node, cap, attempts=1, input_payload=payload, force_status=node_status, error=result.error
         )
         update["routes"] = {**state.get("routes", {}), node.id: route}
         if node_status == "requires_user_input":
             update["status"] = "requires_user_input"
-        executor.runtime.trace_sink.record(
+        services.runtime.trace_sink.record(
             WorkflowTraceEvent(
                 node=node.id,
                 decision=clarification_status or "human",
