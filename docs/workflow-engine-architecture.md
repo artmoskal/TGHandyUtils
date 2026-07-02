@@ -191,6 +191,11 @@ Internal engine guards:
   on `(workflow_id, digest)` so a re-registered machine can never execute stale.
 - **Executor/node boundary:** after the `NodeExecutionServices` refactor, node handlers depend on a
   narrow service protocol and the executor<->nodes cycle is forbidden.
+- **Reserved state keys:** the engine's state-channel keys are a closed, guarded set; node
+  handlers writing any other control key fail the build (schema and set may never drift apart).
+- **Single bundle owner:** when a bundle is passed to `engine.run(observation_bundle=...)`, the run
+  session finalizes it exactly once with the true terminal status (raise -> failed; the
+  `terminal_status` hook lets product post-validation override before the record is written).
 - **Injected machine descriptions:** when legal routes are injected into a branch/decision prompt,
   every legal label must have a description; missing labels fail validation instead of producing an
   opaque machine card.
