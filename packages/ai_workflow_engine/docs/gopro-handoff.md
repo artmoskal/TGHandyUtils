@@ -312,9 +312,11 @@ The full capability set in `engine-v0.6.5` (older tags are unsupported — no de
   bundles, and reports the location on `result.observation_bundle_path`. Run artifacts
   (frames, analysis outputs — anything returned in `CapabilityResult.artifacts`) are archived
   INTO the bundle with an `artifacts.json` manifest (source_path -> bundle_path + sha256), so a
-  GoPro dashboard resolves evidence exactly like MageQA's — and evidence prunes WITH its bundle
-  (one retention policy: `retention_limit`; knobs: `artifacts: copy|off`,
-  `artifact_max_bytes`). Products never call
+  GoPro dashboard resolves archived artifact files exactly like MageQA's — and evidence prunes WITH
+  its bundle (one retention policy: `retention_limit`; knobs: `artifacts: copy|off`,
+  `artifact_max_bytes`). If GoPro emits custom non-file `EvidenceRef.uri` values, it must also return
+  the matching `WorkflowArtifact.path` (or keep the URI equal to that path) so the dashboard can join
+  evidence to the manifest. Products never call
   bundle mechanics in the normal path; `engine.run(observation_bundle=)` remains the explicit
   escape hatch (it takes precedence) and `terminal_status=` stays the post-validation hook —
   a raising run archives as failed, and the record can never say completed for a user-visible failure.

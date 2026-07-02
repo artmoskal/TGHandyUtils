@@ -115,9 +115,12 @@ These points answer the review questions that matter before paying someone to mi
 - **Evidence resolution is engine-owned.** Every run's `WorkflowArtifact`s (screenshots, page
   dumps, CLI salvage — anything a capability returns in `CapabilityResult.artifacts`) are archived
   INTO the bundle at finalize: copied under `artifacts/` and listed in `artifacts.json`. Resolution
-  recipe for the dashboard: take an `EvidenceRef.uri` (or any artifact path), look it up by
-  `source_path` in `artifacts.json`, open `bundle_path` relative to the bundle directory; `sha256`
-  gives integrity, `media_type`/`role`/`owner_node` give rendering context. Entries that could not
+  recipe for the dashboard: look up the artifact file path in `artifacts.json` by `source_path`,
+  then open `bundle_path` relative to the bundle directory; `sha256` gives integrity,
+  `media_type`/`role`/`owner_node` give rendering context. CLI/browser capabilities already return
+  `EvidenceRef.uri == WorkflowArtifact.path`, so evidence refs join directly. If MageQA emits a
+  custom non-file URI such as `artifact://...`, it must also return the matching `WorkflowArtifact`
+  path (or keep the URI equal to that path) so the dashboard can resolve it. Entries that could not
   be archived are honest, never missing: `copied: false` + `skip_reason`
   (`source_missing` / `exceeds_artifact_max_bytes` / `artifact_policy_off` / `copy_failed: …`).
   **Cleanup is ONE policy:** artifacts live inside the bundle, so `retention_limit` pruning deletes
