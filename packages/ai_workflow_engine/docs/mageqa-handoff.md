@@ -79,6 +79,72 @@ transition; failed/partial/blocked states remain visible and never collapse to s
 
 ---
 
+## 1b. MageQA migration clarifications
+
+These points answer the review questions that matter before paying someone to migrate MageQA.
+
+- **v0.6.4 replaces local state/observation plumbing.** MageQA should not keep a local supervisor,
+  state machine, trace collector, bundle writer, retry/deepen loop, or run-status vocabulary beside
+  the engine. The MageQA product layer owns QA intelligence — prompts, rubrics, browser/CLI workers,
+  evidence schemas, finding schemas, report/dashboard presentation — as capabilities and packs. The
+  engine owns execution mechanics and the observation bundle.
+- **Blocked scenario semantics.** "CAPTCHA", "browser unavailable", "MCP failed to connect", and
+  "scenario could not run" are domain outcomes carried in the scenario capability output/metadata,
+  not new engine statuses. Canonical pattern:
+  - if a scenario produced useful evidence or a diagnosable blocker, return
+    `CapabilityResult(status="partial", output=ScenarioResult(status="blocked", blocker={...},
+    evidence_refs=[...]))`;
+  - if a scenario produced no usable output, return `status="failed"` with `error` and blocker
+    metadata;
+  - reserve `status="rejected"` for policy/evaluator rejection, not infrastructure inability;
+  - use workflow `requires_user_input` only for a real resumable human wait with a snapshot.
+  A fan-out with some blocked/failed children becomes workflow `partial`; an all-blocked/all-failed
+  fan-out becomes `failed` unless MageQA deliberately routes to a fallback/report path.
+- **Bundle schema is versioned.** `meta.json` carries `bundle_schema_version` (currently `1`);
+  a dashboard should check it and fail loudly on an unknown version instead of guessing. Fields:
+  `run_id`, `workflow_id`/`workflow`, `status` (terminal, truthful), `timestamp`,
+  `trace_path`/`detail_path`/`usage_path`/`definition_path`, `trace_count`/`detail_count`/
+  `usage_count`, `total_tokens`, `metered_usd`, `notional_usd`. Records in the three JSONL files
+  are `WorkflowTraceEvent` / `ObservationDetail` / `WorkflowUsageEvent` dumps, each stamped with
+  `run_id` + a per-run monotonic `sequence`.
+- **Observation bundle consumption.** The durable bundle layout in v0.6.4 is
+  `trace.jsonl`, `details.jsonl`, `usage.jsonl`, `meta.json`, and `definition.json`, ordered by
+  monotonic `sequence`. For the MageQA dashboard, treat `ai_workflow_viewer.EventSource` /
+  `FileEventSource` / `JsonlObservationViewer` as the stable reader surface. Do not build an
+  independent raw-JSON parser unless MageQA first asks the engine for an explicit schema-versioned
+  export contract.
+- **CLI-agent timeout salvage.** `CliAgentCapability` stages input assets, snapshots existing
+  salvage files, runs the CLI, then salvages matching new files even when the process times out or
+  exits non-zero. A timeout becomes engine capability `partial` and CLI result
+  `status="truncated"`; stdout/result text, `stderr_tail`, return code if known, input fingerprints,
+  salvaged `EvidenceRef`s, `new_artifact_count`, and subscription-notional usage metadata survive.
+  A non-zero exit becomes capability `failed` and CLI result `status="error"`, still with salvage.
+- **Adopter guard templates.** Copy the style from
+  `packages/ai_workflow_engine/tests/test_contract_guards.py`: AST/source checks that fail with
+  file:line evidence. MageQA should add repo-local tests for no product orchestration loop, one
+  provider door, closed status projection, and no product bundle plumbing. These are load-bearing
+  seams, not broad lint rules.
+- **Memory recipe.** Implement a MageQA SQLite adapter behind the engine `MemoryStore` Protocol:
+  `put(record, idempotency_key=None)`, `get(namespace, key)`, `search(namespace,
+  metadata_filter=...)`, and `delete(namespace, key)`. Use
+  `MemoryNamespace("mageqa", tenant_id, target_origin, record_kind)` where `record_kind` is one of
+  `learned_flow`, `finding_history`, `target_profile`, or `flaky_check`. Store durable facts in
+  `MemoryRecord.value`, provenance in `MemoryRecord.evidence_refs`, and schema/data versioning in
+  `MemoryRecord.schema_version` / `metadata`. Memory is non-authoritative prompt/context input; it
+  must not decide engine state transitions.
+- **FlowArtifact boundary.** MageQA may let AI emit scenario plans and structured inputs for
+  registered capabilities. Do not rely on AI-authored arbitrary workflows for the migration. Shipped
+  `FlowArtifact` v1 is constrained to registered steps/branches/evaluators; authorable fan-out,
+  subworkflow references, richer dataflow, and reusable generated process pipelines are v1.5/v2
+  future-stage.
+- **Viewer integration.** `ai_workflow_viewer` supports both static HTML artifacts and a small local
+  HTTP/SSE server. For the MageQA product dashboard, either link/embed generated HTML for a run or
+  consume `EventSource`/`FileEventSource` and project the same records into Next.js. Keep the generic
+  state/trace viewer separate from MageQA's product dashboard; the dashboard can add findings,
+  evidence review, reports, and pitch views on top.
+
+---
+
 ## 2. Node kinds → MageQA roles
 
 | Builder call | Node | MageQA role |

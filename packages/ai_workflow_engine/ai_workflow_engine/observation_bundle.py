@@ -158,6 +158,9 @@ class ObservationRunBundle:
         (self.path / "definition.json").write_text(definition.model_dump_json(), encoding="utf-8")
         usage_events = _usage_events(usage)
         meta = {
+            # Versioned contract for dashboards/viewers programming against the bundle.
+            # Bump ONLY on breaking layout/field changes (reviewed decision, never drift).
+            "bundle_schema_version": 1,
             "run_id": self.run_id,
             "workflow_id": definition.workflow_id,
             "workflow": definition.workflow_id,
