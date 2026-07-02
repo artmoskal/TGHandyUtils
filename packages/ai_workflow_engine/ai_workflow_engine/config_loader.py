@@ -74,6 +74,12 @@ class ObservationConfig(BaseModel):
     bundle_dir: str = "data/observations"
     retention_limit: Optional[int] = None
     capture: Literal["off", "full"] = "full"
+    # G1 evidence resolution: "copy" archives run artifacts (screenshots, dumps, salvage)
+    # into each bundle so EvidenceRefs stay resolvable for dashboards; artifacts prune
+    # WITH the bundle — retention_limit is the single cleanup policy. "off" keeps the
+    # honest manifest (what existed, where) without copying bytes.
+    artifacts: Literal["copy", "off"] = "copy"
+    artifact_max_bytes: int = Field(default=25 * 1024 * 1024, gt=0)
 
 
 class WorkflowConfigBundle(BaseModel):

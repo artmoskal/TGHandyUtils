@@ -146,11 +146,14 @@ class WorkflowRunSession:
     def run_id(self) -> str:
         return self.run_context.workflow_id
 
-    def close(self, status: str) -> None:
+    def close(self, status: str, *, artifacts: Optional[List[Any]] = None) -> None:
         """Finalize session-scoped resources with the run's terminal status (idempotent).
 
         Today that is the optional observation bundle — failed runs finalize as failed
-        instead of leaving an unfinalized directory behind. Finalizing a real
+        instead of leaving an unfinalized directory behind. ``artifacts`` (the run's
+        accumulated ``WorkflowArtifact``s) are archived into the bundle at finalize (G1
+        evidence resolution); a run that raised before producing an envelope closes
+        without them — the manifest is then honestly empty. Finalizing a real
         ``ObservationRunBundle`` requires the definition (B5): attaching a bundle without a
         definition is a loud contract error, never a deep TypeError.
         """
@@ -164,4 +167,9 @@ class WorkflowRunSession:
                     "WorkflowRunSession has a bundle but no definition — attach the "
                     "definition so the bundle can be finalized (bundle.finalize(definition, ...))"
                 )
-            self.bundle.finalize(self.definition, status=status, usage=self.usage_summary)
+            self.bundle.finalize(
+                self.definition,
+                status=status,
+                usage=self.usage_summary,
+                artifacts=artifacts,
+            )

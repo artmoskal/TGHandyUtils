@@ -143,7 +143,7 @@ class _RecordingBundle:
     def __init__(self):
         self.finalized_with = []
 
-    def finalize(self, definition, *, status, usage=None):
+    def finalize(self, definition, *, status, usage=None, artifacts=None):
         assert definition is not None
         self.finalized_with.append(status)
 
@@ -181,9 +181,9 @@ def test_failed_run_closes_its_session_with_failed_status(monkeypatch):
     closes = []
 
     class RecordingSession(WorkflowRunSession):
-        def close(self, status):
+        def close(self, status, *, artifacts=None):
             closes.append(status)
-            super().close(status)
+            super().close(status, artifacts=artifacts)
 
     monkeypatch.setattr(executor_module, "WorkflowRunSession", RecordingSession)
 

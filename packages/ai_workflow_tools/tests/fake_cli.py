@@ -52,6 +52,11 @@ def main() -> int:
     if mode == "garbage":
         print("not json at all")
         return 0
+    if mode == "mcp_startup_failure":
+        # What claude -p --strict-mcp-config does when a configured MCP server cannot
+        # start: diagnostic on stderr, nonzero exit, no result envelope.
+        print("MCP server 'browser' failed to start: spawn npx ENOENT", file=sys.stderr)
+        return 1
     raise SystemExit(f"unsupported FAKE_CLI_MODE: {mode}")
 
 

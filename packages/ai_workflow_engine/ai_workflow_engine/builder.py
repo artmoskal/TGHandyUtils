@@ -424,6 +424,8 @@ class WorkflowEngine:
                 self.observation.bundle_dir,
                 context.run_context.workflow_id,
                 retention_limit=self.observation.retention_limit,
+                artifact_policy=self.observation.artifacts,
+                artifact_max_bytes=self.observation.artifact_max_bytes,
             )
         return await self.executor.run(
             definition,

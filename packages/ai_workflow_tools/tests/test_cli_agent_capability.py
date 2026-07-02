@@ -101,6 +101,46 @@ async def test_claude_flavor_happy_path_maps_envelope_usage_and_subscription_cos
     assert usage.notional_usd == 0.123
 
 
+async def test_mcp_startup_failure_is_a_loud_diagnosable_episode(
+    capability_context,
+    fake_cli_path,
+    monkeypatch,
+    tmp_path,
+):
+    """V1 (MageQA §2): a broken MCP config must yield a diagnosable FAILED episode —
+    never an empty success. claude_p runs with --strict-mcp-config (assembly-tested),
+    so a server that cannot start makes the worker exit nonzero with the diagnostic
+    on stderr; the capability must surface that, not swallow it."""
+
+    workspace = tmp_path / "workspace"
+    _configure_fake_cli(monkeypatch, tmp_path, workspace, mode="mcp_startup_failure")
+    cap = CliAgentCapability(_fake_flavor(claude_p, fake_cli_path), name="browser_agent")
+    request = CliAgentRequest(
+        prompt="Open the dashboard",
+        workspace_dir=str(workspace),
+        mcp_servers=[McpServerConfig(name="browser", command="definitely-not-installed")],
+    )
+    summary = WorkflowUsageSummary()
+    usage_context = WorkflowUsageContext(
+        capability_context.run_context,
+        summary,
+        WorkflowBudget(max_estimated_usd=0.01),
+    )
+
+    with workflow_usage_scope(usage_context):
+        cap_result = await cap(capability_context, request)
+
+    assert cap_result.status == "failed"
+    assert cap_result.error, "MCP startup failure produced no error message"
+    result = cap_result.output
+    assert result.status == "error"
+    assert result.returncode == 1
+    assert "MCP server 'browser' failed to start" in result.stderr_tail
+    # the failed run is still a recorded episode (visible in usage/observability),
+    # not a silently missing one
+    assert summary.events, "failed MCP startup left no usage episode"
+
+
 async def test_codex_flavor_reads_result_file_and_records_honest_unknown_cost(
     capability_context,
     fake_cli_path,

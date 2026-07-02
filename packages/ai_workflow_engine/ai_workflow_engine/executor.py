@@ -293,7 +293,7 @@ class WorkflowExecutor:
                         "machine snapshot — suspension must come from the workflow itself"
                     )
                 envelope = envelope.model_copy(update={"status": override})
-        session.close(envelope.status)
+        session.close(envelope.status, artifacts=envelope.artifacts)
         if session.bundle is not None and getattr(session.bundle, "path", None):
             envelope = envelope.model_copy(
                 update={"observation_bundle_path": str(session.bundle.path)}
@@ -407,7 +407,7 @@ class WorkflowExecutor:
                 session=session,
             )
         envelope = self._envelope(definition, final_state, session=session)
-        session.close(envelope.status)
+        session.close(envelope.status, artifacts=envelope.artifacts)
         if session.bundle is not None and getattr(session.bundle, "path", None):
             envelope = envelope.model_copy(
                 update={"observation_bundle_path": str(session.bundle.path)}

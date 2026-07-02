@@ -1,12 +1,16 @@
 """Config-first observation: the engine owns bundle mechanics from a typed config section."""
 
 import asyncio
+import hashlib
 import json
 
 import pytest
 
 from ai_workflow_engine import (
+    CapabilityResult,
+    EvidenceRef,
     ObservationConfig,
+    WorkflowArtifact,
     WorkflowBuilder,
     WorkflowEngine,
     WorkflowEngineBuilder,
@@ -21,6 +25,48 @@ def _noop(context, payload):
     return {"ok": True}
 
 
+def _evidence_capability(source_path, *, status="accepted"):
+    """Capability producing the CLI-agent shape: an EvidenceRef + WorkflowArtifact pair."""
+
+    def _cap(context, payload):
+        return CapabilityResult(
+            status=status,
+            error="boom" if status == "failed" else None,
+            output={
+                "evidence": EvidenceRef(
+                    role="screenshot", uri=str(source_path), media_type="image/png"
+                ).model_dump()
+            },
+            artifacts=[
+                WorkflowArtifact(
+                    path=str(source_path),
+                    kind="media",
+                    source="fake_browser",
+                    owner_node="solo",
+                    metadata={"role": "screenshot", "media_type": "image/png"},
+                )
+            ],
+        )
+
+    return _cap
+
+
+def _run_with_observation(tmp_path, capability, *, observation=None, flow_id="evidence_flow"):
+    from pathlib import Path
+
+    engine = WorkflowEngine(
+        observation=observation
+        or ObservationConfig(enabled=True, bundle_dir=str(tmp_path / "bundles")),
+    )
+    engine.register_capability("solo", capability, kind="deterministic")
+    engine.register_workflow(WorkflowBuilder(flow_id).step("solo").build())
+    result = asyncio.run(engine.run(flow_id, {"x": 1}))
+    assert result.observation_bundle_path, "engine did not report the bundle location"
+    bundle_path = Path(result.observation_bundle_path)
+    manifest = json.loads((bundle_path / "artifacts.json").read_text())
+    return result, bundle_path, manifest
+
+
 def test_loader_parses_the_observation_section(tmp_path):
     config = tmp_path / "app.yaml"
     config.write_text(
@@ -32,6 +78,8 @@ observation:
   bundle_dir: data/observations
   retention_limit: 25
   capture: full
+  artifacts: copy
+  artifact_max_bytes: 1000000
 """,
         encoding="utf-8",
     )
@@ -40,6 +88,8 @@ observation:
     assert bundle.observation.enabled is True
     assert bundle.observation.retention_limit == 25
     assert bundle.observation.capture == "full"
+    assert bundle.observation.artifacts == "copy"
+    assert bundle.observation.artifact_max_bytes == 1000000
     # observation is a first-class key — no unknown-top-level warning for it
     assert not any("observation" in warning for warning in bundle.warnings)
 
@@ -114,3 +164,144 @@ def test_explicit_bundle_escape_hatch_beats_the_config(tmp_path):
     assert not (tmp_path / "auto").exists(), "auto bundle opened despite explicit escape hatch"
     meta = json.loads((tmp_path / "explicit" / "run-x" / "meta.json").read_text())
     assert meta["status"] == "completed"
+
+
+# --- G1: evidence resolution — artifacts are archived INTO the bundle -----------------
+
+
+def test_run_artifacts_are_archived_and_resolvable(tmp_path):
+    """The resolution contract: EvidenceRef.uri → manifest source_path → bundle_path."""
+
+    source = tmp_path / "shot.png"
+    source.write_bytes(b"png-bytes-evidence")
+
+    result, bundle_path, manifest = _run_with_observation(
+        tmp_path, _evidence_capability(source)
+    )
+
+    assert result.status == "completed"
+    assert len(manifest) == 1
+    entry = manifest[0]
+    assert entry["copied"] is True and entry["skip_reason"] is None
+    assert entry["source_path"] == str(source)
+    assert entry["media_type"] == "image/png" and entry["role"] == "screenshot"
+    archived = bundle_path / entry["bundle_path"]
+    assert archived.read_bytes() == b"png-bytes-evidence"
+    assert entry["sha256"] == hashlib.sha256(b"png-bytes-evidence").hexdigest()
+    # the EvidenceRef in the run output joins the manifest on source_path
+    evidence_uri = result.output["evidence"]["uri"]
+    assert evidence_uri == entry["source_path"]
+    meta = json.loads((bundle_path / "meta.json").read_text())
+    assert meta["artifact_root"] == "artifacts"
+    assert meta["artifact_manifest_path"] == "artifacts.json"
+    assert meta["artifact_count"] == 1 and meta["artifacts_copied"] == 1
+
+
+def test_failed_run_still_archives_failure_evidence(tmp_path):
+    """Failure evidence is the evidence that matters most — archived before any cleanup."""
+
+    source = tmp_path / "failure-shot.png"
+    source.write_bytes(b"broken-page")
+
+    result, bundle_path, manifest = _run_with_observation(
+        tmp_path, _evidence_capability(source, status="failed")
+    )
+
+    assert result.status == "failed"
+    meta = json.loads((bundle_path / "meta.json").read_text())
+    assert meta["status"] == "failed"
+    assert manifest[0]["copied"] is True
+    assert (bundle_path / manifest[0]["bundle_path"]).read_bytes() == b"broken-page"
+
+
+def test_oversized_artifact_is_skipped_honestly(tmp_path):
+    source = tmp_path / "huge.bin"
+    source.write_bytes(b"x" * 100)
+
+    _, bundle_path, manifest = _run_with_observation(
+        tmp_path,
+        _evidence_capability(source),
+        observation=ObservationConfig(
+            enabled=True, bundle_dir=str(tmp_path / "bundles"), artifact_max_bytes=10
+        ),
+    )
+
+    entry = manifest[0]
+    assert entry["copied"] is False
+    assert entry["skip_reason"] == "exceeds_artifact_max_bytes"
+    assert entry["size_bytes"] == 100 and entry["bundle_path"] is None
+    assert not (bundle_path / "artifacts").exists(), "oversized artifact was copied anyway"
+    meta = json.loads((bundle_path / "meta.json").read_text())
+    assert meta["artifact_count"] == 1 and meta["artifacts_copied"] == 0
+
+
+def test_missing_artifact_source_is_diagnosable(tmp_path):
+    _, _, manifest = _run_with_observation(
+        tmp_path, _evidence_capability(tmp_path / "never-written.png")
+    )
+
+    assert manifest[0]["copied"] is False
+    assert manifest[0]["skip_reason"] == "source_missing"
+
+
+def test_artifact_policy_off_keeps_manifest_without_bytes(tmp_path):
+    source = tmp_path / "shot.png"
+    source.write_bytes(b"png-bytes")
+
+    _, bundle_path, manifest = _run_with_observation(
+        tmp_path,
+        _evidence_capability(source),
+        observation=ObservationConfig(
+            enabled=True, bundle_dir=str(tmp_path / "bundles"), artifacts="off"
+        ),
+    )
+
+    entry = manifest[0]
+    assert entry["copied"] is False and entry["skip_reason"] == "artifact_policy_off"
+    assert entry["source_path"] == str(source), "policy off must still record where evidence was"
+    assert not (bundle_path / "artifacts").exists()
+
+
+def test_duplicate_artifact_paths_copied_once(tmp_path):
+    source = tmp_path / "shared.png"
+    source.write_bytes(b"shared-bytes")
+
+    def _two_artifacts(context, payload):
+        artifact = WorkflowArtifact(path=str(source), kind="media")
+        return CapabilityResult(
+            output={"ok": True},
+            artifacts=[artifact, WorkflowArtifact(path=str(source), kind="media")],
+        )
+
+    _, bundle_path, manifest = _run_with_observation(tmp_path, _two_artifacts)
+
+    assert len(manifest) == 2
+    assert all(entry["copied"] for entry in manifest)
+    assert manifest[0]["bundle_path"] == manifest[1]["bundle_path"]
+    assert len(list((bundle_path / "artifacts").iterdir())) == 1
+
+
+def test_retention_prunes_evidence_with_the_bundle(tmp_path):
+    """The user's cleanup policy: ONE knob — pruned bundles take their artifacts with them."""
+
+    source = tmp_path / "shot.png"
+    source.write_bytes(b"png-bytes")
+    engine = WorkflowEngine(
+        observation=ObservationConfig(
+            enabled=True, bundle_dir=str(tmp_path / "bundles"), retention_limit=1
+        ),
+    )
+    engine.register_capability("solo", _evidence_capability(source), kind="deterministic")
+    engine.register_workflow(WorkflowBuilder("prune_flow").step("solo").build())
+
+    first = asyncio.run(engine.run("prune_flow", {"x": 1}))
+    second = asyncio.run(engine.run("prune_flow", {"x": 2}))
+
+    from pathlib import Path
+
+    assert not Path(first.observation_bundle_path).exists(), (
+        "pruned bundle left evidence behind"
+    )
+    survivor = Path(second.observation_bundle_path)
+    manifest = json.loads((survivor / "artifacts.json").read_text())
+    assert (survivor / manifest[0]["bundle_path"]).exists()
