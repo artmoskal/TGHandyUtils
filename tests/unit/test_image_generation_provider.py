@@ -310,3 +310,151 @@ async def test_comparison_generator_runs_both_providers_and_keeps_primary_metada
     assert result.provider == "gemini"
     assert result.usage_metadata["comparison_primary_provider"] == "gemini"
     assert result.usage_metadata["comparison_alternatives"][0]["provider"] == "openai"
+
+
+# --- ChatGPT-browser provider (subscription session over HTTP) -------------------------
+
+
+class FakeChatGptResponse:
+    def __init__(self, payload, status_code=200, text=""):
+        self._payload = payload
+        self.status_code = status_code
+        self.text = text
+
+    def json(self):
+        return self._payload
+
+
+def _chatgpt_config(**overrides):
+    values = {
+        "WORKFLOW_CHATGPT_BROWSER_URL": "http://mini.test:8010",
+        "WORKFLOW_CHATGPT_BROWSER_TIMEOUT_SECONDS": 340,
+        "WORKFLOW_CHATGPT_BROWSER_FORCE_FRESH": True,
+        "WORKFLOW_USAGE_TRACKING_ENABLED": True,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def _chatgpt_image_payload(image_bytes=b"chatgpt-image"):
+    encoded = base64.b64encode(image_bytes).decode("ascii")
+    return {
+        "status": "completed",
+        "mime": "image/png",
+        "bytes": len(image_bytes),
+        "source_url": "https://chatgpt.com/backend-api/x",
+        "image_data_url": f"data:image/png;base64,{encoded}",
+    }
+
+
+@pytest.mark.unit
+async def test_chatgpt_browser_generator_writes_artifact_and_notional_usage(tmp_path):
+    from ai_workflow_tools.media.image_generation import ChatGptBrowserImageGenerator
+
+    calls = []
+
+    def http_post(url, **kwargs):
+        calls.append((url, kwargs))
+        return FakeChatGptResponse(_chatgpt_image_payload())
+
+    generator = ChatGptBrowserImageGenerator(_chatgpt_config(), http_post=http_post)
+    summary = WorkflowUsageSummary()
+    context = WorkflowUsageContext(
+        WorkflowRunContext(workflow_id="wf1", workflow_type="anki_generation"),
+        summary,
+        WorkflowBudget(max_image_calls=1),
+    )
+
+    with workflow_usage_scope(context):
+        result = await generator.generate(
+            ImageGenerationRequest(
+                prompt="study image",
+                output_dir=str(tmp_path),
+                output_basename="card.png",
+            )
+        )
+
+    url, kwargs = calls[0]
+    assert url == "http://mini.test:8010/generate_image"
+    # cache-bust: the service replays identical descriptions, so a variation token is appended
+    assert kwargs["json"]["description"].startswith("study image")
+    assert "(variation " in kwargs["json"]["description"]
+    assert kwargs["json"]["timeout"] == 340
+    assert kwargs["timeout"] == 370  # read timeout = service budget + headroom
+
+    assert result.provider == "chatgpt_browser"
+    assert result.model == "chatgpt-web"
+    assert result.estimated_usd is None
+    with open(result.path, "rb") as fh:
+        assert fh.read() == b"chatgpt-image"
+
+    event = summary.events[0]
+    assert event.cost_class == "subscription_notional"
+    assert event.estimated_usd is None and event.notional_usd is None
+    assert event.metadata["cost_known"] is False
+
+
+@pytest.mark.unit
+async def test_chatgpt_browser_generator_force_fresh_off_keeps_prompt_verbatim(tmp_path):
+    from ai_workflow_tools.media.image_generation import ChatGptBrowserImageGenerator
+
+    calls = []
+
+    def http_post(url, **kwargs):
+        calls.append((url, kwargs))
+        return FakeChatGptResponse(_chatgpt_image_payload())
+
+    generator = ChatGptBrowserImageGenerator(
+        _chatgpt_config(WORKFLOW_CHATGPT_BROWSER_FORCE_FRESH=False, WORKFLOW_USAGE_TRACKING_ENABLED=False),
+        http_post=http_post,
+    )
+    await generator.generate(ImageGenerationRequest(prompt="study image", output_dir=str(tmp_path)))
+
+    assert calls[0][1]["json"]["description"] == "study image"
+
+
+@pytest.mark.unit
+async def test_chatgpt_browser_generator_requires_explicit_url(tmp_path):
+    from ai_workflow_tools.media.image_generation import ChatGptBrowserImageGenerator, ImageGenerationError
+
+    generator = ChatGptBrowserImageGenerator(_chatgpt_config(WORKFLOW_CHATGPT_BROWSER_URL=""))
+    with pytest.raises(ImageGenerationError, match="CHATGPT_BROWSER_API_URL"):
+        await generator.generate(ImageGenerationRequest(prompt="x", output_dir=str(tmp_path)))
+
+
+@pytest.mark.unit
+async def test_chatgpt_browser_generator_rejects_reference_images_loudly(tmp_path):
+    from ai_workflow_tools.media.image_generation import ChatGptBrowserImageGenerator, ImageGenerationError
+
+    generator = ChatGptBrowserImageGenerator(_chatgpt_config())
+    with pytest.raises(ImageGenerationError, match="reference images"):
+        await generator.generate(
+            ImageGenerationRequest(
+                prompt="x",
+                output_dir=str(tmp_path),
+                reference_image_paths=[str(tmp_path / "style.png")],
+            )
+        )
+
+
+@pytest.mark.unit
+async def test_chatgpt_browser_generator_surfaces_service_errors_loudly(tmp_path):
+    from ai_workflow_tools.media.image_generation import ChatGptBrowserImageGenerator, ImageGenerationError
+
+    def http_post(url, **kwargs):
+        return FakeChatGptResponse({"detail": "task was not picked up"}, status_code=502)
+
+    generator = ChatGptBrowserImageGenerator(
+        _chatgpt_config(WORKFLOW_USAGE_TRACKING_ENABLED=False), http_post=http_post
+    )
+    with pytest.raises(ImageGenerationError, match="HTTP 502"):
+        await generator.generate(ImageGenerationRequest(prompt="x", output_dir=str(tmp_path)))
+    assert not list(tmp_path.iterdir()), "failed generation left a partial artifact behind"
+
+
+@pytest.mark.unit
+async def test_create_image_generator_dispatches_chatgpt_provider():
+    from ai_workflow_tools.media.image_generation import ChatGptBrowserImageGenerator
+
+    generator = create_image_generator(SimpleNamespace(WORKFLOW_IMAGE_PROVIDER="chatgpt"))
+    assert isinstance(generator, ChatGptBrowserImageGenerator)

@@ -95,7 +95,7 @@ def test_card_set_planner_uses_decision_model_profile(monkeypatch):
         ANKI_DECISION_MODEL = "gpt-5.4-nano"
         ANKI_CARD_MODEL = "gpt-5.4-mini"
 
-    monkeypatch.setattr("services.content.anki_card_set_planner.create_chat_llm", fake_create_chat_llm)
+    monkeypatch.setattr("services.content.anki_card_set_planner.create_anki_text_llm", fake_create_chat_llm)
 
     planner = AnkiCardSetPlanner(ProfileConfig())
 

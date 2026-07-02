@@ -24,11 +24,17 @@ PROVIDER_CONSTRUCTORS = {
     "ChatAnthropic",
     "Anthropic",
     "AsyncAnthropic",
+    # ChatGPT-browser service clients drive a paid subscription session — same one-door
+    # rule as API SDKs: construct only via the factory so routing/cost stay centralized.
+    "ChatGptBrowserLLMClient",
+    "ChatGptBrowserChatModel",
 }
 
 ALLOWED_CONSTRUCTION_SITES = {
     Path("services/llm_factory.py"),
     Path("packages/ai_workflow_tools/ai_workflow_tools/media/image_generation.py"),
+    # Defines the browser clients (the chat model composes the base client internally).
+    Path("packages/ai_workflow_tools/ai_workflow_tools/chatgpt_browser.py"),
 }
 
 SCAN_DIRS = ("services", "handlers_modular", "packages", "composition", "core", "platforms")
@@ -89,3 +95,73 @@ def test_the_allow_list_itself_is_current():
             for node in ast.walk(tree)
         )
         assert constructs, f"allow-listed module no longer constructs a provider client: {rel}"
+
+
+# --- Backend registry routing (the pluggable seam behind the one door) ------------------
+
+
+def test_registered_backend_routes_by_model_name_per_role():
+    from types import SimpleNamespace
+
+    from ai_workflow_tools.chatgpt_browser import ChatGptBrowserChatModel, ChatGptBrowserLLMClient
+    from services.llm_factory import create_anki_chat_model, create_anki_text_llm
+
+    config = SimpleNamespace(CHATGPT_BROWSER_API_URL="http://mini.test:8010", OPENAI_API_KEY="k")
+
+    assert isinstance(create_anki_text_llm(config, "chatgpt-web", 0.1), ChatGptBrowserLLMClient)
+    assert isinstance(create_anki_chat_model(config, "chatgpt-web", 0.1), ChatGptBrowserChatModel)
+    # unregistered model names fall through to the regular metered API door
+    api_client = create_anki_text_llm(config, "gpt-5.4-mini", 0.1)
+    assert type(api_client).__name__ == "ChatOpenAI"
+
+
+def test_registry_reports_cost_class_and_vision_capability():
+    from services.llm_factory import llm_cost_class, llm_supports_vision
+
+    assert llm_cost_class("chatgpt-web") == "subscription_notional"
+    assert llm_cost_class("gpt-5.4-mini") == "metered"
+    assert llm_supports_vision("chatgpt-web") is False
+    assert llm_supports_vision("gpt-5.4-mini") is True
+
+
+def test_routed_backend_without_url_fails_loudly():
+    from types import SimpleNamespace
+
+    import pytest as _pytest
+
+    from services.llm_factory import create_anki_text_llm
+
+    with _pytest.raises(ValueError, match="CHATGPT_BROWSER_API_URL"):
+        create_anki_text_llm(SimpleNamespace(CHATGPT_BROWSER_API_URL=""), "chatgpt-web", 0.0)
+
+
+def test_new_backends_plug_in_without_editing_the_factory():
+    """The pluggability contract: registering a backend routes it — no factory edits."""
+
+    from types import SimpleNamespace
+
+    from services.llm_factory import (
+        LLMBackend,
+        _LLM_BACKENDS,
+        create_anki_text_llm,
+        llm_cost_class,
+    )
+
+    marker = object()
+    register_key = "unit-test-local-llm"
+    try:
+        from services.llm_factory import register_llm_backend
+
+        register_llm_backend(
+            LLMBackend(
+                build_text=lambda config: marker,
+                build_chat=lambda config: marker,
+                cost_class="subscription_notional",
+                supports_vision=False,
+            ),
+            register_key,
+        )
+        assert create_anki_text_llm(SimpleNamespace(), register_key, 0.0) is marker
+        assert llm_cost_class(register_key) == "subscription_notional"
+    finally:
+        _LLM_BACKENDS.pop(register_key, None)

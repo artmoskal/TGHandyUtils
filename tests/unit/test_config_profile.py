@@ -123,6 +123,10 @@ def test_application_config_direct_env_reads_are_secrets_or_deployment_knobs():
         "ANKI_OBSERVATION_DIR",
         "OBSERVATION_DIR",
         "LLM_BASE_URL",
+        # Deployment knob: per-deployment endpoint of the ChatGPT-browser service on the
+        # always-on box (Tailscale address). No default — selecting the provider without
+        # it fails loudly.
+        "CHATGPT_BROWSER_API_URL",
     }
 
     assert direct_env_keys == allowed

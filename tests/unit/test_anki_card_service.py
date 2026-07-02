@@ -92,7 +92,7 @@ def test_extract_cards_uses_render_model_profile(monkeypatch):
         calls.append((model, temperature))
         return _FakeLLM(['{"cards":[{"type":"basic","question":"Q","answer":"A","tags":[]}]}'])
 
-    monkeypatch.setattr("services.anki_card_service.create_chat_llm", fake_create_chat_llm)
+    monkeypatch.setattr("services.anki_card_service.create_anki_chat_model", fake_create_chat_llm)
     svc = AnkiCardService(
         SimpleNamespace(
             OPENAI_API_KEY="test-key",

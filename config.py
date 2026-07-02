@@ -152,9 +152,13 @@ class Config(IConfig):
     ANKI_CARD_MODEL: str = _model('anki_card', 'gpt-5.4-mini')
     WORKFLOW_DEFAULT_MODEL: str = _model('default', ANKI_CARD_MODEL)
     # Per-node model profiles. These let cheap gates and stronger scenario/rendering nodes diverge.
-    ANKI_DECISION_MODEL: str = _model('anki_decision', ANKI_CARD_MODEL)
-    ANKI_SCENARIO_MODEL: str = _model('anki_scenario', ANKI_CARD_MODEL)
-    ANKI_RENDER_MODEL: str = _model('anki_render', ANKI_CARD_MODEL)
+    # 'chatgpt-web' is a routable model name (services/llm_factory.py): those roles ride
+    # the ChatGPT-browser subscription (CHATGPT_BROWSER_API_URL required, sequential
+    # single-browser queue). Per-role override back to any API model = one setting.
+    # Quality stays on an API model: image inspection needs vision; /ask is text-only.
+    ANKI_DECISION_MODEL: str = _model('anki_decision', 'chatgpt-web')
+    ANKI_SCENARIO_MODEL: str = _model('anki_scenario', 'chatgpt-web')
+    ANKI_RENDER_MODEL: str = _model('anki_render', 'chatgpt-web')
     ANKI_QUALITY_MODEL: str = _model('anki_quality', ANKI_CARD_MODEL)
     ANKI_COMPLEX_SUPERVISOR_MODEL: str = _model('anki_complex_supervisor', 'gpt-5.5')
     WORKFLOW_SUPERVISOR_MODEL: str = _model('supervisor', ANKI_COMPLEX_SUPERVISOR_MODEL)
@@ -167,7 +171,10 @@ class Config(IConfig):
     # AI-chosen image generation is controlled separately to avoid surprise image API cost.
     ANKI_IMAGE_GENERATION_ENABLED: bool = _bool_setting('anki_image_generation_enabled', True)
     ANKI_AUTO_IMAGE_GENERATION_ENABLED: bool = _bool_setting('anki_auto_image_generation_enabled', False)
-    ANKI_IMAGE_PROVIDER: str = str(_setting('anki_image_provider', 'openai')).lower()
+    # Default image provider is the ChatGPT-browser subscription service; note it does
+    # not support reference images yet (FR-1 pending) — style-reference decks must set
+    # anki_image_provider back to openai/gemini until that lands.
+    ANKI_IMAGE_PROVIDER: str = str(_setting('anki_image_provider', 'chatgpt')).lower()
     WORKFLOW_IMAGE_PROVIDER: str = ANKI_IMAGE_PROVIDER
     ANKI_IMAGE_COMPARE_PROVIDERS: str = str(_setting('anki_image_compare_providers', ''))
     WORKFLOW_IMAGE_COMPARE_PROVIDERS: str = ANKI_IMAGE_COMPARE_PROVIDERS
@@ -186,6 +193,9 @@ class Config(IConfig):
         'google': ANKI_GEMINI_IMAGE_MODEL,
         'nano-banana': ANKI_GEMINI_IMAGE_MODEL,
         'nanobanana': ANKI_GEMINI_IMAGE_MODEL,
+        'chatgpt': 'chatgpt-web',
+        'chatgpt-browser': 'chatgpt-web',
+        'chatgpt-web': 'chatgpt-web',
         'comparison': ANKI_OPENAI_IMAGE_MODEL,
         'compare': ANKI_OPENAI_IMAGE_MODEL,
     }
@@ -203,6 +213,18 @@ class Config(IConfig):
     WORKFLOW_GEMINI_IMAGE_SIZE: str = ANKI_GEMINI_IMAGE_SIZE
     ANKI_IMAGE_PROVIDER_TIMEOUT_SECONDS: int = _int_setting('anki_image_provider_timeout_seconds', 120)
     WORKFLOW_IMAGE_PROVIDER_TIMEOUT_SECONDS: int = ANKI_IMAGE_PROVIDER_TIMEOUT_SECONDS
+    # ChatGPT-browser service (subscription ChatGPT over HTTP on the always-on box).
+    # No default endpoint: selecting the provider without the URL fails loudly.
+    # Calls are synchronous and slow (image ~30-90s, sequential single browser) — the
+    # timeout is the SERVICE-side budget; the HTTP read timeout adds +30s on top.
+    CHATGPT_BROWSER_API_URL: str = os.getenv('CHATGPT_BROWSER_API_URL', '')
+    WORKFLOW_CHATGPT_BROWSER_URL: str = CHATGPT_BROWSER_API_URL
+    ANKI_CHATGPT_BROWSER_TIMEOUT_SECONDS: int = _int_setting('anki_chatgpt_browser_timeout_seconds', 340)
+    WORKFLOW_CHATGPT_BROWSER_TIMEOUT_SECONDS: int = ANKI_CHATGPT_BROWSER_TIMEOUT_SECONDS
+    # The service caches identical prompts; force-fresh appends a variation token so
+    # retries/regenerations produce a new image instead of replaying the cache.
+    ANKI_CHATGPT_BROWSER_FORCE_FRESH: bool = _bool_setting('anki_chatgpt_browser_force_fresh', True)
+    WORKFLOW_CHATGPT_BROWSER_FORCE_FRESH: bool = ANKI_CHATGPT_BROWSER_FORCE_FRESH
     ANKI_STYLE_CHARACTER_REFERENCE_IMAGE: str = str(_setting('anki_style_character_reference_image', ''))
     ANKI_STYLE_DESIGN_REFERENCE_IMAGE: str = str(_setting('anki_style_design_reference_image', ''))
     ANKI_STYLE_REFERENCE_VERSION: str = str(_setting('anki_style_reference_version', ''))

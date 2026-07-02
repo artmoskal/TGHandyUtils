@@ -11,7 +11,12 @@ from contextlib import ExitStack
 from typing import Any, Callable, Protocol
 
 from ai_workflow_tools.media.image_models import GeneratedImage, ImageGenerationRequest
-from ai_workflow_engine.usage import check_budget_before_call, record_image_usage
+from ai_workflow_engine.models import WorkflowUsageEvent
+from ai_workflow_engine.usage import (
+    check_budget_before_call,
+    record_image_usage,
+    record_usage_event,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +52,10 @@ def create_image_generator(config: Any) -> ImageGenerator:
         return OpenAIImageGenerator(config)
     if provider in {"gemini", "google", "nano-banana", "nanobanana"}:
         return GeminiImageGenerator(config)
+    if provider in {"chatgpt", "chatgpt-browser", "chatgpt-web"}:
+        return ChatGptBrowserImageGenerator(config)
     raise ImageGenerationError(
-        f"Unsupported WORKFLOW_IMAGE_PROVIDER={provider!r}; expected openai or gemini"
+        f"Unsupported WORKFLOW_IMAGE_PROVIDER={provider!r}; expected openai, gemini, or chatgpt"
     )
 
 
@@ -408,6 +415,192 @@ class GeminiImageGenerator:
         }
 
 
+class ChatGptBrowserImageGenerator:
+    """ChatGPT-over-API browser service (subscription ChatGPT session over plain HTTP).
+
+    Talks to the always-on control server (`POST /generate_image`) that drives a logged-in
+    ChatGPT browser — image cost is covered by the ChatGPT subscription, so usage is recorded
+    as ``subscription_notional`` with ``cost_known=false``, never phantom metered USD.
+
+    Service contract quirks handled here:
+    - The service caches identical descriptions; with ``WORKFLOW_CHATGPT_BROWSER_FORCE_FRESH``
+      (default on) a short variation token is appended so retries/regenerations produce a NEW
+      image instead of silently replaying the cache.
+    - Reference images are NOT supported by the service yet (feature requested from the API
+      owner) — a request carrying references fails loudly instead of silently dropping style.
+    - Calls are synchronous and slow (~30–90 s) and run sequentially on one browser; the read
+      timeout must exceed the service-side timeout.
+    """
+
+    def __init__(self, config: Any, http_post: Callable[..., Any] | None = None):
+        self.config = config
+        self._http_post = http_post
+
+    async def generate(self, request: ImageGenerationRequest) -> GeneratedImage:
+        if not request.prompt.strip():
+            raise ImageGenerationError("Image generation prompt is empty")
+        if request.reference_image_paths:
+            raise ImageGenerationError(
+                "chatgpt browser image provider does not support reference images yet "
+                "(feature requested from the API owner) — clear style/reference images or "
+                "use the openai/gemini provider for this run"
+            )
+        base_url = str(_config_value(self.config, "WORKFLOW_CHATGPT_BROWSER_URL", "") or "").strip()
+        if not base_url:
+            raise ImageGenerationError(
+                "WORKFLOW_CHATGPT_BROWSER_URL (CHATGPT_BROWSER_API_URL) is required for the "
+                "chatgpt browser image provider — no default endpoint is assumed"
+            )
+
+        if getattr(self.config, "WORKFLOW_USAGE_TRACKING_ENABLED", True):
+            check_budget_before_call("image", "generate_image")
+
+        os.makedirs(request.output_dir, exist_ok=True)
+        basename = request.output_basename or f"{uuid.uuid4().hex}.{request.output_format}"
+        path = os.path.join(request.output_dir, basename)
+        service_timeout = int(
+            _config_value(self.config, "WORKFLOW_CHATGPT_BROWSER_TIMEOUT_SECONDS", 340)
+        )
+        description = request.prompt
+        if _config_bool(self.config, "WORKFLOW_CHATGPT_BROWSER_FORCE_FRESH", True):
+            # The service returns cached results for identical descriptions; a retry after a
+            # rejected image would otherwise replay the SAME image forever.
+            description = f"{description}\n(variation {uuid.uuid4().hex[:8]})"
+
+        start = time.monotonic()
+        try:
+            data = await self._post_json(
+                f"{base_url.rstrip('/')}/generate_image",
+                {"description": description, "timeout": service_timeout},
+                read_timeout=service_timeout + 30,
+            )
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+
+            image_data_url = str(data.get("image_data_url") or "")
+            if data.get("status") != "completed" or "," not in image_data_url:
+                raise ImageGenerationError(
+                    f"chatgpt browser image response missing image data (status="
+                    f"{data.get('status')!r})"
+                )
+            with open(path, "wb") as fh:
+                fh.write(base64.b64decode(image_data_url.split(",", 1)[1]))
+
+            self._record_notional_usage(
+                request,
+                elapsed_ms=elapsed_ms,
+                success=True,
+                error=None,
+                source_url=str(data.get("source_url") or ""),
+            )
+            logger.info(
+                "image_generation_artifact provider=chatgpt_browser size=%s output_format=%s path=%s",
+                request.size,
+                request.output_format,
+                path,
+            )
+            return GeneratedImage(
+                path=path,
+                basename=basename,
+                provider="chatgpt_browser",
+                model="chatgpt-web",
+                size=request.size,
+                quality=request.quality,
+                output_format=request.output_format,
+                reference_image_count=0,
+                style_reference_version=request.style_reference_version,
+                usage_metadata={
+                    "mime": data.get("mime"),
+                    "bytes": data.get("bytes"),
+                    "cost_class": "subscription_notional",
+                    "cost_known": False,
+                },
+                estimated_usd=None,
+                request_id=None,
+            )
+        except Exception as exc:
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except OSError as cleanup_error:
+                logger.debug("image_generation_cleanup_failed path=%s error=%s", path, cleanup_error)
+            self._record_notional_usage(
+                request,
+                elapsed_ms=elapsed_ms,
+                success=False,
+                error=str(exc)[:500],
+                source_url="",
+            )
+            if isinstance(exc, ImageGenerationError):
+                raise
+            raise ImageGenerationError(f"chatgpt browser image generation failed: {exc}") from exc
+
+    async def _post_json(self, url: str, payload: dict[str, Any], *, read_timeout: float) -> dict[str, Any]:
+        http_post = self._http_post
+        if http_post is None:
+            import requests
+
+            http_post = requests.post
+        response = await asyncio.to_thread(
+            http_post,
+            url,
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=read_timeout,
+        )
+        try:
+            data = response.json()
+        except Exception as exc:
+            raise ImageGenerationError("chatgpt browser response was not valid JSON") from exc
+        status_code = int(getattr(response, "status_code", 200) or 200)
+        if status_code >= 400:
+            detail = data.get("detail") or data.get("error") if isinstance(data, dict) else None
+            raise ImageGenerationError(
+                f"chatgpt browser service HTTP {status_code}: "
+                f"{detail or getattr(response, 'text', '')} "
+                "(502 usually means the logged-in ChatGPT browser/extension is down on the mini)"
+            )
+        if not isinstance(data, dict):
+            raise ImageGenerationError("chatgpt browser response JSON was not an object")
+        return data
+
+    def _record_notional_usage(
+        self,
+        request: ImageGenerationRequest,
+        *,
+        elapsed_ms: int,
+        success: bool,
+        error: str | None,
+        source_url: str,
+    ) -> None:
+        if not getattr(self.config, "WORKFLOW_USAGE_TRACKING_ENABLED", True):
+            return
+        # Subscription browser session: no per-call price exists. cost_known=false — the run
+        # stays cost-honest instead of reporting phantom $0 metered spend.
+        record_usage_event(
+            WorkflowUsageEvent(
+                provider="chatgpt_browser",
+                operation="image",
+                cost_class="subscription_notional",
+                node="generate_image",
+                model="chatgpt-web",
+                estimated_usd=None,
+                notional_usd=None,
+                elapsed_ms=elapsed_ms,
+                success=success,
+                error=error,
+                metadata={
+                    "cost_known": False,
+                    "cost_source": "unknown",
+                    "size": request.size,
+                    "output_format": request.output_format,
+                    "workflow_id": request.workflow_id,
+                    "source_url": source_url,
+                },
+            )
+        )
+
+
 class ComparisonImageGenerator:
     """Generate the same image request through multiple providers and return the primary result."""
 
@@ -566,6 +759,8 @@ def _generator_for_provider(provider: str, config: Any) -> ImageGenerator:
         return OpenAIImageGenerator(config)
     if canonical == "gemini":
         return GeminiImageGenerator(config)
+    if canonical == "chatgpt":
+        return ChatGptBrowserImageGenerator(config)
     raise ImageGenerationError(f"Unsupported image provider {provider!r}")
 
 
@@ -595,6 +790,9 @@ def _model_for_provider(provider: str, requested_model: str, config: Any) -> str
         if configured:
             return configured
         return requested_model if requested_model.startswith("gemini-") else "gemini-3.1-flash-image"
+    if canonical == "chatgpt":
+        # The browser service exposes no model choice; the label keeps usage/artifacts honest.
+        return "chatgpt-web"
     raise ImageGenerationError(f"Unsupported image provider {provider!r}")
 
 
@@ -606,6 +804,8 @@ def _canonical_provider_name(provider: str) -> str:
         "google": "gemini",
         "nano-banana": "gemini",
         "nanobanana": "gemini",
+        "chatgpt-browser": "chatgpt",
+        "chatgpt-web": "chatgpt",
     }
     return aliases.get(value, value)
 

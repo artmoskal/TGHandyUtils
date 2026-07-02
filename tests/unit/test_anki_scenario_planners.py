@@ -91,7 +91,7 @@ def test_scenario_planner_uses_scenario_model_profile(monkeypatch):
         ANKI_SCENARIO_MODEL = "gpt-5.4-mini"
         ANKI_CARD_MODEL = "gpt-5.4-nano"
 
-    monkeypatch.setattr("services.content.anki_scenario_planners.create_chat_llm", fake_create_chat_llm)
+    monkeypatch.setattr("services.content.anki_scenario_planners.create_anki_text_llm", fake_create_chat_llm)
 
     planner = TextScenarioPlanner(ProfileConfig())
 

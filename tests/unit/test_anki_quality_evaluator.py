@@ -189,3 +189,18 @@ async def test_quality_evaluator_does_not_attach_audio_as_image(tmp_path):
 
     content = llm.messages[0][1].content
     assert isinstance(content, str)
+
+
+async def test_quality_evaluator_rejects_text_only_backend_when_inspecting_images():
+    """Vision guard: a text-only routed backend for the quality role fails at construction,
+    never mid-run with silently dropped images."""
+
+    class ChatGptConfig(FakeConfig):
+        ANKI_QUALITY_MODEL = "chatgpt-web"
+
+    with pytest.raises(ValueError, match="text-only"):
+        AnkiRenderedCardEvaluator(ChatGptConfig(), inspect_images=True)
+
+    # Without image inspection the text-only backend is a legal quality choice.
+    evaluator = AnkiRenderedCardEvaluator(ChatGptConfig(), inspect_images=False)
+    assert evaluator.inspect_images is False

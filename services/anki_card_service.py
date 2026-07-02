@@ -20,7 +20,7 @@ from models.anki import AnkiCard, AnkiCardSet
 from core.interfaces import IConfig
 from core.exceptions import ParsingError
 from core.logging import get_logger
-from services.llm_factory import create_chat_llm
+from services.llm_factory import create_anki_chat_model, llm_cost_class
 from ai_workflow_engine.usage import invoke_metered_chat
 from ai_workflow_engine.prompt_loader import load_prompt_template
 
@@ -96,7 +96,7 @@ class AnkiCardService:
     @property
     def llm(self):
         if self._llm is None:
-            self._llm = create_chat_llm(self.config, model=self._model_name(), temperature=0.2)
+            self._llm = create_anki_chat_model(self.config, model=self._model_name(), temperature=0.2)
         return self._llm
 
     def _model_name(self) -> str:
@@ -168,13 +168,17 @@ class AnkiCardService:
     def _invoke_cards(self, content: str, instructions: str) -> List[AnkiCard]:
         system_text = self._static_prompt.format()
         user_text = self._dynamic_prompt.format(content=content, instructions=instructions or "None")
+        model_name = self._model_name()
         output = invoke_metered_chat(
             self.llm,
             [SystemMessage(content=system_text), HumanMessage(content=user_text)],
             node="render_text_or_cloze",
-            model=self._model_name(),
+            model=model_name,
             metadata={"card_type": "render"},
             config=self.config,
+            # the backend registry knows whether this model is metered or rides a
+            # subscription — phantom metered $0 would break cost honesty.
+            cost_class=llm_cost_class(model_name),
         )
         card_set = self._parser.parse(output.content)
         if not card_set.cards:

@@ -182,3 +182,149 @@ async def test_console_repair_round_spawns_twice_and_delivers_repair_prompt_per_
     second_prompt = records[1]["stdin"] if prompt_location == "stdin" else records[1]["argv"][-1]
     assert first_prompt == "user: Classify mug."
     assert "previous structured-output response was invalid" in second_prompt
+
+
+# --- ChatGPT-browser LLM client (subscription session over HTTP) -----------------------
+
+
+class _FakeHttpResponse:
+    def __init__(self, payload, status_code=200, text=""):
+        self._payload = payload
+        self.status_code = status_code
+        self.text = text
+
+    def json(self):
+        return self._payload
+
+
+def _browser_client(payload, status_code=200, **kwargs):
+    from ai_workflow_tools.chatgpt_browser import ChatGptBrowserLLMClient
+
+    calls = []
+
+    def http_post(url, **post_kwargs):
+        calls.append((url, post_kwargs))
+        return _FakeHttpResponse(payload, status_code=status_code)
+
+    client = ChatGptBrowserLLMClient("http://mini.test:8010/", http_post=http_post, **kwargs)
+    return client, calls
+
+
+async def test_chatgpt_browser_llm_returns_reply_with_notional_cost():
+    client, calls = _browser_client({"status": "completed", "reply": '{"label": "noun"}'})
+
+    response = await client(LLMRequest(system="You classify.", user="Classify dog."))
+
+    assert response.text == '{"label": "noun"}'
+    assert response.model == "chatgpt-web"
+    assert response.cost_class == "subscription_notional"
+    assert response.estimated_usd is None and response.notional_usd is None
+    url, kwargs = calls[0]
+    assert url == "http://mini.test:8010/ask"
+    question = kwargs["json"]["question"]
+    assert question.startswith("system: You classify.")
+    # force_fresh default: variation token busts the service's identical-question cache
+    assert "(request " in question
+
+
+async def test_chatgpt_browser_llm_force_fresh_off_sends_verbatim_question():
+    client, calls = _browser_client(
+        {"status": "completed", "reply": "ok"}, force_fresh=False
+    )
+
+    await client(LLMRequest(user="Classify dog."))
+
+    assert calls[0][1]["json"]["question"] == "user: Classify dog."
+
+
+async def test_chatgpt_browser_llm_rejects_images_loudly():
+    from ai_workflow_tools.chatgpt_browser import ChatGptBrowserError
+
+    client, _ = _browser_client({"status": "completed", "reply": "ok"})
+    with pytest.raises(ChatGptBrowserError, match="text-only"):
+        await client(
+            LLMRequest(
+                user="look",
+                images=[ImageInput(source="base64", data="aGVsbG8=", media_type="image/png")],
+            )
+        )
+
+
+async def test_chatgpt_browser_llm_surfaces_service_down_loudly():
+    from ai_workflow_tools.chatgpt_browser import ChatGptBrowserError
+
+    client, _ = _browser_client({"detail": "task was not picked up"}, status_code=502)
+    with pytest.raises(ChatGptBrowserError, match="HTTP 502"):
+        await client(LLMRequest(user="hello"))
+
+
+async def test_chatgpt_browser_llm_requires_explicit_base_url():
+    from ai_workflow_tools.chatgpt_browser import ChatGptBrowserError, ChatGptBrowserLLMClient
+
+    with pytest.raises(ChatGptBrowserError, match="base_url"):
+        ChatGptBrowserLLMClient("")
+
+
+async def test_chatgpt_browser_llm_empty_reply_is_loud():
+    from ai_workflow_tools.chatgpt_browser import ChatGptBrowserError
+
+    client, _ = _browser_client({"status": "completed", "reply": ""})
+    with pytest.raises(ChatGptBrowserError, match="no reply"):
+        await client(LLMRequest(user="hello"))
+
+
+async def test_chatgpt_browser_chat_model_invokes_langchain_messages_sync():
+    from types import SimpleNamespace
+
+    from ai_workflow_tools.chatgpt_browser import ChatGptBrowserChatModel
+
+    calls = []
+
+    def http_post(url, **kwargs):
+        calls.append((url, kwargs))
+        return _FakeHttpResponse({"status": "completed", "reply": '[{"type":"basic"}]'})
+
+    model = ChatGptBrowserChatModel("http://mini.test:8010", http_post=http_post, force_fresh=False)
+    output = model.invoke(
+        [
+            SimpleNamespace(type="system", content="You render cards."),
+            SimpleNamespace(type="human", content="Make one card about bridges."),
+        ]
+    )
+
+    assert output.content == '[{"type":"basic"}]'
+    question = calls[0][1]["json"]["question"]
+    assert question == "system: You render cards.\n\nhuman: Make one card about bridges."
+
+
+async def test_chatgpt_browser_chat_model_rejects_image_parts_loudly():
+    from types import SimpleNamespace
+
+    from ai_workflow_tools.chatgpt_browser import ChatGptBrowserChatModel, ChatGptBrowserError
+
+    model = ChatGptBrowserChatModel("http://mini.test:8010", http_post=lambda *a, **k: None)
+    with pytest.raises(ChatGptBrowserError, match="text-only"):
+        model.invoke(
+            [
+                SimpleNamespace(
+                    type="human",
+                    content=[
+                        {"type": "text", "text": "inspect"},
+                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,x"}},
+                    ],
+                )
+            ]
+        )
+
+
+async def test_chatgpt_browser_chat_model_service_error_is_loud():
+    from types import SimpleNamespace
+
+    from ai_workflow_tools.chatgpt_browser import ChatGptBrowserChatModel, ChatGptBrowserError
+
+    def http_post(url, **kwargs):
+        return _FakeHttpResponse({"detail": "task was not picked up"}, status_code=502)
+
+    model = ChatGptBrowserChatModel("http://mini.test:8010", http_post=http_post)
+    with pytest.raises(ChatGptBrowserError, match="HTTP 502"):
+        model.invoke([SimpleNamespace(type="human", content="hi")])

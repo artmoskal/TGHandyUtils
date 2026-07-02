@@ -16,7 +16,7 @@ from models.anki_workflow import (
 )
 from ai_workflow_engine.engine import StructuredLLMNode, StructuredOutputError
 from ai_workflow_engine.prompt_loader import load_prompt_template
-from services.llm_factory import create_chat_llm
+from services.llm_factory import create_anki_text_llm
 
 
 class _ScenarioPlannerBase:
@@ -51,7 +51,7 @@ class _ScenarioPlannerBase:
             default_model="gpt-5.4-mini",
             temperature=0.1,
             llm=llm,
-            llm_factory=create_chat_llm,
+            llm_factory=create_anki_text_llm,
             validator=self._validate_scenario,
             repair_prompt_template=self._REPAIR_PROMPT,
         )

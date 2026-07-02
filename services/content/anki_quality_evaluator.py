@@ -19,7 +19,7 @@ from models.anki_workflow import (
 )
 from ai_workflow_engine.engine import StructuredLLMNode, StructuredOutputError
 from ai_workflow_engine.prompt_loader import load_prompt_template
-from services.llm_factory import create_chat_llm
+from services.llm_factory import create_anki_text_llm, llm_supports_vision
 
 
 class AnkiRenderedCardEvaluator:
@@ -35,6 +35,18 @@ class AnkiRenderedCardEvaluator:
     def __init__(self, config: IConfig, llm: Optional[Any] = None, inspect_images: bool = True):
         self.config = config
         self.inspect_images = inspect_images
+        if llm is None and inspect_images:
+            # Quality inspection attaches generated images (vision); the browser /ask
+            # backend is text-only. Fail at construction, not mid-run with dropped images.
+            quality_model = getattr(
+                config, "ANKI_QUALITY_MODEL", getattr(config, "ANKI_CARD_MODEL", "")
+            )
+            if not llm_supports_vision(quality_model):
+                raise ValueError(
+                    f"ANKI_QUALITY_MODEL={quality_model!r} routes to a text-only backend "
+                    "and cannot inspect images — use an API vision model for the quality "
+                    "role or disable ANKI_QUALITY_INSPECT_IMAGES"
+                )
         self._node = StructuredLLMNode(
             name="evaluate_rendered_cards",
             config=config,
@@ -54,7 +66,7 @@ class AnkiRenderedCardEvaluator:
             default_model="gpt-5.4-mini",
             temperature=0.0,
             llm=llm,
-            llm_factory=create_chat_llm,
+            llm_factory=create_anki_text_llm,
             validator=self._validate_evaluation,
             repair_prompt_template=self._REPAIR_PROMPT,
         )
