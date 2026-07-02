@@ -1,6 +1,6 @@
 # MageQA — AI Workflow Engine Usage Guide
 
-> **PIN (2026-07-01):** pin tag `engine-v0.6.1` and build a wheel from it. The consumer model is
+> **PIN (2026-07-02):** pin tag `engine-v0.6.2` and build a wheel from it. The consumer model is
 > breaking-allowed tag-to-tag — do NOT track the live branch. v0.6.0 adds cross-run memory
 > (`memory.py`), observability as **log→bundle→viewer** (HTML renderers MOVED OUT of the engine into
 > the separate `ai_workflow_viewer` package — breaking for anyone importing the old engine renderers),
@@ -9,11 +9,11 @@
 > modules. A direct provider client in workflow code is a reviewed allow-list entry, not a local
 > shortcut — otherwise you lose observability, cost accounting, and model-swap.
 
-Status: **ready for adoption — pin `engine-v0.6.1`** and build a wheel; never track the live branch.
+Status: **ready for adoption — pin `engine-v0.6.2`** and build a wheel; never track the live branch.
 The `WorkflowDefinition` / `WorkflowExecutor` / DI layer is live and proven (Anki runs on it in
 production; the product-neutral examples include site-audit fan-out and the three-axis pilot). The
 sibling `ai_workflow_tools` package ships CLI-agent + console-LLM support (`claude -p` / `codex exec`)
-and the media pack. See **"What v0.6.1 gives you"** at the end for the full capability list.
+and the media pack. See **"What v0.6.2 gives you"** at the end for the full capability list.
 Not in v0.6 (deferred): durable/semantic memory beyond the `MemoryStore` seam, FlowArtifact v1.5,
 ProcessArtifact/v2, browser/no-API executors.
 Source needs: `/Users/artemm/PycharmProjects/MageQA/docs/17-qa-orchestrator-architecture.md`,
@@ -299,9 +299,9 @@ examples: `ai_workflow_engine/examples.py` (`build_demo_engine`, `SiteAuditPack`
 
 ---
 
-## What v0.6.1 gives you
+## What v0.6.2 gives you
 
-The full capability set in `engine-v0.6.1` (older tags are unsupported — no deltas to track):
+The full capability set in `engine-v0.6.2` (older tags are unsupported — no deltas to track):
 
 - **Agent brain + LLM protocol.** Multi-turn, tool-calling protocol (`ChatMessage`/`ToolSpec`/
   `ToolCallRequest`/`ToolResult`); a shipped `LLMAgentPlanner` (screenshot→vision loop, per-turn
@@ -334,6 +334,18 @@ The full capability set in `engine-v0.6.1` (older tags are unsupported — no de
 - **Media** (`ai_workflow_tools.media`): image/voice providers live in tool packs; the engine stays
   provider-neutral (`vision`/image-input stays in the engine as LLM protocol). Install
   `ai-workflow-tools[media]`.
+- **Machine identity + fresh compiles.** Every `WorkflowDefinition` carries a content digest;
+  compiled graphs and registries key on `(workflow_id, digest)`, so re-registering a changed
+  definition under the same id runs the NEW machine (a `machine:re-registered` trace event marks
+  the swap) — dynamic/authored flows can never execute a stale graph.
+- **Nested suspension is rejected loudly (current restriction).** A subworkflow whose child
+  (transitively) declares `human` nodes fails preflight, and a child that suspends at runtime fails
+  the parent node with an explicit error instead of silently continuing — waits belong at the
+  top-level workflow until nested snapshots ship (named-consumer gated).
+- **Envelope trace is sink-independent.** `result.trace` comes from a per-run session buffer — it
+  is complete with Jsonl/bundle sinks and long-lived engines no longer accumulate cross-run trace
+  history for the envelope. Planner fanout now enforces `max_total_planned_tasks` exactly like
+  sequential execution.
 - **Hardened seams + per-run isolation.** Contract guards ship with the engine repo and are
   mutation-verified: one provider door (construction only in sanctioned factory/adapter modules),
   no product orchestration loop, closed run-state vocabulary, engine-imports-no-products, and the

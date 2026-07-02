@@ -187,6 +187,8 @@ External product-to-engine guards:
 Internal engine guards:
 
 - **Engine does not import products:** `ai_workflow_engine` remains product-neutral.
+- **Machine identity:** definitions carry a content digest; compiled graphs and registries key
+  on `(workflow_id, digest)` so a re-registered machine can never execute stale.
 - **Executor/node boundary:** after the `NodeExecutionServices` refactor, node handlers depend on a
   narrow service protocol and the executor<->nodes cycle is forbidden.
 - **Injected machine descriptions:** when legal routes are injected into a branch/decision prompt,
