@@ -332,8 +332,9 @@ def test_observation_bundle_runtime_is_scoped_per_run(tmp_path):
     assert bundle_1 is not None
     assert bundle_2 is not None
     assert engine_1 is not engine_2
-    assert engine_1.runtime.trace_sink.inner is bundle_1.trace_sink
-    assert engine_2.runtime.trace_sink.inner is bundle_2.trace_sink
+    # Chain: ContextEnriching(run-id stamp) -> SessionScoped(run buffer) -> bundle sink.
+    assert engine_1.runtime.trace_sink.inner.inner is bundle_1.trace_sink
+    assert engine_2.runtime.trace_sink.inner.inner is bundle_2.trace_sink
     assert engine_1.detail_sink is bundle_1.detail_sink
     assert engine_2.detail_sink is bundle_2.detail_sink
     assert engine_1.executor.runner is not engine_2.executor.runner

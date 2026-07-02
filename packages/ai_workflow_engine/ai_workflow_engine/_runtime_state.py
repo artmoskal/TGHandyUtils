@@ -33,6 +33,25 @@ def current_workflow_run_context() -> Optional[Any]:
     return _ACTIVE_WORKFLOW_CONTEXT.get()
 
 
+_ACTIVE_RUN_SESSION: ContextVar[Optional[Any]] = ContextVar(
+    "workflow_run_session",
+    default=None,
+)
+
+
+@contextmanager
+def run_session_scope(session: Any) -> Iterator[Any]:
+    token = _ACTIVE_RUN_SESSION.set(session)
+    try:
+        yield session
+    finally:
+        _ACTIVE_RUN_SESSION.reset(token)
+
+
+def current_run_session() -> Optional[Any]:
+    return _ACTIVE_RUN_SESSION.get()
+
+
 @contextmanager
 def observation_capture_scope(capture: Any) -> Iterator[Any]:
     token = _ACTIVE_OBSERVATION_CAPTURE.set(capture)

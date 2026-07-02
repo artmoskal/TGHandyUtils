@@ -138,10 +138,13 @@ def test_resume_rebuilds_session_without_reexecuting_completed_nodes():
 
 
 class _RecordingBundle:
+    """Fake mirroring ObservationRunBundle.finalize's REAL signature (B5 regression)."""
+
     def __init__(self):
         self.finalized_with = []
 
-    def finalize(self, *, status):
+    def finalize(self, definition, *, status, usage=None):
+        assert definition is not None
         self.finalized_with.append(status)
 
 
@@ -154,13 +157,22 @@ def _context() -> CapabilityContext:
 
 def test_session_close_finalizes_bundle_once_with_terminal_status():
     bundle = _RecordingBundle()
-    session = WorkflowRunSession(workflow_id="wf", context=_context(), bundle=bundle)
+    definition = WorkflowBuilder("wf_close").step("s").build()
+    session = WorkflowRunSession(
+        workflow_id="wf", context=_context(), bundle=bundle, definition=definition
+    )
 
     session.close("failed")
     session.close("completed")  # idempotent: the first terminal status wins
 
     assert bundle.finalized_with == ["failed"]
     assert session.run_id == "run-42"
+
+
+def test_session_close_with_bundle_but_no_definition_fails_loudly():
+    session = WorkflowRunSession(workflow_id="wf", context=_context(), bundle=_RecordingBundle())
+    with pytest.raises(RuntimeError, match="no definition"):
+        session.close("completed")
 
 
 def test_failed_run_closes_its_session_with_failed_status(monkeypatch):

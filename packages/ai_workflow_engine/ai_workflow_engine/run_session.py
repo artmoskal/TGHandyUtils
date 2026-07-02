@@ -15,13 +15,42 @@ per-run state; isolation is proven by ``tests/test_run_session.py``.
 from __future__ import annotations
 
 import uuid
-from typing import Any, Optional
+from typing import Any, List, Optional
 
+from ai_workflow_engine._runtime_state import current_run_session
 from ai_workflow_engine.models import (
     CapabilityContext,
     WorkflowRunContext,
+    WorkflowTraceEvent,
     WorkflowUsageSummary,
 )
+
+
+class SessionScopedTraceSink:
+    """Tee every trace event into the ACTIVE run session's buffer, then the configured sink.
+
+    This is the B6/B7 fix: the result envelope reads the session's run-scoped buffer instead of
+    sniffing ``.events`` off whatever sink happened to be configured — so ``result.trace`` is
+    complete with Jsonl/bundle sinks, and a long-lived engine no longer filters an ever-growing
+    shared history per envelope. Events missing a run id are stamped from the session so the
+    buffer (and downstream sinks) stay attributable. The buffer is unbounded WITHIN one run —
+    runs are already bounded by recursion limits and budgets.
+    """
+
+    def __init__(self, inner: Any) -> None:
+        self.inner = inner
+
+    @property
+    def events(self):  # legacy passthrough: child-run envelopes still sniff in-memory sinks
+        return getattr(self.inner, "events", None)
+
+    def record(self, event: WorkflowTraceEvent) -> None:
+        session = current_run_session()
+        if session is not None:
+            if event.run_id is None:
+                event = event.model_copy(update={"run_id": session.run_id})
+            session.trace_events.append(event)
+        self.inner.record(event)
 
 
 class WorkflowRunSession:
@@ -43,11 +72,16 @@ class WorkflowRunSession:
         context: CapabilityContext,
         usage_summary: Optional[WorkflowUsageSummary] = None,
         bundle: Any = None,
+        definition: Any = None,
     ) -> None:
         self.workflow_id = workflow_id
         self.context = context
         self.usage_summary = usage_summary if usage_summary is not None else WorkflowUsageSummary()
         self.bundle = bundle
+        self.definition = definition
+        # Run-scoped trace buffer (B6/B7): filled by SessionScopedTraceSink while this
+        # session's scope is active; the envelope reads it directly.
+        self.trace_events: List[WorkflowTraceEvent] = []
         self.run_context = self._derive_run_context(workflow_id, context)
         self._closed = False
 
@@ -77,11 +111,18 @@ class WorkflowRunSession:
         """Finalize session-scoped resources with the run's terminal status (idempotent).
 
         Today that is the optional observation bundle — failed runs finalize as failed
-        instead of leaving an unfinalized directory behind.
+        instead of leaving an unfinalized directory behind. Finalizing a real
+        ``ObservationRunBundle`` requires the definition (B5): attaching a bundle without a
+        definition is a loud contract error, never a deep TypeError.
         """
 
         if self._closed:
             return
         self._closed = True
         if self.bundle is not None:
-            self.bundle.finalize(status=status)
+            if self.definition is None:
+                raise RuntimeError(
+                    "WorkflowRunSession has a bundle but no definition — attach the "
+                    "definition so the bundle can be finalized (bundle.finalize(definition, ...))"
+                )
+            self.bundle.finalize(self.definition, status=status, usage=self.usage_summary)

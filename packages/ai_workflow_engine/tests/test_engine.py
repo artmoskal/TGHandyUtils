@@ -2888,7 +2888,7 @@ async def test_same_executor_runs_all_example_workflows():
         "site_audit",
         "inventory_observation",
         "card_generation",
-    } <= set(engine.executor._compiled)
+    } <= {key[0] for key in engine.executor._compiled}
 
 
 _FORBIDDEN_PRODUCT_ORCHESTRATION = [

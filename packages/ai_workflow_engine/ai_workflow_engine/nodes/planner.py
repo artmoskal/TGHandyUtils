@@ -243,7 +243,9 @@ async def _execute_plan(
     if task_budget is None:
         task_budget = {"remaining": node.max_total_planned_tasks}
     if node.execution == "fanout":
-        return await _execute_plan_fanout(services, node, plan, context, state)
+        # B3: fanout shares the SAME cumulative task budget as sequential execution —
+        # parallelism must not bypass max_total_planned_tasks.
+        return await _execute_plan_fanout(services, node, plan, context, state, task_budget)
 
     current_plan = plan
     for index, task in enumerate(tasks):
@@ -366,12 +368,34 @@ async def _execute_plan_fanout(
     plan: PlanArtifact,
     context: CapabilityContext,
     state: Dict[str, Any],
+    task_budget: Optional[Dict[str, int]] = None,
 ) -> tuple[PlanArtifact, Dict[str, Any], list[WorkflowArtifact], list[str]]:
-    pending_indexes = [
+    if task_budget is None:
+        task_budget = {"remaining": node.max_total_planned_tasks}
+    pending = [
         index for index, task in enumerate(plan.tasks)
         if task.status not in ("done", "failed", "skipped")
     ]
     tasks = list(plan.tasks)
+    budget_failures: list[str] = []
+    # Cumulative budget gate (B3): tasks beyond the remaining budget are failed loudly and
+    # never invoked — identical semantics to the sequential path.
+    pending_indexes: list[int] = []
+    for index in pending:
+        if task_budget["remaining"] <= 0:
+            exhausted = tasks[index].model_copy(update={
+                "status": "failed",
+                "error": (
+                    f"cumulative plan-task budget exhausted "
+                    f"(max_total_planned_tasks={node.max_total_planned_tasks})"
+                ),
+            })
+            tasks[index] = exhausted
+            budget_failures.append(f"{exhausted.task_id}: {exhausted.error}")
+            _trace_plan_task(services, node, exhausted, "plan:task_failed", error=exhausted.error)
+            continue
+        task_budget["remaining"] -= 1
+        pending_indexes.append(index)
     for index in pending_indexes:
         tasks[index] = tasks[index].model_copy(update={"status": "in_progress", "error": None})
         _trace_plan_task(services, node, tasks[index], "plan:task_started")
@@ -387,7 +411,7 @@ async def _execute_plan_fanout(
     results = await asyncio.gather(*(invoke(index) for index in pending_indexes))
     task_outputs: Dict[str, Any] = {}
     artifacts: list[WorkflowArtifact] = []
-    failures: list[str] = []
+    failures: list[str] = list(budget_failures)
     for index, result in results:
         finished, output_key = _finish_plan_task(node, tasks[index], result)
         tasks[index] = finished

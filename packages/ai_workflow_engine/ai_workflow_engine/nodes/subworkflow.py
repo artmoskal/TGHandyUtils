@@ -26,7 +26,40 @@ def build_subworkflow_node(services, definition: WorkflowDefinition, node: Workf
 
         child_context = services.child_context(context, child_def, ref)
         child_result = await services.run_child(child_def, payload, child_context)
-        ok = child_result.status in ("completed", "partial", "requires_user_input")
+        if child_result.status == "requires_user_input":
+            # B2 stage-1: a child wait has no parent-side representation (no nested snapshot,
+            # no resume dispatch). Converting it to success would silently lose the wait —
+            # fail LOUDLY instead. Preflight already rejects declared human nodes in children;
+            # this catches runtime suspensions (e.g. an evaluator ask_user inside the child).
+            error = (
+                f"child workflow '{child_def.workflow_id}' suspended (requires_user_input): "
+                f"nested suspension is not supported — move the wait to the top-level workflow"
+            )
+            failed = CapabilityResult(
+                status="failed",
+                output=child_result.output,
+                error=error,
+                metadata={"child_workflow": child_def.workflow_id, "child_status": child_result.status},
+            )
+            update = services.record(
+                state, node, failed, attempts=1, input_payload=payload,
+                force_status="failed", error=error,
+            )
+            services.runtime.trace_sink.record(
+                WorkflowTraceEvent(
+                    node=node.id,
+                    decision="subworkflow",
+                    error=error,
+                    severity="error",
+                    metadata={
+                        "parent_workflow": definition.workflow_id,
+                        "child_workflow": child_def.workflow_id,
+                        "child_status": child_result.status,
+                    },
+                )
+            )
+            return update
+        ok = child_result.status in ("completed", "partial")
         cap = CapabilityResult(
             status="accepted" if ok else "failed",
             output=child_result.output,

@@ -40,6 +40,7 @@ from ai_workflow_engine.models import (
     WorkflowRunContext,
 )
 from ai_workflow_engine.flow_authoring import FlowArtifact, build_definition_from_artifact
+from ai_workflow_engine.run_session import SessionScopedTraceSink
 from ai_workflow_engine.snapshot import MachineSnapshot
 from ai_workflow_engine.models import CapabilityResult, WorkflowTraceEvent
 from ai_workflow_engine.usage import UsageSink
@@ -126,7 +127,9 @@ class WorkflowEngine:
         self.detail_sink = detail_sink
         self.runtime = CapabilityRuntime(
             self.registry,
-            self.trace_sink,
+            # Session-aware tee (B6/B7): every runtime trace event lands in the ACTIVE run
+            # session's buffer (exact per-run envelope trace) and then the configured sink.
+            SessionScopedTraceSink(self.trace_sink),
             detail_sink=self.detail_sink,
             capture_detail_text=capture_detail_text,
         )
@@ -433,8 +436,24 @@ class WorkflowEngine:
     # ---------------------------------------------------------------- internals
     def _resolve(self, workflow: Union[str, WorkflowDefinition]) -> WorkflowDefinition:
         if isinstance(workflow, WorkflowDefinition):
-            # Register on first sight so subworkflow lookups + plan caching work.
-            self.workflows.setdefault(workflow.workflow_id, workflow)
+            # Register on first sight; on re-registration with the SAME id but DIFFERENT
+            # content, REPLACE everywhere (workflows, plan cache, subworkflow registry +
+            # compiled-graph eviction inside register_subworkflow) — the registries must
+            # never diverge about which machine an id names (B1).
+            existing = self.workflows.get(workflow.workflow_id)
+            if existing is not None and existing.definition_digest() != workflow.definition_digest():
+                self.trace_sink.record(
+                    WorkflowTraceEvent(
+                        node=workflow.workflow_id,
+                        decision="machine:re-registered",
+                        metadata={
+                            "old_digest": existing.definition_digest(),
+                            "new_digest": workflow.definition_digest(),
+                        },
+                    )
+                )
+                self._plans.pop(workflow.workflow_id, None)
+            self.workflows[workflow.workflow_id] = workflow
             self.executor.register_subworkflow(workflow)
             return workflow
         try:

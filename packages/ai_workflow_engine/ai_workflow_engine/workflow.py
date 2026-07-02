@@ -329,6 +329,19 @@ class WorkflowDefinition(BaseModel):
     def outgoing(self, node_id: str) -> List[Transition]:
         return [t for t in self.transitions if t.source == node_id]
 
+    def definition_digest(self) -> str:
+        """Content identity of this machine (sha256 of the canonical JSON dump).
+
+        Machine-is-data needs data identity: caches/registries key on
+        ``(workflow_id, digest)`` so a re-registered definition with the same id can never
+        silently execute a stale compiled graph. Computed on demand — callers use it at
+        register/compile time, not in the per-node hot path.
+        """
+
+        import hashlib
+
+        return hashlib.sha256(self.model_dump_json().encode("utf-8")).hexdigest()[:16]
+
     def validate_graph(self) -> List[str]:
         """Return a list of structural errors (empty == valid)."""
 

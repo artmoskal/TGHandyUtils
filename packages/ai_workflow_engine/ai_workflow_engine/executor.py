@@ -34,7 +34,12 @@ from ai_workflow_engine.model_binding import model_profile_scope
 from ai_workflow_engine.node_services import ExecutorNodeServices, NodeExecutionServices
 from ai_workflow_engine.nodes import NODE_HANDLERS
 from ai_workflow_engine.run_session import WorkflowRunSession
-from ai_workflow_engine._runtime_state import CONTEXT, RUNNING_PAYLOAD, observation_capture_scope
+from ai_workflow_engine._runtime_state import (
+    CONTEXT,
+    RUNNING_PAYLOAD,
+    observation_capture_scope,
+    run_session_scope,
+)
 from ai_workflow_engine.models import (
     CapabilityContext,
     CapabilityResult,
@@ -187,7 +192,16 @@ class WorkflowExecutor:
         return set(self._handlers)
 
     def register_subworkflow(self, definition: WorkflowDefinition) -> None:
+        existing = self.subworkflows.get(definition.workflow_id)
+        if existing is not None and existing.definition_digest() != definition.definition_digest():
+            # Same id, different machine: drop every compiled graph for the id so nothing can
+            # keep executing the superseded definition (memory hygiene + correctness).
+            self._evict_compiled(definition.workflow_id)
         self.subworkflows[definition.workflow_id] = definition
+
+    def _evict_compiled(self, workflow_id: str) -> None:
+        for key in [k for k in self._compiled if k[0] == workflow_id]:
+            self._compiled.pop(key, None)
 
     async def run(
         self,
@@ -209,10 +223,13 @@ class WorkflowExecutor:
         compiled = self.compile(definition)
         limit = recursion_limit or self._recursion_limit(definition, context)
         graph_config = {"recursion_limit": limit}
-        # H2: one session per run — the single home for run identity + usage aggregation.
-        session = WorkflowRunSession(workflow_id=definition.workflow_id, context=context)
+        # H2: one session per run — the single home for run identity + usage aggregation
+        # + the run-scoped trace buffer the envelope reads (B6/B7).
+        session = WorkflowRunSession(
+            workflow_id=definition.workflow_id, context=context, definition=definition
+        )
         # Top-level run: WorkflowRunner installs the usage/budget scope + lifecycle logging.
-        with observation_capture_scope(self.runtime.observation):
+        with observation_capture_scope(self.runtime.observation), run_session_scope(session):
             final_state = await self.runner.run(
                 compiled,
                 self._initial_state(payload, context),
@@ -222,7 +239,7 @@ class WorkflowExecutor:
                 recursion_fallback=recursion_fallback,
                 session=session,
             )
-        envelope = self._envelope(definition, final_state)
+        envelope = self._envelope(definition, final_state, session=session)
         session.close(envelope.status)
         return envelope
 
@@ -301,25 +318,29 @@ class WorkflowExecutor:
                 "machine_replay_done": False,
             }
         )
-        self.runtime.trace_sink.record(
-            WorkflowTraceEvent(
-                node=snapshot.suspended_node,
-                decision="machine:resumed",
-                run_id=context.run_context.workflow_id,
-                metadata={
-                    "workflow_id": definition.workflow_id,
-                    "completed_nodes": len(snapshot.node_results),
-                },
-            )
-        )
         restored_usage = (
             WorkflowUsageSummary.model_validate(snapshot.usage) if snapshot.usage else None
         )
         # H2: resume rebuilds the session from the snapshot — budgets stay cumulative.
         session = WorkflowRunSession(
-            workflow_id=definition.workflow_id, context=context, usage_summary=restored_usage
+            workflow_id=definition.workflow_id,
+            context=context,
+            usage_summary=restored_usage,
+            definition=definition,
         )
-        with observation_capture_scope(self.runtime.observation):
+        with observation_capture_scope(self.runtime.observation), run_session_scope(session):
+            # Recorded inside the session scope so the resumed-run envelope carries it too.
+            self.runtime.trace_sink.record(
+                WorkflowTraceEvent(
+                    node=snapshot.suspended_node,
+                    decision="machine:resumed",
+                    run_id=context.run_context.workflow_id,
+                    metadata={
+                        "workflow_id": definition.workflow_id,
+                        "completed_nodes": len(snapshot.node_results),
+                    },
+                )
+            )
             final_state = await self.runner.run(
                 compiled,
                 state,
@@ -328,7 +349,7 @@ class WorkflowExecutor:
                 graph_config={"recursion_limit": self._recursion_limit(definition, context)},
                 session=session,
             )
-        envelope = self._envelope(definition, final_state)
+        envelope = self._envelope(definition, final_state, session=session)
         session.close(envelope.status)
         return envelope
 
@@ -390,9 +411,15 @@ class WorkflowExecutor:
         }
 
     def compile(self, definition: WorkflowDefinition) -> Any:
-        """Compile a definition into a runnable LangGraph (cached by workflow id)."""
+        """Compile a definition into a runnable LangGraph (cached by id + content digest).
 
-        cached = self._compiled.get(definition.workflow_id)
+        The digest in the key is the B1 fix: a re-registered definition with the same
+        ``workflow_id`` but different content compiles fresh instead of silently executing
+        the stale graph.
+        """
+
+        cache_key = (definition.workflow_id, definition.definition_digest())
+        cached = self._compiled.get(cache_key)
         if cached is not None:
             return cached
 
@@ -413,7 +440,7 @@ class WorkflowExecutor:
             self._wire_edges(graph, definition, node, LG_END)
 
         compiled = graph.compile()
-        self._compiled[definition.workflow_id] = compiled
+        self._compiled[cache_key] = compiled
         return compiled
 
     # ---------------------------------------------------------------- transition wiring
@@ -642,6 +669,9 @@ class WorkflowExecutor:
                 ref = node.subworkflow
                 if ref is None or ref.workflow_id not in self.subworkflows:
                     return f"subworkflow node '{node.id}' references unregistered workflow"
+                nested = self._nested_suspension_error(node.id, ref.workflow_id)
+                if nested is not None:
+                    return nested
                 continue
             for cap in self._required_capabilities(node):
                 if cap not in known_caps:
@@ -649,6 +679,36 @@ class WorkflowExecutor:
             profile_error = self._model_profile_error(node)
             if profile_error:
                 return profile_error
+        return None
+
+    def _nested_suspension_error(self, node_id: str, child_workflow_id: str) -> Optional[str]:
+        """B2 stage-1: nested suspension is not supported yet — reject it LOUDLY at preflight.
+
+        A child (transitively) containing ``human`` nodes could suspend, but the parent has no
+        representation for a child wait (no nested snapshot / resume dispatch), so accepting the
+        graph would silently break "every wait resumable". Nested snapshots are a future,
+        named-consumer-gated feature.
+        """
+
+        seen: set[str] = set()
+        stack = [child_workflow_id]
+        while stack:
+            workflow_id = stack.pop()
+            if workflow_id in seen:
+                continue
+            seen.add(workflow_id)
+            child = self.subworkflows.get(workflow_id)
+            if child is None:
+                continue  # unregistered child is reported by the caller's check
+            for child_node in child.nodes:
+                if child_node.kind == "human":
+                    return (
+                        f"subworkflow node '{node_id}' -> workflow '{workflow_id}' contains human "
+                        f"node '{child_node.id}': nested suspension is not supported yet — move "
+                        f"the human gate to the top-level workflow"
+                    )
+                if child_node.kind == "subworkflow" and child_node.subworkflow is not None:
+                    stack.append(child_node.subworkflow.workflow_id)
         return None
 
     def _model_profile_error(self, node: WorkflowNode) -> Optional[str]:
@@ -699,7 +759,12 @@ class WorkflowExecutor:
         return 25 + len(definition.nodes) * (2 + loops)
 
     # ---------------------------------------------------------------- envelopes
-    def _envelope(self, definition: WorkflowDefinition, final_state: Dict[str, Any]) -> WorkflowRunResult:
+    def _envelope(
+        self,
+        definition: WorkflowDefinition,
+        final_state: Dict[str, Any],
+        session: Optional[WorkflowRunSession] = None,
+    ) -> WorkflowRunResult:
         node_results: List[NodeResult] = list(final_state.get("node_results", []))
         run_context = final_state.get("workflow_context") or getattr(
             final_state.get(CONTEXT), "run_context", None
@@ -758,7 +823,9 @@ class WorkflowExecutor:
             node_results=node_results,
             artifacts=list(final_state.get("artifacts", [])),
             usage=usage,
-            trace=self._trace_events(run_id=run_id),
+            # B6/B7: the session's run-scoped buffer is exact and sink-shape independent;
+            # sink sniffing remains only for legacy paths without a session (child runs).
+            trace=list(session.trace_events) if session is not None else self._trace_events(run_id=run_id),
             snapshot=snapshot,
         )
 
