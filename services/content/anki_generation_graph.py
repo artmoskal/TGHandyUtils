@@ -254,10 +254,13 @@ class AnkiGenerationGraph:
         self.last_run_result = result
         final_state = result.output if isinstance(result.output, dict) else {}
         self.last_run_state = final_state
-        self._finalize_observation_bundle(bundle, engine, result)
         rendered = final_state.get("rendered")
         if not rendered:
+            # Product post-validation failed: the durable record must say FAILED, not
+            # completed — finalize truthfully BEFORE surfacing the error (B4).
+            self._finalize_observation_bundle(bundle, engine, result, status="failed")
             raise ParsingError("Anki graph produced no rendered cards")
+        self._finalize_observation_bundle(bundle, engine, result)
         usage_summary = result.usage or final_state.get("usage_summary")
         if usage_summary:
             rendered = rendered.model_copy(update={"usage_summary": usage_summary})
