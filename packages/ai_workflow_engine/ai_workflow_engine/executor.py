@@ -266,12 +266,24 @@ class WorkflowExecutor:
             session.close("failed")
             raise
         envelope = self._envelope(definition, final_state, session=session)
-        status = envelope.status
         if terminal_status is not None:
-            override = terminal_status(envelope)
+            # B-post2: the hook must never desynchronize the durable record from the returned
+            # result, and a raising hook must never leave the bundle unfinalized.
+            try:
+                override = terminal_status(envelope)
+            except Exception:
+                session.close("failed")
+                raise
             if override:
-                status = override
-        session.close(status)
+                valid = {"completed", "partial", "failed", "requires_user_input"}
+                if override not in valid:
+                    session.close("failed")
+                    raise ValueError(
+                        f"terminal_status hook returned invalid status {override!r} "
+                        f"(allowed: {sorted(valid)})"
+                    )
+                envelope = envelope.model_copy(update={"status": override})
+        session.close(envelope.status)
         return envelope
 
     async def _run_inner(
@@ -822,6 +834,8 @@ class WorkflowExecutor:
                 plan = final_state.get("plan_artifact")
                 if plan is not None and hasattr(plan, "model_dump"):
                     plan = plan.model_dump()
+                goal = final_state.get("workflow_goal")
+                snapshot_run_context = final_state.get("workflow_context")
                 snapshot = MachineSnapshot(
                     workflow_id=definition.workflow_id,
                     suspended_node=suspended,
@@ -844,6 +858,12 @@ class WorkflowExecutor:
                     plan_artifact=plan,
                     usage=usage.model_dump() if hasattr(usage, "model_dump") else {},
                     fallback_reason=final_state.get("fallback_reason"),
+                    goal=goal.model_dump() if hasattr(goal, "model_dump") else None,
+                    run_context=(
+                        snapshot_run_context.model_dump()
+                        if hasattr(snapshot_run_context, "model_dump")
+                        else None
+                    ),
                 )
         return WorkflowRunResult(
             workflow_id=definition.workflow_id,

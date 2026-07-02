@@ -254,6 +254,22 @@ class WorkflowEngine:
                 f"workflow '{definition.workflow_id}' references unknown model profile(s): "
                 f"{', '.join(unknown_profiles)} (registered: {sorted(self.model_profiles) or 'none'})"
             )
+        existing = self.workflows.get(definition.workflow_id)
+        if existing is not None and existing.definition_digest() != definition.definition_digest():
+            # B-post1: a changed same-id definition invalidates the cached runtime plan too —
+            # definition-level limits/scheduling are folded into the plan, so a stale plan would
+            # run the new machine under the OLD policy. Mirrors the _resolve re-register path.
+            self.trace_sink.record(
+                WorkflowTraceEvent(
+                    node=definition.workflow_id,
+                    decision="machine:re-registered",
+                    metadata={
+                        "old_digest": existing.definition_digest(),
+                        "new_digest": definition.definition_digest(),
+                    },
+                )
+            )
+            self._plans.pop(definition.workflow_id, None)
         self.workflows[definition.workflow_id] = definition
         self.executor.register_subworkflow(definition)
         if profile is not None:
@@ -412,9 +428,19 @@ class WorkflowEngine:
             raise KeyError(
                 f"Unknown workflow: {snapshot.workflow_id} — register it before resuming"
             )
+        # B-post3: resume continues the ORIGINAL run identity — goal, constraints, user,
+        # delivery target, metadata, and run-id lineage come from the snapshot unless the
+        # caller explicitly overrides them.
+        caller_overrode = goal is not None or user_id is not None or constraints is not None
+        if goal is None and snapshot.goal:
+            goal = WorkflowGoal.model_validate(snapshot.goal)
         context = self._run_context_for(
             definition, goal=goal, user_id=user_id, constraints=constraints
         )
+        if snapshot.run_context and not caller_overrode:
+            context = context.model_copy(
+                update={"run_context": WorkflowRunContext.model_validate(snapshot.run_context)}
+            )
         return await self.executor.resume(definition, snapshot, event_payload, context)
 
     def _run_context_for(

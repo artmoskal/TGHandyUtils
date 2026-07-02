@@ -39,6 +39,11 @@ class MachineSnapshot(BaseModel):
     plan_artifact: Optional[Any] = None
     usage: Dict[str, Any] = Field(default_factory=dict)
     fallback_reason: Optional[str] = None
+    # B-post3: the run's identity travels with the machine position, so resume continues under
+    # the SAME goal/constraints/user/delivery/run-id lineage unless the caller overrides them.
+    # Optional for backward compatibility with older snapshots.
+    goal: Optional[Dict[str, Any]] = None
+    run_context: Optional[Dict[str, Any]] = None
 
     def to_json(self) -> str:
         """Serialize for cross-process resume. Raises loudly on non-serializable payloads."""

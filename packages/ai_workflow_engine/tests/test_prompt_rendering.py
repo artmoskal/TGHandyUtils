@@ -181,9 +181,50 @@ def test_terminal_status_hook_overrides_the_archived_status(tmp_path):
         )
     )
 
-    assert result.status == "completed"  # the envelope itself is untouched
+    # B-post2: the returned result and the durable record must agree — both failed.
+    assert result.status == "failed"
     meta = json.loads((tmp_path / "run-hook" / "meta.json").read_text())
-    assert meta["status"] == "failed"  # but the durable record tells the product truth
+    assert meta["status"] == "failed"
+
+
+def test_raising_terminal_status_hook_still_finalizes_the_bundle(tmp_path):
+    builder = WorkflowEngineBuilder()
+    builder.register_capability("solo", _noop, kind="deterministic")
+    builder.register_workflow(WorkflowBuilder("hook_boom_flow").step("solo").build())
+    engine = builder.build()
+    bundle = open_observation_run_bundle(tmp_path, "run-hook-boom")
+
+    def exploding_hook(envelope):
+        raise RuntimeError("post-validation crashed")
+
+    with pytest.raises(RuntimeError, match="post-validation crashed"):
+        asyncio.run(
+            engine.run(
+                "hook_boom_flow", {"x": 1},
+                observation_bundle=bundle, terminal_status=exploding_hook,
+            )
+        )
+
+    meta = json.loads((tmp_path / "run-hook-boom" / "meta.json").read_text())
+    assert meta["status"] == "failed"  # never left unfinalized
+
+
+def test_invalid_terminal_status_override_is_loud(tmp_path):
+    builder = WorkflowEngineBuilder()
+    builder.register_capability("solo", _noop, kind="deterministic")
+    builder.register_workflow(WorkflowBuilder("hook_bad_flow").step("solo").build())
+    engine = builder.build()
+    bundle = open_observation_run_bundle(tmp_path, "run-hook-bad")
+
+    with pytest.raises(ValueError, match="invalid status"):
+        asyncio.run(
+            engine.run(
+                "hook_bad_flow", {"x": 1},
+                observation_bundle=bundle, terminal_status=lambda e: "hollow",
+            )
+        )
+    meta = json.loads((tmp_path / "run-hook-bad" / "meta.json").read_text())
+    assert meta["status"] == "failed"
 
 
 def test_engine_run_finalizes_bundle_failed_when_the_run_raises(tmp_path):
