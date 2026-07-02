@@ -58,8 +58,10 @@ def test_application_config_reads_non_secret_defaults_from_yaml():
     data = _run_config_probe()
 
     assert data["card_model"] == "gpt-5.4-mini"
-    assert data["image_provider"] == "openai"
-    assert data["image_model"] == "gpt-image-2"
+    # ChatGPT-browser subscription is the profile default since FR-1 (reference images)
+    # shipped; the browser service exposes no model choice — 'chatgpt-web' is the label.
+    assert data["image_provider"] == "chatgpt"
+    assert data["image_model"] == "chatgpt-web"
     assert data["style_ref"] == "assets/anki/ppla-design-reference-v2.png"
     assert data["voice_id"] == "bBNhdwrIjl4fcVYiRbT2"
     assert data["max_text_calls"] == 16

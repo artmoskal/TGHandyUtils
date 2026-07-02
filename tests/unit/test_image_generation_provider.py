@@ -376,9 +376,10 @@ async def test_chatgpt_browser_generator_writes_artifact_and_notional_usage(tmp_
 
     url, kwargs = calls[0]
     assert url == "http://mini.test:8010/generate_image"
-    # cache-bust: the service replays identical descriptions, so a variation token is appended
-    assert kwargs["json"]["description"].startswith("study image")
-    assert "(variation " in kwargs["json"]["description"]
+    # cache-bust is first-class: prompt stays verbatim, no_cache forces a fresh generation
+    assert kwargs["json"]["description"] == "study image"
+    assert kwargs["json"]["no_cache"] is True
+    assert "reference_images" not in kwargs["json"]
     assert kwargs["json"]["timeout"] == 340
     assert kwargs["timeout"] == 370  # read timeout = service budget + headroom
 
@@ -411,6 +412,7 @@ async def test_chatgpt_browser_generator_force_fresh_off_keeps_prompt_verbatim(t
     await generator.generate(ImageGenerationRequest(prompt="study image", output_dir=str(tmp_path)))
 
     assert calls[0][1]["json"]["description"] == "study image"
+    assert "no_cache" not in calls[0][1]["json"]
 
 
 @pytest.mark.unit
@@ -423,16 +425,78 @@ async def test_chatgpt_browser_generator_requires_explicit_url(tmp_path):
 
 
 @pytest.mark.unit
-async def test_chatgpt_browser_generator_rejects_reference_images_loudly(tmp_path):
+async def test_chatgpt_browser_generator_sends_reference_images_and_asserts_honored(tmp_path):
+    """FR-1: style refs go up as data URLs; the echoed reference_images_used is enforced."""
+
+    from ai_workflow_tools.media.image_generation import ChatGptBrowserImageGenerator
+
+    ref = tmp_path / "style.png"
+    ref.write_bytes(b"style-bytes")
+    calls = []
+
+    def http_post(url, **kwargs):
+        calls.append((url, kwargs))
+        payload = _chatgpt_image_payload()
+        payload["reference_images_used"] = 1
+        return FakeChatGptResponse(payload)
+
+    generator = ChatGptBrowserImageGenerator(
+        _chatgpt_config(WORKFLOW_USAGE_TRACKING_ENABLED=False), http_post=http_post
+    )
+    result = await generator.generate(
+        ImageGenerationRequest(
+            prompt="styled card",
+            output_dir=str(tmp_path / "out"),
+            reference_image_paths=[str(ref)],
+        )
+    )
+
+    sent = calls[0][1]["json"]["reference_images"]
+    assert len(sent) == 1 and sent[0]["role"] == "style"
+    assert sent[0]["data_url"] == "data:image/png;base64," + base64.b64encode(b"style-bytes").decode()
+    assert result.reference_image_count == 1
+    assert result.usage_metadata["reference_images_used"] == 1
+
+
+@pytest.mark.unit
+async def test_chatgpt_browser_generator_refuses_style_dropped_result(tmp_path):
+    """A response that did not honor the refs is refused — silent style drop is undetectable."""
+
     from ai_workflow_tools.media.image_generation import ChatGptBrowserImageGenerator, ImageGenerationError
 
-    generator = ChatGptBrowserImageGenerator(_chatgpt_config())
-    with pytest.raises(ImageGenerationError, match="reference images"):
+    ref = tmp_path / "style.png"
+    ref.write_bytes(b"style-bytes")
+
+    def http_post(url, **kwargs):
+        payload = _chatgpt_image_payload()
+        payload["reference_images_used"] = 0
+        return FakeChatGptResponse(payload)
+
+    generator = ChatGptBrowserImageGenerator(
+        _chatgpt_config(WORKFLOW_USAGE_TRACKING_ENABLED=False), http_post=http_post
+    )
+    with pytest.raises(ImageGenerationError, match="style-dropped"):
+        await generator.generate(
+            ImageGenerationRequest(
+                prompt="styled card",
+                output_dir=str(tmp_path / "out"),
+                reference_image_paths=[str(ref)],
+            )
+        )
+    assert not (tmp_path / "out").exists() or not list((tmp_path / "out").iterdir())
+
+
+@pytest.mark.unit
+async def test_chatgpt_browser_generator_unreadable_reference_is_loud(tmp_path):
+    from ai_workflow_tools.media.image_generation import ChatGptBrowserImageGenerator, ImageGenerationError
+
+    generator = ChatGptBrowserImageGenerator(_chatgpt_config(WORKFLOW_USAGE_TRACKING_ENABLED=False))
+    with pytest.raises(ImageGenerationError, match="unreadable"):
         await generator.generate(
             ImageGenerationRequest(
                 prompt="x",
                 output_dir=str(tmp_path),
-                reference_image_paths=[str(tmp_path / "style.png")],
+                reference_image_paths=[str(tmp_path / "missing.png")],
             )
         )
 

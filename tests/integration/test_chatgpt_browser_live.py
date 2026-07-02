@@ -177,3 +177,54 @@ async def test_live_chat_model_renders_card_shaped_json():
     if isinstance(cards, dict):
         cards = [cards]
     assert cards and cards[0].get("question"), f"no card in reply: {output.content[:200]}"
+
+
+def _solid_png(width=64, height=64, rgb=(220, 30, 30)) -> bytes:
+    """Minimal valid solid-color PNG via stdlib (no Pillow in the environment)."""
+
+    import struct
+    import zlib
+
+    def chunk(tag: bytes, payload: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(payload))
+            + tag
+            + payload
+            + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF)
+        )
+
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    row = b"\x00" + bytes(rgb) * width
+    body = zlib.compress(row * height)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", header)
+        + chunk(b"IDAT", body)
+        + chunk(b"IEND", b"")
+    )
+
+
+async def test_live_image_with_style_reference_is_honored(tmp_path):
+    """FR-1 acceptance from the consumer side: a style ref goes up, the service echoes
+    reference_images_used, and our provider enforces it — the PPLA styled-deck path."""
+
+    ref = tmp_path / "style-red.png"
+    ref.write_bytes(_solid_png())
+
+    generator = ChatGptBrowserImageGenerator(_config())
+    result = await generator.generate(
+        ImageGenerationRequest(
+            prompt=(
+                "flashcard illustration of the word bridge, matching the attached style "
+                "reference's dominant color palette, flat vector, white background"
+            ),
+            output_dir=str(tmp_path / "out"),
+            output_basename="live-bridge-styled.png",
+            reference_image_paths=[str(ref)],
+        )
+    )
+
+    with open(result.path, "rb") as fh:
+        assert fh.read(8).startswith(b"\x89PNG")
+    assert result.reference_image_count == 1
+    assert result.usage_metadata["reference_images_used"] == 1

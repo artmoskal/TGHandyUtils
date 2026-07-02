@@ -111,8 +111,9 @@ def test_registered_backend_routes_by_model_name_per_role():
     assert isinstance(create_anki_text_llm(config, "chatgpt-web", 0.1), ChatGptBrowserLLMClient)
     assert isinstance(create_anki_chat_model(config, "chatgpt-web", 0.1), ChatGptBrowserChatModel)
     # unregistered model names fall through to the regular metered API door
+    # (asserted structurally — other tests may mock ChatOpenAI itself)
     api_client = create_anki_text_llm(config, "gpt-5.4-mini", 0.1)
-    assert type(api_client).__name__ == "ChatOpenAI"
+    assert not isinstance(api_client, (ChatGptBrowserLLMClient, ChatGptBrowserChatModel))
 
 
 def test_registry_reports_cost_class_vision_and_provider_label():

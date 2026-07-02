@@ -422,12 +422,13 @@ class ChatGptBrowserImageGenerator:
     ChatGPT browser — image cost is covered by the ChatGPT subscription, so usage is recorded
     as ``subscription_notional`` with ``cost_known=false``, never phantom metered USD.
 
-    Service contract quirks handled here:
-    - The service caches identical descriptions; with ``WORKFLOW_CHATGPT_BROWSER_FORCE_FRESH``
-      (default on) a short variation token is appended so retries/regenerations produce a NEW
-      image instead of silently replaying the cache.
-    - Reference images are NOT supported by the service yet (feature requested from the API
-      owner) — a request carrying references fails loudly instead of silently dropping style.
+    Service contract handled here (CHATGPT_API.md, FR-1 shipped 2026-07-02):
+    - Reference images (style/subject conditioning) are sent as data URLs; the service
+      fails loudly if it cannot attach them, and the response echoes
+      ``reference_images_used`` — a mismatch raises here (no silent style drop, ever).
+    - The service caches identical requests; with ``WORKFLOW_CHATGPT_BROWSER_FORCE_FRESH``
+      (default on) the first-class ``no_cache`` flag forces a fresh generation so
+      retries/regenerations never replay a previously rejected image.
     - Calls are synchronous and slow (~30–90 s) and run sequentially on one browser; the read
       timeout must exceed the service-side timeout.
     """
@@ -439,12 +440,6 @@ class ChatGptBrowserImageGenerator:
     async def generate(self, request: ImageGenerationRequest) -> GeneratedImage:
         if not request.prompt.strip():
             raise ImageGenerationError("Image generation prompt is empty")
-        if request.reference_image_paths:
-            raise ImageGenerationError(
-                "chatgpt browser image provider does not support reference images yet "
-                "(feature requested from the API owner) — clear style/reference images or "
-                "use the openai/gemini provider for this run"
-            )
         base_url = str(_config_value(self.config, "WORKFLOW_CHATGPT_BROWSER_URL", "") or "").strip()
         if not base_url:
             raise ImageGenerationError(
@@ -461,17 +456,23 @@ class ChatGptBrowserImageGenerator:
         service_timeout = int(
             _config_value(self.config, "WORKFLOW_CHATGPT_BROWSER_TIMEOUT_SECONDS", 340)
         )
-        description = request.prompt
+        reference_images = [
+            {"data_url": _file_data_url(ref_path), "role": "style"}
+            for ref_path in request.reference_image_paths
+        ]
+        payload: dict[str, Any] = {"description": request.prompt, "timeout": service_timeout}
+        if reference_images:
+            payload["reference_images"] = reference_images
         if _config_bool(self.config, "WORKFLOW_CHATGPT_BROWSER_FORCE_FRESH", True):
-            # The service returns cached results for identical descriptions; a retry after a
-            # rejected image would otherwise replay the SAME image forever.
-            description = f"{description}\n(variation {uuid.uuid4().hex[:8]})"
+            # The service caches identical requests; a retry after a rejected image would
+            # otherwise replay the SAME image forever.
+            payload["no_cache"] = True
 
         start = time.monotonic()
         try:
             data = await self._post_json(
                 f"{base_url.rstrip('/')}/generate_image",
-                {"description": description, "timeout": service_timeout},
+                payload,
                 read_timeout=service_timeout + 30,
             )
             elapsed_ms = int((time.monotonic() - start) * 1000)
@@ -482,6 +483,15 @@ class ChatGptBrowserImageGenerator:
                     f"chatgpt browser image response missing image data (status="
                     f"{data.get('status')!r})"
                 )
+            if reference_images:
+                used = int(data.get("reference_images_used") or 0)
+                if used != len(reference_images):
+                    # Service-side contract says this cannot happen (it fails loudly), but a
+                    # silently style-dropped image is undetectable downstream — enforce here too.
+                    raise ImageGenerationError(
+                        f"chatgpt browser honored {used} of {len(reference_images)} reference "
+                        "images — refusing a style-dropped result"
+                    )
             with open(path, "wb") as fh:
                 fh.write(base64.b64decode(image_data_url.split(",", 1)[1]))
 
@@ -506,11 +516,12 @@ class ChatGptBrowserImageGenerator:
                 size=request.size,
                 quality=request.quality,
                 output_format=request.output_format,
-                reference_image_count=0,
+                reference_image_count=len(reference_images),
                 style_reference_version=request.style_reference_version,
                 usage_metadata={
                     "mime": data.get("mime"),
                     "bytes": data.get("bytes"),
+                    "reference_images_used": data.get("reference_images_used"),
                     "cost_class": "subscription_notional",
                     "cost_known": False,
                 },
@@ -594,6 +605,7 @@ class ChatGptBrowserImageGenerator:
                     "cost_source": "unknown",
                     "size": request.size,
                     "output_format": request.output_format,
+                    "reference_image_count": len(request.reference_image_paths),
                     "workflow_id": request.workflow_id,
                     "source_url": source_url,
                 },
@@ -822,3 +834,15 @@ def _config_bool(config: Any, name: str, default: bool = False) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on"}
     return bool(value)
+
+
+def _file_data_url(path: str) -> str:
+    """Encode a local image file as a data URL (the service's own round-trip format)."""
+
+    mime = mimetypes.guess_type(path)[0] or "image/png"
+    try:
+        with open(path, "rb") as fh:
+            encoded = base64.b64encode(fh.read()).decode("ascii")
+    except OSError as exc:
+        raise ImageGenerationError(f"reference image unreadable: {path}: {exc}") from exc
+    return f"data:{mime};base64,{encoded}"
