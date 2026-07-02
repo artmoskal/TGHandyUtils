@@ -139,6 +139,8 @@ class WorkflowRunResult(BaseModel):
     artifacts: List[WorkflowArtifact] = Field(default_factory=list)
     usage: WorkflowUsageSummary = Field(default_factory=WorkflowUsageSummary)
     trace: List[WorkflowTraceEvent] = Field(default_factory=list)
+    # Where this run's durable observation bundle lives (set when a bundle was attached).
+    observation_bundle_path: Optional[str] = None
     # Durable suspension: set ONLY when status == "requires_user_input" — feed it back through
     # engine.resume(snapshot, event) to continue the machine without re-executing anything.
     snapshot: Optional[MachineSnapshot] = None
@@ -292,6 +294,10 @@ class WorkflowExecutor:
                     )
                 envelope = envelope.model_copy(update={"status": override})
         session.close(envelope.status)
+        if session.bundle is not None and getattr(session.bundle, "path", None):
+            envelope = envelope.model_copy(
+                update={"observation_bundle_path": str(session.bundle.path)}
+            )
         return envelope
 
     async def _run_inner(
@@ -402,6 +408,10 @@ class WorkflowExecutor:
             )
         envelope = self._envelope(definition, final_state, session=session)
         session.close(envelope.status)
+        if session.bundle is not None and getattr(session.bundle, "path", None):
+            envelope = envelope.model_copy(
+                update={"observation_bundle_path": str(session.bundle.path)}
+            )
         return envelope
 
     def _with_replay(self, node: WorkflowNode, fn: Callable[[Dict[str, Any]], Awaitable[Dict[str, Any]]]):

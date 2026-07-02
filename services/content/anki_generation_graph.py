@@ -10,6 +10,7 @@ import json
 import os
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Dict, Literal, Optional, Sequence, TypedDict
 
 from core.exceptions import ParsingError
@@ -41,7 +42,6 @@ from ai_workflow_engine.models import (
 from ai_workflow_tools.media.image_models import ImageGenerationRequest
 from ai_workflow_tools.media.voice_generation import VoiceGenerationRequest
 from ai_workflow_engine.models import WorkflowGoal, WorkflowTraceEvent, WorkflowUsageSummary
-from ai_workflow_engine.observation_bundle import ObservationRunBundle, open_observation_run_bundle
 from services.anki_card_service import AnkiCardService
 from services.content.anki_directives import parse_directives
 from services.content.anki_renderers import (
@@ -177,7 +177,7 @@ class AnkiGenerationGraph:
         self.capability_registry = CapabilityRegistry()
         self.last_run_state: Optional[AnkiGraphState] = None
         self.last_run_result: Any = None
-        self.last_observation_bundle: Optional[ObservationRunBundle] = None
+        self._last_observation_bundle_path: Optional[str] = None
         # The Anki workflow now runs on the reusable executable engine (no product-owned graph).
         self._capabilities_registered = False
         self._register_workflow_capabilities()
@@ -199,8 +199,12 @@ class AnkiGenerationGraph:
     async def run(self, source: ContentSource, message: Any = None) -> RenderedCardSet:
         self._clear_observation_details()
         run_id = str(uuid.uuid4())
-        bundle = self._open_observation_bundle(run_id)
-        engine = self._engine(bundle)
+        # The engine auto-opens the bundle at observation_bundle_dir/run_id (goal metadata pins
+        # the run id); pre-compute the path so it is known even when the run raises.
+        self._last_observation_bundle_path = (
+            str(Path(self.observation_bundle_dir) / run_id) if self.observation_bundle_dir else None
+        )
+        engine = self._engine()
         runtime_plan = self._runtime_plan_for_source(source)
         goal = WorkflowGoal(
             workflow_type="anki_generation",
@@ -250,10 +254,10 @@ class AnkiGenerationGraph:
             goal=goal,
             recursion_fallback=self._engine_recursion_fallback,
             recursion_limit=self._graph_recursion_limit(),
-            observation_bundle=bundle,
             terminal_status=self._terminal_bundle_status,
         )
         self.last_run_result = result
+        self._last_observation_bundle_path = result.observation_bundle_path
         final_state = result.output if isinstance(result.output, dict) else {}
         self.last_run_state = final_state
         rendered = final_state.get("rendered")
@@ -276,7 +280,7 @@ class AnkiGenerationGraph:
     def last_observation_bundle_path(self) -> Optional[str]:
         """Return the most recent durable observation bundle path, when enabled."""
 
-        return str(self.last_observation_bundle.path) if self.last_observation_bundle else None
+        return self._last_observation_bundle_path
 
     def _engine_recursion_fallback(self, wrapper_state: Dict[str, Any], exc: Exception) -> Dict[str, Any]:
         """Adapt the product recursion fallback to the engine's wrapper state shape.
@@ -351,26 +355,31 @@ class AnkiGenerationGraph:
             + (4 * self.max_voice_generations_per_run)
         )
 
-    def _engine(self, bundle: Optional[ObservationRunBundle]):
+    def _engine(self):
         """Build the executable workflow engine for one Anki run.
 
         Orchestration (node dispatch, branching, retry/retrace cycles, fallback, side-effect/budget
-        policy, trace) is owned by the reusable engine. This class contributes only the domain
-        capabilities, the routing decisions, and the declarative workflow shape — no graph wiring.
+        policy, trace) is owned by the reusable engine — including observation: the engine
+        auto-opens, routes, finalizes, and prunes the per-run bundle from the observation config.
+        This class contributes only the domain capabilities, routing decisions, and the
+        declarative workflow shape — no graph wiring, no bundle mechanics.
         """
 
-        from ai_workflow_engine import WorkflowEngine
+        from ai_workflow_engine import ObservationConfig, WorkflowEngine
 
         self._register_workflow_capabilities()
-        trace_sink = bundle.trace_sink if bundle is not None else self.capability_trace_sink
-        detail_sink = bundle.detail_sink if bundle is not None else self.detail_sink
-        usage_sink = bundle.usage_sink if bundle is not None else None
+        observation = ObservationConfig(
+            enabled=bool(self.observation_bundle_dir),
+            bundle_dir=self.observation_bundle_dir or "data/observations",
+            retention_limit=self.observation_retention_limit,
+            capture="full" if self.capture_observation_detail_text else "off",
+        )
         engine = WorkflowEngine(
             registry=self.capability_registry,
-            trace_sink=trace_sink,
-            detail_sink=detail_sink,
+            trace_sink=self.capability_trace_sink,
+            detail_sink=self.detail_sink,
             capture_detail_text=self.capture_observation_detail_text,
-            usage_sink=usage_sink,
+            observation=observation,
             config=self._runner_config,
         )
         if self.runner is not None:
@@ -379,23 +388,6 @@ class AnkiGenerationGraph:
             engine.executor.runner = self.runner
         engine.register_workflow(self._anki_workflow_definition(), profile=self._workflow_profile())
         return engine
-
-    def _open_observation_bundle(self, run_id: str) -> Optional[ObservationRunBundle]:
-        if not self.observation_bundle_dir:
-            self.last_observation_bundle = None
-            return None
-        try:
-            bundle = open_observation_run_bundle(
-                self.observation_bundle_dir,
-                run_id,
-                retention_limit=self.observation_retention_limit,
-            )
-        except Exception:
-            logger.exception("Failed to open Anki observation bundle for run %s", run_id)
-            self.last_observation_bundle = None
-            return None
-        self.last_observation_bundle = bundle
-        return bundle
 
     def _observation_details(self) -> list[Any]:
         if self.detail_sink is None:

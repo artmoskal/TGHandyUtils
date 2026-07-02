@@ -11,7 +11,7 @@ from pathlib import Path
 import json
 import os
 import re
-from typing import Any
+from typing import Any, Literal, Optional
 
 import yaml
 from pydantic import BaseModel, Field, ValidationError
@@ -29,7 +29,7 @@ SECRET_VALUE_RE = re.compile(
     r"(sk-[A-Za-z0-9_-]{16,}|xox[baprs]-[A-Za-z0-9-]{16,}|AIza[A-Za-z0-9_-]{16,})"
 )
 
-ALLOWED_TOP_LEVEL_KEYS = {"workflow", "models", "settings"}
+ALLOWED_TOP_LEVEL_KEYS = {"workflow", "models", "settings", "observation"}
 WORKFLOW_FIELD_KEYS = set(WorkflowProfile.model_fields)
 
 DEFAULT_ENV_OVERRIDES: dict[str, OverridePath] = {
@@ -61,12 +61,28 @@ class WorkflowConfigError(ValueError):
     """Raised when workflow configuration is invalid or unsafe."""
 
 
+class ObservationConfig(BaseModel):
+    """Application-level observation policy (the engine owns the per-run mechanics).
+
+    Configure once in the application config; when ``enabled`` the engine auto-opens a
+    per-run observation bundle, routes trace/detail/usage into it, finalizes it with the
+    true terminal status, and prunes old finalized bundles to ``retention_limit``.
+    Products never call bundle mechanics in the normal path.
+    """
+
+    enabled: bool = False
+    bundle_dir: str = "data/observations"
+    retention_limit: Optional[int] = None
+    capture: Literal["off", "full"] = "full"
+
+
 class WorkflowConfigBundle(BaseModel):
     """Loaded reusable workflow configuration."""
 
     profile: WorkflowProfile
     models: dict[str, ModelProfile] = Field(default_factory=dict)
     settings: dict[str, Any] = Field(default_factory=dict)
+    observation: Optional[ObservationConfig] = None
     warnings: list[str] = Field(default_factory=list)
 
     def model_for(self, name: str) -> ModelProfile:
@@ -181,7 +197,19 @@ def _bundle_from_raw(raw: Mapping[str, Any], warnings: list[str]) -> WorkflowCon
         raise WorkflowConfigError(f"workflow profile validation failed: {exc}") from exc
 
     settings = dict(raw.get("settings") or {})
-    return WorkflowConfigBundle(profile=profile, models=model_profiles, settings=settings, warnings=warnings)
+    observation_raw = raw.get("observation")
+    observation = None
+    if observation_raw is not None:
+        if not isinstance(observation_raw, Mapping):
+            raise WorkflowConfigError("observation must be an object")
+        observation = ObservationConfig.model_validate(dict(observation_raw))
+    return WorkflowConfigBundle(
+        profile=profile,
+        models=model_profiles,
+        settings=settings,
+        observation=observation,
+        warnings=warnings,
+    )
 
 
 def _read_yaml(path: str | Path) -> dict[str, Any]:

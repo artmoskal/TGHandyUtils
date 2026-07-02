@@ -300,7 +300,8 @@ async def test_graph_nodes_run_through_generic_capability_runtime(tmp_path):
     assert observation.workflow_id == "anki_generation"
     assert observation.run_id
     assert observation.nodes["package_cards"].status == "completed"
-    assert not details.details
+    # Product-configured sinks are honored ALONGSIDE the engine-owned bundle now.
+    assert details.details
     assert observation.details
     assert all(ref in observation.details for event in observation.timeline for ref in event.detail_refs)
     assert "Valve diagram" in "\n".join(detail.text or "" for detail in observation.details.values())
@@ -316,7 +317,7 @@ async def test_graph_nodes_run_through_generic_capability_runtime(tmp_path):
 
 
 @pytest.mark.unit
-def test_observation_bundle_runtime_is_scoped_per_run(tmp_path):
+def test_observation_config_is_engine_owned_and_per_run(tmp_path):
     svc = Mock()
     graph = AnkiGenerationGraph(
         svc,
@@ -324,20 +325,15 @@ def test_observation_bundle_runtime_is_scoped_per_run(tmp_path):
         observation_bundle_dir=str(tmp_path / "observations"),
     )
 
-    bundle_1 = graph._open_observation_bundle("run-1")
-    engine_1 = graph._engine(bundle_1)
-    bundle_2 = graph._open_observation_bundle("run-2")
-    engine_2 = graph._engine(bundle_2)
+    engine_1 = graph._engine()
+    engine_2 = graph._engine()
 
-    assert bundle_1 is not None
-    assert bundle_2 is not None
     assert engine_1 is not engine_2
-    # Chain: ContextEnriching(run-id stamp) -> SessionScoped(run buffer) -> bundle sink.
-    assert engine_1.runtime.trace_sink.inner.inner is bundle_1.trace_sink
-    assert engine_2.runtime.trace_sink.inner.inner is bundle_2.trace_sink
-    assert engine_1.detail_sink is bundle_1.detail_sink
-    assert engine_2.detail_sink is bundle_2.detail_sink
     assert engine_1.executor.runner is not engine_2.executor.runner
+    # Observation is CONFIG on the engine — no bundle plumbing in product code.
+    assert engine_1.observation.enabled
+    assert engine_1.observation.bundle_dir == str(tmp_path / "observations")
+    assert engine_1.observation.capture == "full"
 
 
 @pytest.mark.unit

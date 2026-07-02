@@ -16,7 +16,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple, Union, runtime_checkable
 
-from ai_workflow_engine.config_loader import WorkflowConfigBundle, load_workflow_config
+from ai_workflow_engine.config_loader import ObservationConfig, WorkflowConfigBundle, load_workflow_config
 from ai_workflow_engine.engine.capabilities import (
     CapabilityRegistry,
     CapabilityRuntime,
@@ -41,7 +41,12 @@ from ai_workflow_engine.models import (
 )
 from ai_workflow_engine.flow_authoring import FlowArtifact, build_definition_from_artifact
 from ai_workflow_engine.prompt_rendering import PromptRenderService
-from ai_workflow_engine.run_session import SessionScopedTraceSink
+from ai_workflow_engine.observation_bundle import open_observation_run_bundle
+from ai_workflow_engine.run_session import (
+    SessionScopedDetailSink,
+    SessionScopedTraceSink,
+    SessionScopedUsageSink,
+)
 from ai_workflow_engine.snapshot import MachineSnapshot
 from ai_workflow_engine.models import CapabilityResult, WorkflowTraceEvent
 from ai_workflow_engine.usage import UsageSink
@@ -122,20 +127,32 @@ class WorkflowEngine:
         default_profile: Optional[WorkflowProfile] = None,
         model_profiles: Optional[Dict[str, ModelProfile]] = None,
         prompt_root: Optional[Path] = None,
+        observation: Optional[ObservationConfig] = None,
     ) -> None:
         self.registry = registry or CapabilityRegistry()
         self.trace_sink = trace_sink or InMemoryTraceSink()
         self.detail_sink = detail_sink
+        self.observation = observation
+        # Engine-owned observation (config-first): when enabled with full capture, detail
+        # text capture turns on and the session-routing sinks deliver every record into the
+        # auto-opened per-run bundle. Products configure policy once; the engine owns mechanics.
+        observation_on = observation is not None and observation.enabled
+        if observation_on and observation.capture == "full":
+            capture_detail_text = True
+        runtime_detail_sink = self.detail_sink
+        if self.detail_sink is not None or observation_on:
+            runtime_detail_sink = SessionScopedDetailSink(self.detail_sink)
         self.runtime = CapabilityRuntime(
             self.registry,
             # Session-aware tee (B6/B7): every runtime trace event lands in the ACTIVE run
-            # session's buffer (exact per-run envelope trace) and then the configured sink.
+            # session's buffer (exact per-run envelope trace), the session's bundle when one
+            # is attached, and then the configured sink.
             SessionScopedTraceSink(self.trace_sink),
-            detail_sink=self.detail_sink,
+            detail_sink=runtime_detail_sink,
             capture_detail_text=capture_detail_text,
         )
         self.executor = WorkflowExecutor(self.runtime, config=config)
-        self.executor.runner.usage_sink = usage_sink
+        self.executor.runner.usage_sink = SessionScopedUsageSink(usage_sink)
         self.usage_sink = usage_sink
         self.model_profiles = dict(model_profiles or {})
         # Executor shares the live registry so per-node model bindings resolve + validate there.
@@ -166,6 +183,7 @@ class WorkflowEngine:
     @classmethod
     def from_config(cls, config: Union[str, Path, WorkflowConfigBundle], **kwargs: Any) -> "WorkflowEngine":
         bundle = config if isinstance(config, WorkflowConfigBundle) else load_workflow_config([config])
+        kwargs.setdefault("observation", bundle.observation)
         return cls(
             config=bundle,
             default_profile=bundle.profile,
@@ -209,20 +227,21 @@ class WorkflowEngine:
         return self
 
     def _assert_observability_sink_alignment(self, handler: Any) -> None:
-        if self.detail_sink is None:
+        engine_detail_sink = getattr(self.runtime, "detail_sink", None)
+        if engine_detail_sink is None:
             return
         runtime = getattr(handler, "tool_runtime", None)
         if runtime is None:
             return
         runtime_detail_sink = getattr(runtime, "detail_sink", None)
-        if runtime_detail_sink is not self.detail_sink:
+        if runtime_detail_sink is not engine_detail_sink:
             raise ValueError(
                 "Agent capability observability sink mismatch: build/register it with "
                 "runtime=engine.runtime so trace and detail refs resolve in the same run view"
             )
         planner = getattr(handler, "planner", None)
-        planner_detail_sink = getattr(planner, "detail_sink", self.detail_sink)
-        if planner_detail_sink is not self.detail_sink:
+        planner_detail_sink = getattr(planner, "detail_sink", engine_detail_sink)
+        if planner_detail_sink is not engine_detail_sink:
             raise ValueError(
                 "Agent planner observability sink mismatch: use the engine runtime/detail sink"
             )
@@ -394,6 +413,18 @@ class WorkflowEngine:
             constraints=constraints,
             delivery_target=delivery_target,
         )
+        if (
+            observation_bundle is None
+            and self.observation is not None
+            and self.observation.enabled
+        ):
+            # Config-enabled observation: the engine opens the per-run bundle itself;
+            # explicit observation_bundle= remains the escape hatch and takes precedence.
+            observation_bundle = open_observation_run_bundle(
+                self.observation.bundle_dir,
+                context.run_context.workflow_id,
+                retention_limit=self.observation.retention_limit,
+            )
         return await self.executor.run(
             definition,
             payload,
