@@ -109,6 +109,21 @@ class ObservationRunBundle:
     sequence: ObservationSequence = field(default_factory=ObservationSequence)
 
     def __post_init__(self) -> None:
+        # A bundle run id is a FILESYSTEM NAME, never a path: run ids can arrive from
+        # caller-supplied goal metadata, so an unchecked "../escape" or absolute path would
+        # write observation files outside the configured bundle root. Reject loudly.
+        run_id = str(self.run_id)
+        if (
+            not run_id.strip()
+            or run_id in (".", "..")
+            or "/" in run_id
+            or "\\" in run_id
+            or Path(run_id).is_absolute()
+        ):
+            raise ValueError(
+                f"observation run_id must be a plain directory name (no separators, "
+                f"no '..', not absolute, not empty): {run_id!r}"
+            )
         self.base_dir = Path(self.base_dir)
         self.path = self.base_dir / self.run_id
         self.path.mkdir(parents=True, exist_ok=True)

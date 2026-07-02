@@ -75,6 +75,31 @@ def test_disabled_observation_opens_nothing(tmp_path):
     assert not any(tmp_path.iterdir()), "bundle dir written despite observation disabled"
 
 
+def test_malicious_run_id_cannot_escape_the_bundle_root(tmp_path):
+    """A caller-supplied run id is a directory NAME — traversal/absolute paths fail loudly."""
+
+    from ai_workflow_engine import WorkflowGoal
+
+    engine = WorkflowEngine(
+        observation=ObservationConfig(enabled=True, bundle_dir=str(tmp_path / "root")),
+    )
+    engine.register_capability("solo", _noop, kind="deterministic")
+    engine.register_workflow(WorkflowBuilder("escape_flow").step("solo").build())
+
+    goal = WorkflowGoal(
+        workflow_type="escape_flow",
+        objective="escape attempt",
+        metadata={"run_id": "../escape"},
+    )
+    with pytest.raises(ValueError, match="plain directory name"):
+        asyncio.run(engine.run("escape_flow", {"x": 1}, goal=goal))
+    assert not (tmp_path / "escape").exists(), "bundle escaped the configured root"
+
+    for bad in ("/tmp/abs-escape", "..", "", "a/b"):
+        with pytest.raises(ValueError, match="plain directory name"):
+            open_observation_run_bundle(tmp_path / "root", bad)
+
+
 def test_explicit_bundle_escape_hatch_beats_the_config(tmp_path):
     engine = WorkflowEngine(
         observation=ObservationConfig(enabled=True, bundle_dir=str(tmp_path / "auto")),
