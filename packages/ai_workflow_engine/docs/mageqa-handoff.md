@@ -1,19 +1,19 @@
 # MageQA — AI Workflow Engine Usage Guide
 
-> **PIN (2026-07-02):** pin tag `engine-v0.6.4` and build a wheel from it. The consumer model is
+> **PIN (2026-07-02):** pin tag `engine-v0.6.5` and build a wheel from it. The consumer model is
 > breaking-allowed tag-to-tag — do NOT track the live branch. The current tag carries the full
-> capability set (see **"What v0.6.4 gives you"**): cross-run memory, config-first observation
+> capability set (see **"What v0.6.5 gives you"**): cross-run memory, config-first observation
 > (log→bundle→viewer; HTML rendering lives in the separate `ai_workflow_viewer` package), strict
 > prompt files, machine identity, and the hardened seam guards.
 > **One-door rule for consumers:** construct provider clients only through sanctioned factory/adapter
 > modules. A direct provider client in workflow code is a reviewed allow-list entry, not a local
 > shortcut — otherwise you lose observability, cost accounting, and model-swap.
 
-Status: **ready for adoption — pin `engine-v0.6.4`** and build a wheel; never track the live branch.
+Status: **ready for adoption — pin `engine-v0.6.5`** and build a wheel; never track the live branch.
 The `WorkflowDefinition` / `WorkflowExecutor` / DI layer is live and proven (Anki runs on it in
 production; the product-neutral examples include site-audit fan-out and the three-axis pilot). The
 sibling `ai_workflow_tools` package ships CLI-agent + console-LLM support (`claude -p` / `codex exec`)
-and the media pack. See **"What v0.6.4 gives you"** at the end for the full capability list.
+and the media pack. See **"What v0.6.5 gives you"** at the end for the full capability list.
 Not in v0.6 (deferred): durable/semantic memory beyond the `MemoryStore` seam, FlowArtifact v1.5,
 ProcessArtifact/v2, browser/no-API executors.
 Source needs: `/Users/artemm/PycharmProjects/MageQA/docs/17-qa-orchestrator-architecture.md`,
@@ -33,15 +33,19 @@ from ai_workflow_engine import (
     WorkflowBuilder, WorkflowEngine, Retrace, Fallback, BranchDecision,
 )
 
-# (1) DECLARE the audit flow — plan -> fan-out scenarios -> adjudicate -> deepen -> report.
+# (1) DECLARE the audit flow — THE reference shape (surface -> plan -> instruments ->
+#     verify -> deepen -> findings -> report). Your requirements §6→§7→§8→§9→§12 are not a
+#     feature list; they are literally this machine. "Did we adopt correctly?" = diff against it.
 audit_site = (
     WorkflowBuilder("audit_site")
-    .step("plan_qa_session")                         # rubric/budget in -> list of scenario inputs
-    .fanout("run_scenarios", capability="run_browser_scenario",   # bounded parallel browser agents
+    .subworkflow("surface", workflow=SURFACE_FLOW)   # §6 cheap probes/fingerprint/smoke (budgeted)
+    .step("plan_qa_session")                         # §7 scenarios+facts+budget -> scenario inputs
+    .fanout("run_scenarios", capability="run_browser_scenario",   # §8 browser/vision/probe workers
             items_key="plan_qa_session", max_parallel=4)          # partial-failure isolated
-    .step("adjudicate_findings")                     # keep only evidence-grounded findings
+    .step("verify_facts")                            # §9 tri-state fact ledger (MageQA schema)
+    .step("adjudicate_findings")                     # §9 keep only evidence-grounded findings
     .evaluate("coverage_gate", on_reject=Retrace("plan_qa_session"))  # deepen: re-plan if thin, bounded
-    .subworkflow("report", workflow=REPORT_FLOW)     # report sub-flow (curate -> render -> write)
+    .subworkflow("report", workflow=REPORT_FLOW)     # §12 report-first (curate -> render -> write)
     .build()
 )
 
@@ -83,7 +87,7 @@ transition; failed/partial/blocked states remain visible and never collapse to s
 
 These points answer the review questions that matter before paying someone to migrate MageQA.
 
-- **v0.6.4 replaces local state/observation plumbing.** MageQA should not keep a local supervisor,
+- **v0.6.5 replaces local state/observation plumbing.** MageQA should not keep a local supervisor,
   state machine, trace collector, bundle writer, retry/deepen loop, or run-status vocabulary beside
   the engine. The MageQA product layer owns QA intelligence — prompts, rubrics, browser/CLI workers,
   evidence schemas, finding schemas, report/dashboard presentation — as capabilities and packs. The
@@ -104,12 +108,27 @@ These points answer the review questions that matter before paying someone to mi
   a dashboard should check it and fail loudly on an unknown version instead of guessing. Fields:
   `run_id`, `workflow_id`/`workflow`, `status` (terminal, truthful), `timestamp`,
   `trace_path`/`detail_path`/`usage_path`/`definition_path`, `trace_count`/`detail_count`/
-  `usage_count`, `total_tokens`, `metered_usd`, `notional_usd`. Records in the three JSONL files
-  are `WorkflowTraceEvent` / `ObservationDetail` / `WorkflowUsageEvent` dumps, each stamped with
-  `run_id` + a per-run monotonic `sequence`.
-- **Observation bundle consumption.** The durable bundle layout in v0.6.4 is
-  `trace.jsonl`, `details.jsonl`, `usage.jsonl`, `meta.json`, and `definition.json`, ordered by
-  monotonic `sequence`. For the MageQA dashboard, treat `ai_workflow_viewer.EventSource` /
+  `usage_count`, `total_tokens`, `metered_usd`, `notional_usd`, plus the evidence fields
+  `artifact_manifest_path`, `artifact_root`, `artifact_count`, `artifacts_copied`. Records in the
+  three JSONL files are `WorkflowTraceEvent` / `ObservationDetail` / `WorkflowUsageEvent` dumps,
+  each stamped with `run_id` + a per-run monotonic `sequence`.
+- **Evidence resolution is engine-owned.** Every run's `WorkflowArtifact`s (screenshots, page
+  dumps, CLI salvage — anything a capability returns in `CapabilityResult.artifacts`) are archived
+  INTO the bundle at finalize: copied under `artifacts/` and listed in `artifacts.json`. Resolution
+  recipe for the dashboard: take an `EvidenceRef.uri` (or any artifact path), look it up by
+  `source_path` in `artifacts.json`, open `bundle_path` relative to the bundle directory; `sha256`
+  gives integrity, `media_type`/`role`/`owner_node` give rendering context. Entries that could not
+  be archived are honest, never missing: `copied: false` + `skip_reason`
+  (`source_missing` / `exceeds_artifact_max_bytes` / `artifact_policy_off` / `copy_failed: …`).
+  **Cleanup is ONE policy:** artifacts live inside the bundle, so `retention_limit` pruning deletes
+  observations and evidence together — do not build a separate evidence store or a second retention
+  job. Config: `observation.artifacts: copy|off` (default `copy`),
+  `observation.artifact_max_bytes` (default 25 MiB per artifact). Failed runs archive their
+  salvage too — failure evidence is the evidence that matters most.
+- **Observation bundle consumption.** The durable bundle layout in v0.6.5 is
+  `trace.jsonl`, `details.jsonl`, `usage.jsonl`, `meta.json`, `definition.json`, plus the evidence
+  manifest `artifacts.json` and the archived `artifacts/` directory, ordered by monotonic
+  `sequence`. For the MageQA dashboard, treat `ai_workflow_viewer.EventSource` /
   `FileEventSource` / `JsonlObservationViewer` as the stable reader surface. Do not build an
   independent raw-JSON parser unless MageQA first asks the engine for an explicit schema-versioned
   export contract.
@@ -142,6 +161,38 @@ These points answer the review questions that matter before paying someone to mi
   consume `EventSource`/`FileEventSource` and project the same records into Next.js. Keep the generic
   state/trace viewer separate from MageQA's product dashboard; the dashboard can add findings,
   evidence review, reports, and pitch views on top.
+
+---
+
+## 1c. Full requirements coverage (MageQA §1–20): engine-owned vs MageQA-owned
+
+Verdict from the joint fit review: **all twenty requirement groups are expressible on the pinned
+tag; none needs an engine rewrite or a product-side supervisor.** The split below is the contract —
+if a migration step feels like writing plumbing from the left column, stop: that is a seam bug to
+report, not code to write.
+
+| § | Requirement | Engine gives (do NOT rebuild) | MageQA owns (write this) |
+|---|---|---|---|
+| 1 | NL scenarios → plan → bounded run | planner node, bounded depth/`max_total_planned_tasks`, fanout isolation, `evaluate`+`Retrace` deepen | planner prompts/rubrics, scenario schemas |
+| 2 | Browser agent via CLI+MCP | `CliAgentCapability` (staging, salvage, timeout→partial, `--strict-mcp-config`; MCP startup failure is a loud failed episode — test-proven), notional cost | worker prompts, MCP config, a repo guard test forbidding silent parser fallback |
+| 3 | Vision judgment | `ImageInput` (byte-free fingerprints), vision nodes, images on every attempt | consumption-PROOF prompt contract + output validation (engine proves what was SENT) |
+| 4 | Deterministic probes | any-callable capabilities, schemas, side-effect classes, budget gates | the probes themselves (pack code) |
+| 5 | Platform packs | `WorkflowPack`/`register_pack`, profiles/config switches | Magento/WordPress pack logic |
+| 6 | Surface phase | steps/fanout, budget gate at surface exit (NOTE: sub-budgets check the shared CUMULATIVE spend — exact for the FIRST phase, approximate later; true per-phase scopes are a named-consumer slice if you prove the need) | probe capabilities, fingerprint schema |
+| 7 | Analyze/plan | `.plan`, `PromptRef` strict prompt files, per-role `ModelProfile`, parse/repair, planner output in bundle | planner prompt files + plan schema |
+| 8 | Deep-execution fanout | `.fanout`/subworkflow items, `max_parallel`, shared budget, per-item trace | instrument capabilities |
+| 9 | Verification/fact ledger | plain steps+evaluate, partial/blocked normalization (§1b) | `FactClaim`/`FindingCandidate`/tri-state schemas, dedup, verifier capabilities |
+| 10 | Evidence model | `EvidenceRef`, salvage, fingerprints, **archived artifacts + manifest + single retention policy (§1b)** | stable evidence semantics (roles), dashboard rendering |
+| 11 | Regression/replay | `ReplayPlanner` (zero-LLM replay), recorded episodes, `MemoryStore` seam | learned-flow storage, baseline-diff capabilities |
+| 12 | Report-first | report subworkflow position in the reference shape | report capabilities; **boundary: pitch/deck/video/design consume VERIFIED findings/report artifacts, never raw observations** |
+| 13 | Pitch/deck/video | subworkflows + `ai_workflow_tools.media` seams (image/TTS) | storyboard/pitch schemas, video rendering (yours), evaluation prompts |
+| 14 | Design/redesign | optional branch/subworkflow, image refs, human gate, budget | design generator capability, approval flow config |
+| 15 | Human gates | top-level `.human`, durable snapshot/resume; nested suspension loudly unsupported | when to gate (config), review UI |
+| 16 | Outreach seam | `external_write` side-effect class, fail-closed allow-list BEFORE spawn, denial traced | outreach templates, `auto_send` off by default (your config) |
+| 17 | Dashboard/observability | config-first bundle, versioned schema, viewer/`FileEventSource`, `result.observation_bundle_path` | product dashboard views (findings/evidence/reports) on top |
+| 18 | Cost ledger | usage events, metered vs notional split, `cost_known=false`, hard gates, denial trace | dashboard renders the split HONESTLY (never collapse notional into metered) |
+| 19 | Durable memory | `MemoryStore`/`MemoryNamespace`/`MemoryRecord` seam (§1b recipe) | SQLite adapter + record kinds; memory = prompt input, never control |
+| 20 | Safety | side-effect classes, fail-closed denial pre-invocation, traceable denials | public-surface policy, robots/rate rules, probe allow-lists |
 
 ---
 
@@ -376,9 +427,9 @@ examples: `ai_workflow_engine/examples.py` (`build_demo_engine`, `SiteAuditPack`
 
 ---
 
-## What v0.6.4 gives you
+## What v0.6.5 gives you
 
-The full capability set in `engine-v0.6.4` (older tags are unsupported — no deltas to track):
+The full capability set in `engine-v0.6.5` (older tags are unsupported — no deltas to track):
 
 - **Agent brain + LLM protocol.** Multi-turn, tool-calling protocol (`ChatMessage`/`ToolSpec`/
   `ToolCallRequest`/`ToolResult`); a shipped `LLMAgentPlanner` (screenshot→vision loop, per-turn
@@ -420,11 +471,14 @@ The full capability set in `engine-v0.6.4` (older tags are unsupported — no de
     bundle_dir: data/observations
     retention_limit: 100
     capture: full
+    artifacts: copy          # archive run evidence INTO each bundle (default)
+    artifact_max_bytes: 26214400
   ```
 
   — and the ENGINE owns every per-run mechanic: it auto-opens the bundle, routes
-  trace/details/usage into it, finalizes with the true terminal status, prunes old finalized
-  bundles, and reports the location on `result.observation_bundle_path`. Products never call
+  trace/details/usage into it, archives the run's artifacts (evidence) with an honest manifest,
+  finalizes with the true terminal status, prunes old finalized bundles — evidence prunes WITH
+  its bundle, one retention policy — and reports the location on `result.observation_bundle_path`. Products never call
   bundle mechanics in the normal path; `engine.run(observation_bundle=)` remains the explicit
   escape hatch (it takes precedence) and `terminal_status=` stays the post-validation hook —
   a raising run archives as failed, and the record can never say completed for a user-visible failure.
@@ -457,7 +511,8 @@ The full capability set in `engine-v0.6.4` (older tags are unsupported — no de
   completed nodes, and an attached observation bundle finalizes with the run's terminal status —
   failed runs included.
 - **Observability — log→bundle→viewer.** A run appends durable events to a per-run bundle
-  (`observations/<run_id>/{trace,details,usage}.jsonl` + `meta.json` + `definition.json`); nothing is
+  (`observations/<run_id>/{trace,details,usage}.jsonl` + `meta.json` + `definition.json` +
+  `artifacts.json` manifest + archived `artifacts/`); nothing is
   rendered in the hot path. The separate **`ai_workflow_viewer`** package reads bundles (via
   `EventSource`/`FileEventSource`) and builds every view on demand — the state-machine diagram
   (`workflow_to_mermaid` / `save_workflow_html`), the observation graph + timeline

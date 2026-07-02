@@ -231,12 +231,17 @@ The full set in `engine-v0.6.4` (older tags are unsupported):
 - **Media** lives in `ai_workflow_tools.media` (image/voice); the engine stays provider-neutral
   (`vision`/image-input stays in the engine as LLM protocol).
 
-## Config-first observation (v0.6.4)
+## Config-first observation (v0.6.4) + evidence resolution (v0.6.5)
 
-Declare `observation: {enabled, bundle_dir, retention_limit, capture}` in the application config
-and the engine owns everything per run: auto-opened bundle, routed trace/details/usage, truthful
-finalization (failures included), retention pruning, and `result.observation_bundle_path`.
-Products write ZERO bundle code; `observation_bundle=` stays as the explicit escape hatch.
+Declare `observation: {enabled, bundle_dir, retention_limit, capture, artifacts,
+artifact_max_bytes}` in the application config and the engine owns everything per run:
+auto-opened bundle, routed trace/details/usage, truthful finalization (failures included),
+retention pruning, and `result.observation_bundle_path`. Run artifacts (anything returned in
+`CapabilityResult.artifacts`) are archived into the bundle with an `artifacts.json` manifest
+(source_path → bundle_path + sha256 + honest `skip_reason`), so dashboards resolve
+`EvidenceRef`s durably — and evidence prunes WITH its bundle: `retention_limit` is the single
+cleanup policy. Products write ZERO bundle code; `observation_bundle=` stays as the explicit
+escape hatch.
 
 ## Prompt files + bundle ownership (v0.6.3)
 

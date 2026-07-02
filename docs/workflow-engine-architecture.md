@@ -196,6 +196,14 @@ Internal engine guards:
 - **Single bundle owner:** when a bundle is passed to `engine.run(observation_bundle=...)`, the run
   session finalizes it exactly once with the true terminal status (raise -> failed; the
   `terminal_status` hook lets product post-validation override before the record is written).
+- **Evidence resolution (G1, decided 2026-07-02 — engine-owned):** at finalize, the run's
+  `WorkflowArtifact`s are archived under the bundle's `artifacts/` with an `artifacts.json`
+  manifest (`source_path -> bundle_path`, sha256, honest `skip_reason` for anything not copied).
+  Dashboards resolve `EvidenceRef`s through the manifest; artifacts prune WITH the bundle so
+  `retention_limit` stays the single cleanup policy (no second evidence store, no second
+  retention job). Policy knobs live in `ObservationConfig` (`artifacts: copy|off`,
+  `artifact_max_bytes`); a run that raises before producing an envelope archives an honestly
+  empty manifest.
 - **Injected machine descriptions:** when legal routes are injected into a branch/decision prompt,
   every legal label must have a description; missing labels fail validation instead of producing an
   opaque machine card.
