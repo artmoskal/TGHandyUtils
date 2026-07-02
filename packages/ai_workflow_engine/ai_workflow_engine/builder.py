@@ -428,16 +428,24 @@ class WorkflowEngine:
             raise KeyError(
                 f"Unknown workflow: {snapshot.workflow_id} — register it before resuming"
             )
-        # B-post3: resume continues the ORIGINAL run identity — goal, constraints, user,
-        # delivery target, metadata, and run-id lineage come from the snapshot unless the
-        # caller explicitly overrides them.
-        caller_overrode = goal is not None or user_id is not None or constraints is not None
-        if goal is None and snapshot.goal:
+        # B-post3 (strict override rule): resume continues the ORIGINAL run identity — goal,
+        # constraints, user, delivery target, metadata, and run-id lineage all come from the
+        # snapshot. Forking the context is a DELIBERATE act: pass a full replacement ``goal=``.
+        # Partial overrides (user_id/constraints without a goal) are ambiguous and rejected
+        # loudly instead of being silently half-applied.
+        if goal is None and (user_id is not None or constraints is not None):
+            raise ValueError(
+                "resume(...) does not support partial context overrides — pass a full "
+                "replacement goal= to deliberately fork the resume context, or pass nothing "
+                "to continue under the snapshot's original identity"
+            )
+        forked = goal is not None
+        if not forked and snapshot.goal:
             goal = WorkflowGoal.model_validate(snapshot.goal)
         context = self._run_context_for(
             definition, goal=goal, user_id=user_id, constraints=constraints
         )
-        if snapshot.run_context and not caller_overrode:
+        if snapshot.run_context and not forked:
             context = context.model_copy(
                 update={"run_context": WorkflowRunContext.model_validate(snapshot.run_context)}
             )

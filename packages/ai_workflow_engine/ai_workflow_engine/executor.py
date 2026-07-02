@@ -282,6 +282,14 @@ class WorkflowExecutor:
                         f"terminal_status hook returned invalid status {override!r} "
                         f"(allowed: {sorted(valid)})"
                     )
+                if override == "requires_user_input" and envelope.snapshot is None:
+                    # A result that asks the caller to resume MUST carry a resumable snapshot;
+                    # a hook cannot conjure a suspension out of a completed machine.
+                    session.close("failed")
+                    raise ValueError(
+                        "terminal_status hook returned 'requires_user_input' but the run has no "
+                        "machine snapshot — suspension must come from the workflow itself"
+                    )
                 envelope = envelope.model_copy(update={"status": override})
         session.close(envelope.status)
         return envelope

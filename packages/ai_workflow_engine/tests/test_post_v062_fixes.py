@@ -1,5 +1,6 @@
 """Post-v0.6.2 codex findings, verified + regressed: B-post1 stale plan cache,
-B-post3 resume preserves the original run identity (B-post2 lives in test_prompt_rendering)."""
+B-post3 resume preserves the original run identity (B-post2 lives in test_prompt_rendering),
+plus the v0.6.3 validation edges: hook-suspension guard + strict resume overrides."""
 
 import asyncio
 from types import SimpleNamespace
@@ -7,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from ai_workflow_engine import WorkflowBuilder, WorkflowEngineBuilder, WorkflowGoal
+from ai_workflow_engine.models import RuntimeLimits
 
 pytestmark = pytest.mark.unit
 
@@ -36,6 +38,90 @@ def test_reregister_workflow_invalidates_the_cached_runtime_plan():
     result = asyncio.run(engine.run("plan_cache_flow", {"seed": 2}))
     assert result.status == "completed"
     assert result.node("second") is not None
+
+
+def test_reregistered_definition_limits_reach_the_plan():
+    """B-post1 add-on: changed definition-level limits must reach context.plan, not just
+    the compiled graph."""
+
+    seen_limits = []
+    builder = WorkflowEngineBuilder()
+
+    async def cap(context, payload):
+        seen_limits.append(context.limits.max_retries)
+        return {"ok": True}
+
+    builder.register_capability("cap", cap, kind="deterministic")
+    engine = builder.build()
+
+    flow_v1 = WorkflowBuilder("limits_flow").step("cap").build().model_copy(
+        update={"limits": RuntimeLimits(max_retries=1)}
+    )
+    engine.register_workflow(flow_v1)
+    asyncio.run(engine.run("limits_flow", {"seed": 1}))
+
+    flow_v2 = flow_v1.model_copy(update={"limits": RuntimeLimits(max_retries=4)})
+    engine.register_workflow(flow_v2)  # no profile — digest change alone must invalidate
+    asyncio.run(engine.run("limits_flow", {"seed": 2}))
+
+    assert seen_limits == [1, 4], f"stale plan limits rode along: {seen_limits}"
+
+
+def test_terminal_status_requires_user_input_without_snapshot_is_loud(tmp_path):
+    """v0.6.3 edge: a hook cannot conjure a suspension — no snapshot, no requires_user_input."""
+
+    import json
+
+    from ai_workflow_engine.observation_bundle import open_observation_run_bundle
+
+    builder = WorkflowEngineBuilder()
+    builder.register_capability("solo", _noop, kind="deterministic")
+    builder.register_workflow(WorkflowBuilder("fake_suspend_flow").step("solo").build())
+    engine = builder.build()
+    bundle = open_observation_run_bundle(tmp_path, "run-fake-suspend")
+
+    with pytest.raises(ValueError, match="no machine snapshot"):
+        asyncio.run(
+            engine.run(
+                "fake_suspend_flow", {"x": 1},
+                observation_bundle=bundle,
+                terminal_status=lambda e: "requires_user_input",
+            )
+        )
+    meta = json.loads((tmp_path / "run-fake-suspend" / "meta.json").read_text())
+    assert meta["status"] == "failed"
+
+
+def test_resume_partial_context_override_is_rejected_loudly():
+    """v0.6.3 edge (strict rule): partial resume overrides are ambiguous — reject them."""
+
+    builder = WorkflowEngineBuilder()
+
+    async def ask(context, payload):
+        if "resume_event" in context.metadata:
+            return SimpleNamespace(status="answered", value="ok")
+        return SimpleNamespace(status="pending")
+
+    builder.register_capability("ask", ask, kind="deterministic")
+    builder.register_workflow(WorkflowBuilder("strict_resume_wf").human("ask").build())
+    engine = builder.build()
+
+    async def scenario():
+        first = await engine.run("strict_resume_wf", "seed")
+        assert first.status == "requires_user_input"
+        with pytest.raises(ValueError, match="partial context overrides"):
+            await engine.resume(first.snapshot, "go", constraints={"depth": 2})
+        with pytest.raises(ValueError, match="partial context overrides"):
+            await engine.resume(first.snapshot, "go", user_id=5)
+        # A FULL replacement goal is the deliberate fork — allowed.
+        forked = await engine.resume(
+            first.snapshot,
+            "go",
+            goal=WorkflowGoal(workflow_type="strict_resume_wf", objective="forked half"),
+        )
+        assert forked.status == "completed"
+
+    asyncio.run(scenario())
 
 
 def test_resume_preserves_original_goal_and_run_identity():
