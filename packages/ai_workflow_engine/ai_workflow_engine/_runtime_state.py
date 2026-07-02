@@ -10,6 +10,36 @@ from typing import Any, Iterator, Optional
 RUNNING_PAYLOAD = "payload"
 CONTEXT = "engine_context"
 
+# A5 guard surface: every state-channel key the engine owns. The contract-guard test asserts
+# this set matches WorkflowState EXACTLY (adding a state key without updating this set fails
+# the build) and that node handlers write only these keys into their state updates.
+RESERVED_STATE_KEYS = frozenset(
+    {
+        RUNNING_PAYLOAD,
+        CONTEXT,
+        "node_outputs",
+        "node_inputs",
+        "node_results",
+        "node_status",
+        "branch_decisions",
+        "routes",
+        "transition_counts",
+        "eval_counters",
+        "attempts",
+        "artifacts",
+        "status",
+        "error",
+        "fallback_reason",
+        "workflow_context",
+        "workflow_goal",
+        "usage_summary",
+        "plan_artifact",
+        "resume_suspended_node",
+        "resume_event",
+        "machine_replay_done",
+    }
+)
+
 _ACTIVE_WORKFLOW_CONTEXT: ContextVar[Optional[Any]] = ContextVar(
     "workflow_run_context",
     default=None,

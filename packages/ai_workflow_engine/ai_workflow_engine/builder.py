@@ -40,6 +40,7 @@ from ai_workflow_engine.models import (
     WorkflowRunContext,
 )
 from ai_workflow_engine.flow_authoring import FlowArtifact, build_definition_from_artifact
+from ai_workflow_engine.prompt_rendering import PromptRenderService
 from ai_workflow_engine.run_session import SessionScopedTraceSink
 from ai_workflow_engine.snapshot import MachineSnapshot
 from ai_workflow_engine.models import CapabilityResult, WorkflowTraceEvent
@@ -143,9 +144,23 @@ class WorkflowEngine:
         self.config = config
         self.default_profile = default_profile
         self.prompt_root = prompt_root
+        self._prompt_renderer: Optional[PromptRenderService] = None
         self.workflows: Dict[str, WorkflowDefinition] = {}
         self._profiles: Dict[str, WorkflowProfile] = {}
         self._plans: Dict[str, RuntimePlan] = {}
+
+    @property
+    def prompt_renderer(self) -> PromptRenderService:
+        """Strict prompt-file renderer rooted at ``prompt_root`` (loud when unconfigured)."""
+
+        if self.prompt_root is None:
+            raise ValueError(
+                "prompt_renderer requires a prompt root — build the engine with "
+                "WorkflowEngineBuilder().with_prompt_root(...) or pass prompt_root="
+            )
+        if self._prompt_renderer is None:
+            self._prompt_renderer = PromptRenderService(self.prompt_root)
+        return self._prompt_renderer
 
     # ---------------------------------------------------------------- registration
     @classmethod
@@ -352,6 +367,8 @@ class WorkflowEngine:
         delivery_target: Optional[str] = None,
         recursion_fallback: Optional[Any] = None,
         recursion_limit: Optional[int] = None,
+        observation_bundle: Any = None,
+        terminal_status: Optional[Any] = None,
     ) -> WorkflowRunResult:
         definition = self._resolve(workflow)
         context = self._run_context_for(
@@ -367,6 +384,8 @@ class WorkflowEngine:
             context,
             recursion_fallback=recursion_fallback,
             recursion_limit=recursion_limit,
+            observation_bundle=observation_bundle,
+            terminal_status=terminal_status,
         )
 
     async def resume(

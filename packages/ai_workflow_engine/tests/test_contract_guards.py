@@ -126,6 +126,40 @@ def test_handoff_docs_carry_the_adopter_contract_ac():
         assert "One provider door" in text, f"{name} lost the one-door rule"
 
 
+def test_reserved_state_keys_match_the_workflow_state_schema():
+    """A5: the reserved-key set and the executor's state schema may never drift apart."""
+
+    from ai_workflow_engine._runtime_state import RESERVED_STATE_KEYS
+    from ai_workflow_engine.executor import WorkflowState
+
+    assert set(WorkflowState.__annotations__) == set(RESERVED_STATE_KEYS)
+
+
+def test_node_handlers_write_only_reserved_state_keys():
+    """A5: a typo'd control key in a node's state update must fail the build, not no-op."""
+
+    from ai_workflow_engine._runtime_state import RESERVED_STATE_KEYS
+
+    offenders = []
+    for path in _python_files(ENGINE_ROOT / "nodes"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            # update["key"] = ... / state["key"] = ... with a literal key
+            if not isinstance(node, ast.Assign):
+                continue
+            for target in node.targets:
+                if (
+                    isinstance(target, ast.Subscript)
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id in {"update", "state"}
+                    and isinstance(target.slice, ast.Constant)
+                    and isinstance(target.slice.value, str)
+                    and target.slice.value not in RESERVED_STATE_KEYS
+                ):
+                    offenders.append(f"{path.name}:{node.lineno} writes state key {target.slice.value!r}")
+    assert not offenders, "node handlers write non-reserved state keys:\n" + "\n".join(offenders)
+
+
 def test_inject_machine_branch_requires_describe_for_every_label():
     """G-desc: an injected machine card may not contain an undescribed option (goblin rule)."""
 

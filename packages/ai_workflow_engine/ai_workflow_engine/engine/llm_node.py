@@ -77,6 +77,10 @@ class StructuredLLMNode:
         repair_prompt_template: Optional[str] = None,
         pre_parse: Optional[Callable[[str], str]] = None,
         max_repair_rounds: int = 1,
+        prompt_ref: Optional[Any] = None,
+        static_prompt_ref: Optional[Any] = None,
+        dynamic_prompt_ref: Optional[Any] = None,
+        prompt_renderer: Optional[Any] = None,
     ):
         self.name = name
         self.config = config
@@ -97,6 +101,33 @@ class StructuredLLMNode:
         self.prompt: Optional[PromptTemplate] = None
         self.static_prompt: Optional[PromptTemplate] = None
         self.dynamic_prompt: Optional[PromptTemplate] = None
+        # Prompt-file refs (P2): file-backed prompts rendered STRICTLY per call — either raw
+        # templates OR refs, never both; refs need a renderer (both errors are loud).
+        self.prompt_renderer = prompt_renderer
+        self._prompt_ref = prompt_ref
+        self._static_prompt_ref = static_prompt_ref
+        self._dynamic_prompt_ref = dynamic_prompt_ref
+        ref_mode = bool(prompt_ref or static_prompt_ref or dynamic_prompt_ref)
+        raw_mode = bool(prompt_template or static_prompt_template or dynamic_prompt_template)
+        if ref_mode:
+            if raw_mode:
+                raise ValueError("prompt refs and raw prompt templates are mutually exclusive")
+            if prompt_renderer is None:
+                raise ValueError("prompt refs require a prompt_renderer (PromptRenderService)")
+            if (static_prompt_ref is None) != (dynamic_prompt_ref is None):
+                raise ValueError("Both static_prompt_ref and dynamic_prompt_ref are required")
+            if prompt_ref is not None and static_prompt_ref is not None:
+                raise ValueError("prompt_ref cannot be combined with static/dynamic prompt refs")
+            # Load now: path escapes / missing files / declared-variable drift fail at
+            # construction, never mid-run.
+            for ref in (prompt_ref, static_prompt_ref, dynamic_prompt_ref):
+                if ref is not None:
+                    prompt_renderer.load_template(ref)
+            self.repair_prompt = PromptTemplate(
+                template=repair_prompt_template or self._DEFAULT_REPAIR_PROMPT,
+                input_variables=["error", "original_prompt"],
+            )
+            return
         if static_prompt_template or dynamic_prompt_template:
             if prompt_template is not None:
                 raise ValueError(
@@ -406,6 +437,19 @@ class StructuredLLMNode:
         raise StructuredOutputError(f"{self.name} returned invalid structured output: {last_error}")
 
     def _format_prompt(self, values: dict[str, Any]) -> PromptBundle:
+        if self.prompt_renderer is not None and (self._prompt_ref or self._static_prompt_ref):
+            # Ref mode: strict render (a missing variable raises BEFORE any model call).
+            render_values = {**values, "format_instructions": self.parser.get_format_instructions()}
+            if self._static_prompt_ref is not None:
+                system_text = self.prompt_renderer.render(self._static_prompt_ref, render_values).text
+                user_text = self.prompt_renderer.render(self._dynamic_prompt_ref, render_values).text
+                return PromptBundle(
+                    system=system_text,
+                    user=user_text,
+                    full_text=f"{system_text}\n\n{user_text}",
+                )
+            prompt_text = self.prompt_renderer.render(self._prompt_ref, render_values).text
+            return PromptBundle(system=None, user=prompt_text, full_text=prompt_text)
         if self.static_prompt and self.dynamic_prompt:
             system_text = self.static_prompt.format(**values)
             user_text = self.dynamic_prompt.format(**values)

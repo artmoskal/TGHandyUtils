@@ -1,6 +1,6 @@
 """Reusable AI workflow engine package."""
 
-__version__ = "0.6.2"
+__version__ = "0.6.3"
 
 from ai_workflow_engine.engine import (
     AgentCapability,
@@ -89,6 +89,13 @@ from ai_workflow_engine.config_loader import (
     load_workflow_config,
 )
 from ai_workflow_engine.prompt_loader import PromptTemplateLoader, load_prompt_template
+from ai_workflow_engine.prompt_rendering import (
+    PromptRef,
+    PromptRenderError,
+    PromptRenderResult,
+    PromptRenderService,
+    PromptRenderer,
+)
 from ai_workflow_engine.parsing import (
     WEAK_MODEL_CLEANER,
     compose_cleaners,
@@ -207,6 +214,11 @@ __all__ = [
     "AgentStepDecision",
     "AgentToolCall",
     "AgentToolStep",
+    "PromptRef",
+    "PromptRenderError",
+    "PromptRenderResult",
+    "PromptRenderService",
+    "PromptRenderer",
     "PromptTemplateLoader",
     "CapabilityContext",
     "CapabilityResult",

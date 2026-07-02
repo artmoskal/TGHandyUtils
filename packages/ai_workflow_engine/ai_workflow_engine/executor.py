@@ -211,14 +211,32 @@ class WorkflowExecutor:
         *,
         recursion_fallback: Optional[Callable[..., Any]] = None,
         recursion_limit: Optional[int] = None,
+        observation_bundle: Any = None,
+        terminal_status: Optional[Callable[[WorkflowRunResult], Optional[str]]] = None,
     ) -> WorkflowRunResult:
-        """Execute ``definition`` from ``payload`` under ``context`` and return the envelope."""
+        """Execute ``definition`` from ``payload`` under ``context`` and return the envelope.
+
+        A4 (single bundle owner): pass ``observation_bundle`` and the RUN SESSION owns its
+        lifecycle — finalized exactly once with the run's true terminal status, including
+        when the run raises. ``terminal_status`` is the narrow product hook: it sees the
+        finished envelope and may override the archived status (e.g. product post-validation
+        deciding "failed") BEFORE the bundle is finalized — the durable record never says
+        completed for a user-visible failure.
+        """
 
         self._bind_or_validate_event_loop()
         # Pre-flight: bindings and node kinds must resolve, or fail loudly + trace (no run).
         binding_error = self._preflight(definition)
         if binding_error is not None:
-            return self._failed_envelope(definition, binding_error)
+            envelope = self._failed_envelope(definition, binding_error)
+            if observation_bundle is not None:
+                WorkflowRunSession(
+                    workflow_id=definition.workflow_id,
+                    context=context,
+                    definition=definition,
+                    bundle=observation_bundle,
+                ).close("failed")
+            return envelope
 
         compiled = self.compile(definition)
         limit = recursion_limit or self._recursion_limit(definition, context)
@@ -226,21 +244,34 @@ class WorkflowExecutor:
         # H2: one session per run — the single home for run identity + usage aggregation
         # + the run-scoped trace buffer the envelope reads (B6/B7).
         session = WorkflowRunSession(
-            workflow_id=definition.workflow_id, context=context, definition=definition
+            workflow_id=definition.workflow_id,
+            context=context,
+            definition=definition,
+            bundle=observation_bundle,
         )
         # Top-level run: WorkflowRunner installs the usage/budget scope + lifecycle logging.
-        with observation_capture_scope(self.runtime.observation), run_session_scope(session):
-            final_state = await self.runner.run(
-                compiled,
-                self._initial_state(payload, context),
-                workflow_type=context.goal.workflow_type,
-                goal=context.goal,
-                graph_config=graph_config,
-                recursion_fallback=recursion_fallback,
-                session=session,
-            )
+        try:
+            with observation_capture_scope(self.runtime.observation), run_session_scope(session):
+                final_state = await self.runner.run(
+                    compiled,
+                    self._initial_state(payload, context),
+                    workflow_type=context.goal.workflow_type,
+                    goal=context.goal,
+                    graph_config=graph_config,
+                    recursion_fallback=recursion_fallback,
+                    session=session,
+                )
+        except Exception:
+            # The run raised: the bundle must still close, truthfully, as failed.
+            session.close("failed")
+            raise
         envelope = self._envelope(definition, final_state, session=session)
-        session.close(envelope.status)
+        status = envelope.status
+        if terminal_status is not None:
+            override = terminal_status(envelope)
+            if override:
+                status = override
+        session.close(status)
         return envelope
 
     async def _run_inner(
