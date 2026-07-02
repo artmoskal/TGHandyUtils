@@ -1,10 +1,10 @@
 # MageQA — AI Workflow Engine Usage Guide
 
 > **PIN (2026-07-02):** pin tag `engine-v0.6.4` and build a wheel from it. The consumer model is
-> breaking-allowed tag-to-tag — do NOT track the live branch. v0.6.0 adds cross-run memory
-> (`memory.py`), observability as **log→bundle→viewer** (HTML renderers MOVED OUT of the engine into
-> the separate `ai_workflow_viewer` package — breaking for anyone importing the old engine renderers),
-> and the off-mode observation-cost fix.
+> breaking-allowed tag-to-tag — do NOT track the live branch. The current tag carries the full
+> capability set (see **"What v0.6.4 gives you"**): cross-run memory, config-first observation
+> (log→bundle→viewer; HTML rendering lives in the separate `ai_workflow_viewer` package), strict
+> prompt files, machine identity, and the hardened seam guards.
 > **One-door rule for consumers:** construct provider clients only through sanctioned factory/adapter
 > modules. A direct provider client in workflow code is a reviewed allow-list entry, not a local
 > shortcut — otherwise you lose observability, cost accounting, and model-swap.
@@ -204,6 +204,17 @@ profile = WorkflowProfile(
 )
 ```
 
+The same application config file carries the observation policy (see "Config-first
+observation" below) — one reviewable YAML for profile, models, and observation:
+
+```yaml
+observation:
+  enabled: true
+  bundle_dir: data/observations
+  retention_limit: 100
+  capture: full
+```
+
 Per-role models go in the YAML model registry (`ModelProfile` per capability/role); rubric/budget come
 in via `engine.run(..., constraints={...})` or the goal. Swap the profile to change models/budget/
 safety without touching the workflow (proven by `test_engine_from_config_swaps_profile`).
@@ -349,7 +360,8 @@ The full capability set in `engine-v0.6.4` (older tags are unsupported — no de
   trace/details/usage into it, finalizes with the true terminal status, prunes old finalized
   bundles, and reports the location on `result.observation_bundle_path`. Products never call
   bundle mechanics in the normal path; `engine.run(observation_bundle=)` remains the explicit
-  escape hatch (it takes precedence) and `terminal_status=` stays the post-validation hook.
+  escape hatch (it takes precedence) and `terminal_status=` stays the post-validation hook —
+  a raising run archives as failed, and the record can never say completed for a user-visible failure.
 - **Prompt files with strict rendering.** Prompts can live as FILES under a locked prompt root:
   `StructuredLLMNode(prompt_ref=PromptRef("mageqa/route.txt"), prompt_renderer=engine.prompt_renderer)`
   (split static/dynamic refs supported). A missing variable fails LOUDLY before any model call;
@@ -357,11 +369,6 @@ The full capability set in `engine-v0.6.4` (older tags are unsupported — no de
   dialect (`renderer="jinja"`, strict-undefined) — requires the product to install `jinja2`;
   never an engine dependency. Raw string templates keep working; refs and raw are mutually
   exclusive per node.
-- **One bundle owner.** Pass `observation_bundle=` to `engine.run(...)` and the run session owns
-  the durable record end-to-end: finalized exactly once with the true terminal status (a raising
-  run archives as failed), and the narrow `terminal_status=` hook lets product post-validation
-  downgrade a completed engine run to failed BEFORE the record is written — the bundle can never
-  say completed for a user-visible failure.
 - **Machine identity + fresh compiles.** Every `WorkflowDefinition` carries a content digest;
   compiled graphs and registries key on `(workflow_id, digest)`, so re-registering a changed
   definition under the same id runs the NEW machine (a `machine:re-registered` trace event marks
