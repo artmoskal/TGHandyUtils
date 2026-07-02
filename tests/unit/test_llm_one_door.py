@@ -115,13 +115,15 @@ def test_registered_backend_routes_by_model_name_per_role():
     assert type(api_client).__name__ == "ChatOpenAI"
 
 
-def test_registry_reports_cost_class_and_vision_capability():
-    from services.llm_factory import llm_cost_class, llm_supports_vision
+def test_registry_reports_cost_class_vision_and_provider_label():
+    from services.llm_factory import llm_cost_class, llm_provider_label, llm_supports_vision
 
     assert llm_cost_class("chatgpt-web") == "subscription_notional"
     assert llm_cost_class("gpt-5.4-mini") == "metered"
     assert llm_supports_vision("chatgpt-web") is False
     assert llm_supports_vision("gpt-5.4-mini") is True
+    assert llm_provider_label("chatgpt-web") == "chatgpt_browser"
+    assert llm_provider_label("gpt-5.4-mini") == "openai"
 
 
 def test_routed_backend_without_url_fails_loudly():

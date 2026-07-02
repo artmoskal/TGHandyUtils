@@ -30,18 +30,24 @@ models:
     temperature: 0
     max_retries: 1
   anki_decision:
-    provider: openai
-    model: gpt-5.4
+    # chatgpt-web routes to the ChatGPT-browser subscription backend (llm_factory
+    # registry). Set any API model name here to move this role back to metered API.
+    provider: chatgpt-browser
+    model: chatgpt-web
     temperature: 0
     max_retries: 1
   anki_scenario:
-    provider: openai
-    model: gpt-5.4
+    # chatgpt-web routes to the ChatGPT-browser subscription backend (llm_factory
+    # registry). Set any API model name here to move this role back to metered API.
+    provider: chatgpt-browser
+    model: chatgpt-web
     temperature: 0
     max_retries: 1
   anki_render:
-    provider: openai
-    model: gpt-5.4-mini
+    # chatgpt-web routes to the ChatGPT-browser subscription backend (llm_factory
+    # registry). Set any API model name here to move this role back to metered API.
+    provider: chatgpt-browser
+    model: chatgpt-web
     temperature: 0
     max_retries: 1
   anki_quality:
@@ -79,6 +85,10 @@ settings:
   anki_max_image_generations_per_run: 1
   anki_image_generation_enabled: true
   anki_auto_image_generation_enabled: false
+  # NOTE(2026-07-02): stays on openai because this profile uses PPLA style
+  # reference images below, and the chatgpt browser provider cannot honor
+  # reference images until ai-llm-infra FR-1 ships (it rejects them loudly).
+  # Flip to: chatgpt — once FR-1 lands.
   anki_image_provider: openai
   anki_image_compare_providers: ""
   anki_image_comparison_primary_provider: ""

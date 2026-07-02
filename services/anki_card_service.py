@@ -20,7 +20,7 @@ from models.anki import AnkiCard, AnkiCardSet
 from core.interfaces import IConfig
 from core.exceptions import ParsingError
 from core.logging import get_logger
-from services.llm_factory import create_anki_chat_model, llm_cost_class
+from services.llm_factory import create_anki_chat_model, llm_cost_class, llm_provider_label
 from ai_workflow_engine.usage import invoke_metered_chat
 from ai_workflow_engine.prompt_loader import load_prompt_template
 
@@ -179,6 +179,7 @@ class AnkiCardService:
             # the backend registry knows whether this model is metered or rides a
             # subscription — phantom metered $0 would break cost honesty.
             cost_class=llm_cost_class(model_name),
+            provider=llm_provider_label(model_name),
         )
         card_set = self._parser.parse(output.content)
         if not card_set.cards:

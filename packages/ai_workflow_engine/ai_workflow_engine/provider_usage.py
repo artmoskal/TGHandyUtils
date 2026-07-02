@@ -20,6 +20,7 @@ def _usage_event_from_chat_output(
     config: Any = None,
     cost_class: Literal["metered", "subscription_notional"] = "metered",
     notional_usd: Optional[float] = None,
+    provider: str = "openai",
 ) -> WorkflowUsageEvent:
     usage = _model_or_dict(getattr(output, "usage_metadata", None))
     response_metadata = _model_or_dict(getattr(output, "response_metadata", None))
@@ -49,6 +50,7 @@ def _usage_event_from_chat_output(
         )
     return WorkflowUsageEvent(
         operation="chat",
+        provider=provider,
         cost_class=cost_class,
         node=node,
         model=effective_model,

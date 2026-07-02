@@ -96,6 +96,7 @@ class LLMBackend:
     build_chat: Callable[[IConfig], Any]  # sync .invoke(messages) (LangChain call sites)
     cost_class: str = "metered"
     supports_vision: bool = True
+    provider: str = "openai"  # usage-event label (dashboards group by it)
 
 
 _LLM_BACKENDS: dict[str, LLMBackend] = {}
@@ -117,6 +118,13 @@ def llm_cost_class(model: str) -> str:
 
     backend = _backend_for(model)
     return backend.cost_class if backend else "metered"
+
+
+def llm_provider_label(model: str) -> str:
+    """Usage-event provider label for this model's backend ('openai' for the API door)."""
+
+    backend = _backend_for(model)
+    return backend.provider if backend else "openai"
 
 
 def llm_supports_vision(model: str) -> bool:
@@ -183,6 +191,7 @@ register_llm_backend(
         build_chat=_build_chatgpt_browser_chat,
         cost_class="subscription_notional",  # rides the ChatGPT subscription, no per-call price
         supports_vision=False,  # /ask is text-only
+        provider="chatgpt_browser",
     ),
     "chatgpt-web",
     "chatgpt",

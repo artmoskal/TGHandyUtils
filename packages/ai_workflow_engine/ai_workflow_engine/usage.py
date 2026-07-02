@@ -77,6 +77,7 @@ def invoke_metered_chat(
     config: Any = None,
     cost_class: Literal["metered", "subscription_notional"] = "metered",
     notional_usd: Optional[float] = None,
+    provider: str = "openai",
 ) -> Any:
     """Invoke a LangChain chat model and record usage metadata when the provider returns it."""
     message_list = list(messages)
@@ -108,6 +109,7 @@ def invoke_metered_chat(
                 config=config,
                 cost_class=cost_class,
                 notional_usd=notional_usd,
+                provider=provider,
             )
         )
         return output
