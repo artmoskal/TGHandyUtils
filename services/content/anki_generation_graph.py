@@ -240,31 +240,38 @@ class AnkiGenerationGraph:
             "workflow_goal": goal,
             "workflow_context": run_context,
         }
-        try:
-            result = await engine.run(
-                "anki_generation",
-                initial_state,
-                goal=goal,
-                recursion_fallback=self._engine_recursion_fallback,
-                recursion_limit=self._graph_recursion_limit(),
-            )
-        except Exception:
-            self._finalize_observation_bundle(bundle, engine, None, status="failed")
-            raise
+        # A4: the ENGINE run session owns the bundle lifecycle — it finalizes exactly once
+        # with the true terminal status (raise -> failed; envelope status otherwise), and the
+        # terminal_status hook lets product post-validation mark a "completed" engine run as
+        # failed BEFORE the durable record is written. This class no longer finalizes.
+        result = await engine.run(
+            "anki_generation",
+            initial_state,
+            goal=goal,
+            recursion_fallback=self._engine_recursion_fallback,
+            recursion_limit=self._graph_recursion_limit(),
+            observation_bundle=bundle,
+            terminal_status=self._terminal_bundle_status,
+        )
         self.last_run_result = result
         final_state = result.output if isinstance(result.output, dict) else {}
         self.last_run_state = final_state
         rendered = final_state.get("rendered")
         if not rendered:
-            # Product post-validation failed: the durable record must say FAILED, not
-            # completed — finalize truthfully BEFORE surfacing the error (B4).
-            self._finalize_observation_bundle(bundle, engine, result, status="failed")
             raise ParsingError("Anki graph produced no rendered cards")
-        self._finalize_observation_bundle(bundle, engine, result)
         usage_summary = result.usage or final_state.get("usage_summary")
         if usage_summary:
             rendered = rendered.model_copy(update={"usage_summary": usage_summary})
         return rendered
+
+    @staticmethod
+    def _terminal_bundle_status(result: Any) -> Optional[str]:
+        """Product post-validation for the durable record: no rendered cards == failed."""
+
+        final_state = result.output if isinstance(result.output, dict) else {}
+        if not final_state.get("rendered"):
+            return "failed"
+        return None
 
     def last_observation_bundle_path(self) -> Optional[str]:
         """Return the most recent durable observation bundle path, when enabled."""
@@ -389,25 +396,6 @@ class AnkiGenerationGraph:
             return None
         self.last_observation_bundle = bundle
         return bundle
-
-    def _finalize_observation_bundle(
-        self,
-        bundle: Optional[ObservationRunBundle],
-        engine: Any,
-        result: Any,
-        *,
-        status: Optional[str] = None,
-    ) -> None:
-        if bundle is None:
-            return
-        try:
-            bundle.finalize(
-                engine.workflows["anki_generation"],
-                status=status or getattr(result, "status", "unknown"),
-                usage=getattr(result, "usage", None) if result is not None else None,
-            )
-        except Exception:
-            logger.exception("Failed to finalize Anki observation bundle for run %s", bundle.run_id)
 
     def _observation_details(self) -> list[Any]:
         if self.detail_sink is None:
