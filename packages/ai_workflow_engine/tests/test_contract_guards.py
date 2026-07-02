@@ -8,10 +8,12 @@ THIS file, never a silent drift.
 
 import ast
 from pathlib import Path
+import tomllib
 from typing import get_args
 
 import pytest
 
+import ai_workflow_engine
 from ai_workflow_engine.models import CapabilityStatus, WorkflowResultStatus
 from ai_workflow_engine.workflow import WorkflowBuilder, WorkflowValidationError
 
@@ -19,6 +21,7 @@ pytestmark = pytest.mark.unit
 
 ENGINE_ROOT = Path(__file__).resolve().parents[1] / "ai_workflow_engine"
 DOCS_ROOT = Path(__file__).resolve().parents[1] / "docs"
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 
 # G-int1: the engine is product-neutral — importing any of these repo-level product
 # packages from engine code breaks the boundary.
@@ -75,6 +78,15 @@ def test_engine_imports_no_product_code():
                 if name in FORBIDDEN_PRODUCT_MODULES:
                     offenders.append(f"{path.relative_to(ENGINE_ROOT.parent)}:{node.lineno} imports {name}")
     assert not offenders, "engine imports product code:\n" + "\n".join(offenders)
+
+
+def test_release_version_matches_current_pin():
+    """Release guard: a pinned tag must not build a wheel that reports the previous version."""
+
+    expected = "0.6.5"
+    pyproject = tomllib.loads((PACKAGE_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert pyproject["project"]["version"] == expected
+    assert ai_workflow_engine.__version__ == expected
 
 
 def test_nodes_use_only_the_node_services_surface():
