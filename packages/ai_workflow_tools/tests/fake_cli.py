@@ -64,7 +64,9 @@ def _record_invocation(argv: list[str], stdin_text: str) -> None:
     record_path = os.environ.get("FAKE_CLI_RECORD")
     if not record_path:
         return
-    payload = {"argv": argv, "stdin": stdin_text}
+    cwd = Path(os.getcwd())
+    cwd_files = sorted(str(f.relative_to(cwd)) for f in cwd.rglob("*") if f.is_file())
+    payload = {"argv": argv, "stdin": stdin_text, "cwd_files": cwd_files}
     path = Path(record_path)
     if os.environ.get("FAKE_CLI_RECORD_APPEND") == "1":
         records = []

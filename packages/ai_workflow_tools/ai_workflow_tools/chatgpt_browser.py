@@ -19,10 +19,30 @@ Contract notes (mirror of the image provider in ``media/image_generation.py``):
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 import uuid
 from typing import Any, Callable
 
 from ai_workflow_engine.llm_protocol import ChatMessage, LLMRequest, LLMResponse
+
+logger = logging.getLogger(__name__)
+
+# The service self-throttles to protect the shared ChatGPT account (HTTP 429 +
+# Retry-After); the documented consumer contract is: back off and retry, don't hammer.
+# The wait is bounded and every wait is logged — cooperation, never a silent stall.
+DEFAULT_RATE_LIMIT_MAX_WAIT_S = 120.0
+
+
+def _retry_after_seconds(response: Any, data: Any) -> float:
+    headers = getattr(response, "headers", None) or {}
+    raw = headers.get("Retry-After") if hasattr(headers, "get") else None
+    if raw is None and isinstance(data, dict):
+        raw = data.get("retry_after")
+    try:
+        return max(1.0, float(raw))
+    except (TypeError, ValueError):
+        return 20.0  # the service's minimum inter-request gap
 
 
 class ChatGptBrowserError(RuntimeError):
@@ -38,7 +58,9 @@ class ChatGptBrowserLLMClient:
         *,
         timeout_s: float = 200.0,
         force_fresh: bool = True,
+        rate_limit_max_wait_s: float = DEFAULT_RATE_LIMIT_MAX_WAIT_S,
         http_post: Callable[..., Any] | None = None,
+        sleeper: Callable[[float], Any] | None = None,
     ) -> None:
         base_url = str(base_url or "").strip()
         if not base_url:
@@ -49,7 +71,11 @@ class ChatGptBrowserLLMClient:
         self.base_url = base_url.rstrip("/")
         self.timeout_s = float(timeout_s)
         self.force_fresh = force_fresh
+        self.rate_limit_max_wait_s = float(rate_limit_max_wait_s)
         self._http_post = http_post
+        self._sleeper = sleeper
+        # Usage-event attribution for the engine's plain-callable metering path.
+        self.provider_label = "chatgpt_browser"
 
     async def __call__(self, request: LLMRequest) -> LLMResponse:
         self._validate_request(request)
@@ -85,28 +111,52 @@ class ChatGptBrowserLLMClient:
             import requests
 
             http_post = requests.post
-        response = await asyncio.to_thread(
-            http_post,
-            url,
-            json=payload,
-            headers={"Content-Type": "application/json"},
-            timeout=self.timeout_s + 30,
-        )
-        try:
-            data = response.json()
-        except Exception as exc:
-            raise ChatGptBrowserError("chatgpt browser response was not valid JSON") from exc
-        status_code = int(getattr(response, "status_code", 200) or 200)
-        if status_code >= 400:
-            detail = data.get("detail") or data.get("error") if isinstance(data, dict) else None
-            raise ChatGptBrowserError(
-                f"chatgpt browser service HTTP {status_code}: "
-                f"{detail or getattr(response, 'text', '')} "
-                "(502 usually means the logged-in ChatGPT browser/extension is down)"
+        sleep = self._sleeper or asyncio.sleep
+        waited = 0.0
+        while True:
+            response = await asyncio.to_thread(
+                http_post,
+                url,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=self.timeout_s + 30,
             )
-        if not isinstance(data, dict):
-            raise ChatGptBrowserError("chatgpt browser response JSON was not an object")
-        return data
+            try:
+                data = response.json()
+            except Exception as exc:
+                raise ChatGptBrowserError("chatgpt browser response was not valid JSON") from exc
+            status_code = int(getattr(response, "status_code", 200) or 200)
+            if status_code == 429:
+                # Documented consumer contract: the service self-throttles to protect the
+                # shared ChatGPT account — honour Retry-After, bounded, loud when exhausted.
+                delay = _retry_after_seconds(response, data)
+                if waited + delay > self.rate_limit_max_wait_s:
+                    raise ChatGptBrowserError(
+                        f"chatgpt browser rate-limited beyond the {self.rate_limit_max_wait_s:.0f}s "
+                        f"wait budget (waited {waited:.0f}s, next retry_after={delay:.0f}s) — "
+                        "the service may be in a circuit-breaker cooldown; try later"
+                    )
+                logger.info(
+                    "chatgpt_browser rate_limited retry_after=%.0fs waited=%.0fs budget=%.0fs",
+                    delay,
+                    waited,
+                    self.rate_limit_max_wait_s,
+                )
+                result = sleep(delay)
+                if asyncio.iscoroutine(result):
+                    await result
+                waited += delay
+                continue
+            if status_code >= 400:
+                detail = data.get("detail") or data.get("error") if isinstance(data, dict) else None
+                raise ChatGptBrowserError(
+                    f"chatgpt browser service HTTP {status_code}: "
+                    f"{detail or getattr(response, 'text', '')} "
+                    "(502 usually means the logged-in ChatGPT browser/extension is down)"
+                )
+            if not isinstance(data, dict):
+                raise ChatGptBrowserError("chatgpt browser response JSON was not an object")
+            return data
 
     @staticmethod
     def _validate_request(request: LLMRequest) -> None:
@@ -188,27 +238,48 @@ class ChatGptBrowserChatModel:
             import requests
 
             http_post = requests.post
-        response = http_post(
-            url,
-            json=payload,
-            headers={"Content-Type": "application/json"},
-            timeout=self._client.timeout_s + 30,
-        )
-        try:
-            data = response.json()
-        except Exception as exc:
-            raise ChatGptBrowserError("chatgpt browser response was not valid JSON") from exc
-        status_code = int(getattr(response, "status_code", 200) or 200)
-        if status_code >= 400:
-            detail = data.get("detail") or data.get("error") if isinstance(data, dict) else None
-            raise ChatGptBrowserError(
-                f"chatgpt browser service HTTP {status_code}: "
-                f"{detail or getattr(response, 'text', '')} "
-                "(502 usually means the logged-in ChatGPT browser/extension is down)"
+        sleep = self._client._sleeper or time.sleep
+        budget = self._client.rate_limit_max_wait_s
+        waited = 0.0
+        while True:
+            response = http_post(
+                url,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=self._client.timeout_s + 30,
             )
-        if not isinstance(data, dict):
-            raise ChatGptBrowserError("chatgpt browser response JSON was not an object")
-        return data
+            try:
+                data = response.json()
+            except Exception as exc:
+                raise ChatGptBrowserError("chatgpt browser response was not valid JSON") from exc
+            status_code = int(getattr(response, "status_code", 200) or 200)
+            if status_code == 429:
+                delay = _retry_after_seconds(response, data)
+                if waited + delay > budget:
+                    raise ChatGptBrowserError(
+                        f"chatgpt browser rate-limited beyond the {budget:.0f}s wait budget "
+                        f"(waited {waited:.0f}s, next retry_after={delay:.0f}s) — "
+                        "the service may be in a circuit-breaker cooldown; try later"
+                    )
+                logger.info(
+                    "chatgpt_browser rate_limited retry_after=%.0fs waited=%.0fs budget=%.0fs",
+                    delay,
+                    waited,
+                    budget,
+                )
+                sleep(delay)
+                waited += delay
+                continue
+            if status_code >= 400:
+                detail = data.get("detail") or data.get("error") if isinstance(data, dict) else None
+                raise ChatGptBrowserError(
+                    f"chatgpt browser service HTTP {status_code}: "
+                    f"{detail or getattr(response, 'text', '')} "
+                    "(502 usually means the logged-in ChatGPT browser/extension is down)"
+                )
+            if not isinstance(data, dict):
+                raise ChatGptBrowserError("chatgpt browser response JSON was not an object")
+            return data
 
 
 class _ChatReply:

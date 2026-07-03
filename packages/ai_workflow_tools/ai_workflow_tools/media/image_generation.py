@@ -433,9 +433,15 @@ class ChatGptBrowserImageGenerator:
       timeout must exceed the service-side timeout.
     """
 
-    def __init__(self, config: Any, http_post: Callable[..., Any] | None = None):
+    def __init__(
+        self,
+        config: Any,
+        http_post: Callable[..., Any] | None = None,
+        sleeper: Callable[..., Any] | None = None,
+    ):
         self.config = config
         self._http_post = http_post
+        self._sleeper = sleeper
 
     async def generate(self, request: ImageGenerationRequest) -> GeneratedImage:
         if not request.prompt.strip():
@@ -547,33 +553,64 @@ class ChatGptBrowserImageGenerator:
             raise ImageGenerationError(f"chatgpt browser image generation failed: {exc}") from exc
 
     async def _post_json(self, url: str, payload: dict[str, Any], *, read_timeout: float) -> dict[str, Any]:
+        from ai_workflow_tools.chatgpt_browser import _retry_after_seconds
+
         http_post = self._http_post
         if http_post is None:
             import requests
 
             http_post = requests.post
-        response = await asyncio.to_thread(
-            http_post,
-            url,
-            json=payload,
-            headers={"Content-Type": "application/json"},
-            timeout=read_timeout,
+        # Images are occasional and allowed to be slow: the default budget rides out the
+        # service's 15-min account-protection cooldown instead of failing the run.
+        budget = float(
+            _config_value(self.config, "WORKFLOW_CHATGPT_BROWSER_RATE_WAIT_MAX_SECONDS", 1200)
         )
-        try:
-            data = response.json()
-        except Exception as exc:
-            raise ImageGenerationError("chatgpt browser response was not valid JSON") from exc
-        status_code = int(getattr(response, "status_code", 200) or 200)
-        if status_code >= 400:
-            detail = data.get("detail") or data.get("error") if isinstance(data, dict) else None
-            raise ImageGenerationError(
-                f"chatgpt browser service HTTP {status_code}: "
-                f"{detail or getattr(response, 'text', '')} "
-                "(502 usually means the logged-in ChatGPT browser/extension is down on the mini)"
+        sleep = self._sleeper or asyncio.sleep
+        waited = 0.0
+        while True:
+            response = await asyncio.to_thread(
+                http_post,
+                url,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=read_timeout,
             )
-        if not isinstance(data, dict):
-            raise ImageGenerationError("chatgpt browser response JSON was not an object")
-        return data
+            try:
+                data = response.json()
+            except Exception as exc:
+                raise ImageGenerationError("chatgpt browser response was not valid JSON") from exc
+            status_code = int(getattr(response, "status_code", 200) or 200)
+            if status_code == 429:
+                # Documented consumer contract: the service self-throttles to protect the
+                # shared ChatGPT account — honour Retry-After, bounded, loud when exhausted.
+                delay = _retry_after_seconds(response, data)
+                if waited + delay > budget:
+                    raise ImageGenerationError(
+                        f"chatgpt browser rate-limited beyond the {budget:.0f}s wait budget "
+                        f"(waited {waited:.0f}s, next retry_after={delay:.0f}s) — the service "
+                        "may be in a circuit-breaker cooldown; try later"
+                    )
+                logger.info(
+                    "chatgpt_browser rate_limited retry_after=%.0fs waited=%.0fs budget=%.0fs",
+                    delay,
+                    waited,
+                    budget,
+                )
+                result = sleep(delay)
+                if asyncio.iscoroutine(result):
+                    await result
+                waited += delay
+                continue
+            if status_code >= 400:
+                detail = data.get("detail") or data.get("error") if isinstance(data, dict) else None
+                raise ImageGenerationError(
+                    f"chatgpt browser service HTTP {status_code}: "
+                    f"{detail or getattr(response, 'text', '')} "
+                    "(502 usually means the logged-in ChatGPT browser/extension is down on the mini)"
+                )
+            if not isinstance(data, dict):
+                raise ImageGenerationError("chatgpt browser response JSON was not an object")
+            return data
 
     def _record_notional_usage(
         self,

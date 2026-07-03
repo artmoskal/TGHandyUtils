@@ -89,8 +89,8 @@ async def test_three_axis_pilot_runs_cli_console_retrace_and_replay(
     assert [event.model_dump() for event in outcome.live_events] == [
         event.model_dump() for event in outcome.trace_events
     ]
-    assert "metered" in outcome.trace_dump
-    assert "notional" in outcome.trace_dump
+    assert "billed (API)" in outcome.trace_dump
+    assert "subscription" in outcome.trace_dump  # plan-value segment for CLI console calls
     assert "artifacts_salvaged" in outcome.trace_dump
     assert "memory://seed" not in outcome.trace_dump
 

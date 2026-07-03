@@ -135,13 +135,7 @@ async def test_console_refuses_images_and_tools_before_spawn(fake_cli_path, monk
     record_path = _configure_fake_cli(monkeypatch, tmp_path, mode="envelope")
     client = ConsoleLLMClient(_fake_flavor(claude_p, fake_cli_path))
 
-    with pytest.raises(ValueError, match="cannot receive images"):
-        await client(
-            LLMRequest(
-                user="inspect",
-                images=[ImageInput(source="base64", data="aGVsbG8=", media_type="image/png")],
-            )
-        )
+    # Images are STAGED (no longer refused) — covered by the staged-vision tests below.
     with pytest.raises(ValueError, match="cannot host tool-calling"):
         await client(LLMRequest(user="inspect", tools=[ToolSpec(name="click")]))
 
@@ -328,3 +322,197 @@ async def test_chatgpt_browser_chat_model_service_error_is_loud():
     model = ChatGptBrowserChatModel("http://mini.test:8010", http_post=http_post)
     with pytest.raises(ChatGptBrowserError, match="HTTP 502"):
         model.invoke([SimpleNamespace(type="human", content="hi")])
+
+
+class _RateLimitedThenOk:
+    """First N responses are 429 self-throttle; then the real payload."""
+
+    def __init__(self, payload, *, limited=1, retry_after=3):
+        self.payload = payload
+        self.limited = limited
+        self.retry_after = retry_after
+        self.calls = 0
+
+    def __call__(self, url, **kwargs):
+        self.calls += 1
+        if self.calls <= self.limited:
+            return _FakeHttpResponse(
+                {"status": "rate_limited", "error": "self-throttle", "retry_after": self.retry_after},
+                status_code=429,
+            )
+        return _FakeHttpResponse(self.payload)
+
+
+async def test_chatgpt_browser_llm_honours_429_retry_after_bounded():
+    from ai_workflow_tools.chatgpt_browser import ChatGptBrowserLLMClient
+
+    post = _RateLimitedThenOk({"status": "completed", "reply": "ok"}, limited=2, retry_after=4)
+    sleeps = []
+
+    async def sleeper(delay):
+        sleeps.append(delay)
+
+    client = ChatGptBrowserLLMClient(
+        "http://mini.test:8010", http_post=post, sleeper=sleeper, force_fresh=False
+    )
+    response = await client(LLMRequest(user="hello"))
+
+    assert response.text == "ok"
+    assert sleeps == [4, 4], "must wait exactly the service-provided retry_after"
+    assert post.calls == 3
+
+
+async def test_chatgpt_browser_llm_rate_limit_budget_exhaustion_is_loud():
+    from ai_workflow_tools.chatgpt_browser import ChatGptBrowserError, ChatGptBrowserLLMClient
+
+    post = _RateLimitedThenOk({"status": "completed", "reply": "ok"}, limited=99, retry_after=50)
+    sleeps = []
+
+    async def sleeper(delay):
+        sleeps.append(delay)
+
+    client = ChatGptBrowserLLMClient(
+        "http://mini.test:8010",
+        http_post=post,
+        sleeper=sleeper,
+        rate_limit_max_wait_s=60,
+    )
+    with pytest.raises(ChatGptBrowserError, match="rate-limited beyond"):
+        await client(LLMRequest(user="hello"))
+    assert sleeps == [50], "one wait fits the 60s budget; the second (100s total) must not"
+
+
+async def test_chatgpt_browser_chat_model_honours_429():
+    from ai_workflow_tools.chatgpt_browser import ChatGptBrowserChatModel
+
+    from types import SimpleNamespace
+
+    post = _RateLimitedThenOk({"status": "completed", "reply": "done"}, limited=1, retry_after=2)
+    sleeps = []
+    model = ChatGptBrowserChatModel(
+        "http://mini.test:8010", http_post=post, force_fresh=False
+    )
+    model._client._sleeper = sleeps.append
+
+    output = model.invoke([SimpleNamespace(type="human", content="hi")])
+
+    assert output.content == "done"
+    assert sleeps == [2]
+
+
+# --- ConsoleChatModel (sync .invoke over the CLI, for LangChain call sites) --------------
+
+
+async def test_console_chat_model_invokes_cli_synchronously(fake_cli_path, monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from ai_workflow_tools.cli_agents import ConsoleChatModel
+
+    _configure_fake_cli(monkeypatch, tmp_path, mode="envelope", result='[{"type": "basic"}]')
+    model = ConsoleChatModel(_fake_flavor(claude_p, fake_cli_path))
+
+    output = model.invoke(
+        [
+            SimpleNamespace(type="system", content="You render cards."),
+            SimpleNamespace(type="human", content="One card about bridges."),
+        ]
+    )
+
+    assert output.content == '[{"type": "basic"}]'
+
+
+async def test_console_chat_model_missing_binary_is_loud():
+    from types import SimpleNamespace
+
+    from ai_workflow_tools.cli_agents import ConsoleChatModel
+
+    broken = claude_p.model_copy(update={"base_argv": ["definitely-not-a-binary-xyz"]})
+    model = ConsoleChatModel(broken)
+    with pytest.raises(RuntimeError, match="binary not found"):
+        model.invoke([SimpleNamespace(type="human", content="hi")])
+
+
+async def test_console_chat_model_rejects_image_parts_loudly(fake_cli_path):
+    from types import SimpleNamespace
+
+    from ai_workflow_tools.cli_agents import ConsoleChatModel
+
+    model = ConsoleChatModel(_fake_flavor(claude_p, fake_cli_path))
+    with pytest.raises(ValueError, match="text-only"):
+        model.invoke(
+            [
+                SimpleNamespace(
+                    type="human",
+                    content=[
+                        {"type": "text", "text": "look"},
+                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,x"}},
+                    ],
+                )
+            ]
+        )
+
+
+# --- Staged vision: images become workspace files the CLI reads itself ------------------
+
+
+async def test_console_stages_images_and_allows_read_tool(fake_cli_path, monkeypatch, tmp_path):
+    record_path = _configure_fake_cli(monkeypatch, tmp_path, mode="envelope", result='{"label": "red"}')
+    client = ConsoleLLMClient(_fake_flavor(claude_p, fake_cli_path))
+
+    response = await client(
+        LLMRequest(
+            user="What color is the image? JSON only.",
+            images=[ImageInput(source="base64", data="aGVsbG8=", media_type="image/png")],
+        )
+    )
+
+    assert response.text == '{"label": "red"}'
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    # image existed ON DISK in the CLI's working directory at invocation time
+    assert "inputs/img-1.png" in record["cwd_files"], record["cwd_files"]
+    assert record["stdin"].startswith("First read and inspect these image file(s)")
+    assert "inputs/img-1.png" in record["stdin"]
+    assert "--allowedTools" in record["argv"] and "Read" in record["argv"]
+
+
+async def test_console_stages_path_source_images_by_copy(fake_cli_path, monkeypatch, tmp_path):
+    record_path = _configure_fake_cli(monkeypatch, tmp_path, mode="envelope")
+    source_image = tmp_path / "card.png"
+    source_image.write_bytes(b"png-bytes")
+    client = ConsoleLLMClient(_fake_flavor(claude_p, fake_cli_path))
+
+    await client(
+        LLMRequest(
+            user="inspect",
+            images=[ImageInput(source="path", data=str(source_image), media_type="image/png")],
+        )
+    )
+
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert "inputs/img-1.png" in record["cwd_files"]
+
+
+async def test_console_unreadable_path_image_is_loud(fake_cli_path, monkeypatch, tmp_path):
+    _configure_fake_cli(monkeypatch, tmp_path, mode="envelope")
+    client = ConsoleLLMClient(_fake_flavor(claude_p, fake_cli_path))
+
+    with pytest.raises(ValueError, match="unreadable"):
+        await client(
+            LLMRequest(
+                user="inspect",
+                images=[ImageInput(source="path", data=str(tmp_path / "missing.png"), media_type="image/png")],
+            )
+        )
+
+
+async def test_console_url_source_images_are_rejected_loudly(fake_cli_path, monkeypatch, tmp_path):
+    _configure_fake_cli(monkeypatch, tmp_path, mode="envelope")
+    client = ConsoleLLMClient(_fake_flavor(claude_p, fake_cli_path))
+
+    with pytest.raises(ValueError, match="cannot fetch"):
+        await client(
+            LLMRequest(
+                user="inspect",
+                images=[ImageInput(source="url", data="https://x.test/i.png", media_type="image/png")],
+            )
+        )
