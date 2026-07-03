@@ -1,5 +1,7 @@
 # Deployment (pointer)
 
+> Running your OWN instance (not the author's)? See [self-hosting.md](self-hosting.md).
+
 This repo contains **no infrastructure code**. All deploy/IaC for TGHandyUtils lives in the
 separate **`aws_deploy`** repository (private). This page only tells a developer of *this* repo
 how their code reaches a running bot — it intentionally duplicates no host facts or secrets.

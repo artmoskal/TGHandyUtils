@@ -3,32 +3,11 @@
 What runs where, which config layer wins, and every external service the bot depends on.
 Verified 2026-07-02. If this drifts from reality, fix THIS file in the same change.
 
-## Fresh deployment (new operator quickstart)
+## Deploying
 
-1. Prereqs: Docker (compose v2). That's it — everything else runs in the container.
-2. `cp .env.example .env` and fill it in. Minimum viable: `TELEGRAM_BOT_TOKEN` (from
-   @BotFather) + `OPENAI_API_KEY` + **uncomment the PURE-API MODE block** — the committed
-   yaml otherwise routes anki roles to private backends you don't have (claude
-   subscription, a self-hosted ChatGPT-browser service) and those calls fail loudly.
-3. `docker compose up -d --build bot` → `docker compose logs -f bot` until you see
-   `Run polling for bot @<yourbot>`.
-4. Message your bot: `/start`, then `/anki` + some text for a first card.
-5. Tests (all Docker, never bare pytest): `./test.sh unit`.
-
-Optional backends, each one setting away (per anki ROLE, in `.env` or
-`config/anki.profile.yaml` models):
-- **`claude-p`** — text via the claude CLI on a Claude subscription (CLI is already in
-  the image). Auth: `claude setup-token` → `CLAUDE_CODE_OAUTH_TOKEN` in `.env`. Supports
-  staged vision (the CLI reads image files from its workspace).
-- **`codex-exec`** — text via the codex CLI, non-interactive (also in the image). Auth:
-  ChatGPT-plan login state or `OPENAI_API_KEY`. Caveat: the cost ledger assumes plan
-  auth (`subscription_notional`); API-key-authed codex is really metered spend.
-- **`chatgpt-web` / image provider `chatgpt`** — requires your OWN ChatGPT-browser
-  service instance (see the section below); the address in this doc is the author's
-  private tailnet and will not work for you.
-
-Cost honesty is built in: usage captions separate `billed (API)` (real money) from
-`subscription … plan value` (flat-rate quota) — see the usage ledger sections below.
+- **Your own instance (third parties):** the complete guide is [self-hosting.md](self-hosting.md).
+- **The author's Pi deployment:** via the private `aws_deploy` Ansible repo — pointer and
+  branch-pin gotcha in [deployment.md](deployment.md).
 
 ## Runtime topology
 

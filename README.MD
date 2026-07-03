@@ -2,11 +2,10 @@
 
 Are you tired of manually creating tasks in Todoist after every chat with your friends, boss, or worse... your mom? Fear not, because **TGHandyUtils** is here to save your day! With our completely over-engineered AI-powered bot, you can finally live the hands-free life you've always dreamed of. 🚀
 
-> **Deploying your own?** Follow the operator quickstart in
-> [`docs/infrastructure.md`](docs/infrastructure.md) — copy [`.env.example`](.env.example)
-> to `.env`, fill two required keys, uncomment PURE-API MODE, `docker compose up -d --build bot`.
-> Optional per-role backends: `claude -p` and `codex exec` (non-interactive, CLIs pre-baked
-> in the image), Gemini images, or a self-hosted ChatGPT-browser service.
+> **Deploying your own?** Complete operator guide: [`docs/self-hosting.md`](docs/self-hosting.md)
+> — two required keys, one uncommented block, `docker compose up -d --build bot`. Optional
+> per-role backends: `claude -p` and `codex exec` (non-interactive, CLIs pre-baked in the
+> image), Gemini images, or a self-hosted ChatGPT-browser service.
 
 ## ✨ Features
 
