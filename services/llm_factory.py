@@ -197,3 +197,83 @@ register_llm_backend(
     "chatgpt",
     "chatgpt-browser",
 )
+
+
+# --- Built-in backend: claude -p console CLI (Claude subscription, no API key) ------------
+#
+# Runtime requirement: the `claude` binary must exist AND be authenticated in the process
+# environment (container/Pi: install the CLI + provide CLAUDE_CODE_OAUTH_TOKEN from
+# `claude setup-token`). A missing binary fails loudly at call time with a clear message.
+
+def _build_claude_p_text(config: IConfig):
+    from ai_workflow_tools.cli_agents import ConsoleLLMClient, claude_p
+
+    return ConsoleLLMClient(
+        claude_p,
+        timeout_s=float(getattr(config, "ANKI_CLAUDE_P_TIMEOUT_SECONDS", 240)),
+        subscription_mode=True,
+    )
+
+
+def _build_claude_p_chat(config: IConfig):
+    from ai_workflow_tools.cli_agents import ConsoleChatModel, claude_p
+
+    return ConsoleChatModel(
+        claude_p,
+        timeout_s=float(getattr(config, "ANKI_CLAUDE_P_TIMEOUT_SECONDS", 240)),
+    )
+
+
+register_llm_backend(
+    LLMBackend(
+        build_text=_build_claude_p_text,
+        build_chat=_build_claude_p_chat,
+        cost_class="subscription_notional",  # rides the Claude subscription
+        # Staged vision: images become workspace files the CLI reads itself
+        # (ConsoleLLMClient._stage_request_images + --allowedTools Read).
+        supports_vision=True,
+        provider="claude_p",
+    ),
+    "claude-p",
+    "claude-cli",
+    "claude-code",
+)
+
+
+# --- Built-in backend: codex exec console CLI (ChatGPT-plan auth assumed) -----------------
+#
+# Runtime requirement: the `codex` binary present + authenticated (`codex login` state or
+# OPENAI_API_KEY). NOTE: cost class assumes ChatGPT-plan auth; an API-key-authenticated
+# codex is actually metered — the CLI does not report which, so keep plan auth or expect
+# the ledger to show plan-covered for what is really metered spend.
+
+def _build_codex_exec_text(config: IConfig):
+    from ai_workflow_tools.cli_agents import ConsoleLLMClient, codex_exec
+
+    return ConsoleLLMClient(
+        codex_exec,
+        timeout_s=float(getattr(config, "ANKI_CODEX_TIMEOUT_SECONDS", 240)),
+        subscription_mode=True,
+    )
+
+
+def _build_codex_exec_chat(config: IConfig):
+    from ai_workflow_tools.cli_agents import ConsoleChatModel, codex_exec
+
+    return ConsoleChatModel(
+        codex_exec,
+        timeout_s=float(getattr(config, "ANKI_CODEX_TIMEOUT_SECONDS", 240)),
+    )
+
+
+register_llm_backend(
+    LLMBackend(
+        build_text=_build_codex_exec_text,
+        build_chat=_build_codex_exec_chat,
+        cost_class="subscription_notional",
+        supports_vision=True,  # staged files; codex reads its sandbox natively
+        provider="codex_exec",
+    ),
+    "codex-exec",
+    "codex",
+)

@@ -344,8 +344,9 @@ async def test_anki_processor_caption_can_show_usage_summary():
         assert "render_text_or_cloze" in caption
         assert "txt" in caption
         assert "$0.0012" in caption
-        assert "total: 1 text, 0 image, 100 in, 0 cached, 20 out, metered $0.0012" in caption
-        assert "notional" not in caption  # all-metered Anki run: no flat-rate segment
+        assert "total: 1 text, 0 image, 100 in, 0 cached, 20 out" in caption
+        assert "billed (API): $0.0012" in caption
+        assert "subscription" not in caption  # all-metered Anki run: no flat-rate segment
     finally:
         anki_buffer.clear(user_id)
 
@@ -396,3 +397,42 @@ async def test_anki_processor_sends_engine_trace_as_plain_text_debug_message():
         assert all(kwargs.get("parse_mode") is None for _text, kwargs in debug)
     finally:
         anki_buffer.clear(user_id)
+
+
+async def test_progress_ticker_notifies_tg_user_during_long_generation():
+    """Owner requirement (2026-07-03): image generation may wait out backend cooldowns —
+    the TG user must be kept informed instead of watching a silent spinner."""
+
+    import asyncio
+
+    user_id = 777003
+    anki_buffer.clear(user_id)
+    service = AnkiCardService(Config())
+    rendered = RenderedCardSet(
+        cards=[AnkiCard(question="Q", answer="A")],
+        image_asset_plan=ImageAssetPlan(image_role="ignore_media", rationale="none"),
+    )
+
+    class SlowGraph(FakeGraph):
+        async def run(self, source, message=None):
+            await asyncio.sleep(0.25)
+            return await super().run(source, message)
+
+    graph = SlowGraph(rendered)
+    message = FakeTelegramMessage()
+    processor = AnkiProcessor(service, anki_graph=graph)
+    processor.PROGRESS_TICKER_INTERVAL_S = 0.05
+
+    result = await processor.process(
+        ProcessingContext(
+            message=message,
+            thread_content=[("User", "some content")],
+            user_id=user_id,
+            owner_name="User",
+        )
+    )
+
+    assert result.success
+    progress_edits = [text for text in message.status.edits if "Still working" in text]
+    assert progress_edits, f"no progress edits reached the TG user: {message.status.edits}"
+    assert "Image generation can take" in progress_edits[0]

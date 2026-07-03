@@ -152,13 +152,12 @@ class Config(IConfig):
     ANKI_CARD_MODEL: str = _model('anki_card', 'gpt-5.4-mini')
     WORKFLOW_DEFAULT_MODEL: str = _model('default', ANKI_CARD_MODEL)
     # Per-node model profiles. These let cheap gates and stronger scenario/rendering nodes diverge.
-    # 'chatgpt-web' is a routable model name (services/llm_factory.py): those roles ride
-    # the ChatGPT-browser subscription (CHATGPT_BROWSER_API_URL required, sequential
-    # single-browser queue). Per-role override back to any API model = one setting.
-    # Quality stays on an API model: image inspection needs vision; /ask is text-only.
-    ANKI_DECISION_MODEL: str = _model('anki_decision', 'chatgpt-web')
-    ANKI_SCENARIO_MODEL: str = _model('anki_scenario', 'chatgpt-web')
-    ANKI_RENDER_MODEL: str = _model('anki_render', 'chatgpt-web')
+    # Text roles default to the metered API (owner decision 2026-07-03). 'chatgpt-web'
+    # stays a routable model name (services/llm_factory.py registry): point any role at it
+    # to ride the ChatGPT-browser subscription instead.
+    ANKI_DECISION_MODEL: str = _model('anki_decision', ANKI_CARD_MODEL)
+    ANKI_SCENARIO_MODEL: str = _model('anki_scenario', ANKI_CARD_MODEL)
+    ANKI_RENDER_MODEL: str = _model('anki_render', ANKI_CARD_MODEL)
     ANKI_QUALITY_MODEL: str = _model('anki_quality', ANKI_CARD_MODEL)
     ANKI_COMPLEX_SUPERVISOR_MODEL: str = _model('anki_complex_supervisor', 'gpt-5.5')
     WORKFLOW_SUPERVISOR_MODEL: str = _model('supervisor', ANKI_COMPLEX_SUPERVISOR_MODEL)
@@ -225,6 +224,16 @@ class Config(IConfig):
     # retries/regenerations produce a new image instead of replaying the cache.
     ANKI_CHATGPT_BROWSER_FORCE_FRESH: bool = _bool_setting('anki_chatgpt_browser_force_fresh', True)
     WORKFLOW_CHATGPT_BROWSER_FORCE_FRESH: bool = ANKI_CHATGPT_BROWSER_FORCE_FRESH
+    # Image generation may ride out the service's 15-min account-protection cooldown
+    # (owner decision 2026-07-03: images are occasional; waiting beats failing — the
+    # TG user is kept informed by the processor's progress ticker).
+    ANKI_CHATGPT_BROWSER_RATE_WAIT_MAX_SECONDS: int = _int_setting('anki_chatgpt_browser_rate_wait_max_seconds', 1200)
+    WORKFLOW_CHATGPT_BROWSER_RATE_WAIT_MAX_SECONDS: int = ANKI_CHATGPT_BROWSER_RATE_WAIT_MAX_SECONDS
+    # claude -p console backend (routing key 'claude-p' in any anki role model setting).
+    # Runtime requirement: the claude CLI installed + authenticated in the bot process env.
+    ANKI_CLAUDE_P_TIMEOUT_SECONDS: int = _int_setting('anki_claude_p_timeout_seconds', 240)
+    # codex exec console backend (routing key 'codex-exec'); binary + auth required at runtime.
+    ANKI_CODEX_TIMEOUT_SECONDS: int = _int_setting('anki_codex_timeout_seconds', 240)
     ANKI_STYLE_CHARACTER_REFERENCE_IMAGE: str = str(_setting('anki_style_character_reference_image', ''))
     ANKI_STYLE_DESIGN_REFERENCE_IMAGE: str = str(_setting('anki_style_design_reference_image', ''))
     ANKI_STYLE_REFERENCE_VERSION: str = str(_setting('anki_style_reference_version', ''))

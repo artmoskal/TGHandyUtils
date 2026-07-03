@@ -30,29 +30,31 @@ models:
     temperature: 0
     max_retries: 1
   anki_decision:
-    # chatgpt-web routes to the ChatGPT-browser subscription backend (llm_factory
-    # registry). Set any API model name here to move this role back to metered API.
-    provider: chatgpt-browser
-    model: chatgpt-web
+    # claude-p = claude CLI console backend (Claude subscription; owner switch 2026-07-03).
+    # Set any API model name here to move this role back to metered API.
+    provider: claude-p
+    model: claude-p
     temperature: 0
     max_retries: 1
   anki_scenario:
-    # chatgpt-web routes to the ChatGPT-browser subscription backend (llm_factory
-    # registry). Set any API model name here to move this role back to metered API.
-    provider: chatgpt-browser
-    model: chatgpt-web
+    # claude-p = claude CLI console backend (Claude subscription; owner switch 2026-07-03).
+    # Set any API model name here to move this role back to metered API.
+    provider: claude-p
+    model: claude-p
     temperature: 0
     max_retries: 1
   anki_render:
-    # chatgpt-web routes to the ChatGPT-browser subscription backend (llm_factory
-    # registry). Set any API model name here to move this role back to metered API.
-    provider: chatgpt-browser
-    model: chatgpt-web
+    # claude-p = claude CLI console backend (Claude subscription; owner switch 2026-07-03).
+    # Set any API model name here to move this role back to metered API.
+    provider: claude-p
+    model: claude-p
     temperature: 0
     max_retries: 1
   anki_quality:
-    provider: openai
-    model: gpt-5.4-mini
+    # claude-p with STAGED vision: generated card images become workspace files the
+    # CLI reads itself (--allowedTools Read) — image inspection stays real.
+    provider: claude-p
+    model: claude-p
     temperature: 0
     max_retries: 1
   anki_complex_supervisor:

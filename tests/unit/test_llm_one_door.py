@@ -168,3 +168,48 @@ def test_new_backends_plug_in_without_editing_the_factory():
         assert llm_cost_class(register_key) == "subscription_notional"
     finally:
         _LLM_BACKENDS.pop(register_key, None)
+
+
+def test_claude_p_backend_routes_with_subscription_facts():
+    """claude -p is a registered backend: routable per role, honest cost class, no vision."""
+
+    from types import SimpleNamespace
+
+    from ai_workflow_tools.cli_agents import ConsoleChatModel, ConsoleLLMClient
+    from services.llm_factory import (
+        create_anki_chat_model,
+        create_anki_text_llm,
+        llm_cost_class,
+        llm_provider_label,
+        llm_supports_vision,
+    )
+
+    config = SimpleNamespace(ANKI_CLAUDE_P_TIMEOUT_SECONDS=99)
+
+    text_client = create_anki_text_llm(config, "claude-p", 0.0)
+    chat_client = create_anki_chat_model(config, "claude-p", 0.0)
+
+    assert isinstance(text_client, ConsoleLLMClient)
+    assert text_client.subscription_mode is True
+    assert text_client.timeout_s == 99
+    assert isinstance(chat_client, ConsoleChatModel)
+    assert chat_client.timeout_s == 99
+    assert llm_cost_class("claude-p") == "subscription_notional"
+    assert llm_provider_label("claude-p") == "claude_p"
+    # staged vision: images become workspace files the CLI reads itself
+    assert llm_supports_vision("claude-p") is True
+
+
+def test_codex_exec_backend_routes_with_subscription_facts():
+    from types import SimpleNamespace
+
+    from ai_workflow_tools.cli_agents import ConsoleChatModel, ConsoleLLMClient
+    from services.llm_factory import create_anki_text_llm, llm_cost_class, llm_provider_label
+
+    config = SimpleNamespace(ANKI_CODEX_TIMEOUT_SECONDS=77)
+    text_client = create_anki_text_llm(config, "codex-exec", 0.0)
+    assert isinstance(text_client, ConsoleLLMClient)
+    assert text_client.flavor.name == "codex_exec"
+    assert text_client.timeout_s == 77
+    assert llm_cost_class("codex-exec") == "subscription_notional"
+    assert llm_provider_label("codex") == "codex_exec"

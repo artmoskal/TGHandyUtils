@@ -253,6 +253,29 @@ class AnkiProcessor(IContentProcessor):
                 logger.warning(f"Could not read anki_deck_name for {user_id}: {e}")
         return DEFAULT_DECK_NAME
 
+    PROGRESS_TICKER_INTERVAL_S: float = 45.0
+
+    @staticmethod
+    async def _progress_ticker(status_msg, interval_s: float = 45.0) -> None:
+        """Edit the status message periodically during long generations (image backend can
+        wait out a rate-limit cooldown). Edit failures never disturb the run."""
+
+        import time as _time
+
+        start = _time.monotonic()
+        while True:
+            await asyncio.sleep(interval_s)
+            elapsed = int(_time.monotonic() - start)
+            minutes, seconds = divmod(elapsed, 60)
+            try:
+                await status_msg.edit_text(
+                    f"🃏 Still working… {minutes}m {seconds:02d}s. Image generation can take "
+                    "several minutes when the AI backend is busy (it waits politely instead of "
+                    "giving up)."
+                )
+            except Exception:
+                logger.debug("anki progress ticker edit failed", exc_info=True)
+
     def _save_images(self, user_id: int, screenshots) -> list:
         """Persist image bytes to the user's buffer dir. Returns [(path, basename)]."""
         out = []
@@ -331,7 +354,16 @@ class AnkiProcessor(IContentProcessor):
         buffered = False
         try:
             source = build_content_source(ctx.thread_content, ctx.user_id, ctx.owner_name, ctx.location)
-            rendered = await self.anki_graph.run(source, message=message)
+            # Long-run transparency: image generation rides the subscription browser backend
+            # and may legitimately wait out its account-protection cooldown (up to ~20 min).
+            # The ticker keeps the Telegram user informed instead of leaving a silent spinner.
+            ticker = asyncio.create_task(
+                self._progress_ticker(status_msg, interval_s=self.PROGRESS_TICKER_INTERVAL_S)
+            )
+            try:
+                rendered = await self.anki_graph.run(source, message=message)
+            finally:
+                ticker.cancel()
             cards = rendered.cards
             image_plan = rendered.image_asset_plan
 

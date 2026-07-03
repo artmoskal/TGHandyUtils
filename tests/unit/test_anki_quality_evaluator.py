@@ -191,6 +191,7 @@ async def test_quality_evaluator_does_not_attach_audio_as_image(tmp_path):
     assert isinstance(content, str)
 
 
+@pytest.mark.unit
 async def test_quality_evaluator_rejects_text_only_backend_when_inspecting_images():
     """Vision guard: a text-only routed backend for the quality role fails at construction,
     never mid-run with silently dropped images."""
@@ -204,3 +205,53 @@ async def test_quality_evaluator_rejects_text_only_backend_when_inspecting_image
     # Without image inspection the text-only backend is a legal quality choice.
     evaluator = AnkiRenderedCardEvaluator(ChatGptConfig(), inspect_images=False)
     assert evaluator.inspect_images is False
+
+    # claude-p supports STAGED vision (workspace files + Read tool) — legal with inspection.
+    class ClaudePConfig(FakeConfig):
+        ANKI_QUALITY_MODEL = "claude-p"
+
+    evaluator = AnkiRenderedCardEvaluator(ClaudePConfig(), inspect_images=True)
+    assert evaluator.inspect_images is True
+
+
+@pytest.mark.unit
+async def test_quality_evaluator_hands_images_to_plain_callable_clients(tmp_path):
+    """Staged-vision path: plain clients (claude-p) receive the generated images through
+    LLMRequest.images as path-sourced ImageInputs — not silently dropped."""
+
+    from ai_workflow_engine.llm_protocol import LLMRequest, LLMResponse
+
+    image_path = tmp_path / "diagram.png"
+    image_path.write_bytes(b"fake-png")
+    requests = []
+
+    async def plain_client(request: LLMRequest) -> LLMResponse:
+        requests.append(request)
+        return LLMResponse(text=_accepted_json(), model="claude-p")
+
+    evaluator = AnkiRenderedCardEvaluator(FakeConfig(), llm=plain_client)
+
+    await evaluator.evaluate(
+        ContentSource(content="A valve controls flow.", user_id=10),
+        AnkiDirectiveConstraints(card_type="visual"),
+        CardBuildPlan(card_kind="visual_basic", image_policy="generate"),
+        TextCardScenario(source_content="A valve controls flow."),
+        RenderedCardSet(
+            cards=[AnkiCard(question="What controls flow?", answer="A valve.")],
+            image_asset_plan=ImageAssetPlan(image_role="generate_new_visual"),
+            generated_media=[
+                GeneratedMedia(
+                    path=str(image_path),
+                    basename="diagram.png",
+                    source="generated",
+                    role="back",
+                )
+            ],
+        ),
+    )
+
+    assert requests, "plain client never invoked"
+    images = requests[0].images
+    assert len(images) == 1
+    assert images[0].source == "path"
+    assert images[0].data == str(image_path)

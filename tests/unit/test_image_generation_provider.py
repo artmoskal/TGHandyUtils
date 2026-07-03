@@ -522,3 +522,38 @@ async def test_create_image_generator_dispatches_chatgpt_provider():
 
     generator = create_image_generator(SimpleNamespace(WORKFLOW_IMAGE_PROVIDER="chatgpt"))
     assert isinstance(generator, ChatGptBrowserImageGenerator)
+
+
+@pytest.mark.unit
+async def test_chatgpt_browser_generator_honours_429_retry_after(tmp_path):
+    from ai_workflow_tools.media.image_generation import ChatGptBrowserImageGenerator
+
+    calls = {"n": 0}
+
+    def http_post(url, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return FakeChatGptResponse(
+                {"status": "rate_limited", "error": "self-throttle", "retry_after": 6},
+                status_code=429,
+            )
+        return FakeChatGptResponse(_chatgpt_image_payload())
+
+    sleeps = []
+
+    async def sleeper(delay):
+        sleeps.append(delay)
+
+    generator = ChatGptBrowserImageGenerator(
+        _chatgpt_config(WORKFLOW_USAGE_TRACKING_ENABLED=False),
+        http_post=http_post,
+        sleeper=sleeper,
+    )
+    result = await generator.generate(
+        ImageGenerationRequest(prompt="study image", output_dir=str(tmp_path))
+    )
+
+    assert sleeps == [6]
+    assert calls["n"] == 2
+    with open(result.path, "rb") as fh:
+        assert fh.read() == b"chatgpt-image"

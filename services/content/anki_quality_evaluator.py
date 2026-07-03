@@ -98,10 +98,14 @@ class AnkiRenderedCardEvaluator:
                     "media_summary": self._media_summary(rendered.generated_media),
                 },
                 content_hash_input=source.content,
+                # LangChain clients get images as multimodal message parts (attempt 1):
                 message_factory=lambda messages, attempt: self._messages(
                     messages,
                     rendered.generated_media if attempt == 1 else [],
                 ),
+                # Plain-callable clients (e.g. claude-p staged vision) get the same images
+                # through the LLMRequest transport instead:
+                images=self._image_inputs(rendered.generated_media) if self.inspect_images else [],
             )
         except StructuredOutputError as exc:
             raise ParsingError(f"Quality evaluator returned invalid output: {exc}") from exc
@@ -205,6 +209,25 @@ class AnkiRenderedCardEvaluator:
             ],
             sort_keys=True,
         )
+
+    @staticmethod
+    def _image_inputs(media: list[GeneratedMedia]) -> list:
+        """Path-sourced ImageInputs for plain-callable clients (same cap/filter as
+        ``_image_parts`` — first two non-audio images)."""
+
+        from ai_workflow_engine import ImageInput
+
+        inputs = []
+        for item in media:
+            if item.role == "audio":
+                continue
+            mime = mimetypes.guess_type(item.path)[0] or "image/png"
+            if not mime.startswith("image/"):
+                continue
+            inputs.append(ImageInput(source="path", data=item.path, media_type=mime, role=item.role))
+            if len(inputs) >= 2:
+                break
+        return inputs
 
     @staticmethod
     def _image_parts(media: list[GeneratedMedia]) -> list[dict]:
