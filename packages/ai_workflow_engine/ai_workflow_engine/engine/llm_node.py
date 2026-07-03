@@ -297,6 +297,11 @@ class StructuredLLMNode:
         from ai_workflow_engine.usage import check_input_tokens_per_call, estimate_text_tokens
 
         request_metadata = {"model_profile": profile.model_dump()} if profile is not None else {}
+        # The SAME resolution the dispatch probed (codex ship-review finding): with a
+        # factory + profile, the profile-built client must be the one invoked and
+        # attributed — calling self.llm here would silently run the DEFAULT-model client
+        # (or a LangChain client, crashing) whenever a profile routed elsewhere.
+        client = self._llm_for_profile(profile)
         last_error = ""
         for attempt in range(1, 2 + self.max_repair_rounds):
             try:
@@ -325,7 +330,7 @@ class StructuredLLMNode:
                 self._record_callable_request(request, attempt, profile)
                 try:
                     with engine_worker_observation_scope():
-                        response = await self.llm(request)
+                        response = await client(request)
                 except Exception as exc:
                     self._record_llm_error(attempt, exc, profile, transport="plain_callable")
                     raise
@@ -340,7 +345,7 @@ class StructuredLLMNode:
                     notional_usd=response.notional_usd,
                     # Traceability: clients may declare who they are (e.g. 'claude_p',
                     # 'chatgpt_browser'); anonymous callables stay 'custom'.
-                    provider=getattr(self.llm, "provider_label", None) or "custom",
+                    provider=getattr(client, "provider_label", None) or "custom",
                 )
                 parsed = self.parser.parse(self._apply_pre_parse(response.text, attempt, content_hash))
                 if self.validator:

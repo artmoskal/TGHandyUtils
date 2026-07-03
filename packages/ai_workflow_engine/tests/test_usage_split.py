@@ -141,3 +141,43 @@ def test_summary_formatting_unknown_subscription_value_says_plan_covered():
     assert "plan-covered (value unknown)" in rendered
     assert "incl." in rendered  # row shows included-in-plan, never a scary '?'
     assert "billed (API): $0" in rendered
+
+
+def test_failed_call_usage_event_keeps_provider_and_cost_class():
+    """Codex ship-review finding: the invoke_metered_chat error path dropped provider —
+    failed non-OpenAI/subscription calls were mislabeled as metered OpenAI."""
+
+    from ai_workflow_engine.models import WorkflowRunContext
+    from ai_workflow_engine.usage import (
+        WorkflowBudget,
+        WorkflowUsageContext,
+        invoke_metered_chat,
+        workflow_usage_scope,
+    )
+
+    class ExplodingLLM:
+        def invoke(self, messages):
+            raise RuntimeError("browser down")
+
+    summary = WorkflowUsageSummary()
+    scope = WorkflowUsageContext(
+        WorkflowRunContext(workflow_id="wf-err", workflow_type="t"),
+        summary,
+        WorkflowBudget(),
+    )
+    with workflow_usage_scope(scope):
+        with pytest.raises(RuntimeError, match="browser down"):
+            invoke_metered_chat(
+                ExplodingLLM(),
+                [],
+                node="render",
+                model="chatgpt-web",
+                cost_class="subscription_notional",
+                provider="chatgpt_browser",
+            )
+
+    event = summary.events[0]
+    assert event.success is False
+    assert event.provider == "chatgpt_browser"
+    assert event.cost_class == "subscription_notional"
+    assert event.estimated_usd is None

@@ -165,6 +165,13 @@ class ChatGptBrowserLLMClient:
                 "ChatGptBrowserLLMClient cannot receive images (/ask is text-only); use an "
                 "API vision client for image-grounded calls"
             )
+        if request.tools or request.tool_choice:
+            # /ask cannot execute tool calls — flattening the specs into text and hoping
+            # would be a silent capability drop (codex ship-review finding).
+            raise ChatGptBrowserError(
+                "ChatGptBrowserLLMClient cannot host tool-calling turns (/ask is a plain "
+                "text pipe); use an API client or an agent-episode capability"
+            )
 
 
 def _flatten_request(request: LLMRequest) -> str:

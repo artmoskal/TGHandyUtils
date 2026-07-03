@@ -516,3 +516,11 @@ async def test_console_url_source_images_are_rejected_loudly(fake_cli_path, monk
                 images=[ImageInput(source="url", data="https://x.test/i.png", media_type="image/png")],
             )
         )
+
+
+async def test_chatgpt_browser_llm_rejects_tool_calling_loudly():
+    from ai_workflow_tools.chatgpt_browser import ChatGptBrowserError
+
+    client, _ = _browser_client({"status": "completed", "reply": "ok"})
+    with pytest.raises(ChatGptBrowserError, match="tool-calling"):
+        await client(LLMRequest(user="click stuff", tools=[ToolSpec(name="click")]))

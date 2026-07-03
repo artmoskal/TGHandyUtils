@@ -119,6 +119,9 @@ def invoke_metered_chat(
         record_usage_event(
             WorkflowUsageEvent(
                 operation="chat",
+                # Failed calls keep honest attribution too (codex ship-review finding:
+                # the error path dropped provider, mislabeling failed non-OpenAI calls).
+                provider=provider,
                 node=node,
                 model=model,
                 attempt=attempt,

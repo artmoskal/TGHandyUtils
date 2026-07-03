@@ -336,3 +336,37 @@ async def test_plain_callable_provider_label_reaches_usage_events():
 
     assert result.status == "completed"
     assert result.usage.events[0].provider == "claude_p"
+
+
+async def test_plain_path_invokes_the_profile_resolved_client_not_the_default():
+    """Codex ship-review blocker: dispatch probed the profile-built client but execution
+    still called self.llm — a profile routing to a DIFFERENT plain backend silently ran
+    the default one (or crashed on a LangChain default). The resolved client must be the
+    one invoked AND attributed."""
+
+    from ai_workflow_engine.engine import StructuredLLMNode
+    from ai_workflow_engine.model_binding import model_profile_scope
+    from ai_workflow_engine.models import ModelProfile
+
+    default_client = FakeOllamaClient(model="default-plain")
+    default_client.provider_label = "default_backend"
+    profile_client = FakeOllamaClient(model="routed-plain")
+    profile_client.provider_label = "routed_backend"
+    clients = {"default-plain": default_client, "routed-plain": profile_client}
+
+    node = StructuredLLMNode(
+        name="profile_routing",
+        config=object(),
+        output_model=Verdict,
+        prompt_template="Classify {item}.",
+        input_variables=["item"],
+        llm_factory=lambda config, model, temperature: clients[model],
+        default_model="default-plain",
+    )
+
+    with model_profile_scope(ModelProfile(name="routed", provider="test", model="routed-plain")):
+        result = await node.run({"item": "mug"})
+
+    assert result.label == "ok"
+    assert profile_client.requests, "profile-resolved client was never invoked"
+    assert not default_client.requests, "default client was invoked despite an active profile"

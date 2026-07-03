@@ -152,9 +152,9 @@ class Config(IConfig):
     ANKI_CARD_MODEL: str = _model('anki_card', 'gpt-5.4-mini')
     WORKFLOW_DEFAULT_MODEL: str = _model('default', ANKI_CARD_MODEL)
     # Per-node model profiles. These let cheap gates and stronger scenario/rendering nodes diverge.
-    # Text roles default to the metered API (owner decision 2026-07-03). 'chatgpt-web'
-    # stays a routable model name (services/llm_factory.py registry): point any role at it
-    # to ride the ChatGPT-browser subscription instead.
+    # CODE-DEFAULT layer only: API models. The LIVE layer (config/anki.profile.yaml)
+    # currently routes all four roles to 'claude-p'. Routable backend names any role can
+    # use: 'claude-p', 'codex-exec', 'chatgpt-web' (services/llm_factory.py registry).
     ANKI_DECISION_MODEL: str = _model('anki_decision', ANKI_CARD_MODEL)
     ANKI_SCENARIO_MODEL: str = _model('anki_scenario', ANKI_CARD_MODEL)
     ANKI_RENDER_MODEL: str = _model('anki_render', ANKI_CARD_MODEL)
@@ -170,9 +170,9 @@ class Config(IConfig):
     # AI-chosen image generation is controlled separately to avoid surprise image API cost.
     ANKI_IMAGE_GENERATION_ENABLED: bool = _bool_setting('anki_image_generation_enabled', True)
     ANKI_AUTO_IMAGE_GENERATION_ENABLED: bool = _bool_setting('anki_auto_image_generation_enabled', False)
-    # Default image provider is the ChatGPT-browser subscription service; note it does
-    # not support reference images yet (FR-1 pending) — style-reference decks must set
-    # anki_image_provider back to openai/gemini until that lands.
+    # Default image provider is the ChatGPT-browser subscription service. Reference
+    # images are supported (FR-1 shipped 2026-07-02): PPLA style refs ride along and a
+    # style-dropped result is refused loudly.
     ANKI_IMAGE_PROVIDER: str = str(_setting('anki_image_provider', 'chatgpt')).lower()
     WORKFLOW_IMAGE_PROVIDER: str = ANKI_IMAGE_PROVIDER
     ANKI_IMAGE_COMPARE_PROVIDERS: str = str(_setting('anki_image_compare_providers', ''))
