@@ -18,6 +18,14 @@ services:
       - TRELLO_TOKEN=${TRELLO_TOKEN:-}
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
+      # ChatGPT-browser service on the mini (default Anki text+image backend) — without
+      # this the first anki call fails loudly (chatgpt-web routes need the endpoint).
+      - CHATGPT_BROWSER_API_URL=${CHATGPT_BROWSER_API_URL:-}
+      # claude -p console backend auth (roles routed to 'claude-p'); no default — the CLI
+      # fails loudly without it.
+      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
     working_dir: /app
     command: bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate TGHandyUtils && python main.py"
     restart: unless-stopped
