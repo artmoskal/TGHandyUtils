@@ -36,9 +36,9 @@ Watch the local bot: `docker compose logs -f bot`.
 
 | Service | Used for | Config | Cost class |
 |---|---|---|---|
-| **ChatGPT-browser service** (Mac mini, Tailscale `http://100.107.180.35:8010`) | Anki text roles decision/scenario/render (`chatgpt-web` routable model) + Anki image generation incl. PPLA style refs (FR-1) | `CHATGPT_BROWSER_API_URL` env — REQUIRED when any role routes there; loud error if missing. Knobs: `anki_chatgpt_browser_timeout_seconds`, `anki_chatgpt_browser_force_fresh` | `subscription_notional` (rides ChatGPT Pro; `cost_known=false`) |
-| **OpenAI API** | Anki text roles (decision/scenario/render defaults), quality role (vision inspection), whisper/audio, general chat workflows, optional image provider | `OPENAI_API_KEY` | metered |
-| **claude -p CLI** (in the bot image) | optional text backend — set any anki role model to `claude-p` | `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`; no default, loud if missing). NOTE: shares the owner's Claude-subscription quota with coding sessions | `subscription_notional` |
+| **ChatGPT-browser service** (Mac mini, Tailscale `http://100.107.180.35:8010`) | Anki IMAGE generation incl. PPLA style refs (FR-1); optional text via the `chatgpt-web` routable model | `CHATGPT_BROWSER_API_URL` env — REQUIRED when any role routes there; loud error if missing. Knobs: `anki_chatgpt_browser_timeout_seconds`, `anki_chatgpt_browser_force_fresh` | `subscription_notional` (rides ChatGPT Pro; `cost_known=false`) |
+| **OpenAI API** | general bot plumbing (classifier/task parsing), whisper/audio, uploaded-photo vision, optional anki backends/image provider | `OPENAI_API_KEY` | metered |
+| **claude -p CLI** (in the bot image) | DEFAULT for all four anki text roles incl. quality (staged vision: the CLI reads generated card images). `codex-exec` is the sibling backend | `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`; no default, loud if missing). NOTE: shares the owner's Claude-subscription quota with coding sessions | `subscription_notional` |
 | **Gemini** | optional image provider (`anki_image_provider: gemini`) | `GEMINI_API_KEY` | metered |
 | **ElevenLabs** | Anki voice generation | `ELEVENLABS_API_KEY` | metered |
 | **Telegram** | the bot itself | `TELEGRAM_BOT_TOKEN` (different per instance) | — |
@@ -55,8 +55,9 @@ Watch the local bot: `docker compose logs -f bot`.
 - Backend selection is per-role via the model name: set any `anki_*` role model to
   `chatgpt-web` (browser) or an API model name (metered). Registry:
   `services/llm_factory.py` (`LLMBackend`, `register_llm_backend`).
-- The quality role must stay on an API vision model while
-  `anki_quality_inspect_images: true` — text-only backends are rejected at construction.
+- The quality role needs a VISION-capable backend while `anki_quality_inspect_images: true`:
+  API vision models qualify, `claude-p` qualifies via staged files; genuinely text-only
+  backends (`chatgpt-web` /ask) are rejected loudly at construction.
 
 ## Testing
 
@@ -72,7 +73,9 @@ Watch the local bot: `docker compose logs -f bot`.
 
 1. Push/merge `polish/workflow-engine` (pushing is the owner's action, never automated).
 2. Deploy via `aws_deploy` Ansible as usual.
-3. Add `CHATGPT_BROWSER_API_URL=http://100.107.180.35:8010` to the Pi's env.
+3. Add `CHATGPT_BROWSER_API_URL=http://100.107.180.35:8010` AND `CLAUDE_CODE_OAUTH_TOKEN`
+   to the Pi's env (template via aws_deploy secrets; infra compose uses env_file so no
+   compose change is needed).
 4. Verify the Pi reaches the mini over Tailscale (`curl <url>/ping` from the Pi) — without
    it the first Anki call fails loudly by design.
 
