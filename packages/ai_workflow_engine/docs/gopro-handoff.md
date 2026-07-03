@@ -1,19 +1,25 @@
 # GoPro — AI Workflow Engine Usage Guide
 
-> **PIN (2026-07-02):** pin tag `engine-v0.6.5` and build a wheel from it. The consumer model is
+> **PIN (2026-07-02):** pin tag `engine-v0.6.6` and build a wheel from it. The consumer model is
 > breaking-allowed tag-to-tag — do NOT track the live branch. The current tag carries the full
-> capability set (see **"What v0.6.5 gives you"**): cross-run memory, config-first observation
+> capability set (see **"What v0.6.6 gives you"**): cross-run memory, config-first observation
 > (log→bundle→viewer; HTML rendering lives in the separate `ai_workflow_viewer` package), strict
 > prompt files, machine identity, and the hardened seam guards.
+> **v0.6.6 delta (2026-07-03), pick it up — it contains a consumer-facing FIX:** structured
+> nodes dispatched factory-built PLAIN clients (e.g. `ConsoleLLMClient`) down the LangChain
+> path on their first execution (crash on missing `.invoke`, recovered only on retry), and a
+> profile routing to a different plain backend could invoke the default client. Both fixed.
+> Also: usage captions now separate `billed (API)` (real charges) from `subscription … plan
+> value`; usage events carry honest `provider` attribution incl. on FAILED calls.
 > **One-door rule for consumers:** construct provider clients only through sanctioned factory/adapter
 > modules. A direct provider client in workflow code is a reviewed allow-list entry, not a local
 > shortcut — otherwise you lose observability, cost accounting, and model-swap.
 
-Status: **ready for adoption — pin `engine-v0.6.5`** and build a wheel; never track the live branch.
+Status: **ready for adoption — pin `engine-v0.6.6`** and build a wheel; never track the live branch.
 The `WorkflowDefinition` / `WorkflowExecutor` / DI layer is live and proven (Anki runs on it in
 production; one `WorkflowExecutor` runs the product-neutral examples). The sibling `ai_workflow_tools`
 package ships CLI-agent + console-LLM support (`claude -p` / `codex exec`) and the media pack. See
-**"What v0.6.5 gives you"** at the end for the full capability list.
+**"What v0.6.6 gives you"** at the end for the full capability list.
 Not in v0.6 (deferred): durable/semantic memory beyond the `MemoryStore` seam, FlowArtifact v1.5,
 ProcessArtifact/v2, browser/no-API executors.
 Source needs: `/Users/artemm/PycharmProjects/gopro-streaming/docs/architecture/workflow-execution-engine-requirements.md`,
@@ -257,9 +263,9 @@ import from `ai_workflow_tools.cli_agents`: `CliAgentCapability`, `CliAgentReque
 
 ---
 
-## What v0.6.5 gives you
+## What v0.6.6 gives you
 
-The full capability set in `engine-v0.6.5` (older tags are unsupported — no deltas to track):
+The full capability set in `engine-v0.6.6` (older tags are unsupported — no deltas to track):
 
 - **Agent brain + LLM protocol.** Multi-turn, tool-calling protocol (`ChatMessage`/`ToolSpec`/
   `ToolCallRequest`/`ToolResult`); a shipped `LLMAgentPlanner` (screenshot→vision loop, per-turn
