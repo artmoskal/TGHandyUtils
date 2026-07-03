@@ -472,7 +472,7 @@ async def test_console_stages_images_and_allows_read_tool(fake_cli_path, monkeyp
     assert "inputs/img-1.png" in record["cwd_files"], record["cwd_files"]
     assert record["stdin"].startswith("First read and inspect these image file(s)")
     assert "inputs/img-1.png" in record["stdin"]
-    assert "--allowedTools" in record["argv"] and "Read" in record["argv"]
+    assert "--allowedTools" in record["argv"] and "Read(./inputs/**)" in record["argv"]
 
 
 async def test_console_stages_path_source_images_by_copy(fake_cli_path, monkeypatch, tmp_path):

@@ -56,7 +56,10 @@ class ConsoleLLMClient:
                     f"{listing}. They are required context for the task below.\n\n{prompt}"
                 )
                 if self.flavor.name == claude_p.name and "--allowedTools" not in extra_argv:
-                    extra_argv = [*extra_argv, "--allowedTools", "Read"]
+                    # Path-SCOPED Read: only the staged inputs are readable. An unscoped
+                    # Read would let hostile prompt content steer the agent into reading
+                    # anything visible to the process (e.g. /app/.env in the bot container).
+                    extra_argv = [*extra_argv, "--allowedTools", "Read(./inputs/**)"]
             invocation = _build_console_invocation(self.flavor, prompt, Path(workspace), extra_argv)
             external = await self.external_runner(
                 None,
