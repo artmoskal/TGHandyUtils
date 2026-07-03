@@ -193,6 +193,10 @@ class StructuredLLMNode:
                 f"{self.name}: model_profile '{profile.name}' requested but this node has a fixed "
                 "llm client; construct it with llm_factory or remove the node's model_profile"
             )
+        if self._llm_factory is None:
+            # Fixed PLAIN callable + profile: there is no factory to rebuild from — the
+            # profile rides on request metadata instead (the plain path's contract).
+            return self.llm
         if not hasattr(self, "_llm_by_model"):
             self._llm_by_model = {}
         if profile.model not in self._llm_by_model:
@@ -226,7 +230,13 @@ class StructuredLLMNode:
                 f"{self.name}: model_profile '{profile.name}' requested but this node has a fixed "
                 "llm client; construct it with llm_factory or remove the node's model_profile"
             )
-        if is_plain_llm_callable(self._llm):
+        # Dispatch on the client that will ACTUALLY be used — resolved through the lazy
+        # factory and the active profile. Checking the raw self._llm field here dispatched
+        # factory-built plain callables down the LangChain path on their FIRST execution
+        # (self._llm still None -> "not plain") and crashed on the missing .invoke; the
+        # node only recovered on re-execution once the client was cached (live Anki bug,
+        # 2026-07-02).
+        if is_plain_llm_callable(self._llm_for_profile(profile)):
             # Plain-callable client (no LangChain): async path, LLMRequest transport,
             # uniform metering with honest cost attribution (RC2).
             return await self._invoke_callable_with_retry(
@@ -328,6 +338,9 @@ class StructuredLLMNode:
                     config=self.config,
                     cost_class=response.cost_class,
                     notional_usd=response.notional_usd,
+                    # Traceability: clients may declare who they are (e.g. 'claude_p',
+                    # 'chatgpt_browser'); anonymous callables stay 'custom'.
+                    provider=getattr(self.llm, "provider_label", None) or "custom",
                 )
                 parsed = self.parser.parse(self._apply_pre_parse(response.text, attempt, content_hash))
                 if self.validator:

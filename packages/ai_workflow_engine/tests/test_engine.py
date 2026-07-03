@@ -1788,8 +1788,9 @@ def test_usage_summary_displays_cached_input_tokens():
     assert "700" in text
     assert "$0.0007" in text
     assert "$0.0141" in text
-    assert "total: 1 text, 1 image, 3k in, 1.5k cached, 400 out, metered $0.0148" in text
-    assert "notional" not in text  # pure-metered run: absent is not unknown
+    assert "total: 1 text, 1 image, 3k in, 1.5k cached, 400 out" in text
+    assert "billed (API): $0.0148" in text
+    assert "subscription" not in text  # pure-metered run: absent is not unknown
 
 
 def test_usage_summary_separates_metered_and_subscription_notional_costs():
@@ -1821,7 +1822,8 @@ def test_usage_summary_separates_metered_and_subscription_notional_costs():
     assert summary.metered_usd == 0.25
     assert summary.estimated_usd == 0.25
     assert summary.notional_usd == 0.42
-    assert "metered $0.2500 / notional $0.4200" in text
+    assert "billed (API): $0.2500" in text
+    assert "subscription: ~$0.4200 plan value, no extra charge" in text
     assert "$99.0000" not in text
 
 
@@ -1843,8 +1845,9 @@ def test_usage_summary_displays_tool_character_count_when_present():
     assert "generate_voice" in text
     assert "tool" in text
     assert "42ch" in text
-    assert "total: 0 text, 0 image, 1 tool, 0 in, 0 cached, 0 out, 42 chars, metered ?" in text
-    assert "notional" not in text  # no subscription events -> no notional segment
+    assert "total: 0 text, 0 image, 1 tool, 0 in, 0 cached, 0 out, 42 chars" in text
+    assert "billed (API): ?" in text  # metered calls happened, price unknown — honestly unknown
+    assert "subscription" not in text  # no subscription events -> no plan-value segment
 
 
 async def test_structured_llm_node_splits_static_prefix_and_dynamic_tail():
@@ -2974,8 +2977,8 @@ def test_format_trace_events_renders_flow_decisions_and_usage():
     assert "study_goal: recall the Bernoulli relationship" in text
     assert "(attempt 2)" in text
     assert "overload" in text
-    assert "metered $0.0100" in text  # usage/cost footer
-    assert "notional" not in text  # pure-metered run: absent is not unknown
+    assert "billed (API): $0.0100" in text  # usage/cost footer — real money only
+    assert "subscription" not in text  # pure-metered run: absent is not unknown
 
 
 def test_format_trace_events_preserves_usage_footer_when_trace_is_truncated():
@@ -3006,8 +3009,8 @@ def test_format_trace_events_preserves_usage_footer_when_trace_is_truncated():
     text = format_trace_events(events, usage=usage, title="Trace", max_total_len=600)
 
     assert "…(trace truncated)" in text
-    assert "metered $0.0100" in text
-    assert "notional $0.0200" in text
+    assert "billed (API): $0.0100" in text
+    assert "subscription: ~$0.0200 plan value" in text
 
 
 def test_format_trace_events_omits_observation_noise_to_keep_domain_decisions_visible():

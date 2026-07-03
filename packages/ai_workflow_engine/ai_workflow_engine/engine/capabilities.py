@@ -703,18 +703,30 @@ def _omit_trace_metadata_key(key: str) -> bool:
 
 
 def _format_trace_usage_footer(usage: WorkflowUsageSummary) -> str:
-    # Absent is not unknown: render the notional segment only when subscription events exist.
+    # Same money-honesty language as format_usage_summary: "billed" is REAL provider
+    # charges only ($0 when no metered events exist — absent is not unknown); the
+    # subscription segment is plan value, appears only when subscription calls exist.
+    has_metered = any(
+        getattr(event, "cost_class", "metered") == "metered" for event in usage.events
+    )
     has_subscription = any(
         getattr(event, "cost_class", "metered") == "subscription_notional"
         for event in usage.events
     )
-    notional_segment = (
-        f" / notional {_format_trace_cost(usage.notional_usd)}" if has_subscription else ""
+    billed = (
+        f"billed (API): {_format_trace_cost(usage.metered_usd)}" if has_metered else "billed (API): $0"
     )
+    if has_subscription:
+        if usage.notional_usd is not None:
+            subscription = f" · subscription: ~{_format_trace_cost(usage.notional_usd)} plan value"
+        else:
+            subscription = " · subscription: plan-covered (value unknown)"
+    else:
+        subscription = ""
     return (
         f"— {usage.text_call_count} text / {usage.image_call_count} image / "
         f"{usage.tool_call_count} tool calls, {usage.total_tokens} tokens, "
-        f"metered {_format_trace_cost(usage.metered_usd)}{notional_segment}"
+        f"{billed}{subscription}"
     )
 
 

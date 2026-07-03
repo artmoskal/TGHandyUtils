@@ -119,6 +119,7 @@ def record_callable_usage(
     config: Any = None,
     cost_class: Literal["metered", "subscription_notional"] = "metered",
     notional_usd: Optional[float] = None,
+    provider: str = "custom",
 ) -> None:
     """Meter one plain-callable LLM call with honest cost attribution (RC2)."""
 
@@ -143,7 +144,7 @@ def record_callable_usage(
         cost_source = "unknown"
     record_usage_event(
         WorkflowUsageEvent(
-            provider="custom",
+            provider=provider,
             operation="chat",
             cost_class=cost_class,
             node=node,

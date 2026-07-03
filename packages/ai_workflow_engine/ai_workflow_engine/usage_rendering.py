@@ -18,16 +18,31 @@ def format_usage_summary(summary: Optional[WorkflowUsageSummary]) -> str:
         "node/provider        op       in   cache     out      cost",
     ]
     rows.extend(_format_usage_event_row(event) for event in summary.events)
-    # Absent is not unknown: the notional segment appears only when subscription events exist.
-    # A pure-metered run must not render "notional ?" — that would conflate "no flat-rate usage"
-    # with "flat-rate cost unknown" (the cost-honesty axis, inverted).
+    # Money honesty in the caption (owner requirement 2026-07-03): "billed" is REAL money
+    # charged by API providers; "subscription" is plan value already paid for — never money
+    # spent by this run. Absent is not unknown: with NO metered events, billed is a true $0;
+    # with metered events of unknown price it stays "?". The subscription segment appears
+    # only when subscription calls exist ("no flat-rate usage" must not read as "unknown").
+    has_metered = any(
+        getattr(event, "cost_class", "metered") == "metered" for event in summary.events
+    )
     has_subscription = any(
         getattr(event, "cost_class", "metered") == "subscription_notional" for event in summary.events
     )
-    notional_segment = (
-        f" / notional {_format_usage_cost(summary.notional_usd)}" if has_subscription else ""
-    )
-    rows.append(
+    if has_metered:
+        billed_segment = f"billed (API): {_format_usage_cost(summary.metered_usd)}"
+    else:
+        billed_segment = "billed (API): $0"
+    if has_subscription:
+        if summary.notional_usd is not None:
+            subscription_segment = (
+                f" · subscription: ~{_format_usage_cost(summary.notional_usd)} plan value, no extra charge"
+            )
+        else:
+            subscription_segment = " · subscription: plan-covered (value unknown), no extra charge"
+    else:
+        subscription_segment = ""
+    total_line = (
         "total: "
         f"{summary.text_call_count} text, {summary.image_call_count} image, "
         f"{tool_total}"
@@ -35,8 +50,9 @@ def format_usage_summary(summary: Optional[WorkflowUsageSummary]) -> str:
         f"{_compact_token_count(summary.cached_input_tokens)} cached, "
         f"{_compact_token_count(summary.output_tokens)} out, "
         f"{char_total}"
-        f"metered {_format_usage_cost(summary.metered_usd)}{notional_segment}"
     )
+    rows.append(total_line.rstrip(", "))
+    rows.append(f"{billed_segment}{subscription_segment}")
     return "\n".join(rows)
 
 
@@ -53,8 +69,18 @@ def _format_usage_event_row(event: WorkflowUsageEvent) -> str:
         f"{input_value:>7} "
         f"{_compact_token_count(cached_tokens):>7} "
         f"{_compact_token_count(output_tokens):>7} "
-        f"{_format_usage_cost(_event_display_cost(event)):>9}"
+        f"{_format_event_cost(event):>9}"
     )
+
+
+def _format_event_cost(event: WorkflowUsageEvent) -> str:
+    """Per-row cost: real money verbatim; subscription value prefixed '~'; a subscription
+    call with unknown value shows 'incl.' (covered by the plan) — never a scary '?'."""
+
+    cost = _event_display_cost(event)
+    if getattr(event, "cost_class", "metered") == "subscription_notional":
+        return f"~{_format_usage_cost(cost)}" if cost is not None else "incl."
+    return _format_usage_cost(cost)
 
 
 def _usage_event_label(event: WorkflowUsageEvent) -> str:

@@ -102,15 +102,42 @@ def test_image_and_text_token_estimation_shapes():
     assert estimate_text_tokens(["ab", {"text": "cdef"}]) >= 2
 
 
-def test_summary_formatting_renders_notional_only_for_subscription_runs():
+def test_summary_formatting_separates_billed_from_subscription_value():
+    """The caption must never let plan value read as real spend (owner req 2026-07-03)."""
+
     metered = WorkflowUsageSummary()
     metered.add_event(WorkflowUsageEvent(node="a", model="m", estimated_usd=0.01, total_tokens=10))
     rendered = format_usage_summary(metered)
-    assert "metered" in rendered and "notional" not in rendered
+    assert "billed (API): $0.0100" in rendered
+    assert "subscription" not in rendered  # no flat-rate usage ≠ unknown flat-rate cost
 
     mixed = WorkflowUsageSummary()
     mixed.add_event(WorkflowUsageEvent(node="a", model="m", estimated_usd=0.01))
     mixed.add_event(
         WorkflowUsageEvent(node="b", model="m", cost_class="subscription_notional", notional_usd=0.2)
     )
-    assert "notional" in format_usage_summary(mixed)
+    rendered = format_usage_summary(mixed)
+    assert "billed (API): $0.0100" in rendered
+    assert "subscription: ~$0.2000 plan value, no extra charge" in rendered
+    assert "~$0.2000" in rendered.splitlines()[3]  # subscription ROW carries the ~ marker
+
+
+def test_summary_formatting_pure_subscription_run_shows_true_zero_billed():
+    subscription = WorkflowUsageSummary()
+    subscription.add_event(
+        WorkflowUsageEvent(node="q", model="claude-p", cost_class="subscription_notional", notional_usd=0.05)
+    )
+    rendered = format_usage_summary(subscription)
+    assert "billed (API): $0" in rendered  # NO metered events -> genuinely nothing billed
+    assert "plan value, no extra charge" in rendered
+
+
+def test_summary_formatting_unknown_subscription_value_says_plan_covered():
+    unknown = WorkflowUsageSummary()
+    unknown.add_event(
+        WorkflowUsageEvent(node="img", model="chatgpt-web", cost_class="subscription_notional")
+    )
+    rendered = format_usage_summary(unknown)
+    assert "plan-covered (value unknown)" in rendered
+    assert "incl." in rendered  # row shows included-in-plan, never a scary '?'
+    assert "billed (API): $0" in rendered

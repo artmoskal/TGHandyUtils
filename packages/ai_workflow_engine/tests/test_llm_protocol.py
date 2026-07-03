@@ -290,3 +290,49 @@ async def test_vision_images_ride_on_the_llm_request():
     assert len(request.images) == 1
     assert request.images[0].role == "frame"
     assert request.images[0].data == "aGVsbG8="
+
+
+async def test_factory_built_plain_callable_uses_plain_path_on_FIRST_execution():
+    """Regression (live Anki bug 2026-07-02): dispatch checked the raw self._llm field,
+    which is None before the lazy llm_factory fires — so a factory-built PLAIN client was
+    sent down the LangChain path on its first execution and crashed on the missing
+    .invoke. Dispatch must resolve the client (factory included) before branching."""
+
+    from ai_workflow_engine.engine import StructuredLLMNode
+
+    client = FakeOllamaClient()
+    factory_calls = []
+
+    def factory(config, model, temperature):
+        factory_calls.append(model)
+        return client
+
+    node = StructuredLLMNode(
+        name="first_run_dispatch",
+        config=object(),
+        output_model=Verdict,
+        prompt_template="Classify {item}.",
+        input_variables=["item"],
+        llm_factory=factory,
+        default_model="fake-plain",
+    )
+
+    result = await node.run({"item": "mug"})  # FIRST execution — crashed before the fix
+
+    assert result.label == "ok"
+    assert client.requests, "plain client was never invoked through the plain path"
+    assert factory_calls == ["fake-plain"], "factory should build exactly once at dispatch"
+
+
+async def test_plain_callable_provider_label_reaches_usage_events():
+    """Traceability: clients that declare provider_label are attributed in usage events
+    (anonymous callables stay 'custom')."""
+
+    client = FakeOllamaClient()
+    client.provider_label = "claude_p"
+    engine = _engine(client)
+
+    result = await engine.run("classifier", "a mug")
+
+    assert result.status == "completed"
+    assert result.usage.events[0].provider == "claude_p"
