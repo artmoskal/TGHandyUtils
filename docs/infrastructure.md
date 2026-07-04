@@ -59,6 +59,30 @@ Watch the local bot: `docker compose logs -f bot`.
   API vision models qualify, `claude-p` qualifies via staged files; genuinely text-only
   backends (`chatgpt-web` /ask) are rejected loudly at construction.
 
+## Known deliberate deviation — front-door paths run off-engine (owner decision 2026-07-04)
+
+The message classifier (`services/content/classifier.py:36`), task parsing
+(`services/parsing_service.py:40`), whisper transcription, uploaded-photo vision, and the
+Todoist/Trello/Calendar platform writes (`platforms/*.py` — no `external_write` gating)
+predate the workflow engine and bypass it: no trace/bundles, no budget gates, no backend
+registry routing, no side-effect policy on platform writes. This contradicts the north
+star ("one engine across the gradient") and is **deliberately deferred, not endorsed**:
+the engine ships to external consumers first (MageQA/GoPro) and must prove itself there.
+
+**Revisit trigger:** engine polished + shipped + validated by other applications — or the
+next front-door bug that trace-lessness makes painful, whichever comes first. Migration
+shape when triggered (sliced, parity-gated): classifier → one-step engine flow with
+routing-parity fixtures; task parsing → structured node + `external_write`-gated platform
+capabilities with idempotency keys; whisper/vision → engine capabilities. Old paths get
+DELETED on cutover (no duplicate implementations).
+
+## Planned work (design docs, approved 2026-07-04)
+
+- [run-durability-plan.md](run-durability-plan.md) — no silent run loss on restart (loud
+  sweep first, re-dispatch + dedup second).
+- [cost-ledger-plan.md](cost-ledger-plan.md) — durable per-pool usage ledger, optional
+  daily caps with loud refusal, `/usage` command.
+
 ## Testing
 
 - `./test.sh unit` — full mocked tier in Docker (NEVER bare pytest). Batch variants:
@@ -82,6 +106,6 @@ Watch the local bot: `docker compose logs -f bot`.
 ## In-repo packages
 
 `packages/ai_workflow_engine` (the reusable workflow engine — consumers pin tags, currently
-`engine-v0.6.5`), `packages/ai_workflow_tools` (CLI agents, ChatGPT-browser clients, media
+`engine-v0.6.6`), `packages/ai_workflow_tools` (CLI agents, ChatGPT-browser clients, media
 providers), `packages/ai_workflow_viewer` (observation-bundle viewer). Observation bundles:
 `data/observations/<run_id>/` per run (trace/details/usage/meta/definition/artifacts).
