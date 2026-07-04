@@ -178,7 +178,7 @@ class AnkiCardService:
             config=self.config,
             # the backend registry knows whether this model is metered or rides a
             # subscription — phantom metered $0 would break cost honesty.
-            cost_class=llm_cost_class(model_name),
+            cost_class=llm_cost_class(model_name, self.config),
             provider=llm_provider_label(model_name),
         )
         card_set = self._parser.parse(output.content)

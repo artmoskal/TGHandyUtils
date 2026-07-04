@@ -17,6 +17,7 @@ BATCH_SIZE=""
 START_INDEX=0
 SHOW_HELP=false
 PYTEST_ARGS=""
+PYTEST_EXTRA_ARGS=()
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -41,6 +42,7 @@ while [[ $# -gt 0 ]]; do
             # Everything after -- is passed to pytest
             shift
             PYTEST_ARGS="$@"
+            PYTEST_EXTRA_ARGS=("$@")
             break
             ;;
         *)
@@ -163,19 +165,6 @@ docker-compose -f docker-compose.test.yml down --remove-orphans --volumes 2>/dev
 # Create test results directory
 mkdir -p test-results
 
-# Determine pytest marker based on test type
-case $TEST_TYPE in
-    unit)
-        PYTEST_MARKER="-m unit"
-        ;;
-    integration)
-        PYTEST_MARKER="-m integration"
-        ;;
-    all)
-        PYTEST_MARKER=""
-        ;;
-esac
-
 # Function to run tests (with or without batching)
 run_tests() {
     local test_files="$1"
@@ -188,19 +177,40 @@ run_tests() {
         coverage_html_dir="htmlcov-$batch_label"
     fi
     
-    docker-compose -f docker-compose.test.yml run --rm -e RUNNING_IN_DOCKER=1 bot-test bash -c "
-        echo 'Running tests...' &&
-        python -m pytest $test_files -v \
-            $PYTEST_MARKER \
-            --log-cli-level=DEBUG \
-            --log-cli-format='%(asctime)s [%(levelname)s] %(name)s - %(message)s' \
-            --cov=services --cov=ai_workflow_engine --cov=ai_workflow_tools --cov=ai_workflow_viewer --cov=platforms --cov=database --cov=models --cov=core \
-            --cov-report=term-missing \
-            --cov-report=html:/app/test-results/$coverage_html_dir \
-            --cov-report=xml:/app/test-results/coverage$coverage_suffix.xml \
-            --junit-xml=/app/test-results/junit$coverage_suffix.xml \
-            $PYTEST_ARGS
-    "
+    TEST_TARGETS="$test_files" docker-compose -f docker-compose.test.yml run --rm \
+        -e RUNNING_IN_DOCKER=1 \
+        -e TEST_TARGETS \
+        bot-test bash -c '
+            echo "Running tests..."
+            args=(python -m pytest)
+            if [ -n "$TEST_TARGETS" ]; then
+                read -r -a targets <<< "$TEST_TARGETS"
+                args+=("${targets[@]}")
+            fi
+            args+=(-v)
+            if [ "$1" != "all" ]; then
+                args+=(-m "$1")
+            fi
+            args+=(
+                --log-cli-level=DEBUG
+                --log-cli-format="%(asctime)s [%(levelname)s] %(name)s - %(message)s"
+                --cov=services
+                --cov=ai_workflow_engine
+                --cov=ai_workflow_tools
+                --cov=ai_workflow_viewer
+                --cov=platforms
+                --cov=database
+                --cov=models
+                --cov=core
+                --cov-report=term-missing
+                --cov-report=html:/app/test-results/"$2"
+                --cov-report=xml:/app/test-results/coverage"$3".xml
+                --junit-xml=/app/test-results/junit"$3".xml
+            )
+            shift 3
+            args+=("$@")
+            "${args[@]}"
+        ' bash "$TEST_TYPE" "$coverage_html_dir" "$coverage_suffix" "${PYTEST_EXTRA_ARGS[@]}"
 }
 
 # Run tests with or without batching

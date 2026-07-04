@@ -44,6 +44,7 @@ WORKFLOW_OVERRIDE_MAP = {
     "IMAGE_OUTPUT_FORMAT": ("settings", "anki_image_output_format"),
     "GEMINI_IMAGE_SIZE": ("settings", "anki_gemini_image_size"),
     "IMAGE_PROVIDER_TIMEOUT_SECONDS": ("settings", "anki_image_provider_timeout_seconds"),
+    "CODEX_COST_CLASS": ("settings", "anki_codex_cost_class"),
     "STYLE_CHARACTER_REFERENCE_IMAGE": ("settings", "anki_style_character_reference_image"),
     "STYLE_DESIGN_REFERENCE_IMAGE": ("settings", "anki_style_design_reference_image"),
     "STYLE_REFERENCE_VERSION": ("settings", "anki_style_reference_version"),
@@ -234,6 +235,8 @@ class Config(IConfig):
     ANKI_CLAUDE_P_TIMEOUT_SECONDS: int = _int_setting('anki_claude_p_timeout_seconds', 240)
     # codex exec console backend (routing key 'codex-exec'); binary + auth required at runtime.
     ANKI_CODEX_TIMEOUT_SECONDS: int = _int_setting('anki_codex_timeout_seconds', 240)
+    ANKI_CODEX_COST_CLASS: str = str(_setting('anki_codex_cost_class', 'subscription_notional'))
+    WORKFLOW_CODEX_COST_CLASS: str = ANKI_CODEX_COST_CLASS
     ANKI_STYLE_CHARACTER_REFERENCE_IMAGE: str = str(_setting('anki_style_character_reference_image', ''))
     ANKI_STYLE_DESIGN_REFERENCE_IMAGE: str = str(_setting('anki_style_design_reference_image', ''))
     ANKI_STYLE_REFERENCE_VERSION: str = str(_setting('anki_style_reference_version', ''))

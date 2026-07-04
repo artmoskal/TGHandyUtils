@@ -132,3 +132,106 @@ def test_application_config_direct_env_reads_are_secrets_or_deployment_knobs():
     }
 
     assert direct_env_keys == allowed
+
+
+def _pytest_mark_names(node):
+    if isinstance(node, ast.Attribute):
+        value = node.value
+        if (
+            isinstance(value, ast.Attribute)
+            and value.attr == "mark"
+            and isinstance(value.value, ast.Name)
+            and value.value.id == "pytest"
+        ):
+            return {node.attr}
+    if isinstance(node, ast.Call):
+        return _pytest_mark_names(node.func)
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        names = set()
+        for item in node.elts:
+            names.update(_pytest_mark_names(item))
+        return names
+    return set()
+
+
+def test_test_files_do_not_mix_unit_and_integration_markers():
+    """A test item selected by both tiers makes wrapper results untrustworthy."""
+
+    repo_root = Path(__file__).resolve().parents[2]
+    roots = [
+        repo_root / "tests",
+        repo_root / "packages" / "ai_workflow_engine" / "tests",
+        repo_root / "packages" / "ai_workflow_tools" / "tests",
+        repo_root / "packages" / "ai_workflow_viewer" / "tests",
+    ]
+    offenders = []
+    for root in roots:
+        for path in sorted(root.rglob("test_*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            module_marks = set()
+            for node in tree.body:
+                if not isinstance(node, ast.Assign):
+                    continue
+                if any(isinstance(target, ast.Name) and target.id == "pytestmark" for target in node.targets):
+                    module_marks.update(_pytest_mark_names(node.value))
+            for node in tree.body:
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                marks = set(module_marks)
+                for decorator in node.decorator_list:
+                    marks.update(_pytest_mark_names(decorator))
+                if {"unit", "integration"} <= marks:
+                    offenders.append(f"{path.relative_to(repo_root)}::{node.name}")
+
+    assert not offenders, "tests marked as both unit and integration:\n" + "\n".join(offenders)
+
+
+def test_every_test_carries_a_tier_marker():
+    """The OTHER half of the marker hazard (bit us 2026-07-03): a test with NO tier
+    marker is silently deselected from BOTH tiers and never runs anywhere."""
+
+    repo_root = Path(__file__).resolve().parents[2]
+    roots = [
+        repo_root / "tests",
+        repo_root / "packages" / "ai_workflow_engine" / "tests",
+        repo_root / "packages" / "ai_workflow_tools" / "tests",
+        repo_root / "packages" / "ai_workflow_viewer" / "tests",
+    ]
+    tier_marks = {"unit", "integration", "api"}
+    offenders = []
+    for root in roots:
+        for path in sorted(root.rglob("test_*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            module_marks = set()
+            for node in tree.body:
+                if not isinstance(node, ast.Assign):
+                    continue
+                if any(isinstance(target, ast.Name) and target.id == "pytestmark" for target in node.targets):
+                    module_marks.update(_pytest_mark_names(node.value))
+            for node in tree.body:
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                if not node.name.startswith("test_"):
+                    continue
+                marks = set(module_marks)
+                for decorator in node.decorator_list:
+                    marks.update(_pytest_mark_names(decorator))
+                if not (tier_marks & marks):
+                    offenders.append(f"{path.relative_to(repo_root)}::{node.name}")
+
+    assert not offenders, (
+        "tests with NO tier marker (never selected by any tier):\n" + "\n".join(offenders)
+    )
+
+
+def test_test_wrapper_preserves_pytest_args_as_array():
+    """The wrapper must pass pytest args like ``-k 'a or b'`` without word-splitting."""
+
+    repo_root = Path(__file__).resolve().parents[2]
+    script = repo_root / "test.sh"
+    text = script.read_text(encoding="utf-8")
+
+    assert 'PYTEST_EXTRA_ARGS=("$@")' in text
+    assert 'args+=("$@")' in text
+    assert "python -m pytest $test_files" not in text
+    subprocess.run(["bash", "-n", str(script)], check=True)

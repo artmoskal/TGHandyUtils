@@ -113,10 +113,12 @@ def _backend_for(model: str) -> Optional[LLMBackend]:
     return _LLM_BACKENDS.get(str(model or "").strip().lower())
 
 
-def llm_cost_class(model: str) -> str:
+def llm_cost_class(model: str, config: IConfig | None = None) -> str:
     """Cost class for metering wrappers: 'metered' unless the backend says otherwise."""
 
     backend = _backend_for(model)
+    if backend and backend.provider == "codex_exec":
+        return _codex_cost_class(config)
     return backend.cost_class if backend else "metered"
 
 
@@ -147,7 +149,7 @@ def create_anki_chat_model(config: IConfig, model: str = DEFAULT_MODEL, temperat
     """Same routing for sync ``llm.invoke(messages)`` call sites (the render path).
 
     Callers metering via ``invoke_metered_chat`` should pass
-    ``cost_class=llm_cost_class(model)`` so subscription backends never report
+    ``cost_class=llm_cost_class(model, config)`` so subscription backends never report
     phantom metered USD.
     """
 
@@ -253,7 +255,7 @@ def _build_codex_exec_text(config: IConfig):
     return ConsoleLLMClient(
         codex_exec,
         timeout_s=float(getattr(config, "ANKI_CODEX_TIMEOUT_SECONDS", 240)),
-        subscription_mode=True,
+        subscription_mode=_codex_cost_class(config) == "subscription_notional",
     )
 
 
@@ -264,6 +266,27 @@ def _build_codex_exec_chat(config: IConfig):
         codex_exec,
         timeout_s=float(getattr(config, "ANKI_CODEX_TIMEOUT_SECONDS", 240)),
     )
+
+
+def _codex_cost_class(config: IConfig | None) -> str:
+    """Codex CLI can be ChatGPT-plan backed or API-key backed; make the economics explicit."""
+
+    raw = (
+        getattr(config, "WORKFLOW_CODEX_COST_CLASS", None)
+        if config is not None
+        else None
+    ) or (
+        getattr(config, "ANKI_CODEX_COST_CLASS", None)
+        if config is not None
+        else None
+    ) or "subscription_notional"
+    value = str(raw).strip().lower()
+    if value not in {"metered", "subscription_notional"}:
+        raise ValueError(
+            "WORKFLOW_CODEX_COST_CLASS must be 'subscription_notional' for ChatGPT-plan "
+            "auth or 'metered' for OPENAI_API_KEY-backed codex exec"
+        )
+    return value
 
 
 register_llm_backend(

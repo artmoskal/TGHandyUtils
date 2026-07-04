@@ -81,7 +81,6 @@ class FakeTelegramMessage:
         )
 
 
-@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_anki_processor_delivers_apkg_and_buffers_cards():
     user_id = 777001
@@ -118,7 +117,6 @@ async def test_anki_processor_delivers_apkg_and_buffers_cards():
         anki_buffer.clear(user_id)
 
 
-@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_anki_processor_caption_and_photo_preview_show_generated_image(tmp_path):
     user_id = 777002
@@ -164,7 +162,6 @@ async def test_anki_processor_caption_and_photo_preview_show_generated_image(tmp
         anki_buffer.clear(user_id)
 
 
-@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_anki_processor_sends_comparison_preview_without_embedding_alternative(tmp_path):
     user_id = 777005
@@ -218,7 +215,6 @@ async def test_anki_processor_sends_comparison_preview_without_embedding_alterna
         anki_buffer.clear(user_id)
 
 
-@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_anki_processor_caption_and_audio_preview_show_generated_voice(tmp_path):
     user_id = 777006
@@ -264,7 +260,6 @@ async def test_anki_processor_caption_and_audio_preview_show_generated_voice(tmp
         anki_buffer.clear(user_id)
 
 
-@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_anki_processor_caption_shows_fallback_used():
     user_id = 777003
@@ -297,7 +292,6 @@ async def test_anki_processor_caption_shows_fallback_used():
         anki_buffer.clear(user_id)
 
 
-@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_anki_processor_caption_can_show_usage_summary():
     user_id = 777004
@@ -351,7 +345,6 @@ async def test_anki_processor_caption_can_show_usage_summary():
         anki_buffer.clear(user_id)
 
 
-@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_anki_processor_sends_engine_trace_as_plain_text_debug_message():
     # Regression: the engine trace can carry card HTML (<br>, <img>); the debug message must send

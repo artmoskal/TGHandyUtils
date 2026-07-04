@@ -213,3 +213,24 @@ def test_codex_exec_backend_routes_with_subscription_facts():
     assert text_client.timeout_s == 77
     assert llm_cost_class("codex-exec") == "subscription_notional"
     assert llm_provider_label("codex") == "codex_exec"
+
+
+def test_codex_exec_cost_class_is_explicit_when_api_key_backed():
+    """Cost honesty: codex exec may run from ChatGPT-plan auth or OPENAI_API_KEY auth.
+    The latter is metered spend, so products must be able to mark it as metered."""
+
+    from types import SimpleNamespace
+
+    import pytest as _pytest
+
+    from services.llm_factory import create_anki_text_llm, llm_cost_class
+
+    config = SimpleNamespace(ANKI_CODEX_TIMEOUT_SECONDS=77, WORKFLOW_CODEX_COST_CLASS="metered")
+
+    text_client = create_anki_text_llm(config, "codex-exec", 0.0)
+    assert text_client.subscription_mode is False
+    assert llm_cost_class("codex-exec", config) == "metered"
+
+    bad_config = SimpleNamespace(WORKFLOW_CODEX_COST_CLASS="free-ish")
+    with _pytest.raises(ValueError, match="WORKFLOW_CODEX_COST_CLASS"):
+        llm_cost_class("codex-exec", bad_config)
