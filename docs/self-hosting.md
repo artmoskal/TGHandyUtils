@@ -105,6 +105,14 @@ reference-image support) at a self-hosted service that drives a logged-in ChatGP
 session. You must run your own instance — the author's is on a private network. Unless
 you already have this, use `openai` (default in pure-API mode) or `gemini`.
 
+## 7a. Style references — make visual cards look like YOURS, not the author's
+
+`config/anki.profile.yaml` ships `anki_style_character_reference_image` /
+`anki_style_design_reference_image` pointing at the author's `assets/anki/ppla-*.png`
+(an aviation-training visual identity). With those set, your generated visual cards adopt
+that look. To use your own style (or none): drop your reference PNGs under `assets/`,
+repoint `anki_style_*` in the profile, or blank them to generate unstyled images.
+
 ## 8. Troubleshooting (failures are loud by design)
 
 | Symptom | Meaning |
