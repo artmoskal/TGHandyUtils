@@ -86,6 +86,13 @@ def create_openai_client(config: IConfig, api_key: str = "") -> AsyncOpenAI:
 #
 # Unregistered model names fall through to the regular metered ChatOpenAI door, so plain
 # API models keep working untouched.
+#
+# ROUTING-KEY RULE (ship-review Q3, 2026-07-04): keys are matched EXACTLY and MUST NOT
+# resemble a real provider model id. Providers ship models with names like `codex-*` and
+# `gpt-*`; if a routing key collided with one, setting that model would silently hijack it
+# to the console/subscription backend. Keep keys distinctive (`chatgpt-web`, `claude-p`,
+# `codex-exec`) — never a bare `codex`/`gpt`-style token — so any real API model id falls
+# through to the metered door.
 
 
 @dataclass(frozen=True)
