@@ -297,6 +297,8 @@ register_llm_backend(
         supports_vision=True,  # staged files; codex reads its sandbox natively
         provider="codex_exec",
     ),
+    # Routing keys must NOT collide with plausible API model ids (OpenAI ships
+    # codex-named API models) — bare "codex" was removed for that reason; keys are
+    # exact-match so "codex-mini-latest" etc. always fall through to the API door.
     "codex-exec",
-    "codex",
 )

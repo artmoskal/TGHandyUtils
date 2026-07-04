@@ -212,7 +212,9 @@ def test_codex_exec_backend_routes_with_subscription_facts():
     assert text_client.flavor.name == "codex_exec"
     assert text_client.timeout_s == 77
     assert llm_cost_class("codex-exec") == "subscription_notional"
-    assert llm_provider_label("codex") == "codex_exec"
+    assert llm_provider_label("codex-exec") == "codex_exec"
+    # bare "codex" deliberately NOT a routing key (real-model-name collision risk):
+    assert llm_provider_label("codex") == "openai"
 
 
 def test_codex_exec_cost_class_is_explicit_when_api_key_backed():
