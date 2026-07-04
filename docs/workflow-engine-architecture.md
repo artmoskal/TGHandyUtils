@@ -211,6 +211,19 @@ Internal engine guards:
 The engine should ship canonical enums and reusable guard templates, but adopter repos must run the
 product-facing checks on their own packs and projections.
 
+**CLI-worker tool surface — scoped by call type (decided 2026-07-04; lands with the CLI-runtime
+fix wave, full spec in `docs/_discussion/2026-07-04-swiss-knife-gaps-design.md` §G-0.2):** a
+`claude -p`/`codex exec` worker's tool access is a property of *how it is used*, not one blanket
+rule. (1) A **structured LLM-node call** (`ConsoleLLMClient`/`ConsoleChatModel` behind a
+`StructuredLLMNode`) is a completion, not an agent — empty allow-list; a tool call would break the
+JSON parse/repair contract and add an injection surface for no benefit. (2) A **staged-vision call**
+gets `Read(./inputs/**)` only. (3) A **`CliAgentCapability`** — the real subagent — gets a
+documented, deliberately-generous default allow-list (`Read, Grep, Glob, LS, WebFetch, WebSearch,
+Bash`) when the request names none, overridable per request; `Edit`/`Write`/MCP stay opt-in because
+they are side-effecting and belong behind the `external_write` gate, never a silent default. The
+principle: lean generous for investigation agents, empty for completions — never bolt tools onto a
+node call to avoid it becoming an agent.
+
 **Enriched decisions — the supported recipe (decided 2026-07-01, supersedes a `transition_branch`
 primitive):** when a decision needs situation-specific enrichment ("retry — and change THIS") or an
 evolving in-run scratchpad, do not reach for a new node kind. Use a judgment `step` whose output

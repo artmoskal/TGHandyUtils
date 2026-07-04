@@ -9,10 +9,7 @@ Sections run in reading order §0→§13; **Appendix A** holds implementation hi
 complete · **[INTENDED]** designed, not built · **[FUTURE / discuss-later]** roadmap, needs its own
 spec + explicit approval. See the consolidated table in §13.
 **Doc jurisdiction:** this file is the permanent architecture source. Package/root READMEs and
-`ARCHITECTURE.md` are summaries. `packages/ai_workflow_engine/docs/engine-completion-spec.md` is
-historical implementation/completion provenance. `docs/_discussion/2026-06-19-engine-memory-design.md`
-is historical/T2 memory design workspace material; accepted T1 memory decisions are merged here.
-GoPro/MageQA handoffs are consumer recipes. If any of those conflict with this file, this file wins.
+`ARCHITECTURE.md` are summaries. GoPro/MageQA handoffs are consumer recipes. If any of those conflict with this file, this file wins.
 
 ---
 

@@ -170,7 +170,7 @@ architectural decision — raise it explicitly and we'll scope it then.
 
 ### Ask 4 (distribution / pip) — **git-tag + subdirectory pip install. Two packages, not one.**
 It's already pip-installable; there's no PyPI/private index (none planned unless demand justifies).
-Consume it the way GoPro does — pin an **immutable tag** (`engine-v0.6.0`), build a wheel, and never
+Consume it the way GoPro does — pin an **immutable tag** (`engine-v0.6.6`), build a wheel, and never
 track the live branch (see the GoPro/MageQA handoff for the full adoption recipe). **Important:** since v0.4.0,
 `CliAgentCapability` + the `claude_p` flavor live in **`ai_workflow_tools`**, not the engine
 (`ai_workflow_tools/cli_agents/`). `ai-workflow-tools` depends on `ai-workflow-engine`, so your

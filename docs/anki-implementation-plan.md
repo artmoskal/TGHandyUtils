@@ -431,7 +431,7 @@ Deliverables:
 Files:
 
 - `config.py`
-- `packages/ai_workflow_engine/ai_workflow_engine/image_generation.py`
+- `packages/ai_workflow_tools/ai_workflow_tools/media/image_generation.py`
 - `tests/unit/test_image_generation_provider.py`
 
 ## Phase 7 - Manual Review and Release

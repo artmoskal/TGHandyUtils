@@ -5,7 +5,7 @@ Reusable, executable AI workflow builder/runtime.
 Architecture source of truth: `docs/executable-workflow-engine-spec.md` at the repo root. This
 README is a package summary; if it conflicts with the binding spec, the binding spec wins.
 
-> **Status: `engine-v0.6.5` is the current release — pin it, build a wheel, don't track the live
+> **Status: `engine-v0.6.6` is the current release — pin it, build a wheel, don't track the live
 > branch.** Older tags are unsupported. Declare (`WorkflowBuilder`) + wire (`WorkflowEngine.from_config`)
 > + run (`await engine.run(...)`); branch, fan-out/gather, planner plans, evaluator
 > retry/retrace/replan/fallback, subworkflows, human clarification, scheduling/cancellation, per-node
@@ -18,7 +18,7 @@ README is a package summary; if it conflicts with the binding spec, the binding 
 
 ```python
 # Pin the tag + install (git + subdirectory; no PyPI):
-#   pip install "ai-workflow-engine @ git+https://<repo>@engine-v0.6.5#subdirectory=packages/ai_workflow_engine"
+#   pip install "ai-workflow-engine @ git+https://<repo>@engine-v0.6.6#subdirectory=packages/ai_workflow_engine"
 from ai_workflow_engine import WorkflowBuilder, WorkflowEngine
 
 flow = (WorkflowBuilder("my_flow")
@@ -206,7 +206,7 @@ low overhead.
 
 ## Capabilities
 
-The full set in `engine-v0.6.5` (older tags are unsupported):
+The full set in `engine-v0.6.6` (older tags are unsupported):
 
 - **Declare + run.** `WorkflowBuilder` (step / branch / evaluate / fanout / plan / subworkflow /
   human), `WorkflowEngine.from_config` (DI for models/budget/safety), `await engine.run(...)`. A branch
