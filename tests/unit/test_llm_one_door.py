@@ -35,6 +35,10 @@ ALLOWED_CONSTRUCTION_SITES = {
     Path("packages/ai_workflow_tools/ai_workflow_tools/media/image_generation.py"),
     # Defines the browser clients (the chat model composes the base client internally).
     Path("packages/ai_workflow_tools/ai_workflow_tools/chatgpt_browser.py"),
+    # The L2 tool catalog is a sanctioned construction door (reviewed 2026-07-05):
+    # its builders centralize client construction with descriptions + side effects,
+    # same one-door intent as llm_factory for product code.
+    Path("packages/ai_workflow_tools/ai_workflow_tools/catalog.py"),
 }
 
 SCAN_DIRS = ("services", "handlers_modular", "packages", "composition", "core", "platforms")

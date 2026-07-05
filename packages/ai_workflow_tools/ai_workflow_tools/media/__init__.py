@@ -6,6 +6,11 @@ import from here, shim-free. Provider SDKs (openai, requests) load lazily; insta
 ``[media]`` extra to actually generate.
 """
 
+from ai_workflow_tools.media.capabilities import (
+    MediaGenerationCapability,
+    build_image_generation_capability,
+    build_voice_generation_capability,
+)
 from ai_workflow_tools.media.image_generation import OpenAIImageGenerator, create_image_generator
 from ai_workflow_tools.media.image_models import GeneratedImage, ImageGenerationRequest
 from ai_workflow_tools.media.voice_generation import (
@@ -16,6 +21,9 @@ from ai_workflow_tools.media.voice_generation import (
 
 __all__ = [
     "GeneratedImage",
+    "MediaGenerationCapability",
+    "build_image_generation_capability",
+    "build_voice_generation_capability",
     "GeneratedVoiceAudio",
     "ImageGenerationRequest",
     "OpenAIImageGenerator",

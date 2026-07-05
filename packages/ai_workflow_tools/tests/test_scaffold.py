@@ -4,8 +4,18 @@ import json
 import sys
 
 @pytest.mark.unit
-def test_version():
-    assert ai_workflow_tools.__version__ == "0.1.0"
+def test_release_version_matches_current_pin():
+    """Release guard (same shape as the engine's): pyproject and __version__ move together —
+    the 0.1.0-vs-0.2.0 drift this replaced must not recur."""
+    import tomllib
+    from pathlib import Path
+
+    expected = "0.3.0"
+    pyproject = tomllib.loads(
+        (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+    )
+    assert pyproject["project"]["version"] == expected
+    assert ai_workflow_tools.__version__ == expected
 
 @pytest.mark.unit
 def test_engine_import():
