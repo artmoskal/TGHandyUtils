@@ -155,9 +155,21 @@ class LLMAgentPlanner:
         history: Sequence[AgentToolStep],
         context: CapabilityContext | None = None,
     ) -> list[ChatMessage]:
-        messages = self.memory.render(request, history, self._memory_render_context())
-        self._record_memory_projection(request, history, messages, context)
+        memory = self._effective_memory(context)
+        messages = memory.render(request, history, self._memory_render_context())
+        self._record_memory_projection(request, history, messages, context, memory)
         return messages
+
+    def _effective_memory(self, context: CapabilityContext | None) -> AgentMemory:
+        """Node-scoped memory selection (GoPro R4): a node-level ``memory=`` config wins
+        over the construction-time default. The config was already resolved loudly at
+        graph validation; re-resolving per call is cheap and keeps memory stateless."""
+
+        metadata = getattr(context, "metadata", None) if context is not None else None
+        config = metadata.get("agent_memory") if isinstance(metadata, dict) else None
+        if config is None:
+            return self.memory
+        return resolve_agent_memory(config)
 
     def _record_memory_projection(
         self,
@@ -165,7 +177,15 @@ class LLMAgentPlanner:
         history: Sequence[AgentToolStep],
         messages: Sequence[ChatMessage],
         context: CapabilityContext | None,
+        memory: AgentMemory | None = None,
     ) -> None:
+        memory = memory if memory is not None else self.memory
+        # AC-S5: counts/labels only in metadata — the state block's TEXT rides the
+        # existing detail-capture path (payload), so it is absent when capture is off.
+        stats: dict[str, Any] = {}
+        stats_fn = getattr(memory, "projection_stats", None)
+        if callable(stats_fn):
+            stats = dict(stats_fn(request, history))
         self._observation_capture().record(
             node=self.node_name,
             attempt=len(history) + 1,
@@ -173,16 +193,17 @@ class LLMAgentPlanner:
             phase="memory:projection",
             kind="memory_projection",
             payload={
-                "memory_mode": self.memory.__class__.__name__,
+                "memory_mode": memory.__class__.__name__,
                 "prompt": request.prompt,
                 "history": list(history),
                 "messages": list(messages),
             },
             metadata={
-                "memory_mode": self.memory.__class__.__name__,
+                "memory_mode": memory.__class__.__name__,
                 "history_steps": len(history),
                 "message_count": len(messages),
                 "image_count": self._image_count(messages),
+                **stats,
                 "workflow_id": context.run_context.workflow_id if context else None,
                 "workflow_type": context.run_context.workflow_type if context else None,
             },

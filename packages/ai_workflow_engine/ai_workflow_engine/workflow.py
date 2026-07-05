@@ -14,7 +14,7 @@ Public concepts (kept product-neutral):
 
 from __future__ import annotations
 
-from typing import Dict, List, Literal, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -195,6 +195,11 @@ class WorkflowNode(BaseModel):
     # declarative per-node model binding: name into the engine's ModelProfile registry, resolved at
     # run time and validated loudly at registration/preflight (unknown name never fails mid-run).
     model_profile: Optional[str] = None
+    # Declarative per-NODE agent-memory selection (GoPro R4; mirrors model_profile): a
+    # `resolve_agent_memory`-shaped config ("mode" string or {mode,...} mapping) applied to
+    # agent capabilities invoked under this node. Validated loudly at graph validation;
+    # delivered per call via context.metadata["agent_memory"]; None -> capability default.
+    memory: Optional[Any] = None
     # Opt-in plan context injection. When true and a PlanArtifact exists, the executor adds a
     # rendered plan string to context.metadata["plan"] for this node's capability call only.
     inject_plan: bool = False
@@ -354,6 +359,7 @@ class WorkflowDefinition(BaseModel):
 
         errors: List[str] = []
         errors.extend(_validate_graph_identity(ids, self.entry, known))
+        errors.extend(_validate_node_memory_configs(self.nodes))
         errors.extend(_validate_node_shapes(self.nodes, known, nodes_by_id))
         errors.extend(_validate_transitions(self.transitions, nodes_by_id, known))
         errors.extend(_validate_cycle_gates(ids, self.transitions, known))
@@ -386,6 +392,23 @@ def _validate_injected_machine_descriptions(
                 f"{', '.join(undescribed)} — every legal label must carry a description "
                 f"for the machine card"
             )
+    return errors
+
+
+def _validate_node_memory_configs(nodes: List["WorkflowNode"]) -> List[str]:
+    """Loud-at-build agent-memory validation (GoPro R4): an unknown mode or bad option
+    must never fail mid-run."""
+
+    from ai_workflow_engine.memory import resolve_agent_memory
+
+    errors: List[str] = []
+    for node in nodes:
+        if node.memory is None:
+            continue
+        try:
+            resolve_agent_memory(node.memory)
+        except (TypeError, ValueError) as exc:
+            errors.append(f"node '{node.id}' memory config invalid: {exc}")
     return errors
 
 
@@ -692,6 +715,7 @@ class WorkflowBuilder:
         allow_raw_media_export: bool = False,
         scheduling: Optional[SchedulingPolicy] = None,
         model_profile: Optional[str] = None,
+        memory: Optional[Any] = None,
         inject_plan: bool = False,
         inject_machine: bool = False,
         title: str = "",
@@ -709,6 +733,7 @@ class WorkflowBuilder:
                 allow_raw_media_export=allow_raw_media_export,
                 scheduling=scheduling,
                 model_profile=model_profile,
+                memory=memory,
                 inject_plan=inject_plan,
                 inject_machine=inject_machine,
                 title=title,

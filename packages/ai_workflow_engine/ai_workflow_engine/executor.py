@@ -583,6 +583,12 @@ class WorkflowExecutor:
         """Invoke a capability under the node's declared model profile (if any), traced."""
 
         context = self._context_for_node(node, context, state, definition=definition)
+        if node.memory is not None:
+            # GoPro R4: node-scoped agent-memory selection rides context metadata; the
+            # planner resolves it per call (validated loudly at graph validation).
+            context = context.model_copy(
+                update={"metadata": {**context.metadata, "agent_memory": node.memory}}
+            )
         if not node.model_profile:
             return await self.runtime.invoke(capability, payload, context, attempt=attempt)
         profile = self.model_profiles.get(node.model_profile)

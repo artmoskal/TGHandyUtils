@@ -3134,3 +3134,33 @@ async def test_executor_external_process_step_denied_without_side_effect_allowan
 
     assert result.status == "failed"
     assert "external_call" in (result.error or "")
+
+
+async def test_node_memory_config_is_validated_loudly_at_build():  # GoPro R4
+    with pytest.raises(ValueError, match="memory config invalid"):
+        (
+            WorkflowBuilder("bad_memory_flow")
+            .step("probe", memory={"mode": "definitely_not_a_mode"})
+            .build()
+        )
+
+
+async def test_node_memory_config_is_delivered_to_the_capability_context():  # GoPro R4
+    engine = WorkflowEngine()
+    seen: dict = {}
+
+    async def probe(context, _payload):
+        seen["memory"] = context.metadata.get("agent_memory")
+        return {"ok": True}
+
+    engine.register_capability("probe", probe)
+    engine.register_workflow(
+        WorkflowBuilder("memory_flow")
+        .step("probe", memory={"mode": "image_evicting", "keep_last_images": 0})
+        .build()
+    )
+
+    result = await engine.run("memory_flow", {})
+
+    assert result.status == "completed"
+    assert seen["memory"] == {"mode": "image_evicting", "keep_last_images": 0}

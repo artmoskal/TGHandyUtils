@@ -856,3 +856,168 @@ async def test_agent_request_metadata_passes_through_to_llm_callable():
     # engine observability keys win on collision (consumer cannot clobber them)
     assert sent["workflow_id"] == "wf-agent"
     assert sent["agent_node"] == "agent_planner"
+
+
+# --- GoPro P1 memory wave: AC-S2 (behavioral), AC-S5 (observability), R3, R4 -------------
+
+
+class _StateFollowerLLM:
+    """Scripted weak-model stand-in: IGNORES the raw transcript, follows ONLY the state
+    block. If a WORKING STATE block lists visited zoom args, it zooms the first unvisited
+    section of [1, 2]; with no state block it always zooms section 1 (the repeat bug)."""
+
+    def __init__(self) -> None:
+        self.requests: list[LLMRequest] = []
+
+    async def __call__(self, request: LLMRequest) -> LLMResponse:
+        self.requests.append(request)
+        visited: set[int] = set()
+        for message in request.messages:
+            content = message.content or ""
+            if "WORKING STATE" in content and "zoom:" in content:
+                import re as _re
+
+                match = _re.search(r"zoom: .*args=\[([^\]]*)\]", content)
+                if match and match.group(1).strip():
+                    visited = {int(part) for part in match.group(1).split(",")}
+        section = next(candidate for candidate in (1, 2) if candidate not in visited)
+        return LLMResponse(
+            tool_calls=[
+                ToolCallRequest(call_id=f"zoom-{section}", name="zoom", arguments={"section": section})
+            ]
+        )
+
+
+def _zoom_history(section: int) -> AgentToolStep:
+    return AgentToolStep(
+        call=AgentToolCall(tool_name="zoom", payload={"section": section}, rationale="look"),
+        status="accepted",
+        output={"seen": f"section {section}"},
+    )
+
+
+async def test_structured_state_prevents_weak_model_tool_repeat():  # AC-S2 (load-bearing)
+    from ai_workflow_engine import StructuredStateMemory
+
+    zoom_spec = {"zoom": ToolSpec(name="zoom", description="zoom a section", parameters={})}
+    context = _context()
+
+    def make_planner(memory):
+        return LLMAgentPlanner(
+            _StateFollowerLLM(),
+            tool_specs=zoom_spec,
+            node_name="zoom_agent",
+            memory=memory,
+        )
+
+    with_state = make_planner(StructuredStateMemory())
+    request = AgentRunRequest(prompt="inventory", allowed_tools=["zoom"])
+    with workflow_usage_scope(
+        WorkflowUsageContext(context.run_context, context.usage_summary, WorkflowBudget())
+    ):
+        first = await with_state.next_step(context, request, [])
+        second = await with_state.next_step(context, request, [_zoom_history(1)])
+
+    assert first.payload == {"section": 1}
+    assert second.payload == {"section": 2}  # state block prevented the repeat
+
+    without_state = make_planner(None)  # FullReplayMemory: transcript-only, fake ignores it
+    with workflow_usage_scope(
+        WorkflowUsageContext(context.run_context, context.usage_summary, WorkflowBudget())
+    ):
+        repeat = await without_state.next_step(context, request, [_zoom_history(1)])
+
+    assert repeat.payload == {"section": 1}  # the exact bug R1 exists to fix
+
+
+async def test_structured_state_projection_metadata_counts_only():  # AC-S5
+    from ai_workflow_engine import StructuredStateMemory
+
+    trace = InMemoryTraceSink()
+    details = InMemoryDetailSink()
+    client = ScriptedLLM(LLMResponse(text='{"caption": "done"}'))
+    planner = _planner(
+        client, memory=StructuredStateMemory(), trace_sink=trace, detail_sink=details
+    )
+    context = _context()
+
+    with workflow_usage_scope(
+        WorkflowUsageContext(context.run_context, context.usage_summary, WorkflowBudget())
+    ):
+        decision = await planner.next_step(
+            context, AgentRunRequest(prompt="SECRET room", allowed_tools=[]), [_zoom_history(1)]
+        )
+
+    assert decision.action == "finish"
+    event = next(item for item in trace.events if item.phase == "memory:projection")
+    assert event.metadata["memory_mode"] == "StructuredStateMemory"
+    assert event.metadata["reducer_label"] == "default_tool_state_reducer"
+    assert isinstance(event.metadata["state_chars"], int) and event.metadata["state_chars"] > 0
+    # counts/labels ONLY — capture is off, so no detail and no state text anywhere
+    assert event.detail_refs == []
+    assert details.details == []
+    assert "WORKING STATE" not in event.model_dump_json()
+    assert "SECRET room" not in event.model_dump_json()
+
+
+async def test_builder_passes_memory_through_to_planner():  # R3 (AC-M2 gap)
+    from ai_workflow_engine.memory import ImageEvictingMemory
+
+    registry = CapabilityRegistry()
+    capability = build_llm_agent_capability(
+        ScriptedLLM(),
+        registry,
+        allowed_tools=[],
+        name="memory_agent",
+        memory={"mode": "image_evicting", "keep_last_images": 0},
+    )
+
+    assert isinstance(capability.planner.memory, ImageEvictingMemory)
+    assert capability.planner.memory.keep_last_images == 0
+
+
+async def test_node_level_memory_config_overrides_planner_default():  # R4 (planner half)
+    from ai_workflow_engine import StructuredStateMemory  # noqa: F401  (mode registered)
+
+    trace = InMemoryTraceSink()
+    client = ScriptedLLM(LLMResponse(text='{"caption": "done"}'))
+    planner = _planner(client, trace_sink=trace)  # constructed default: FullReplayMemory
+    context = _context().model_copy(
+        update={"metadata": {"agent_memory": {"mode": "structured_state"}}}
+    )
+
+    with workflow_usage_scope(
+        WorkflowUsageContext(context.run_context, context.usage_summary, WorkflowBudget())
+    ):
+        await planner.next_step(
+            context, AgentRunRequest(prompt="go", allowed_tools=[]), [_zoom_history(1)]
+        )
+
+    event = next(item for item in trace.events if item.phase == "memory:projection")
+    assert event.metadata["memory_mode"] == "StructuredStateMemory"  # node config won
+    assert event.metadata["reducer_label"] == "default_tool_state_reducer"
+
+
+async def test_repair_prompt_lands_after_the_state_block_deterministically():
+    # Pinned decision (GoPro R1 repair-round rule): the state block stays the LAST
+    # memory-produced message; a repair round appends its prompt AFTER it.
+    from ai_workflow_engine import StructuredStateMemory
+
+    client = ScriptedLLM(
+        LLMResponse(text="not json"),
+        LLMResponse(text='{"caption": "fixed"}'),
+    )
+    planner = _planner(client, memory=StructuredStateMemory(), max_repair_rounds=1)
+    context = _context()
+
+    with workflow_usage_scope(
+        WorkflowUsageContext(context.run_context, context.usage_summary, WorkflowBudget())
+    ):
+        decision = await planner.next_step(
+            context, AgentRunRequest(prompt="go", allowed_tools=[]), [_zoom_history(1)]
+        )
+
+    assert decision.action == "finish"
+    repair_messages = client.requests[1].messages
+    assert "WORKING STATE" in (repair_messages[-2].content or "")
+    assert "invalid" in (repair_messages[-1].content or "").lower()

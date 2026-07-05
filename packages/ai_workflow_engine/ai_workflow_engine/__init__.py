@@ -1,6 +1,6 @@
 """Reusable AI workflow engine package."""
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 from ai_workflow_engine.convenience import run_single_llm, run_single_step
 from ai_workflow_engine.engine import (
@@ -110,9 +110,15 @@ from ai_workflow_engine.vision import ImageInput, StructuredVisionLLMNode
 from ai_workflow_engine.memory import (
     AgentMemory,
     AgentMemoryRenderContext,
+    CompactingMemory,
     FullReplayMemory,
     ImageEvictingMemory,
     InMemoryMemoryStore,
+    StructuredStateMemory,
+    WindowedMemory,
+    default_rule_based_compactor,
+    default_state_renderer,
+    default_tool_state_reducer,
     MemoryNamespace,
     MemoryRecord,
     MemoryStore,
@@ -309,6 +315,12 @@ __all__ = [
     "StructuredVisionLLMNode",
     "AgentMemory",
     "AgentMemoryRenderContext",
+    "CompactingMemory",
+    "StructuredStateMemory",
+    "WindowedMemory",
+    "default_rule_based_compactor",
+    "default_state_renderer",
+    "default_tool_state_reducer",
     "FullReplayMemory",
     "ImageEvictingMemory",
     "InMemoryMemoryStore",
