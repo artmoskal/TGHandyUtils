@@ -92,7 +92,9 @@ async def test_console_claude_structured_node_uses_pre_parse_and_subscription_us
 
     record = json.loads(record_path.read_text(encoding="utf-8"))
     assert record["stdin"] == "user: Classify mug."
-    assert record["argv"] == [str(fake_cli_path), "--output-format", "json"]
+    # Text-only completions carry the explicit disable-all switch (G-0.2): no silent
+    # CLI-default tool inherit on structured LLM-node calls.
+    assert record["argv"] == [str(fake_cli_path), "--output-format", "json", "--tools", ""]
     assert "--mcp-config" not in record["argv"]
 
 
@@ -473,6 +475,9 @@ async def test_console_stages_images_and_allows_read_tool(fake_cli_path, monkeyp
     assert record["stdin"].startswith("First read and inspect these image file(s)")
     assert "inputs/img-1.png" in record["stdin"]
     assert "--allowedTools" in record["argv"] and "Read(./inputs/**)" in record["argv"]
+    # Staged vision keeps ONLY the scoped Read grant — the disable-all switch must not
+    # appear (it would block the Read), and no broader tool default may leak in.
+    assert "--tools" not in record["argv"]
 
 
 async def test_console_stages_path_source_images_by_copy(fake_cli_path, monkeypatch, tmp_path):
@@ -524,3 +529,39 @@ async def test_chatgpt_browser_llm_rejects_tool_calling_loudly():
     client, _ = _browser_client({"status": "completed", "reply": "ok"})
     with pytest.raises(ChatGptBrowserError, match="tool-calling"):
         await client(LLMRequest(user="click stuff", tools=[ToolSpec(name="click")]))
+
+
+# --- G-0.2 flag-form coverage: joined (=) and kebab spellings must suppress the default -
+
+
+def test_explicit_tool_flag_detection_covers_joined_and_kebab_forms():
+    from ai_workflow_tools.cli_agents.console import _has_explicit_tool_flag
+
+    assert _has_explicit_tool_flag(["--tools", ""])
+    assert _has_explicit_tool_flag(["--tools=default"])
+    assert _has_explicit_tool_flag(["--allowedTools", "Read"])
+    assert _has_explicit_tool_flag(["--allowedTools=Read(./inputs/**)"])
+    assert _has_explicit_tool_flag(["--allowed-tools", "Read"])
+    assert _has_explicit_tool_flag(["--allowed-tools=Read"])
+    assert _has_explicit_tool_flag(["--disallowedTools=Bash"])
+    assert _has_explicit_tool_flag(["--disallowed-tools", "Bash"])
+    assert not _has_explicit_tool_flag(["--verbose", "--output-format", "json"])
+    # Prefix must not false-positive on unrelated flags that merely share a prefix.
+    assert not _has_explicit_tool_flag(["--toolsette"])
+
+
+async def test_console_caller_joined_tool_flag_suppresses_default_no_tools(
+    fake_cli_path, monkeypatch, tmp_path
+):
+    record_path = _configure_fake_cli(monkeypatch, tmp_path, mode="envelope")
+    client = ConsoleLLMClient(
+        _fake_flavor(claude_p, fake_cli_path), extra_argv=["--allowedTools=Read"]
+    )
+
+    await client(LLMRequest(user="hello"))
+
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert "--allowedTools=Read" in record["argv"]
+    assert "--tools" not in record["argv"], (
+        "an explicit =-joined tool flag must suppress the appended --tools \"\" default"
+    )

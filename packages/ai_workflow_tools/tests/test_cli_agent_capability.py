@@ -190,7 +190,9 @@ async def test_timeout_returns_partial_and_salvages_png(
     workspace = tmp_path / "workspace"
     _configure_fake_cli(monkeypatch, tmp_path, workspace, mode="sleep", sleep_s="5")
     cap = CliAgentCapability(_fake_flavor(claude_p, fake_cli_path), name="browser_agent")
-    request = CliAgentRequest(prompt="Capture", workspace_dir=str(workspace), timeout_s=0.1)
+    # 0.5s (not 0.1s): the fake needs python-startup + stdin + PNG-write headroom under
+    # parallel-suite CPU load; 0.1s flaked while still being a real timeout test.
+    request = CliAgentRequest(prompt="Capture", workspace_dir=str(workspace), timeout_s=0.5)
 
     cap_result = await cap(capability_context, request)
 
@@ -360,3 +362,83 @@ async def test_input_assets_without_loader_fail_before_spawn(
         await cap(capability_context, request)
 
     assert not record_path.exists()
+
+
+def test_capability_default_spec_declares_bash_side_effects_honestly():
+    # Owner decision 2026-07-04: the default tool set includes Bash (shell writes +
+    # network), so the DEFAULT spec must declare it — the safety ledger must not lie.
+    from ai_workflow_tools.toolsets import BASH_SIDE_EFFECTS
+
+    cap = CliAgentCapability(claude_p)
+    assert list(BASH_SIDE_EFFECTS) == cap.spec.side_effects
+
+    narrowed = CliAgentCapability(claude_p, side_effects=["workspace_write"])
+    assert narrowed.spec.side_effects == ["workspace_write"]
+
+
+async def test_capability_pre_spawn_denial_when_bash_granted_but_side_effects_undeclared(
+    capability_context, tmp_path
+):
+    class _MustNotSpawn:
+        calls = 0
+
+        async def __call__(self, *_args, **_kwargs):
+            type(self).calls += 1
+            raise AssertionError("external process must not spawn after pre-spawn denial")
+
+    runner = _MustNotSpawn()
+    cap = CliAgentCapability(claude_p, side_effects=[], external_runner=runner)
+    # allowed_tools=None -> DEFAULT_AGENT_TOOLS (includes Bash) against an empty ledger.
+    result = await cap(
+        capability_context,
+        CliAgentRequest(prompt="investigate", workspace_dir=str(tmp_path / "ws")),
+    )
+
+    assert result.status == "failed"
+    assert "pre-spawn denial" in result.error
+    assert result.metadata["pre_spawn_denial"] is True
+    assert _MustNotSpawn.calls == 0
+
+
+async def test_codex_exec_pre_spawn_denial_when_workspace_side_effects_undeclared(
+    capability_context, tmp_path
+):
+    class _MustNotSpawn:
+        calls = 0
+
+        async def __call__(self, *_args, **_kwargs):
+            type(self).calls += 1
+            raise AssertionError("codex process must not spawn after pre-spawn denial")
+
+    runner = _MustNotSpawn()
+    cap = CliAgentCapability(codex_exec, side_effects=[], external_runner=runner)
+
+    result = await cap(
+        capability_context,
+        CliAgentRequest(prompt="inspect", workspace_dir=str(tmp_path / "ws")),
+    )
+
+    assert result.status == "failed"
+    assert "codex_exec" in result.error
+    assert "workspace_write" in result.error
+    assert result.metadata["pre_spawn_denial"] is True
+    assert _MustNotSpawn.calls == 0
+
+
+async def test_capability_narrowed_spec_allows_bashless_requests(
+    capability_context, fake_cli_path, monkeypatch, tmp_path
+):
+    workspace = tmp_path / "workspace"
+    _configure_fake_cli(monkeypatch, tmp_path, workspace, mode="envelope")
+    cap = CliAgentCapability(_fake_flavor(claude_p, fake_cli_path), side_effects=[])
+
+    result = await cap(
+        capability_context,
+        CliAgentRequest(
+            prompt="read only",
+            workspace_dir=str(workspace),
+            allowed_tools=["Read", "Grep"],
+        ),
+    )
+
+    assert result.status == "accepted"

@@ -1,6 +1,6 @@
 """CLI-agent capability support."""
 
-from .assembly import build_cli_agent_invocation
+from .assembly import build_cli_agent_invocation, resolve_effective_tools
 from .capability import CliAgentCapability
 from .console import ConsoleChatModel, ConsoleLLMClient
 from .flavors import claude_p, codex_exec
@@ -22,6 +22,7 @@ __all__ = [
     "CliFlavor",
     "McpServerConfig",
     "build_cli_agent_invocation",
+    "resolve_effective_tools",
     "claude_p",
     "codex_exec",
 ]

@@ -23,7 +23,9 @@ from ai_workflow_engine.models import (
 from ai_workflow_engine.parsing import compose_cleaners, extract_fenced_json, extract_first_json_object
 from ai_workflow_engine.usage import record_usage_event
 
-from .assembly import build_cli_agent_invocation
+from ai_workflow_tools.toolsets import BASH_SIDE_EFFECTS, bash_in_tools
+
+from .assembly import build_cli_agent_invocation, resolve_effective_tools
 from .models import CliAgentRequest, CliAgentResult, CliFlavor
 
 AssetLoader = Callable[[EvidenceRef], bytes]
@@ -49,11 +51,17 @@ class _ParsedCliOutput:
 class CliAgentCapability:
     """Run one CLI-backed agent episode as an engine capability."""
 
+    DEFAULT_DESCRIPTION = (
+        "Bounded CLI-agent episode (claude -p / codex exec): tri-state tool allow-list, "
+        "MCP servers, staged input assets, artifact salvage, subscription-honest usage."
+    )
+
     def __init__(
         self,
         flavor: CliFlavor,
         *,
         name: str = "cli_agent",
+        description: str | None = None,
         side_effects: list[str] | None = None,
         asset_loader: AssetLoader | None = None,
         trace_sink: TraceSink | None = None,
@@ -63,12 +71,20 @@ class CliAgentCapability:
         self.asset_loader = asset_loader
         self.trace_sink = trace_sink
         self.external_runner = external_runner or ExternalProcessCapability()
+        if side_effects is None:
+            # Honest default (owner decision 2026-07-04): the default claude_p tool set
+            # includes Bash (shell writes + network) and codex_exec always runs
+            # --sandbox workspace-write, so an undeclared-side-effect default would make
+            # the engine's ledger lie. Pass an explicit list to narrow — a narrowed spec
+            # combined with a Bash-bearing tool set is refused pre-spawn.
+            side_effects = list(BASH_SIDE_EFFECTS)
         self.spec = CapabilitySpec(
             name=name,
             kind="agent",
+            description=description or self.DEFAULT_DESCRIPTION,
             input_model=CliAgentRequest,
             output_model=CliAgentResult,
-            side_effects=list(side_effects or []),
+            side_effects=list(side_effects),
             metered=False,
             timeout_s=None,
         )
@@ -80,6 +96,31 @@ class CliAgentCapability:
     ) -> CapabilityResult:
         if isinstance(request, dict):
             request = CliAgentRequest.model_validate(request)
+
+        effective_tools = resolve_effective_tools(self.flavor, request)
+        required_side_effects: tuple[str, ...] = ()
+        reason = ""
+        if self.flavor.name == "codex_exec":
+            required_side_effects = BASH_SIDE_EFFECTS
+            reason = "codex_exec runs a workspace-write subscription CLI episode"
+        elif bash_in_tools(effective_tools):
+            required_side_effects = BASH_SIDE_EFFECTS
+            reason = "the effective tool set includes Bash"
+
+        if required_side_effects:
+            missing = [
+                effect for effect in required_side_effects if effect not in self.spec.side_effects
+            ]
+            if missing:
+                return CapabilityResult(
+                    status="failed",
+                    error=(
+                        f"cli_agent pre-spawn denial: {reason} but "
+                        f"the capability spec does not declare side effects {missing}; declare "
+                        "them or narrow the runtime request — the side-effect ledger must not lie"
+                    ),
+                    metadata={"flavor": self.flavor.name, "pre_spawn_denial": True},
+                )
 
         workspace = Path(request.workspace_dir)
         workspace.mkdir(parents=True, exist_ok=True)

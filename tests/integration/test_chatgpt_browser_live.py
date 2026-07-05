@@ -278,3 +278,35 @@ async def test_live_staged_vision_cannot_read_outside_inputs(tmp_path):
         )
     finally:
         canary_path.unlink(missing_ok=True)
+
+
+# --- claude -p text-only completion under the G-0.2 no-tools policy (live, v0.7.0) -------
+
+
+async def test_live_claude_p_text_completion_runs_tool_free():
+    """Real `claude -p` completion THROUGH the new `--tools ""` policy — the RUNTIME proof
+    unit tests can't give: the installed CLI (2.1.199 in the bot container) accepts the
+    disable-all switch and returns a normal completion. No tool ran (`tool_calls == []`);
+    the completion is subscription-costed. (Injection resistance is the canary test's job —
+    this one just proves the flag is real and non-breaking on a clean call.)"""
+
+    import shutil
+
+    from ai_workflow_engine.llm_protocol import LLMRequest
+    from ai_workflow_tools.cli_agents import ConsoleLLMClient, claude_p
+
+    if shutil.which("claude") is None:
+        pytest.skip("claude CLI not on PATH (run inside the bot container where it is installed)")
+
+    client = ConsoleLLMClient(claude_p, timeout_s=180)
+    response = await client(
+        LLMRequest(
+            system="You answer factual questions in one short sentence.",
+            user="What is the capital of Portugal?",
+        )
+    )
+
+    assert response.text.strip(), "live claude -p completion returned no text"
+    assert "Lisbon" in response.text or "Lisboa" in response.text
+    assert response.tool_calls == [], "text-only completion must run tool-free"
+    assert response.cost_class == "subscription_notional"

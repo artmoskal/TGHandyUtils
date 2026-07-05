@@ -144,7 +144,10 @@ class ExternalProcessCapability:
             return ""
         chunks: list[bytes] = []
         while True:
-            chunk = await stream.readline()
+            # Bounded chunks, not readline(): a single line beyond asyncio's 64KiB stream
+            # limit raises LimitOverrunError — and CLI workers legitimately emit huge
+            # single-line JSON envelopes.
+            chunk = await stream.read(8192)
             if not chunk:
                 break
             chunks.append(chunk)

@@ -124,3 +124,85 @@ def test_codex_exec_assembly_puts_mcp_env_in_config_entries_and_prompt_last(tmp_
     assert invocation.stdin_data is None
     assert invocation.result_file == str(tmp_path / "codex-last-message.txt")
     assert invocation.mcp_config_path is None
+
+
+def test_claude_p_tri_state_none_applies_default_agent_tools(tmp_path):
+    from ai_workflow_tools.toolsets import DEFAULT_AGENT_TOOLS
+
+    invocation = build_cli_agent_invocation(
+        claude_p,
+        CliAgentRequest(prompt="investigate", workspace_dir=str(tmp_path)),
+    )
+
+    marker = invocation.argv.index("--allowedTools")
+    granted = invocation.argv[marker + 1 : marker + 1 + len(DEFAULT_AGENT_TOOLS)]
+    assert granted == list(DEFAULT_AGENT_TOOLS)
+    assert "--tools" not in invocation.argv
+
+
+def test_claude_p_tri_state_empty_list_means_explicit_no_tools(tmp_path):
+    invocation = build_cli_agent_invocation(
+        claude_p,
+        CliAgentRequest(prompt="pure completion", workspace_dir=str(tmp_path), allowed_tools=[]),
+    )
+
+    marker = invocation.argv.index("--tools")
+    assert invocation.argv[marker + 1] == ""
+    assert "--allowedTools" not in invocation.argv
+
+
+def test_claude_p_tri_state_explicit_list_is_exact_override_no_merge(tmp_path):
+    invocation = build_cli_agent_invocation(
+        claude_p,
+        CliAgentRequest(
+            prompt="narrow read",
+            workspace_dir=str(tmp_path),
+            allowed_tools=["Read", "Grep"],
+        ),
+    )
+
+    marker = invocation.argv.index("--allowedTools")
+    tail = invocation.argv[marker + 1 :]
+    assert tail[:2] == ["Read", "Grep"]
+    assert "Bash" not in invocation.argv
+    assert "WebFetch" not in invocation.argv
+    assert "--tools" not in invocation.argv
+
+
+def test_codex_exec_rejects_explicit_allowed_tools_loudly(tmp_path):
+    request = CliAgentRequest(
+        prompt="inspect", workspace_dir=str(tmp_path), allowed_tools=["Read"]
+    )
+
+    with pytest.raises(ValueError, match="--sandbox"):
+        build_cli_agent_invocation(codex_exec, request)
+
+
+def test_preset_constants_round_trip_and_share_one_source_of_truth(tmp_path):
+    from ai_workflow_tools.toolsets import (
+        DEFAULT_AGENT_TOOLS,
+        INVESTIGATION,
+        NO_TOOLS,
+        READ_ONLY,
+        WEB,
+    )
+
+    assert DEFAULT_AGENT_TOOLS is INVESTIGATION
+    assert INVESTIGATION == (*READ_ONLY, *WEB, "Bash")
+
+    invocation = build_cli_agent_invocation(
+        claude_p,
+        CliAgentRequest(
+            prompt="preset run", workspace_dir=str(tmp_path), allowed_tools=list(INVESTIGATION)
+        ),
+    )
+    marker = invocation.argv.index("--allowedTools")
+    assert invocation.argv[marker + 1 : marker + 1 + len(INVESTIGATION)] == list(INVESTIGATION)
+
+    no_tools = build_cli_agent_invocation(
+        claude_p,
+        CliAgentRequest(
+            prompt="no tools", workspace_dir=str(tmp_path), allowed_tools=list(NO_TOOLS)
+        ),
+    )
+    assert no_tools.argv[no_tools.argv.index("--tools") + 1] == ""

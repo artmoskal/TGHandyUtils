@@ -1199,6 +1199,50 @@ async def test_external_process_capability_terminates_then_grace_kills_stubborn_
     assert "ready" in result.output["stdout"]
 
 
+async def test_external_process_capability_handles_long_single_line_stdout_and_stderr():
+    # Regression (G-0.1): readline() raised LimitOverrunError -> ValueError on any single
+    # line beyond asyncio's 64KiB stream limit — CLI workers emit huge one-line JSON.
+    payload_len = 200_000
+    script = (
+        "import sys\n"
+        f"sys.stdout.write('o' * {payload_len})\n"
+        f"sys.stderr.write('e' * {payload_len})\n"
+    )
+
+    result = await ExternalProcessCapability()(
+        capability_context_for_goal(WorkflowGoal(workflow_type="external", objective="long single lines")),
+        ExternalProcessRequest(command=[sys.executable, "-c", script], timeout_s=30),
+    )
+
+    assert result.status == "accepted"
+    assert len(result.output["stdout"]) == payload_len
+    assert set(result.output["stdout"]) == {"o"}
+    assert len(result.output["stderr"]) == payload_len
+    assert set(result.output["stderr"]) == {"e"}
+
+
+async def test_external_process_timeout_salvage_survives_long_single_line():
+    # Regression (G-0.1): the timeout-salvage path must also survive a giant no-newline
+    # payload — pre-fix the reader task crashed before the timeout branch could salvage.
+    payload_len = 150_000
+    script = (
+        "import sys, time\n"
+        f"sys.stdout.write('x' * {payload_len})\n"
+        "sys.stdout.flush()\n"
+        "time.sleep(5)\n"
+    )
+
+    result = await ExternalProcessCapability()(
+        capability_context_for_goal(WorkflowGoal(workflow_type="external", objective="salvage long line")),
+        ExternalProcessRequest(command=[sys.executable, "-c", script], timeout_s=0.5),
+    )
+
+    assert result.status == "partial"
+    assert "timed out" in result.error
+    assert len(result.output["stdout"]) == payload_len
+    assert set(result.output["stdout"]) == {"x"}
+
+
 async def test_external_adapter_capability_writes_idempotently():
     registry = CapabilityRegistry()
     registry.register(

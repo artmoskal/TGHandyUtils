@@ -222,6 +222,10 @@ async def _compose_three_axis_plan(context, payload: Any) -> PlanArtifact:
                 payload={
                     "prompt": f"Inspect {request.url} for {coordinator_scenario}",
                     "workspace_dir": str(flexible_workspace),
+                    # Fake episode needs no CLI tools; leaving this None would grant the
+                    # Bash-bearing default and (honestly) fail the pre-spawn side-effect
+                    # check against this pilot's narrow workspace_write-only ledger.
+                    "allowed_tools": [],
                     "input_assets": [asset.model_dump() for asset in input_assets],
                     "salvage_globs": ["*.png"],
                     "expect_json_result": True,

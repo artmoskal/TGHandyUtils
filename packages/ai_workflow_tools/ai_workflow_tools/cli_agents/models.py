@@ -33,7 +33,10 @@ class CliAgentRequest(BaseModel):
     workspace_dir: str
     timeout_s: float = 600.0
     mcp_servers: List[McpServerConfig] = Field(default_factory=list)
-    allowed_tools: List[str] = Field(default_factory=list)
+    # Tri-state (claude_p): None -> DEFAULT_AGENT_TOOLS; [] -> explicit no-tools
+    # (`--tools ""`); non-empty -> EXACT override, never merged with defaults.
+    # codex_exec governs tools via --sandbox and rejects non-None values loudly.
+    allowed_tools: Optional[List[str]] = None
     input_assets: List[EvidenceRef] = Field(default_factory=list)
     salvage_globs: List[str] = Field(
         default_factory=lambda: ["*.png", "*.jpg", "*.jpeg", "session*.md", "page-*.yml"]

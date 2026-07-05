@@ -18,6 +18,24 @@ from .models import CliAgentInvocation, CliFlavor
 
 logger = logging.getLogger(__name__)
 
+# Every spelling the claude CLI accepts for tool-surface flags: camel/kebab aliases,
+# bare ("--tools", "value") and joined ("--tools=value") forms. Exact-token checks are
+# NOT enough — missing a joined/kebab form would stack a conflicting `--tools ""` on top
+# of the caller's explicit tool policy.
+_TOOL_FLAGS = (
+    "--tools",
+    "--allowedTools",
+    "--allowed-tools",
+    "--disallowedTools",
+    "--disallowed-tools",
+)
+
+
+def _has_explicit_tool_flag(argv: Sequence[str]) -> bool:
+    return any(
+        item == flag or item.startswith(f"{flag}=") for item in argv for flag in _TOOL_FLAGS
+    )
+
 
 class ConsoleLLMClient:
     """LLMCallable over a CLI runtime for plain text-in, JSON/text-out calls."""
@@ -55,7 +73,7 @@ class ConsoleLLMClient:
                     f"First read and inspect these image file(s) in your working directory: "
                     f"{listing}. They are required context for the task below.\n\n{prompt}"
                 )
-                if self.flavor.name == claude_p.name and "--allowedTools" not in extra_argv:
+                if self.flavor.name == claude_p.name and not _has_explicit_tool_flag(extra_argv):
                     # Path-SCOPED Read: only the staged inputs are readable. An unscoped
                     # Read would let hostile prompt content steer the agent into reading
                     # anything visible to the process (e.g. /app/.env in the bot container).
@@ -264,10 +282,15 @@ def _build_console_invocation(
 ) -> CliAgentInvocation:
     workspace.mkdir(parents=True, exist_ok=True)
     if flavor.name == claude_p.name:
-        return CliAgentInvocation(
-            argv=[*flavor.base_argv, "--output-format", "json", *extra_argv],
-            stdin_data=prompt,
-        )
+        argv = [*flavor.base_argv, "--output-format", "json", *extra_argv]
+        if not _has_explicit_tool_flag(extra_argv):
+            # Console calls are completions, not agents: a tool call would break the
+            # JSON parse/repair contract and add an injection surface. `--tools ""` is
+            # the CLI's documented disable-all switch (verified 2.1.199/2.1.201); the
+            # staged-vision path appends its scoped --allowedTools BEFORE this point,
+            # and explicit caller tool flags win.
+            argv.extend(["--tools", ""])
+        return CliAgentInvocation(argv=argv, stdin_data=prompt)
     if flavor.name == codex_exec.name:
         result_file = workspace / "codex-last-message.txt"
         return CliAgentInvocation(
