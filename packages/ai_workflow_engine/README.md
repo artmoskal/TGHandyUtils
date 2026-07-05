@@ -33,6 +33,14 @@ result = await engine.run("my_flow", MyInput(...))
 # result.status / .output / .node("prepare").output / .usage / .trace
 ```
 
+Truly trivial case? The one-call façade rides the same engine (budget/trace/usage/parse-repair
+intact — sugar, never a bypass):
+
+```python
+from ai_workflow_engine import run_single_llm
+verdict = await run_single_llm(my_llm, "Classify: {text}", Verdict, {"text": "…"})
+```
+
 You declare the flow + capabilities; the engine owns **all** orchestration (branch, retry, retrace,
 fallback, fan-out, scheduling, side-effect/budget gates, trace, subworkflows) — you write no
 coordinator loop (a static guard enforces this). Start from your product's guide above.
@@ -97,7 +105,7 @@ that extend it **by addition, never by editing the layer below**.
 |---|---|---|
 | **L0 Core engine + universal services** | Graph execution, branch/retry/retrace/replan, fan-out, scheduling + cancellation, budgets, side-effect/privacy gates, trace, checkpoints, model binding, plan-as-data, artifact/evidence references, replay, human approval, evaluator/adjudicator mechanics, capability registry, policy/secrets plumbing, and the T1 workflow-memory seam. Zero domain knowledge. LangGraph is the hidden backend. | New generic mechanics only — never special cases |
 | **L1 Universal executors** | HOW a model/tool is reached, behind one socket: the `LLMCallable` protocol (LangChain `.invoke` clients are a peer family, not a privilege). Today: LangChain clients, plain async callables (raw HTTP / Ollama), and `ConsoleLLMClient` in `ai_workflow_tools` for non-interactive `claude -p` / `codex exec` text-to-JSON calls. Future no-API executors can implement the same socket. | Implement `LLMCallable` — zero engine edits |
-| **L2 Modality/tool packs** | Reusable packages and `WorkflowPack`s for non-mandatory modalities: CLI/browser agents, MCP suites, TTS/STT, image generation, video analysis/production, OCR, VLM frame analysis. Today: `ai_workflow_tools` ships CLI-agent capability support (`CliAgentCapability`, `CliAgentRequest.input_assets`, MCP config env, salvage provenance), console clients, and media generation provider seams. Engine `vision.py` stays in core because image input is part of the LLM protocol. | Ship a package/pack, `register_pack(...)` |
+| **L2 Modality/tool packs** | Reusable packages and `WorkflowPack`s for non-mandatory modalities: CLI/browser agents, MCP suites, TTS/STT, image generation, video analysis/production, OCR, VLM frame analysis. Today: `ai_workflow_tools` ships a **described tool catalog** (`TOOL_CATALOG` / `render_tool_catalog()` / `register_from_catalog(engine, name)` — every shipped tool listed with description, kind, side effects; a completeness guard fails when a tool ships undocumented), CLI-agent capability support (`CliAgentCapability`, tri-state `allowed_tools`, MCP config env, salvage provenance), console clients (text-only completions run `--tools ""`), tool presets (`READ_ONLY`/`WEB`/`INVESTIGATION`/`NO_TOOLS` — plain tuples, `DEFAULT_AGENT_TOOLS is INVESTIGATION`), and media generation capabilities. Engine `vision.py` stays in core because image input is part of the LLM protocol. | Ship a package/pack, `register_pack(...)` |
 | **L3 Domain packs** | Todoist, Anki, GoPro, MageQA, CRM, or other product-family packs. They package workflow definitions, prompts, rubrics, schemas, and adapters on top of L0-L2. | Product/family package |
 | (L4 Products) | Deployment, UI/transport, account config, delivery. | `WorkflowBuilder` + capabilities |
 
@@ -139,8 +147,9 @@ under the same executor.
 Products should treat these as framework rules, not local style preferences:
 
 - **One provider door.** Construct provider clients only in sanctioned factory/adapter modules. In
-  this repo today, those are `services/llm_factory.py` and
-  `ai_workflow_tools.media.image_generation`. Product workflow code should not create raw provider
+  this repo today: `services/llm_factory.py`, `ai_workflow_tools.media.image_generation`,
+  `ai_workflow_tools.chatgpt_browser`, and `ai_workflow_tools.catalog` (the catalog's builders are
+  the L2 construction door). Product workflow code should not create raw provider
   clients beside the engine path; doing so bypasses model selection, budget, trace, usage, and
   observability. Add a new construction site only as an explicit reviewed allow-list entry.
 - **No product orchestration loop.** Product packs declare workflows and register capabilities; they
@@ -230,6 +239,14 @@ The full set in `engine-v0.6.6` (older tags are unsupported):
   memory via the `MemoryStore` seam (bring your own sqlite for durability).
 - **Media** lives in `ai_workflow_tools.media` (image/voice); the engine stays provider-neutral
   (`vision`/image-input stays in the engine as LLM protocol).
+- **One-call façade.** `run_single_llm(llm, template, OutputModel, values)` /
+  `run_single_step(fn, payload)` — a 1-node workflow on the real engine (usage + trace + budget +
+  loud failure included); `engine=` reuses a configured engine for volume.
+- **Discoverable toolset.** `from ai_workflow_tools import TOOL_CATALOG, render_tool_catalog,
+  register_from_catalog` — every shipped tool described (catalog reuses
+  `CapabilitySpec.description`); presets `READ_ONLY/WEB/INVESTIGATION/NO_TOOLS`; CLI tool policy is
+  explicit per call type (`--tools ""` completions, scoped-Read staged vision, tri-state agent
+  allow-list with Bash-honest side-effect declaration + pre-spawn denial).
 
 ## Config-first observation (v0.6.4) + evidence resolution (v0.6.5)
 

@@ -1,26 +1,61 @@
 # MageQA — AI Workflow Engine Usage Guide
 
-> **PIN (2026-07-02):** pin tag `engine-v0.6.6` and build a wheel from it. The consumer model is
-> breaking-allowed tag-to-tag — do NOT track the live branch. The current tag carries the full
-> capability set (see **"What v0.6.6 gives you"**): cross-run memory, config-first observation
-> (log→bundle→viewer; HTML rendering lives in the separate `ai_workflow_viewer` package), strict
-> prompt files, machine identity, and the hardened seam guards.
-> **v0.6.6 delta (2026-07-03), pick it up — it contains a consumer-facing FIX:** structured
-> nodes dispatched factory-built PLAIN clients (e.g. `ConsoleLLMClient`) down the LangChain
-> path on their first execution (crash on missing `.invoke`, recovered only on retry), and a
-> profile routing to a different plain backend could invoke the default client. Both fixed.
-> Also: usage captions now separate `billed (API)` (real charges) from `subscription … plan
-> value`; usage events carry honest `provider` attribution incl. on FAILED calls.
+> **PIN (2026-07-05):** pin tag `engine-v0.7.0` and build a wheel from it. The consumer model is
+> breaking-allowed tag-to-tag — do NOT track the live branch. The tag carries the full v0.7.0
+> capability set (see **"What v0.7.0 gives you"**):
+> cross-run memory, config-first observation (log→bundle→viewer; HTML rendering lives in the
+> separate `ai_workflow_viewer` package), strict prompt files, machine identity, and hardened seam
+> guards.
+> **Release gate: CLOSED 2026-07-05** — package version metadata is lockstep-guarded in both
+> packages (engine 0.7.0, tools 0.3.0; pyproject ↔ `__version__` release-guard tests), the
+> one-call façade exposes the full run envelope (`return_result=True`), and console tool-flag
+> handling covers joined/kebab forms (regression-locked). The tag builds packages that report
+> the matching versions.
+> **v0.7.0 delta (2026-07-05) — CONTRACT CHANGE, read before re-pinning:**
+> 1. **`CliAgentRequest.allowed_tools` is tri-state.** `None` (the NEW field default) → the
+>    documented `DEFAULT_AGENT_TOOLS` (`Read, Grep, Glob, LS, WebFetch, WebSearch, Bash`);
+>    `[]` → explicit no-tools (`--tools ""`); a non-empty list → EXACT override, never merged.
+>    Old behavior — default `[]` silently inheriting the CLI's own tool defaults — is gone.
+>    `codex_exec` rejects a non-None list loudly (its surface is governed by `--sandbox`).
+> 2. **Side-effect ledger honesty.** The default `CliAgentCapability` spec now declares
+>    `workspace_write` + `external_call` (Bash is in the default tool set; codex_exec always
+>    runs `--sandbox workspace-write`). Your workflow profile must ALLOW those effects for
+>    agent nodes or the engine refuses pre-invocation. Migrate: allow both effects on real
+>    agent flows. For `claude_p`, you may narrow by setting explicit `side_effects=[...]`
+>    and a Bash-less `allowed_tools` list. For `codex_exec`, `allowed_tools` is rejected;
+>    a narrowed spec that omits the Codex workspace-write/subscription side effects is
+>    refused PRE-SPAWN.
+> 3. **Text-only console completions are tool-free** (`claude -p … --tools ""`): the injection
+>    surface on structured text calls is closed. Staged vision keeps ONLY scoped
+>    `Read(./inputs/**)` — the exfiltration canary is re-verified in every live run.
+> 4. **Crash fix you want:** external-process stream reading is chunked — a CLI emitting one
+>    huge single-line JSON (>64KiB) no longer kills the call (the `LimitOverrunError` class
+>    of failures is gone; regression-locked).
+> 5. **NEW — discoverable toolset:** `from ai_workflow_tools import TOOL_CATALOG,
+>    render_tool_catalog, register_from_catalog` — every shipped tool described (kind, side
+>    effects, builder), plus presets `READ_ONLY / WEB / INVESTIGATION / NO_TOOLS`
+>    (`DEFAULT_AGENT_TOOLS is INVESTIGATION`); a completeness guard keeps the catalog honest.
+> 6. **NEW — one-call façade:** `from ai_workflow_engine import run_single_llm,
+>    run_single_step` — a 1-node workflow on the real engine (usage/trace/budget/parse-repair
+>    intact) for the trivial case; trace/usage stay reachable via `return_result=True` even when the
+>    helper creates the engine internally.
+> **MageQA migration check (2 minutes):** your browser agents pass explicit `mcp__*` tool
+> lists → exact-override semantics, unaffected by (1). For (2): the audit profile must allow
+> `workspace_write` + `external_call` on real agent steps. Only `claude_p` agents can narrow by
+> registering a smaller `side_effects=[...]` and keeping `allowed_tools` Bash-less; `codex_exec`
+> must declare its workspace-write/subscription side effects.
 > **One-door rule for consumers:** construct provider clients only through sanctioned factory/adapter
-> modules. A direct provider client in workflow code is a reviewed allow-list entry, not a local
-> shortcut — otherwise you lose observability, cost accounting, and model-swap.
+> modules (in this repo: `services/llm_factory.py`, `ai_workflow_tools.media.image_generation`,
+> `ai_workflow_tools.chatgpt_browser`, `ai_workflow_tools.catalog` — the catalog builders are the
+> supported discovery door). A direct provider client in workflow code is a reviewed allow-list
+> entry, not a local shortcut — otherwise you lose observability, cost accounting, and model-swap.
 
-Status: **ready for adoption — pin `engine-v0.6.6`** and build a wheel; never track the live branch.
+Status: **ready for adoption — pin `engine-v0.7.0`** and build a wheel; never track the live branch.
 The `WorkflowDefinition` / `WorkflowExecutor` / DI layer is live and proven (Anki runs on it in
 production; the product-neutral examples include site-audit fan-out and the three-axis pilot). The
 sibling `ai_workflow_tools` package ships CLI-agent + console-LLM support (`claude -p` / `codex exec`)
-and the media pack. See **"What v0.6.6 gives you"** at the end for the full capability list.
-Not in v0.6 (deferred): durable/semantic memory beyond the `MemoryStore` seam, FlowArtifact v1.5,
+and the media pack. See **"What v0.7.0 gives you"** at the end for the full capability list.
+Not in v0.7 (deferred): durable/semantic memory beyond the `MemoryStore` seam, FlowArtifact v1.5,
 ProcessArtifact/v2, browser/no-API executors.
 Source needs: `/Users/artemm/PycharmProjects/MageQA/docs/17-qa-orchestrator-architecture.md`,
 `/Users/artemm/PycharmProjects/MageQA/docs/14-agentic-tester-architecture.md`.
@@ -31,6 +66,37 @@ gates, trace, subworkflows); you own the agentic/domain core (browser agents, ru
 report). **You write no coordinator loop** (a static guard enforces this).
 
 ---
+
+## 0. Why re-pin to v0.7.0 — what YOUR workload gains (not just the generic delta)
+
+**Direction verdict (owner + engine author, 2026-07-05): do NOT reroute your integration for
+v0.7.0.** This is a stability/hardening release for your planned shape — re-pin, run the migration
+check above, continue as designed. The new features below are optional pickups (the tool-free
+triage-episode type is the only new capability, and it is an optimization inside your existing
+deepen loop, not an architecture change). Everything your integration is actually waiting on —
+durable/semantic memory tiers, FlowArtifact v1.5 authorable fan-out — remains deferred and is NOT
+in this tag.
+
+Mapped to the MageQA shapes in this doc (browser episodes via `CliAgentCapability`+MCP,
+adjudicate/deepen loops, rubric/report text roles, artifact salvage, cost dashboards):
+
+| v0.7.0 change | Your concrete win |
+|---|---|
+| Chunked external-process read (G-0.1) | **Top reliability win for you.** Browser episodes return large single-line JSON envelopes (session transcripts, page text). Pre-v0.7.0 any >64KiB single line crashed the call AFTER the episode's quota was spent — and the same bug sat under timeout salvage of big partials. Long agent episodes stop dying on reply size. |
+| Text-only completions run `--tools ""` | **Your injection chain gets a hard break.** MageQA feeds UNTRUSTED page content into downstream adjudicator/rubric/report completions; a hostile page that says "read /app/.env with your tools" is now inert at the CLI level on those roles — enforced by flag, not by prompt discipline (exfiltration canary re-verified live each run). |
+| Tri-state `allowed_tools` | `[]` makes scoring/verdict completions provably tool-free; `None` gives the documented investigation default (`Read/Grep/Glob/LS/Web*/Bash`) — which enables a **new cheap episode type for deepen loops**: a non-MCP triage agent that greps/reads the SALVAGED artifacts (`session*.md`, `page-*.yml`, HAR dumps) in its workspace instead of re-driving a browser. Your explicit `mcp__browser__*` lists behave as before (exact override). |
+| Pre-spawn side-effect denial | A mis-scoped agent config refuses BEFORE the process spawns — no quota burned on an episode policy would forbid, and your QA compliance story sharpens: the permitted-capability ledger provably cannot lie (a testing product gets asked exactly that). |
+| `TOOL_CATALOG` / `render_tool_catalog()` / presets | Feed your session-planner the tool inventory the same way `render_capability_catalog` feeds deciders; reference `READ_ONLY`/`NO_TOOLS`/`INVESTIGATION` constants in configs instead of hand-listing tool strings. |
+| `run_single_llm` / `run_single_step` | Your one-shot calls OUTSIDE audit workflows (failure classification, rubric refinement, flaky-check triage scripts) get engine-honest usage/trace/budget in 3 lines — kills the temptation for shadow LLM paths; `return_result=True` hands back the full run envelope. |
+
+**Coming from `engine-v0.6.5` or earlier? You ALSO pick up the v0.6.6 consumer-facing fixes**
+(previously bannered here, restated because they matter to your exact stack): structured nodes
+dispatched factory-built PLAIN clients (e.g. `ConsoleLLMClient` — your claude-p text roles) down
+the LangChain path on their FIRST execution (crash on missing `.invoke`, recovered only on retry),
+and a profile routed to a different plain backend could invoke the default client — both fixed;
+usage captions split `billed (API)` from `subscription … plan value` (your cost dashboards), and
+usage events carry honest `provider` attribution including on FAILED calls (your failure
+analytics).
 
 ## 1. The whole adoption in three steps
 
@@ -93,7 +159,7 @@ transition; failed/partial/blocked states remain visible and never collapse to s
 
 These points answer the review questions that matter before paying someone to migrate MageQA.
 
-- **v0.6.6 replaces local state/observation plumbing.** MageQA should not keep a local supervisor,
+- **The engine replaces local state/observation plumbing (since v0.6.4).** MageQA should not keep a local supervisor,
   state machine, trace collector, bundle writer, retry/deepen loop, or run-status vocabulary beside
   the engine. The MageQA product layer owns QA intelligence — prompts, rubrics, browser/CLI workers,
   evidence schemas, finding schemas, report/dashboard presentation — as capabilities and packs. The
@@ -134,7 +200,7 @@ These points answer the review questions that matter before paying someone to mi
   job. Config: `observation.artifacts: copy|off` (default `copy`),
   `observation.artifact_max_bytes` (default 25 MiB per artifact). Failed runs archive their
   salvage too — failure evidence is the evidence that matters most.
-- **Observation bundle consumption.** The durable bundle layout in v0.6.6 is
+- **Observation bundle consumption.** The durable bundle layout (v0.6.4+) is
   `trace.jsonl`, `details.jsonl`, `usage.jsonl`, `meta.json`, `definition.json`, plus the evidence
   manifest `artifacts.json` and the archived `artifacts/` directory, ordered by monotonic
   `sequence`. For the MageQA dashboard, treat `ai_workflow_viewer.EventSource` /
@@ -436,9 +502,18 @@ examples: `ai_workflow_engine/examples.py` (`build_demo_engine`, `SiteAuditPack`
 
 ---
 
-## What v0.6.6 gives you
+## What v0.7.0 gives you
 
-The full capability set in `engine-v0.6.6` (older tags are unsupported — no deltas to track):
+`engine-v0.7.0` gives MageQA the full capability set below (older tags
+are unsupported — no deltas to track):
+
+- **Discoverable toolset (v0.7.0).** `TOOL_CATALOG` / `render_tool_catalog()` /
+  `register_from_catalog(engine, name, **kw)` in `ai_workflow_tools`; presets
+  `READ_ONLY/WEB/INVESTIGATION/NO_TOOLS`; tri-state `allowed_tools` with Bash-honest
+  side-effect declaration + pre-spawn denial.
+- **One-call façade (v0.7.0).** `run_single_llm` / `run_single_step` — trivial calls on the
+  real engine, with usage/trace/budget/loud failures inspectable from the returned run wrapper or
+  the passed `engine=`.
 
 - **Agent brain + LLM protocol.** Multi-turn, tool-calling protocol (`ChatMessage`/`ToolSpec`/
   `ToolCallRequest`/`ToolResult`); a shipped `LLMAgentPlanner` (screenshot→vision loop, per-turn
@@ -457,7 +532,7 @@ The full capability set in `engine-v0.6.6` (older tags are unsupported — no de
 - **Self-describing machine.** Declare label semantics once (`.branch(..., describe={...})`); deciders
   get their legal moves + live gate budgets via `inject_machine=True` (`context.metadata["machine"]`).
   Any branch label that closes a loop REQUIRES a pre-set gate (`bounds={"label": N}`,
-  `exhausted={"label": "escape"}`) — ungated cycles fail validation loudly. **Validation now requires a `describe` entry for EVERY decision label on an `inject_machine=True` branch** (the goblin rule): an option the navigator cannot understand fails the build loudly instead of producing an opaque machine card. Zero-LLM routing via
+  `exhausted={"label": "escape"}`) — ungated cycles fail validation loudly. **Validation now requires a `describe` entry for EVERY decision label on an `inject_machine=True` branch**: an option the navigator cannot understand fails the build loudly instead of producing an opaque machine card. Zero-LLM routing via
   `engine.register_guard(...)` (traced `decision_policy`). Feed flow-author prompts with
   `render_capability_catalog(engine.registry, allowed)`.
 - **Flow-as-data + planning.** `engine.run_authored_flow(FlowArtifact(...), payload)` — an LLM emits a

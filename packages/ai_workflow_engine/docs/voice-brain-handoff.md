@@ -170,19 +170,21 @@ architectural decision — raise it explicitly and we'll scope it then.
 
 ### Ask 4 (distribution / pip) — **git-tag + subdirectory pip install. Two packages, not one.**
 It's already pip-installable; there's no PyPI/private index (none planned unless demand justifies).
-Consume it the way GoPro does — pin an **immutable tag** (`engine-v0.6.6`), build a wheel, and never
+Consume it the way GoPro does — pin an **immutable tag** (`engine-v0.7.0`), build a wheel, and never
 track the live branch (see the GoPro/MageQA handoff for the full adoption recipe). **Important:** since v0.4.0,
 `CliAgentCapability` + the `claude_p` flavor live in **`ai_workflow_tools`**, not the engine
 (`ai_workflow_tools/cli_agents/`). `ai-workflow-tools` depends on `ai-workflow-engine`, so your
 `requirements.txt` needs **both**, pinned to the same tag:
 
 ```
-ai-workflow-engine @ git+ssh://git@<host>/<repo>@engine-v0.4.1#subdirectory=packages/ai_workflow_engine
-ai-workflow-tools  @ git+ssh://git@<host>/<repo>@engine-v0.4.1#subdirectory=packages/ai_workflow_tools
+ai-workflow-engine @ git+ssh://git@<host>/<repo>@engine-v0.7.0#subdirectory=packages/ai_workflow_engine
+ai-workflow-tools  @ git+ssh://git@<host>/<repo>@engine-v0.7.0#subdirectory=packages/ai_workflow_tools
 ```
 
 (or build wheels from the tag via a detached worktree and vendor them, like GoPro's
-`tools/build_engine_wheel.sh`). Current tags: `engine-v0.4.1` is latest (the Ask-1 passthrough lands here). Effort on my side: zero —
+`tools/build_engine_wheel.sh`). Current tags: `engine-v0.7.0` is latest (the Ask-1 passthrough
+landed in v0.4.1 and is included; v0.7.0 adds the tri-state `allowed_tools` contract — your
+`CliAgentCapability(claude_p)` v1 keeps working, see the GoPro handoff delta for the 2-minute check). Effort on my side: zero —
 just pick your pin. If an `ssh`-less HTTPS path or a wheel-publish step would help your CI, say so.
 
 ### Net

@@ -1,26 +1,61 @@
 # GoPro — AI Workflow Engine Usage Guide
 
-> **PIN (2026-07-02):** pin tag `engine-v0.6.6` and build a wheel from it. The consumer model is
-> breaking-allowed tag-to-tag — do NOT track the live branch. The current tag carries the full
-> capability set (see **"What v0.6.6 gives you"**): cross-run memory, config-first observation
-> (log→bundle→viewer; HTML rendering lives in the separate `ai_workflow_viewer` package), strict
-> prompt files, machine identity, and the hardened seam guards.
-> **v0.6.6 delta (2026-07-03), pick it up — it contains a consumer-facing FIX:** structured
-> nodes dispatched factory-built PLAIN clients (e.g. `ConsoleLLMClient`) down the LangChain
-> path on their first execution (crash on missing `.invoke`, recovered only on retry), and a
-> profile routing to a different plain backend could invoke the default client. Both fixed.
-> Also: usage captions now separate `billed (API)` (real charges) from `subscription … plan
-> value`; usage events carry honest `provider` attribution incl. on FAILED calls.
+> **PIN (2026-07-05):** pin tag `engine-v0.7.0` and build a wheel from it. The consumer model is
+> breaking-allowed tag-to-tag — do NOT track the live branch. The tag carries the full v0.7.0
+> capability set (see **"What v0.7.0 gives you"**):
+> cross-run memory, config-first observation (log→bundle→viewer; HTML rendering lives in the
+> separate `ai_workflow_viewer` package), strict prompt files, machine identity, and hardened seam
+> guards.
+> **Release gate: CLOSED 2026-07-05** — package version metadata is lockstep-guarded in both
+> packages (engine 0.7.0, tools 0.3.0; pyproject ↔ `__version__` release-guard tests), the
+> one-call façade exposes the full run envelope (`return_result=True`), and console tool-flag
+> handling covers joined/kebab forms (regression-locked). The tag builds packages that report
+> the matching versions.
+> **v0.7.0 delta (2026-07-05) — CONTRACT CHANGE, read before re-pinning:**
+> 1. **`CliAgentRequest.allowed_tools` is tri-state.** `None` (the NEW field default) → the
+>    documented `DEFAULT_AGENT_TOOLS` (`Read, Grep, Glob, LS, WebFetch, WebSearch, Bash`);
+>    `[]` → explicit no-tools (`--tools ""`); a non-empty list → EXACT override, never merged.
+>    Old behavior — default `[]` silently inheriting the CLI's own tool defaults — is gone.
+>    `codex_exec` rejects a non-None list loudly (its surface is governed by `--sandbox`).
+> 2. **Side-effect ledger honesty.** The default `CliAgentCapability` spec now declares
+>    `workspace_write` + `external_call` (Bash is in the default tool set; codex_exec always
+>    runs `--sandbox workspace-write`). Your workflow profile must ALLOW those effects for
+>    agent nodes or the engine refuses pre-invocation. Migrate: allow both effects on real
+>    agent flows. For `claude_p`, you may narrow by setting explicit `side_effects=[...]`
+>    and a Bash-less `allowed_tools` list. For `codex_exec`, `allowed_tools` is rejected;
+>    a narrowed spec that omits the Codex workspace-write/subscription side effects is
+>    refused PRE-SPAWN.
+> 3. **Text-only console completions are tool-free** (`claude -p … --tools ""`): the injection
+>    surface on structured text calls is closed. Staged vision keeps ONLY scoped
+>    `Read(./inputs/**)` — the exfiltration canary is re-verified in every live run.
+> 4. **Crash fix you want:** external-process stream reading is chunked — a CLI emitting one
+>    huge single-line JSON (>64KiB) no longer kills the call (the `LimitOverrunError` class
+>    of failures is gone; regression-locked).
+> 5. **NEW — discoverable toolset:** `from ai_workflow_tools import TOOL_CATALOG,
+>    render_tool_catalog, register_from_catalog` — every shipped tool described (kind, side
+>    effects, builder), plus presets `READ_ONLY / WEB / INVESTIGATION / NO_TOOLS`
+>    (`DEFAULT_AGENT_TOOLS is INVESTIGATION`); a completeness guard keeps the catalog honest.
+> 6. **NEW — one-call façade:** `from ai_workflow_engine import run_single_llm,
+>    run_single_step` — a 1-node workflow on the real engine (usage/trace/budget/parse-repair
+>    intact) for the trivial case; trace/usage stay reachable via `return_result=True` even when the
+>    helper creates the engine internally.
+> **GoPro migration check (2 minutes):** a sidecar `CliAgentCapability` worker that relied on
+> the old empty-default (CLI-inherit) now gets the documented investigation set — pass `[]`
+> explicitly if you want a tool-free episode. For (2): your inventory/goal-compiler profile
+> must allow `workspace_write` + `external_call` on agent nodes (deterministic/VLM steps are
+> untouched).
 > **One-door rule for consumers:** construct provider clients only through sanctioned factory/adapter
-> modules. A direct provider client in workflow code is a reviewed allow-list entry, not a local
-> shortcut — otherwise you lose observability, cost accounting, and model-swap.
+> modules (in this repo: `services/llm_factory.py`, `ai_workflow_tools.media.image_generation`,
+> `ai_workflow_tools.chatgpt_browser`, `ai_workflow_tools.catalog` — the catalog builders are the
+> supported discovery door). A direct provider client in workflow code is a reviewed allow-list
+> entry, not a local shortcut — otherwise you lose observability, cost accounting, and model-swap.
 
-Status: **ready for adoption — pin `engine-v0.6.6`** and build a wheel; never track the live branch.
+Status: **ready for adoption — pin `engine-v0.7.0`** and build a wheel; never track the live branch.
 The `WorkflowDefinition` / `WorkflowExecutor` / DI layer is live and proven (Anki runs on it in
 production; one `WorkflowExecutor` runs the product-neutral examples). The sibling `ai_workflow_tools`
 package ships CLI-agent + console-LLM support (`claude -p` / `codex exec`) and the media pack. See
-**"What v0.6.6 gives you"** at the end for the full capability list.
-Not in v0.6 (deferred): durable/semantic memory beyond the `MemoryStore` seam, FlowArtifact v1.5,
+**"What v0.7.0 gives you"** at the end for the full capability list.
+Not in v0.7 (deferred): durable/semantic memory beyond the `MemoryStore` seam, FlowArtifact v1.5,
 ProcessArtifact/v2, browser/no-API executors.
 Source needs: `/Users/artemm/PycharmProjects/gopro-streaming/docs/architecture/workflow-execution-engine-requirements.md`,
 `/Users/artemm/PycharmProjects/gopro-streaming/docs/universal_event_descriptor/HOME_INVENTORY_CASE.md`.
@@ -90,6 +125,38 @@ Before GoPro treats the engine integration as ready, run these checks in the GoP
 
 Reference test shape: enum rejects ad-hoc statuses; engine result maps to deterministic transition;
 failed/partial/blocked states remain visible and never collapse to silent-empty output.
+
+---
+
+## 1b. GoPro migration clarifications
+
+These points answer the review questions that matter before wiring the sidecar or goal compiler.
+
+- **The engine replaces local orchestration mechanics.** GoPro should not keep a separate scheduler,
+  retry/retrace loop, drop-stale lane manager, observation bundle writer, trace collector, or run-state
+  vocabulary beside the engine. GoPro owns video/domain semantics — frame selection, VLM/OCR tools,
+  prompts, schemas, inventory adapters, and delivery — as capabilities and packs.
+- **Live sidecar threading is explicit.** One `WorkflowEngine` / `WorkflowExecutor` belongs to one
+  asyncio event loop. If a camera sidecar or worker thread needs to submit work, marshal into that
+  loop with `asyncio.run_coroutine_threadsafe(engine.run(...), engine_loop)`; do not mutate a shared
+  engine from multiple event loops.
+- **Backend lanes are engine scheduling policy, not product locks.** Put
+  `SchedulingPolicy(backend_key=..., max_backend_concurrency=..., mode=...)` on local-model/VLM nodes.
+  The engine owns queue/drop/cancel behavior and keeps the backend slot until the worker really
+  completes.
+- **Goal compiler boundary.** GoPro may use AI to emit structured plans, scenario inputs, or a
+  constrained `FlowArtifact` for registered capabilities. Do not rely on fully arbitrary AI-authored
+  process pipelines for the migration: authorable fan-out/subworkflow and reusable generated process
+  artifacts remain v1.5/v2 future-stage.
+- **Observation and evidence are engine-owned.** Configure observation once in application YAML; the
+  engine writes the bundle, archives returned `WorkflowArtifact`s under `artifacts/`, and reports
+  `result.observation_bundle_path`. A GoPro dashboard or sidecar UI should read the bundle/viewer
+  surface, not build a second trace/evidence store.
+- **Memory is product-owned behind the engine seam.** Implement durable GoPro storage behind
+  `MemoryStore`; use namespaces such as
+  `MemoryNamespace("gopro", tenant_id, target_id, record_kind)` for learned flows, camera/room
+  profiles, inventory history, flaky checks, and planning hints. Memory is prompt/context input, not
+  control state.
 
 ---
 
@@ -263,9 +330,18 @@ import from `ai_workflow_tools.cli_agents`: `CliAgentCapability`, `CliAgentReque
 
 ---
 
-## What v0.6.6 gives you
+## What v0.7.0 gives you
 
-The full capability set in `engine-v0.6.6` (older tags are unsupported — no deltas to track):
+`engine-v0.7.0` gives GoPro the full capability set below (older tags
+are unsupported — no deltas to track):
+
+- **Discoverable toolset (v0.7.0).** `TOOL_CATALOG` / `render_tool_catalog()` /
+  `register_from_catalog(engine, name, **kw)` in `ai_workflow_tools`; presets
+  `READ_ONLY/WEB/INVESTIGATION/NO_TOOLS`; tri-state `allowed_tools` with Bash-honest
+  side-effect declaration + pre-spawn denial.
+- **One-call façade (v0.7.0).** `run_single_llm` / `run_single_step` — trivial calls on the
+  real engine, with usage/trace/budget/loud failures inspectable from the returned run wrapper or
+  the passed `engine=`.
 
 - **Agent brain + LLM protocol.** Multi-turn, tool-calling protocol (`ChatMessage`/`ToolSpec`/
   `ToolCallRequest`/`ToolResult`); a shipped `LLMAgentPlanner` (screenshot→vision loop, per-turn
@@ -284,7 +360,7 @@ The full capability set in `engine-v0.6.6` (older tags are unsupported — no de
 - **Self-describing machine.** Declare label semantics once (`.branch(..., describe={...})`); deciders
   get their legal moves + live gate budgets via `inject_machine=True` (`context.metadata["machine"]`).
   Any branch label that closes a loop REQUIRES a pre-set gate (`bounds={"label": N}`,
-  `exhausted={"label": "escape"}`) — ungated cycles fail validation loudly. **Validation now requires a `describe` entry for EVERY decision label on an `inject_machine=True` branch** (the goblin rule): an option the navigator cannot understand fails the build loudly instead of producing an opaque machine card. Zero-LLM routing via
+  `exhausted={"label": "escape"}`) — ungated cycles fail validation loudly. **Validation now requires a `describe` entry for EVERY decision label on an `inject_machine=True` branch**: an option the navigator cannot understand fails the build loudly instead of producing an opaque machine card. Zero-LLM routing via
   `engine.register_guard(...)` (traced `decision_policy`). Feed the S1 goal-compiler prompt with
   `render_capability_catalog(engine.registry, allowed)` (side effects outside the allow-list marked
   DENIED, AI-writers NOT-AUTHORABLE); `render_machine_card(definition, node_id)` renders any state
@@ -327,7 +403,7 @@ The full capability set in `engine-v0.6.6` (older tags are unsupported — no de
   escape hatch (it takes precedence) and `terminal_status=` stays the post-validation hook —
   a raising run archives as failed, and the record can never say completed for a user-visible failure.
 - **Prompt files with strict rendering.** Prompts can live as FILES under a locked prompt root:
-  `StructuredLLMNode(prompt_ref=PromptRef("mageqa/route.txt"), prompt_renderer=engine.prompt_renderer)`
+  `StructuredLLMNode(prompt_ref=PromptRef("gopro/route.txt"), prompt_renderer=engine.prompt_renderer)`
   (split static/dynamic refs supported). A missing variable fails LOUDLY before any model call;
   paths cannot escape the root; template+rendered digests are recorded. Jinja is one optional
   dialect (`renderer="jinja"`, strict-undefined) — requires the product to install `jinja2`;
