@@ -303,3 +303,35 @@ def test_dropped_turn_finding_text_survives_windowing_and_compaction_bounded():
     summary = compacted[2].content
     assert "found: blue mug on desk" in summary
     assert "found: keyboard" in summary
+
+
+def test_dropped_turn_excerpts_use_canonical_tool_rendering_and_2arg_compactors_still_work():
+    # Codex round-2 architecture smell: compaction must read like normal replay — excerpts
+    # go through context.tool_content, not a parallel str(output) rendering.
+    history = [
+        _step("inspect", {"tile": 1}, output="found: blue mug"),
+        _step("inspect", {"tile": 2}, output="found: lamp"),
+        _step("inspect", {"tile": 3}, output="found: keyboard"),
+    ]
+    marked_ctx = AgentMemoryRenderContext(
+        tool_content=lambda step: f"RENDERED::{step.output}",
+        images_from_output=lambda _output: [],
+        system_prompt=None,
+    )
+
+    windowed = WindowedMemory(max_turns=1).render(REQ, history, marked_ctx)
+    notice = windowed[1].content
+    assert "RENDERED::found: blue mug" in notice
+
+    compacted = CompactingMemory(token_threshold=1, keep_last_turns=1).render(
+        REQ, history, marked_ctx
+    )
+    assert "RENDERED::found: lamp" in compacted[1].content
+
+    # A plain (request, dropped) compactor — the spec'd pluggable shape — keeps working.
+    two_arg = CompactingMemory(
+        compactor=lambda _request, dropped: f"TWO-ARG summary of {len(dropped)} turns",
+        token_threshold=1,
+        keep_last_turns=1,
+    ).render(REQ, history, marked_ctx)
+    assert "TWO-ARG summary of 2 turns" in two_arg[1].content

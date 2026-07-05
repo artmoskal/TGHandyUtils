@@ -12,7 +12,7 @@
 > handling covers joined/kebab forms (regression-locked). The tag builds packages that report
 > the matching versions.
 > **v0.8.0 delta (2026-07-05) — YOUR P1 MEMORY REQUEST DELIVERED (additive, no breaking change):**
-> R1 `StructuredStateMemory` — pure derived-state reducer (default: per-tool calls/arg-digests/
+> R1 `StructuredStateMemory` — pure derived-state reducer (default: per-tool calls/arg-summaries/
 > ok/error tallies, product-neutral, AC-S4-pinned), state block appended as the LAST memory-
 > produced message (repair prompt lands after it — order pinned by test), byte-free LOUD
 > validation of reducer/renderer output (never silent stripping), `reducer_label` +

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -338,7 +339,9 @@ def render_full_replay_messages(
 # Pure derived-state hooks: same (request, history) -> same state, no mutation across turns.
 StateReducer = Callable[[AgentRunRequest, Sequence[AgentToolStep]], Any]
 StateRenderer = Callable[[Any], str]
-# Compacts the DROPPED history prefix into one findings-preserving text block.
+# Compacts the DROPPED history prefix into one bounded text block. May optionally accept a
+# third positional arg (the AgentMemoryRenderContext) to reuse canonical tool rendering;
+# plain (request, dropped) callables keep working.
 Compactor = Callable[[AgentRunRequest, Sequence[AgentToolStep]], str]
 
 
@@ -348,7 +351,7 @@ def default_tool_state_reducer(
     """Product-neutral working state: per tool — call count, per-call arg summaries, ok/error.
 
     Enough for "visited / remaining"-style prompts without any product code. Deterministic:
-    tools sorted by name, digests in call order.
+    tools sorted by name, arg summaries in call order.
     """
 
     tools: dict[str, dict[str, Any]] = {}
@@ -498,7 +501,10 @@ class WindowedMemory:
             messages.append(ChatMessage(role="system", content=context.system_prompt))
         messages.append(ChatMessage(role="user", content=request.prompt))
         messages.append(
-            ChatMessage(role="user", content=_dropped_turns_notice("window_dropped", request, dropped))
+            ChatMessage(
+                role="user",
+                content=_dropped_turns_notice("window_dropped", request, dropped, context),
+            )
         )
         tail_context = AgentMemoryRenderContext(
             tool_content=context.tool_content,
@@ -552,7 +558,7 @@ class CompactingMemory:
         dropped = history[: -self.keep_last_turns]
         recent = history[-self.keep_last_turns :]
         summary = _assert_state_output_safe(
-            None, self.compactor(request, dropped), who="CompactingMemory"
+            None, _call_compactor(self.compactor, request, dropped, context), who="CompactingMemory"
         )
         messages: list[ChatMessage] = []
         if context.system_prompt:
@@ -588,18 +594,25 @@ _COMPACT_TOTAL_CHARS = 4000
 
 
 def default_rule_based_compactor(
-    request: AgentRunRequest, dropped: Sequence[AgentToolStep]
+    request: AgentRunRequest,
+    dropped: Sequence[AgentToolStep],
+    context: "AgentMemoryRenderContext | None" = None,
 ) -> str:
     """Rule-based summary of dropped turns (no LLM call, ever): the per-tool activity
     tally PLUS a bounded excerpt of each dropped turn's output, so discovered findings
-    survive windowing/compaction by default instead of vanishing with the turn."""
+    survive windowing/compaction by default instead of vanishing with the turn.
+
+    Excerpts use the CANONICAL tool rendering (``context.tool_content``) when the render
+    context is available, so compacted history reads like normal replay — falling back to
+    ``str(output)`` only for bare 2-arg invocation. Bound: first ``_COMPACT_OUTPUT_CHARS``
+    chars per turn — rich/long findings need a custom reducer or compactor (documented)."""
 
     lines = [default_state_renderer(default_tool_state_reducer(request, dropped))]
     if dropped:
         lines.append("dropped-turn outputs (bounded excerpts):")
     used = 0
     for index, step in enumerate(dropped, start=1):
-        excerpt = _bounded_output_excerpt(step.output)
+        excerpt = _bounded_output_excerpt(step, context)
         line = f"- {step.call.tool_name}[{index}]: {excerpt}"
         used += len(line)
         if used > _COMPACT_TOTAL_CHARS:
@@ -609,17 +622,49 @@ def default_rule_based_compactor(
     return "\n".join(lines)
 
 
-def _bounded_output_excerpt(output: Any) -> str:
-    text = " ".join(str(output).split())
+def _bounded_output_excerpt(
+    step: AgentToolStep, context: "AgentMemoryRenderContext | None"
+) -> str:
+    rendered = context.tool_content(step) if context is not None else str(step.output)
+    text = " ".join(str(rendered).split())
     if len(text) > _COMPACT_OUTPUT_CHARS:
         return text[:_COMPACT_OUTPUT_CHARS] + "…"
     return text
 
 
-def _dropped_turns_notice(
-    marker: str, request: AgentRunRequest, dropped: Sequence[AgentToolStep]
+def _call_compactor(
+    compactor: Compactor,
+    request: AgentRunRequest,
+    dropped: Sequence[AgentToolStep],
+    context: AgentMemoryRenderContext,
 ) -> str:
-    summary = default_rule_based_compactor(request, dropped)
+    """Invoke a compactor, passing the render context when its signature accepts it —
+    2-arg product compactors (the spec'd shape) keep working unchanged."""
+
+    try:
+        parameters = list(inspect.signature(compactor).parameters.values())
+    except (TypeError, ValueError):
+        return compactor(request, dropped)
+    positional = [
+        parameter
+        for parameter in parameters
+        if parameter.kind
+        in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    ]
+    if len(positional) >= 3 or any(
+        parameter.kind == inspect.Parameter.VAR_POSITIONAL for parameter in parameters
+    ):
+        return compactor(request, dropped, context)
+    return compactor(request, dropped)
+
+
+def _dropped_turns_notice(
+    marker: str,
+    request: AgentRunRequest,
+    dropped: Sequence[AgentToolStep],
+    context: "AgentMemoryRenderContext | None" = None,
+) -> str:
+    summary = default_rule_based_compactor(request, dropped, context)
     return (
         f"[memory:{marker}] {len(dropped)} earlier turn(s) not replayed verbatim; "
         f"their tool activity + bounded output excerpts:\n{summary}"
