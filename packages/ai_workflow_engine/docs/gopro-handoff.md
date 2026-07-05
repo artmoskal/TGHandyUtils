@@ -21,7 +21,8 @@
 > "image_evicting", "keep_last_images": 1}}` (nested base, AC-S3-tested). The AC-S2 behavioral
 > proof is in `tests/test_agent_planner.py`: a scripted weak model that follows ONLY the state
 > block stops re-zooming visited sections; with full replay alone it repeats.
-> R2 `WindowedMemory(max_turns=N)` (dropped turns leave a findings-preserving tally notice) +
+> R2 `WindowedMemory(max_turns=N)` (dropped turns leave an activity tally + bounded excerpts
+> of their OUTPUTS — discovered findings survive windowing by default, size-capped) +
 > `CompactingMemory(inner=…, token_threshold=…, keep_last_turns=…)` (pass-through under
 > threshold; rule-based default compactor; pluggable compactor is CODE — no hidden model calls).
 > R3 builder `memory=` pass-through test exists. R4 per-NODE selection:

@@ -278,3 +278,28 @@ def test_compacting_memory_passthrough_under_threshold_and_compacts_over():  # R
         inner={"mode": "image_evicting", "keep_last_images": 1}, token_threshold=1, keep_last_turns=1
     )
     assert isinstance(nested.inner, ImageEvictingMemory)
+
+
+def test_dropped_turn_finding_text_survives_windowing_and_compaction_bounded():
+    # Codex re-validation follow-up: activity tallies alone are NOT findings-preservation.
+    # The default compactor must carry bounded excerpts of dropped outputs.
+    history = [
+        _step("inspect", {"tile": 1}, output="found: blue mug on desk"),
+        _step("inspect", {"tile": 2}, output="found: lamp near window " + "x" * 500),
+        _step("inspect", {"tile": 3}, output="found: keyboard"),
+        _step("inspect", {"tile": 4}, output="nothing new"),
+    ]
+
+    windowed = WindowedMemory(max_turns=1).render(REQ, history, _render_ctx())
+    notice = windowed[2].content
+    assert "found: blue mug on desk" in notice
+    assert "found: lamp near window" in notice
+    assert "…" in notice  # the 500-char output is truncated, not carried whole
+    assert "x" * 200 not in notice  # bounded excerpt, never the full blob
+
+    compacted = CompactingMemory(token_threshold=1, keep_last_turns=1).render(
+        REQ, history, _render_ctx()
+    )
+    summary = compacted[2].content
+    assert "found: blue mug on desk" in summary
+    assert "found: keyboard" in summary

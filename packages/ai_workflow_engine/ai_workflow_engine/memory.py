@@ -345,7 +345,7 @@ Compactor = Callable[[AgentRunRequest, Sequence[AgentToolStep]], str]
 def default_tool_state_reducer(
     _request: AgentRunRequest, history: Sequence[AgentToolStep]
 ) -> dict[str, Any]:
-    """Product-neutral working state: per tool — call count, per-call arg digests, ok/error.
+    """Product-neutral working state: per tool — call count, per-call arg summaries, ok/error.
 
     Enough for "visited / remaining"-style prompts without any product code. Deterministic:
     tools sorted by name, digests in call order.
@@ -355,7 +355,7 @@ def default_tool_state_reducer(
     for step in history:
         entry = tools.setdefault(step.call.tool_name, {"calls": 0, "args": [], "ok": 0, "error": 0})
         entry["calls"] += 1
-        entry["args"].append(_call_args_digest(step.call.payload))
+        entry["args"].append(_call_args_summary(step.call.payload))
         if step.status == "accepted":
             entry["ok"] += 1
         else:
@@ -363,7 +363,7 @@ def default_tool_state_reducer(
     return {"turns": len(history), "tools": {name: tools[name] for name in sorted(tools)}}
 
 
-def _call_args_digest(payload: Mapping[str, Any]) -> Any:
+def _call_args_summary(payload: Mapping[str, Any]) -> Any:
     if not payload:
         return ""
     if len(payload) == 1:
@@ -583,12 +583,37 @@ class CompactingMemory:
         return estimate_text_tokens(list(messages))
 
 
+_COMPACT_OUTPUT_CHARS = 160
+_COMPACT_TOTAL_CHARS = 4000
+
+
 def default_rule_based_compactor(
     request: AgentRunRequest, dropped: Sequence[AgentToolStep]
 ) -> str:
-    """Findings-preserving rule-based summary of dropped turns (no LLM call, ever)."""
+    """Rule-based summary of dropped turns (no LLM call, ever): the per-tool activity
+    tally PLUS a bounded excerpt of each dropped turn's output, so discovered findings
+    survive windowing/compaction by default instead of vanishing with the turn."""
 
-    return default_state_renderer(default_tool_state_reducer(request, dropped))
+    lines = [default_state_renderer(default_tool_state_reducer(request, dropped))]
+    if dropped:
+        lines.append("dropped-turn outputs (bounded excerpts):")
+    used = 0
+    for index, step in enumerate(dropped, start=1):
+        excerpt = _bounded_output_excerpt(step.output)
+        line = f"- {step.call.tool_name}[{index}]: {excerpt}"
+        used += len(line)
+        if used > _COMPACT_TOTAL_CHARS:
+            lines.append(f"- … {len(dropped) - index + 1} more dropped turn(s) elided (size cap)")
+            break
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _bounded_output_excerpt(output: Any) -> str:
+    text = " ".join(str(output).split())
+    if len(text) > _COMPACT_OUTPUT_CHARS:
+        return text[:_COMPACT_OUTPUT_CHARS] + "…"
+    return text
 
 
 def _dropped_turns_notice(
@@ -597,7 +622,7 @@ def _dropped_turns_notice(
     summary = default_rule_based_compactor(request, dropped)
     return (
         f"[memory:{marker}] {len(dropped)} earlier turn(s) not replayed verbatim; "
-        f"their tool activity:\n{summary}"
+        f"their tool activity + bounded output excerpts:\n{summary}"
     )
 
 

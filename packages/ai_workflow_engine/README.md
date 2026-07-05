@@ -172,8 +172,9 @@ The shipped memory slice is intentionally narrow and replay-safe:
   `reducer_label` for observability) and appends them as the last memory-produced message —
   the weak-model anti-repeat fix, proven behaviorally in tests. Reducer/renderer output is
   validated byte-free LOUDLY (never silently stripped). Composes: `base=image_evicting`.
-- `WindowedMemory(max_turns=N)` (v0.8.0) keeps the last N turns verbatim; dropped turns leave a
-  findings-preserving tally notice — never a silent drop.
+- `WindowedMemory(max_turns=N)` (v0.8.0) keeps the last N turns verbatim; dropped turns leave an
+  activity tally + bounded excerpts of their outputs — findings survive by default, never a
+  silent drop.
 - `CompactingMemory(inner=…, token_threshold=…, keep_last_turns=…)` (v0.8.0) passes through
   byte-identical under the threshold; above it, old turns become a rule-based summary (pluggable
   compactor — code, not a hidden model call).
