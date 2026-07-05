@@ -167,13 +167,28 @@ The shipped memory slice is intentionally narrow and replay-safe:
 - `FullReplayMemory` is the default and renders canonical agent history exactly as before.
 - `ImageEvictingMemory(keep_last_images=N)` keeps only the most recent image-bearing tool turns as
   LLM images and replaces evicted images with explicit evidence/fingerprint audit markers.
+- `StructuredStateMemory` (v0.8.0, GoPro P1) derives compact working-state facts from history via a
+  PURE reducer (default: per-tool calls/args/ok/error tallies; product reducers injectable with
+  `reducer_label` for observability) and appends them as the last memory-produced message —
+  the weak-model anti-repeat fix, proven behaviorally in tests. Reducer/renderer output is
+  validated byte-free LOUDLY (never silently stripped). Composes: `base=image_evicting`.
+- `WindowedMemory(max_turns=N)` (v0.8.0) keeps the last N turns verbatim; dropped turns leave a
+  findings-preserving tally notice — never a silent drop.
+- `CompactingMemory(inner=…, token_threshold=…, keep_last_turns=…)` (v0.8.0) passes through
+  byte-identical under the threshold; above it, old turns become a rule-based summary (pluggable
+  compactor — code, not a hidden model call).
+- Per-NODE selection: `.step("agent", memory={"mode": "structured_state", …})` mirrors
+  `model_profile` — validated loudly at graph build, delivered per call, overrides the
+  capability's constructed default.
 - `MemoryStore` and `InMemoryMemoryStore` define deterministic exact/filter memory storage for tests
   and development. Durable stores and semantic search are not shipped.
 - `MemoryNamespace(product, tenant, subject, kind)` is the public memory scope. `tenant` is the hard
   isolation boundary; `subject` is the product-owned target such as a site origin, camera, project, or
   run family; `kind` is the record family inside that subject.
 
-Config/profile mode names are exact: `full_replay` and `image_evicting`. Alias strings such as
+Config/profile mode names are exact: `full_replay`, `image_evicting`, `structured_state`,
+`windowed`, and `compacting` (nested `base`/`inner` configs supported; unknown options rejected
+loudly). Alias strings such as
 `full`, `default`, `image_eviction`, and `semantic_search` fail loudly. Memory is prompt input, not
 control state; snapshot/resume replay must fast-forward recorded nodes without consulting live
 memory.
