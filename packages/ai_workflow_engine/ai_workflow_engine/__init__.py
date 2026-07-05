@@ -1,7 +1,8 @@
 """Reusable AI workflow engine package."""
 
-__version__ = "0.6.6"
+__version__ = "0.7.0"
 
+from ai_workflow_engine.convenience import run_single_llm, run_single_step
 from ai_workflow_engine.engine import (
     AgentCapability,
     AgentEpisodePlanner,
@@ -181,6 +182,8 @@ from ai_workflow_engine.builder import (
 )
 
 __all__ = [
+    "run_single_llm",
+    "run_single_step",
     "END",
     "BranchDecision",
     "Fallback",
