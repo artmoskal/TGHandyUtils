@@ -5,7 +5,7 @@ Reusable, executable AI workflow builder/runtime.
 Architecture source of truth: `docs/executable-workflow-engine-spec.md` at the repo root. This
 README is a package summary; if it conflicts with the binding spec, the binding spec wins.
 
-> **Status: `engine-v0.6.6` is the current release — pin it, build a wheel, don't track the live
+> **Status: `engine-v0.8.0` is the current release — pin it, build a wheel, don't track the live
 > branch.** Older tags are unsupported. Declare (`WorkflowBuilder`) + wire (`WorkflowEngine.from_config`)
 > + run (`await engine.run(...)`); branch, fan-out/gather, planner plans, evaluator
 > retry/retrace/replan/fallback, subworkflows, human clarification, scheduling/cancellation, per-node
@@ -18,7 +18,7 @@ README is a package summary; if it conflicts with the binding spec, the binding 
 
 ```python
 # Pin the tag + install (git + subdirectory; no PyPI):
-#   pip install "ai-workflow-engine @ git+https://<repo>@engine-v0.6.6#subdirectory=packages/ai_workflow_engine"
+#   pip install "ai-workflow-engine @ git+https://<repo>@engine-v0.8.0#subdirectory=packages/ai_workflow_engine"
 from ai_workflow_engine import WorkflowBuilder, WorkflowEngine
 
 flow = (WorkflowBuilder("my_flow")
@@ -68,8 +68,9 @@ The platform is an implementation-agnostic workflow engine plus a set of tool li
   Status: T1 is shipped for bounded agent prompt projection (`AgentMemory`, `FullReplayMemory`,
   `ImageEvictingMemory`) plus the deterministic
   `MemoryStore`/`MemoryNamespace(product, tenant, subject, kind)`/`InMemoryMemoryStore` contract.
-  Durable/semantic stores, compacting/windowed/structured policies, and broader workflow/project
-  scopes remain deferred until a named consumer proves the need.
+  `engine-v0.8.0` adds the GoPro-proven prompt-memory policies: `StructuredStateMemory`,
+  `WindowedMemory`, `CompactingMemory`, and per-node `memory=` selection. Durable/semantic stores
+  and broader workflow/project scopes remain deferred until a named consumer proves the need.
 - **Economics is part of the architecture.** Metered calls are budgeted explicitly; subscription or
   flat-rate workers report notional or unknown cost honestly instead of pretending to be free.
 - **Rigidity is a three-axis choice.** Work item execution, work-set composition, and replay mode can
@@ -229,9 +230,37 @@ changes need a reusable mechanic, fail-loud validation, and tests that prove sim
 low overhead.
 
 
+## Release Package For Consumers
+
+`engine-v0.8.0` is a tag-based framework release, not a live-branch contract.
+
+Release contents:
+
+- `ai-workflow-engine==0.8.0`: the L0 core engine, workflow builder/executor, config loader,
+  budget/usage/trace, observation bundle writer, memory policies, prompt files, evidence/artifact
+  refs, scheduling, replay, and human/suspend mechanics.
+- `ai-workflow-tools==0.3.0`: optional L2 tools package for CLI agents, console clients, tool
+  catalog, and media helpers. Consumers install it only when they use those tool packs.
+- `ai_workflow_viewer`: source package for reading/rendering observation bundles. It is a viewer
+  utility, not required in a production runtime image unless the product renders bundles there.
+
+GoPro currently vendors only `ai-workflow-engine` in the detection image. That is intentional: the
+current GoPro code imports engine APIs directly and does not yet use `ai_workflow_tools` or bundle
+viewer runtime code inside the detection container.
+
+Consumer rules:
+
+- Pin immutable tags and record source commit + wheel hash.
+- Do not track `polish/workflow-engine` or any live branch.
+- After a consumer vendors a tag, that tag is frozen for that consumer. Any later engine fix ships
+  as a newer tag, not by re-cutting the consumed tag.
+- Keep product domain logic in product capabilities/packs; do not reimplement engine mechanics
+  locally.
+- Run the consumer's approved wrapper tests after rebuilding the image.
+
 ## Capabilities
 
-The full set in `engine-v0.6.6` (older tags are unsupported):
+The full set in `engine-v0.8.0` (older tags are unsupported):
 
 - **Declare + run.** `WorkflowBuilder` (step / branch / evaluate / fanout / plan / subworkflow /
   human), `WorkflowEngine.from_config` (DI for models/budget/safety), `await engine.run(...)`. A branch

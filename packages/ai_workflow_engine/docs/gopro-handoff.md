@@ -1,13 +1,13 @@
 # GoPro — AI Workflow Engine Usage Guide
 
 > **PIN (2026-07-05):** pin tag `engine-v0.8.0` and build a wheel from it. The consumer model is
-> breaking-allowed tag-to-tag — do NOT track the live branch. The tag carries the full v0.7.0
-> capability set (see **"What v0.7.0 gives you"**):
-> cross-run memory, config-first observation (log→bundle→viewer; HTML rendering lives in the
-> separate `ai_workflow_viewer` package), strict prompt files, machine identity, and hardened seam
-> guards.
+> breaking-allowed tag-to-tag — do NOT track the live branch. The tag carries the full framework
+> capability set (see **"What engine-v0.8.0 gives you"**):
+> agent prompt-memory policies plus the `MemoryStore` seam, config-first observation
+> (log→bundle→viewer; HTML rendering lives in the separate `ai_workflow_viewer` package),
+> strict prompt files, machine identity, and hardened seam guards.
 > **Release gate: CLOSED 2026-07-05** — package version metadata is lockstep-guarded in both
-> packages (engine 0.7.0, tools 0.3.0; pyproject ↔ `__version__` release-guard tests), the
+> packages (engine 0.8.0, tools 0.3.0; pyproject ↔ `__version__` release-guard tests), the
 > one-call façade exposes the full run envelope (`return_result=True`), and console tool-flag
 > handling covers joined/kebab forms (regression-locked). The tag builds packages that report
 > the matching versions.
@@ -73,11 +73,16 @@ Status: **ready for adoption — pin `engine-v0.8.0`** and build a wheel; never 
 The `WorkflowDefinition` / `WorkflowExecutor` / DI layer is live and proven (Anki runs on it in
 production; one `WorkflowExecutor` runs the product-neutral examples). The sibling `ai_workflow_tools`
 package ships CLI-agent + console-LLM support (`claude -p` / `codex exec`) and the media pack. See
-**"What v0.7.0 gives you"** at the end for the full capability list.
+**"What engine-v0.8.0 gives you"** at the end for the full capability list.
 Not in v0.8 (deferred): durable/semantic memory STORES beyond the `MemoryStore` seam, FlowArtifact v1.5,
 ProcessArtifact/v2, browser/no-API executors.
 Source needs: `/Users/artemm/PycharmProjects/gopro-streaming/docs/architecture/workflow-execution-engine-requirements.md`,
 `/Users/artemm/PycharmProjects/gopro-streaming/docs/universal_event_descriptor/HOME_INVENTORY_CASE.md`.
+
+**Current GoPro package scope:** the detection image vendors only `ai-workflow-engine==0.8.0`.
+It does not include `ai_workflow_tools` or `ai_workflow_viewer` yet. That is intentional for the
+current GoPro code path, which imports core engine APIs directly. Add the tools/viewer packages only
+when GoPro starts using CLI-agent tool packs, media helpers, or in-container observation rendering.
 
 This is a **how-to**: declare your flow, register your capabilities, run it. The engine owns every
 orchestration mechanic (branch, retry, retrace, fallback, fan-out, scheduling, side-effect/privacy/
@@ -349,7 +354,7 @@ import from `ai_workflow_tools.cli_agents`: `CliAgentCapability`, `CliAgentReque
 
 ---
 
-## What v0.7.0 gives you
+## What engine-v0.8.0 gives you
 
 `engine-v0.8.0` gives GoPro the full capability set below (older tags
 are unsupported — no deltas to track):
