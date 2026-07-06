@@ -5,7 +5,7 @@ Reusable, executable AI workflow builder/runtime.
 Architecture source of truth: `docs/executable-workflow-engine-spec.md` at the repo root. This
 README is a package summary; if it conflicts with the binding spec, the binding spec wins.
 
-> **Status: `engine-v0.8.0` is the current release — pin it, build a wheel, don't track the live
+> **Status: `engine-v0.8.1` is the current release — pin it, build a wheel, don't track the live
 > branch.** Older tags are unsupported. Declare (`WorkflowBuilder`) + wire (`WorkflowEngine.from_config`)
 > + run (`await engine.run(...)`); branch, fan-out/gather, planner plans, evaluator
 > retry/retrace/replan/fallback, subworkflows, human clarification, scheduling/cancellation, per-node
@@ -18,7 +18,7 @@ README is a package summary; if it conflicts with the binding spec, the binding 
 
 ```python
 # Pin the tag + install (git + subdirectory; no PyPI):
-#   pip install "ai-workflow-engine @ git+https://<repo>@engine-v0.8.0#subdirectory=packages/ai_workflow_engine"
+#   pip install "ai-workflow-engine @ git+https://<repo>@engine-v0.8.1#subdirectory=packages/ai_workflow_engine"
 from ai_workflow_engine import WorkflowBuilder, WorkflowEngine
 
 flow = (WorkflowBuilder("my_flow")
@@ -68,9 +68,11 @@ The platform is an implementation-agnostic workflow engine plus a set of tool li
   Status: T1 is shipped for bounded agent prompt projection (`AgentMemory`, `FullReplayMemory`,
   `ImageEvictingMemory`) plus the deterministic
   `MemoryStore`/`MemoryNamespace(product, tenant, subject, kind)`/`InMemoryMemoryStore` contract.
-  `engine-v0.8.0` adds the GoPro-proven prompt-memory policies: `StructuredStateMemory`,
-  `WindowedMemory`, `CompactingMemory`, and per-node `memory=` selection. Durable/semantic stores
-  and broader workflow/project scopes remain deferred until a named consumer proves the need.
+  `engine-v0.8.0` added the GoPro-proven prompt-memory policies: `StructuredStateMemory`,
+  `WindowedMemory`, `CompactingMemory`, and per-node `memory=` selection. `engine-v0.8.1` hardens the byte-free guard (traverses Pydantic/dataclass/arbitrary-object attributes; rejects rendered data-URI media; attribute-less value objects pass) and
+  custom reducers/compactors with stricter byte-free validation and loud rejection of unsafe
+  compaction/structured-state composition. Durable/semantic stores and broader workflow/project
+  scopes remain deferred until a named consumer proves the need.
 - **Economics is part of the architecture.** Metered calls are budgeted explicitly; subscription or
   flat-rate workers report notional or unknown cost honestly instead of pretending to be free.
 - **Rigidity is a three-axis choice.** Work item execution, work-set composition, and replay mode can
@@ -168,17 +170,19 @@ The shipped memory slice is intentionally narrow and replay-safe:
 - `FullReplayMemory` is the default and renders canonical agent history exactly as before.
 - `ImageEvictingMemory(keep_last_images=N)` keeps only the most recent image-bearing tool turns as
   LLM images and replaces evicted images with explicit evidence/fingerprint audit markers.
-- `StructuredStateMemory` (v0.8.0, GoPro P1) derives compact working-state facts from history via a
+- `StructuredStateMemory` (v0.8.0, GoPro P1; hardened in v0.8.1) derives compact working-state facts from history via a
   PURE reducer (default: per-tool calls/args/ok/error tallies; product reducers injectable with
   `reducer_label` for observability) and appends them as the last memory-produced message —
   the weak-model anti-repeat fix, proven behaviorally in tests. Reducer/renderer output is
-  validated byte-free LOUDLY (never silently stripped). Composes: `base=image_evicting`.
+  validated byte-free LOUDLY (never silently stripped), including Pydantic-nested media/bytes and
+  rendered `data:*;base64,` state. Composes: `base=image_evicting`.
 - `WindowedMemory(max_turns=N)` (v0.8.0) keeps the last N turns verbatim; dropped turns leave an
   activity tally + bounded excerpts of their outputs — findings survive by default, never a
   silent drop.
-- `CompactingMemory(inner=…, token_threshold=…, keep_last_turns=…)` (v0.8.0) passes through
+- `CompactingMemory(inner=…, token_threshold=…, keep_last_turns=…)` (v0.8.0; hardened in v0.8.1) passes through
   byte-identical under the threshold; above it, old turns become a rule-based summary (pluggable
-  compactor — code, not a hidden model call).
+  compactor — code, not a hidden model call). Use it as `StructuredStateMemory(base=CompactingMemory(...))`
+  when you need both compaction and full-history working state; the unsafe reverse order fails loudly.
 - Per-NODE selection: `.step("agent", memory={"mode": "structured_state", …})` mirrors
   `model_profile` — validated loudly at graph build, delivered per call, overrides the
   capability's constructed default.
@@ -232,11 +236,11 @@ low overhead.
 
 ## Release Package For Consumers
 
-`engine-v0.8.0` is a tag-based framework release, not a live-branch contract.
+`engine-v0.8.1` is a tag-based framework release, not a live-branch contract.
 
 Release contents:
 
-- `ai-workflow-engine==0.8.0`: the L0 core engine, workflow builder/executor, config loader,
+- `ai-workflow-engine==0.8.1`: the L0 core engine, workflow builder/executor, config loader,
   budget/usage/trace, observation bundle writer, memory policies, prompt files, evidence/artifact
   refs, scheduling, replay, and human/suspend mechanics.
 - `ai-workflow-tools==0.3.0`: optional L2 tools package for CLI agents, console clients, tool
@@ -260,7 +264,7 @@ Consumer rules:
 
 ## Capabilities
 
-The full set in `engine-v0.8.0` (older tags are unsupported):
+The full set in `engine-v0.8.1` (older tags are unsupported):
 
 - **Declare + run.** `WorkflowBuilder` (step / branch / evaluate / fanout / plan / subworkflow /
   human), `WorkflowEngine.from_config` (DI for models/budget/safety), `await engine.run(...)`. A branch

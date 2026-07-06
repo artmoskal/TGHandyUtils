@@ -1,16 +1,20 @@
 # MageQA — AI Workflow Engine Usage Guide
 
-> **PIN (2026-07-05):** pin tag `engine-v0.8.0` and build a wheel from it. The consumer model is
-> breaking-allowed tag-to-tag — do NOT track the live branch. The tag carries the full v0.7.0
-> capability set (see **"What v0.7.0 gives you"**):
+> **PIN (2026-07-06):** pin tag `engine-v0.8.1` and build a wheel from it. The consumer model is
+> breaking-allowed tag-to-tag — do NOT track the live branch. The tag carries the full current
+> capability set (see **"What engine-v0.8.1 gives you"**):
 > cross-run memory, config-first observation (log→bundle→viewer; HTML rendering lives in the
 > separate `ai_workflow_viewer` package), strict prompt files, machine identity, and hardened seam
 > guards.
-> **Release gate: CLOSED 2026-07-05** — package version metadata is lockstep-guarded in both
-> packages (engine 0.7.0, tools 0.3.0; pyproject ↔ `__version__` release-guard tests), the
+> **Release gate: CLOSED 2026-07-06** — package version metadata is lockstep-guarded in both
+> packages (engine 0.8.1, tools 0.3.0; pyproject ↔ `__version__` release-guard tests), the
 > one-call façade exposes the full run envelope (`return_result=True`), and console tool-flag
 > handling covers joined/kebab forms (regression-locked). The tag builds packages that report
 > the matching versions.
+> **v0.8.1 delta (2026-07-06, additive hardening):** custom memory reducers now fail loudly on
+> Pydantic-nested media/bytes and rendered `data:*;base64,` state; unsafe
+> `compacting(inner=structured_state)` is rejected in favor of
+> `structured_state(base=compacting)`; compacting wording is neutral for custom compactors.
 > **v0.8.0 delta (2026-07-05, additive):** T2 prompt-projection memory shipped for the GoPro
 > named-consumer request and is yours too: `structured_state` (derived working-state block for
 > weak-model agents), `windowed`, `compacting` modes + per-NODE `memory=` selection on
@@ -55,11 +59,11 @@
 > supported discovery door). A direct provider client in workflow code is a reviewed allow-list
 > entry, not a local shortcut — otherwise you lose observability, cost accounting, and model-swap.
 
-Status: **ready for adoption — pin `engine-v0.8.0`** and build a wheel; never track the live branch.
+Status: **ready for adoption — pin `engine-v0.8.1`** and build a wheel; never track the live branch.
 The `WorkflowDefinition` / `WorkflowExecutor` / DI layer is live and proven (Anki runs on it in
 production; the product-neutral examples include site-audit fan-out and the three-axis pilot). The
 sibling `ai_workflow_tools` package ships CLI-agent + console-LLM support (`claude -p` / `codex exec`)
-and the media pack. See **"What v0.7.0 gives you"** at the end for the full capability list.
+and the media pack. See **"What engine-v0.8.1 gives you"** at the end for the full capability list.
 Not in v0.8 (deferred): durable/semantic memory STORES beyond the `MemoryStore` seam, FlowArtifact v1.5,
 ProcessArtifact/v2, browser/no-API executors.
 Source needs: `/Users/artemm/PycharmProjects/MageQA/docs/17-qa-orchestrator-architecture.md`,
@@ -72,15 +76,13 @@ report). **You write no coordinator loop** (a static guard enforces this).
 
 ---
 
-## 0. Why re-pin to v0.7.0 — what YOUR workload gains (not just the generic delta)
+## 0. Why pin the current tag — what YOUR workload gains (not just the generic delta)
 
 **Direction verdict (owner + engine author, 2026-07-05): do NOT reroute your integration for
-v0.7.0.** This is a stability/hardening release for your planned shape — re-pin, run the migration
-check above, continue as designed. The new features below are optional pickups (the tool-free
-triage-episode type is the only new capability, and it is an optimization inside your existing
-deepen loop, not an architecture change). Of the things previously deferred: T2 prompt-projection memory
-(structured_state/windowed/compacting) SHIPPED in v0.8.0; durable/semantic memory stores and
-FlowArtifact v1.5 authorable fan-out remain deferred.
+the current tag.** The v0.7.0 items below were the contract-change deltas; v0.8.0 added prompt-
+projection memory, and v0.8.1 hardens its custom reducer/compactor edges. Re-pin, run the migration
+check above, continue as designed. Durable/semantic memory stores and FlowArtifact v1.5 authorable
+fan-out remain deferred.
 
 Mapped to the MageQA shapes in this doc (browser episodes via `CliAgentCapability`+MCP,
 adjudicate/deepen loops, rubric/report text roles, artifact salvage, cost dashboards):
@@ -507,9 +509,9 @@ examples: `ai_workflow_engine/examples.py` (`build_demo_engine`, `SiteAuditPack`
 
 ---
 
-## What v0.7.0 gives you
+## What engine-v0.8.1 gives you
 
-`engine-v0.8.0` gives MageQA the full capability set below (older tags
+`engine-v0.8.1` gives MageQA the full capability set below (older tags
 are unsupported — no deltas to track):
 
 - **Discoverable toolset (v0.7.0).** `TOOL_CATALOG` / `render_tool_catalog()` /

@@ -1,4 +1,5 @@
 import pytest
+from pydantic import BaseModel
 
 from ai_workflow_engine import (
     EvidenceRef,
@@ -232,6 +233,129 @@ def test_structured_state_rejects_bytes_and_image_inputs_loudly():  # AC-S6 rend
         bad_renderer.render(REQ, history, _render_ctx())
 
 
+def test_structured_state_rejects_model_nested_media_and_rendered_data_uris_loudly():
+    class FindingWithImage(BaseModel):
+        image: ImageInput
+
+    class FindingWithBytes(BaseModel):
+        blob: bytes
+
+    history = [_step("zoom", {"section": 1})]
+
+    image = ImageInput(source="base64", data="aGk=", media_type="image/png")
+    image_memory = StructuredStateMemory(reducer=lambda _r, _h: FindingWithImage(image=image))
+    with pytest.raises(ValueError, match="byte-free"):
+        image_memory.render(REQ, history, _render_ctx())
+
+    bytes_memory = StructuredStateMemory(reducer=lambda _r, _h: FindingWithBytes(blob=b"raw"))
+    with pytest.raises(ValueError, match="byte-free"):
+        bytes_memory.render(REQ, history, _render_ctx())
+
+    set_memory = StructuredStateMemory(reducer=lambda _r, _h: {"blobs": {b"raw"}})
+    with pytest.raises(ValueError, match="byte-free"):
+        set_memory.render(REQ, history, _render_ctx())
+
+    data_uri_memory = StructuredStateMemory(
+        reducer=lambda _r, _h: {"status": "bad"},
+        render_state=lambda _s: "data:image/png;base64,aGk=",
+    )
+    with pytest.raises(ValueError, match="data URI"):
+        data_uri_memory.render(REQ, history, _render_ctx())
+
+    safe_memory = StructuredStateMemory(
+        reducer=lambda _r, _h: {
+            "sha256": "a" * 64,
+            "evidence_ref": "frame-123",
+            "uuid": "123e4567-e89b-12d3-a456-426614174000",
+        },
+        render_state=lambda state: "\n".join(f"{key}: {value}" for key, value in state.items()),
+    )
+    assert "sha256" in safe_memory.render(REQ, history, _render_ctx())[-1].content
+
+
+def test_structured_state_rejects_transport_hidden_in_arbitrary_objects():  # AC-S6 fall-through hole
+    """A plain (non-pydantic/dataclass) object OR a __slots__ object holding an ImageInput/bytes in
+    an attribute must NOT slip past the byte-free guard at the arbitrary-object fall-through."""
+
+    class PlainHolder:  # no __dict__ recursion type, no pydantic/dataclass
+        def __init__(self, payload):
+            self.hidden = payload
+
+    class SlotHolder:
+        __slots__ = ("hidden", "unset")
+
+        def __init__(self, payload):
+            self.hidden = payload  # 'unset' deliberately left unassigned
+
+    history = [_step("zoom", {"section": 1})]
+    image = ImageInput(source="base64", data="aGk=", media_type="image/png")
+
+    for holder_type in (PlainHolder, SlotHolder):
+        for payload in (image, b"rawbytes"):
+            memory = StructuredStateMemory(
+                reducer=lambda _r, _h, p=payload, t=holder_type: {"f": t(p)},
+                render_state=lambda _s: "safe text",
+            )
+            with pytest.raises(ValueError, match="byte-free"):
+                memory.render(REQ, history, _render_ctx())
+
+
+def test_structured_state_rejects_opaque_default_repr_objects_loudly():  # codex 21:13 gate
+    """An object with NO readable state and the DEFAULT object repr renders as a non-deterministic
+    memory address (`<X object at 0x…>`). It must fail loudly, not silently pollute the prompt —
+    forcing the reducer to emit clean value/JSON state."""
+
+    class EmptySlots:
+        __slots__ = ()  # no readable attributes, inherits object.__repr__
+
+    history = [_step("zoom", {"section": 1})]
+
+    for opaque in (object(), EmptySlots()):
+        memory = StructuredStateMemory(
+            reducer=lambda _r, _h, o=opaque: {"opaque": o},
+            render_state=lambda _s: "safe text",
+        )
+        with pytest.raises(ValueError, match="opaque object"):
+            memory.render(REQ, history, _render_ctx())
+
+    # An object with a CUSTOM (deterministic) repr and no attributes is fine — not opaque.
+    class StableValue:
+        __slots__ = ()
+
+        def __repr__(self):
+            return "StableValue()"
+
+    ok_memory = StructuredStateMemory(
+        reducer=lambda _r, _h: {"v": StableValue()},
+        render_state=lambda state: f"v={state['v']!r}",
+    )
+    assert "StableValue()" in ok_memory.render(REQ, history, _render_ctx())[-1].content
+
+
+def test_structured_state_passes_attribute_less_value_objects_no_false_positive():  # anti-regression
+    """Byte-free value objects with no readable attributes that could hide transport
+    (datetime/UUID/Decimal) — and byte-free EvidenceRef — must PASS, not be false-positives."""
+
+    import datetime as _dt
+    import uuid as _uuid
+    from decimal import Decimal
+
+    history = [_step("zoom", {"section": 1})]
+    value_state = {
+        "when": _dt.datetime(2026, 7, 6, 21, 0, 0),
+        "id": _uuid.UUID("123e4567-e89b-12d3-a456-426614174000"),
+        "amount": Decimal("1.50"),
+        "evidence": EvidenceRef(role="frame", uri="/tmp/f.png", media_type="image/png"),
+    }
+    memory = StructuredStateMemory(
+        reducer=lambda _r, _h: value_state,
+        render_state=lambda state: " ".join(f"{k}={v}" for k, v in state.items()),
+    )
+
+    rendered = memory.render(REQ, history, _render_ctx())[-1].content
+    assert "amount=1.50" in rendered  # rendered, not rejected
+
+
 def test_structured_state_reducer_label_defaults_and_overrides():
     assert StructuredStateMemory().reducer_label == "default_tool_state_reducer"
     labeled = StructuredStateMemory(reducer=lambda _r, _h: {}, reducer_label="gopro_findings")
@@ -280,6 +404,54 @@ def test_compacting_memory_passthrough_under_threshold_and_compacts_over():  # R
     assert isinstance(nested.inner, ImageEvictingMemory)
 
 
+def test_compacting_memory_rejects_structured_state_inner_but_allows_safe_reverse_order():
+    with pytest.raises(ValueError, match="StructuredStateMemory\\(base=CompactingMemory"):
+        CompactingMemory(inner=StructuredStateMemory(), token_threshold=1, keep_last_turns=1)
+
+    with pytest.raises(ValueError, match="StructuredStateMemory\\(base=CompactingMemory"):
+        resolve_agent_memory(
+            {
+                "mode": "compacting",
+                "inner": {"mode": "structured_state"},
+                "token_threshold": 1,
+                "keep_last_turns": 1,
+            }
+        )
+
+    history = [_step("zoom", {"section": index}, output="long " * 80) for index in range(1, 4)]
+    safe = StructuredStateMemory(
+        base={"mode": "compacting", "token_threshold": 1, "keep_last_turns": 1}
+    )
+    messages = safe.render(REQ, history, _render_ctx(system=None))
+    state_block = messages[-1].content
+
+    assert "[memory:compacted]" in "\n".join(message.content or "" for message in messages)
+    assert "args=[1, 2, 3]" in state_block
+
+
+def test_compacting_memory_midrange_threshold_and_uncompactable_over_budget_notice():
+    history = [_step("zoom", {"section": index}, output="medium text " * 20) for index in range(1, 6)]
+    full = render_full_replay_messages(REQ, history, _render_ctx())
+    threshold = CompactingMemory._estimate_tokens(full) - 1
+
+    compacted = CompactingMemory(token_threshold=threshold, keep_last_turns=2).render(
+        REQ, history, _render_ctx()
+    )
+    assert "[memory:compacted]" in compacted[2].content
+
+    passthrough = CompactingMemory(token_threshold=threshold + 2, keep_last_turns=2).render(
+        REQ, history, _render_ctx()
+    )
+    assert _dump(passthrough) == _dump(full)
+
+    huge_recent = [_step("zoom", {"section": index}, output="large " * 400) for index in range(1, 3)]
+    over_budget = CompactingMemory(token_threshold=1, keep_last_turns=4).render(
+        REQ, huge_recent, _render_ctx(system=None)
+    )
+    assert "[memory:over_budget]" in over_budget[1].content
+    assert "[memory:compacted]" not in "\n".join(message.content or "" for message in over_budget)
+
+
 def test_dropped_turn_finding_text_survives_windowing_and_compaction_bounded():
     # Codex re-validation follow-up: activity tallies alone are NOT findings-preservation.
     # The default compactor must carry bounded excerpts of dropped outputs.
@@ -326,6 +498,8 @@ def test_dropped_turn_excerpts_use_canonical_tool_rendering_and_2arg_compactors_
     compacted = CompactingMemory(token_threshold=1, keep_last_turns=1).render(
         REQ, history, marked_ctx
     )
+    assert "summary below" in compacted[1].content
+    assert "findings preserved below" not in compacted[1].content
     assert "RENDERED::found: lamp" in compacted[1].content
 
     # A plain (request, dropped) compactor — the spec'd pluggable shape — keeps working.

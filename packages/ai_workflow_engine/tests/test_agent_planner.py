@@ -998,6 +998,70 @@ async def test_node_level_memory_config_overrides_planner_default():  # R4 (plan
     assert event.metadata["reducer_label"] == "default_tool_state_reducer"
 
 
+class _FinishWhenNodeMemoryVisibleLLM:
+    def __init__(self) -> None:
+        self.requests: list[LLMRequest] = []
+
+    async def __call__(self, request: LLMRequest) -> LLMResponse:
+        self.requests.append(request)
+        if len(self.requests) == 1:
+            return LLMResponse(
+                tool_calls=[
+                    ToolCallRequest(call_id="zoom-1", name="zoom", arguments={"section": 1})
+                ]
+            )
+        saw_state = any(
+            "WORKING STATE" in (message.content or "") and "args=[1]" in (message.content or "")
+            for message in request.messages
+        )
+        return LLMResponse(text='{"caption": "' + ("state" if saw_state else "missing") + '"}')
+
+
+async def test_engine_run_applies_node_level_memory_config_end_to_end():  # R4 full chain
+    registry = CapabilityRegistry()
+
+    async def zoom(_context, payload):
+        return {"seen": payload["section"]}
+
+    registry.register(
+        CapabilitySpec(name="zoom", kind="tool", description="zoom a section"),
+        zoom,
+    )
+    client = _FinishWhenNodeMemoryVisibleLLM()
+    capability = build_llm_agent_capability(
+        client,
+        registry,
+        allowed_tools=["zoom"],
+        name="node_memory_agent",
+        output_model=Caption,
+    )
+    engine = (
+        WorkflowEngineBuilder()
+        .register_capability_spec(capability.spec, capability)
+        .register_workflow(
+            WorkflowBuilder("node_memory_e2e")
+            .step(
+                "agent",
+                capability="node_memory_agent",
+                memory={"mode": "structured_state"},
+            )
+            .build()
+        )
+        .build()
+    )
+
+    result = await engine.run(
+        "node_memory_e2e",
+        AgentRunRequest(prompt="inventory", allowed_tools=["zoom"], max_steps=3),
+    )
+
+    assert result.status == "completed"
+    assert result.output.output.caption == "state"
+    assert "WORKING STATE" in (client.requests[0].messages[-1].content or "")
+    assert "turns: 0" in (client.requests[0].messages[-1].content or "")
+    assert any("WORKING STATE" in (message.content or "") for message in client.requests[1].messages)
+
+
 async def test_repair_prompt_lands_after_the_state_block_deterministically():
     # Pinned decision (GoPro R1 repair-round rule): the state block stays the LAST
     # memory-produced message; a repair round appends its prompt AFTER it.

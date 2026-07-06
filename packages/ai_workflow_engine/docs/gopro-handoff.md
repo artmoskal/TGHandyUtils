@@ -1,16 +1,23 @@
 # GoPro — AI Workflow Engine Usage Guide
 
-> **PIN (2026-07-05):** pin tag `engine-v0.8.0` and build a wheel from it. The consumer model is
+> **PIN (2026-07-06):** pin tag `engine-v0.8.1` and build a wheel from it. The consumer model is
 > breaking-allowed tag-to-tag — do NOT track the live branch. The tag carries the full framework
-> capability set (see **"What engine-v0.8.0 gives you"**):
+> capability set (see **"What engine-v0.8.1 gives you"**):
 > agent prompt-memory policies plus the `MemoryStore` seam, config-first observation
 > (log→bundle→viewer; HTML rendering lives in the separate `ai_workflow_viewer` package),
 > strict prompt files, machine identity, and hardened seam guards.
-> **Release gate: CLOSED 2026-07-05** — package version metadata is lockstep-guarded in both
-> packages (engine 0.8.0, tools 0.3.0; pyproject ↔ `__version__` release-guard tests), the
+> **Release gate: CLOSED 2026-07-06** — package version metadata is lockstep-guarded in both
+> packages (engine 0.8.1, tools 0.3.0; pyproject ↔ `__version__` release-guard tests), the
 > one-call façade exposes the full run envelope (`return_result=True`), and console tool-flag
 > handling covers joined/kebab forms (regression-locked). The tag builds packages that report
 > the matching versions.
+> **v0.8.1 delta (2026-07-06) — memory hardening patch:** v0.8.0 delivered the GoPro P1 memory
+> policies; v0.8.1 makes the custom reducer/compactor path safer before you lean on it. Pydantic-
+> nested `bytes` / `ImageInput` and rendered `data:*;base64,` state now fail loudly; unsafe
+> `CompactingMemory(inner=StructuredStateMemory(...))` is rejected with guidance to use
+> `StructuredStateMemory(base=CompactingMemory(...))`; compacting wording no longer claims a custom
+> compactor preserved findings unless it did; R4 node-level `memory=` is proven end-to-end through
+> `engine.run`.
 > **v0.8.0 delta (2026-07-05) — YOUR P1 MEMORY REQUEST DELIVERED (additive, no breaking change):**
 > R1 `StructuredStateMemory` — pure derived-state reducer (default: per-tool calls/arg-summaries/
 > ok/error tallies, product-neutral, AC-S4-pinned), state block appended as the LAST memory-
@@ -29,7 +36,7 @@
 > `.step("zoom_agent", memory={...})` — mirrors `model_profile`: loud at graph validation,
 > delivered per call via context, overrides the constructed default. Unknown modes/options fail
 > loudly everywhere (incl. a strictness fix: `image_evicting` now rejects unknown options).
-> Re-validate per your §7: suite + code sweep at tag `engine-v0.8.0`.
+> Re-validate per your §7: suite + code sweep at tag `engine-v0.8.1`.
 > **v0.7.0 delta (2026-07-05) — CONTRACT CHANGE, read before re-pinning:**
 > 1. **`CliAgentRequest.allowed_tools` is tri-state.** `None` (the NEW field default) → the
 >    documented `DEFAULT_AGENT_TOOLS` (`Read, Grep, Glob, LS, WebFetch, WebSearch, Bash`);
@@ -69,17 +76,17 @@
 > supported discovery door). A direct provider client in workflow code is a reviewed allow-list
 > entry, not a local shortcut — otherwise you lose observability, cost accounting, and model-swap.
 
-Status: **ready for adoption — pin `engine-v0.8.0`** and build a wheel; never track the live branch.
+Status: **ready for adoption — pin `engine-v0.8.1`** and build a wheel; never track the live branch.
 The `WorkflowDefinition` / `WorkflowExecutor` / DI layer is live and proven (Anki runs on it in
 production; one `WorkflowExecutor` runs the product-neutral examples). The sibling `ai_workflow_tools`
 package ships CLI-agent + console-LLM support (`claude -p` / `codex exec`) and the media pack. See
-**"What engine-v0.8.0 gives you"** at the end for the full capability list.
+**"What engine-v0.8.1 gives you"** at the end for the full capability list.
 Not in v0.8 (deferred): durable/semantic memory STORES beyond the `MemoryStore` seam, FlowArtifact v1.5,
 ProcessArtifact/v2, browser/no-API executors.
 Source needs: `/Users/artemm/PycharmProjects/gopro-streaming/docs/architecture/workflow-execution-engine-requirements.md`,
 `/Users/artemm/PycharmProjects/gopro-streaming/docs/universal_event_descriptor/HOME_INVENTORY_CASE.md`.
 
-**Current GoPro package scope:** the detection image vendors only `ai-workflow-engine==0.8.0`.
+**Current GoPro package scope:** the detection image should vendor only `ai-workflow-engine==0.8.1`.
 It does not include `ai_workflow_tools` or `ai_workflow_viewer` yet. That is intentional for the
 current GoPro code path, which imports core engine APIs directly. Add the tools/viewer packages only
 when GoPro starts using CLI-agent tool packs, media helpers, or in-container observation rendering.
@@ -354,9 +361,9 @@ import from `ai_workflow_tools.cli_agents`: `CliAgentCapability`, `CliAgentReque
 
 ---
 
-## What engine-v0.8.0 gives you
+## What engine-v0.8.1 gives you
 
-`engine-v0.8.0` gives GoPro the full capability set below (older tags
+`engine-v0.8.1` gives GoPro the full capability set below (older tags
 are unsupported — no deltas to track):
 
 - **Discoverable toolset (v0.7.0).** `TOOL_CATALOG` / `render_tool_catalog()` /

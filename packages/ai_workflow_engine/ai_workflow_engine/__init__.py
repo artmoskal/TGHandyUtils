@@ -1,6 +1,6 @@
 """Reusable AI workflow engine package."""
 
-__version__ = "0.8.0"
+__version__ = "0.8.1"
 
 from ai_workflow_engine.convenience import run_single_llm, run_single_step
 from ai_workflow_engine.engine import (
