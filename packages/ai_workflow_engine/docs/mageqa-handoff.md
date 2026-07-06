@@ -11,10 +11,16 @@
 > one-call façade exposes the full run envelope (`return_result=True`), and console tool-flag
 > handling covers joined/kebab forms (regression-locked). The tag builds packages that report
 > the matching versions.
+> **MageQA current pin check (2026-07-06):** the MageQA repo currently vendors
+> `ai_workflow_engine-0.7.0` / `ai_workflow_tools-0.3.0` and its canary asserts the v0.7.0 surface.
+> So `0.7.0 -> 0.8.1` has **no additional breaking contract change**; it is an additive memory
+> upgrade plus custom-reducer hardening. If a branch is older than v0.7.0, read the v0.7.0 contract
+> changes below before re-pinning.
 > **v0.8.1 delta (2026-07-06, additive hardening):** custom memory reducers now fail loudly on
-> Pydantic-nested media/bytes and rendered `data:*;base64,` state; unsafe
-> `compacting(inner=structured_state)` is rejected in favor of
-> `structured_state(base=compacting)`; compacting wording is neutral for custom compactors.
+> Pydantic-nested media/bytes, rendered `data:*;base64,` state, and opaque default-repr reducer
+> objects (`object()` / empty-slots values that would render as memory addresses). Value-like
+> attribute-less objects still pass. Unsafe `compacting(inner=structured_state)` is rejected in
+> favor of `structured_state(base=compacting)`; compacting wording is neutral for custom compactors.
 > **v0.8.0 delta (2026-07-05, additive):** T2 prompt-projection memory shipped for the GoPro
 > named-consumer request and is yours too: `structured_state` (derived working-state block for
 > weak-model agents), `windowed`, `compacting` modes + per-NODE `memory=` selection on
@@ -79,10 +85,11 @@ report). **You write no coordinator loop** (a static guard enforces this).
 ## 0. Why pin the current tag — what YOUR workload gains (not just the generic delta)
 
 **Direction verdict (owner + engine author, 2026-07-05): do NOT reroute your integration for
-the current tag.** The v0.7.0 items below were the contract-change deltas; v0.8.0 added prompt-
-projection memory, and v0.8.1 hardens its custom reducer/compactor edges. Re-pin, run the migration
-check above, continue as designed. Durable/semantic memory stores and FlowArtifact v1.5 authorable
-fan-out remain deferred.
+the current tag.** MageQA already sits on v0.7.0, so there is no new breaking change in v0.8.1.
+Re-pin, run the migration check above, and continue as designed. The useful new surface is optional:
+prompt-projection memory for long/deep browser-agent episodes, bounded windowing/compaction for
+large transcripts, and per-node `memory=` so only the workers that need state get it. Durable/semantic
+memory stores and FlowArtifact v1.5 authorable fan-out remain deferred.
 
 Mapped to the MageQA shapes in this doc (browser episodes via `CliAgentCapability`+MCP,
 adjudicate/deepen loops, rubric/report text roles, artifact salvage, cost dashboards):
@@ -95,6 +102,13 @@ adjudicate/deepen loops, rubric/report text roles, artifact salvage, cost dashbo
 | Pre-spawn side-effect denial | A mis-scoped agent config refuses BEFORE the process spawns — no quota burned on an episode policy would forbid, and your QA compliance story sharpens: the permitted-capability ledger provably cannot lie (a testing product gets asked exactly that). |
 | `TOOL_CATALOG` / `render_tool_catalog()` / presets | Feed your session-planner the tool inventory the same way `render_capability_catalog` feeds deciders; reference `READ_ONLY`/`NO_TOOLS`/`INVESTIGATION` constants in configs instead of hand-listing tool strings. |
 | `run_single_llm` / `run_single_step` | Your one-shot calls OUTSIDE audit workflows (failure classification, rubric refinement, flaky-check triage scripts) get engine-honest usage/trace/budget in 3 lines — kills the temptation for shadow LLM paths; `return_result=True` hands back the full run envelope. |
+
+| v0.8.x additive memory surface | Your concrete win |
+|---|---|
+| `StructuredStateMemory` | Useful for long browser/vision/deepen loops where the worker must remember "already inspected", "already refuted", or "retry reason" without replaying the full transcript. Treat it as prompt input only, never control state. |
+| `WindowedMemory` / `CompactingMemory` | Lets agent episodes stay bounded when browser transcripts, page text, or tool outputs get large. Dropped turns leave bounded activity/output notices; compactors are product code, not hidden model calls. |
+| Per-node `memory=` | Use memory only on the nodes that need it: browser/deepen/replay/triage agents. Keep deterministic probes, report rendering, and short adjudicators on full replay or no extra memory unless they prove a need. |
+| v0.8.1 reducer hardening | If MageQA writes custom reducers for target profile, learned flows, flaky checks, or finding history, bad reducer output fails loudly instead of slipping raw bytes/images/data URIs or nondeterministic object reprs into prompts. |
 
 **Coming from `engine-v0.6.5` or earlier? You ALSO pick up the v0.6.6 consumer-facing fixes**
 (previously bannered here, restated because they matter to your exact stack): structured nodes
