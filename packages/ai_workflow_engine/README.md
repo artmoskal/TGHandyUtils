@@ -69,10 +69,13 @@ The platform is an implementation-agnostic workflow engine plus a set of tool li
   `ImageEvictingMemory`) plus the deterministic
   `MemoryStore`/`MemoryNamespace(product, tenant, subject, kind)`/`InMemoryMemoryStore` contract.
   `engine-v0.8.0` added the GoPro-proven prompt-memory policies: `StructuredStateMemory`,
-  `WindowedMemory`, `CompactingMemory`, and per-node `memory=` selection. `engine-v0.8.1` hardens the byte-free guard (traverses Pydantic/dataclass/arbitrary-object attributes; rejects rendered data-URI media; attribute-less value objects pass) and
-  custom reducers/compactors with stricter byte-free validation and loud rejection of unsafe
-  compaction/structured-state composition. Durable/semantic stores and broader workflow/project
-  scopes remain deferred until a named consumer proves the need.
+  `WindowedMemory`, `CompactingMemory`, and per-node `memory=` selection. `engine-v0.8.1` hardens the
+  byte-free guard (traverses Pydantic/dataclass/arbitrary-object attributes; rejects rendered
+  data-URI media; rejects opaque default-repr objects that would render as memory addresses while
+  still allowing value-like attribute-less objects) and custom reducers/compactors with stricter
+  byte-free validation and loud rejection of unsafe compaction/structured-state composition.
+  Durable/semantic stores and broader workflow/project scopes remain deferred until a named
+  consumer proves the need.
 - **Economics is part of the architecture.** Metered calls are budgeted explicitly; subscription or
   flat-rate workers report notional or unknown cost honestly instead of pretending to be free.
 - **Rigidity is a three-axis choice.** Work item execution, work-set composition, and replay mode can

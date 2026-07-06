@@ -13,11 +13,12 @@
 > the matching versions.
 > **v0.8.1 delta (2026-07-06) — memory hardening patch:** v0.8.0 delivered the GoPro P1 memory
 > policies; v0.8.1 makes the custom reducer/compactor path safer before you lean on it. Pydantic-
-> nested `bytes` / `ImageInput` and rendered `data:*;base64,` state now fail loudly; unsafe
-> `CompactingMemory(inner=StructuredStateMemory(...))` is rejected with guidance to use
-> `StructuredStateMemory(base=CompactingMemory(...))`; compacting wording no longer claims a custom
-> compactor preserved findings unless it did; R4 node-level `memory=` is proven end-to-end through
-> `engine.run`.
+> nested `bytes` / `ImageInput`, rendered `data:*;base64,` state, and opaque default-repr reducer
+> objects (`object()` / empty-slots values that would render as memory addresses) now fail loudly;
+> value-like attribute-less objects still pass. Unsafe `CompactingMemory(inner=StructuredStateMemory(...))`
+> is rejected with guidance to use `StructuredStateMemory(base=CompactingMemory(...))`; compacting
+> wording no longer claims a custom compactor preserved findings unless it did; R4 node-level
+> `memory=` is proven end-to-end through `engine.run`.
 > **v0.8.0 delta (2026-07-05) — YOUR P1 MEMORY REQUEST DELIVERED (additive, no breaking change):**
 > R1 `StructuredStateMemory` — pure derived-state reducer (default: per-tool calls/arg-summaries/
 > ok/error tallies, product-neutral, AC-S4-pinned), state block appended as the LAST memory-
