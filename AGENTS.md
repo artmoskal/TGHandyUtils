@@ -1,6 +1,3 @@
-## Development Guidelines
-- Never change extension code locally, it should be done on 9881 and then tested, when working pushed! Do not push from local machine!
-
 ## Testing Rules - MUST FOLLOW
 - **ALWAYS use ./test.sh, ./test_batch.sh, or ./test_all_batches.sh from project root** - NO EXCEPTIONS
 - **NEVER use direct pytest commands**
