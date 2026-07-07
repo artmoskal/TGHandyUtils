@@ -863,6 +863,54 @@ def test_checkpoint_stores_reject_raw_bytes_and_keep_latest():
         assert_checkpoint_payload_safe({"frame": b"not-state"})
 
 
+def test_checkpoint_guard_rejects_nested_transport_payload_shapes():
+    from dataclasses import dataclass
+
+    from ai_workflow_engine.vision import ImageInput
+
+    @dataclass
+    class DataclassState:
+        raw: bytes
+
+    class TaggedDict(dict):
+        pass
+
+    tagged = TaggedDict({"safe": True})
+    tagged.raw = b"hidden"
+
+    class TaggedInt(int):
+        pass
+
+    number = TaggedInt(7)
+    number.raw = b"hidden"
+
+    class Opaque:
+        pass
+
+    unsafe_payloads = [
+        {b"raw-key": "value"},
+        {"state": DataclassState(b"raw")},
+        {"state": tagged},
+        {"state": number},
+        {"state": ImageInput(source="base64", data="aGk=", media_type="image/png")},
+        {"state": Opaque()},
+    ]
+
+    for payload in unsafe_payloads:
+        with pytest.raises(ValueError, match="checkpoint data"):
+            assert_checkpoint_payload_safe(payload)
+
+    assert_checkpoint_payload_safe(
+        {
+            "state": {
+                "evidence": EvidenceRef(ref_id="frame-1", role="frame", uri="evidence://frame-1"),
+                "status": "ok",
+                "items": [1, 2, 3],
+            }
+        }
+    )
+
+
 async def test_human_clarification_capability_pauses_supervisor_loop_until_answer():
     clarification_id = "location-choice"
 

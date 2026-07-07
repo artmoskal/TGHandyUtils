@@ -1,24 +1,27 @@
 # GoPro — AI Workflow Engine Usage Guide
 
-> **PIN (2026-07-06):** pin tag `engine-v0.8.1` and build a wheel from it. The consumer model is
+> **PIN (2026-07-07):** pin tag `engine-v0.8.1` and build a wheel from it. The consumer model is
 > breaking-allowed tag-to-tag — do NOT track the live branch. The tag carries the full framework
 > capability set (see **"What engine-v0.8.1 gives you"**):
 > agent prompt-memory policies plus the `MemoryStore` seam, config-first observation
 > (log→bundle→viewer; HTML rendering lives in the separate `ai_workflow_viewer` package),
 > strict prompt files, machine identity, and hardened seam guards.
-> **Release gate: CLOSED 2026-07-06** — package version metadata is lockstep-guarded in both
+> **Release gate: CLOSED 2026-07-07** — package version metadata is lockstep-guarded in both
 > packages (engine 0.8.1, tools 0.3.0; pyproject ↔ `__version__` release-guard tests), the
 > one-call façade exposes the full run envelope (`return_result=True`), and console tool-flag
 > handling covers joined/kebab forms (regression-locked). The tag builds packages that report
 > the matching versions.
-> **v0.8.1 delta (2026-07-06) — memory hardening patch:** v0.8.0 delivered the GoPro P1 memory
-> policies; v0.8.1 makes the custom reducer/compactor path safer before you lean on it. Pydantic-
-> nested `bytes` / `ImageInput`, rendered `data:*;base64,` state, and opaque default-repr reducer
-> objects (`object()` / empty-slots values that would render as memory addresses) now fail loudly;
-> value-like attribute-less objects still pass. Unsafe `CompactingMemory(inner=StructuredStateMemory(...))`
-> is rejected with guidance to use `StructuredStateMemory(base=CompactingMemory(...))`; compacting
-> wording no longer claims a custom compactor preserved findings unless it did; R4 node-level
-> `memory=` is proven end-to-end through `engine.run`.
+> **v0.8.1 delta (2026-07-07) — memory/checkpoint hardening patch:** v0.8.0 delivered the GoPro P1
+> memory policies; v0.8.1 makes custom reducers/compactors and persisted state fail-closed before
+> you lean on them. The shared guard walks Pydantic/dataclass/computed/private fields, mappings,
+> concrete containers, scalar subclasses, enum values, exception args, partial args, and object
+> attributes; raw `bytes` / `ImageInput`, actual rendered `data:*;base64,` state, iterators, unsafe
+> mapping keys, wrapper-carried unsafe values, and opaque/arbitrary custom objects now fail loudly.
+> Reducers should emit dict/list/scalar/value objects or evidence refs, not domain objects by repr.
+> Unsafe `CompactingMemory(inner=StructuredStateMemory(...))` is rejected with guidance to use
+> `StructuredStateMemory(base=CompactingMemory(...))`; compacting wording no longer claims a custom
+> compactor preserved findings unless it did; R4 node-level `memory=` is proven end-to-end through
+> `engine.run`.
 > **v0.8.0 delta (2026-07-05) — YOUR P1 MEMORY REQUEST DELIVERED (additive, no breaking change):**
 > R1 `StructuredStateMemory` — pure derived-state reducer (default: per-tool calls/arg-summaries/
 > ok/error tallies, product-neutral, AC-S4-pinned), state block appended as the LAST memory-

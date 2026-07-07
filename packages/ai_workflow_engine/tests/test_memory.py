@@ -273,6 +273,35 @@ def test_structured_state_rejects_model_nested_media_and_rendered_data_uris_loud
     assert "sha256" in safe_memory.render(REQ, history, _render_ctx())[-1].content
 
 
+def test_structured_state_redacts_transport_data_uri_tool_args_without_losing_call_fact():
+    history = [
+        _step(
+            "inspect_image",
+            {"image_url": "data:image/png;base64,abcdef", "label": "front"},
+            output="ok",
+        )
+    ]
+
+    rendered = StructuredStateMemory().render(REQ, history, _render_ctx())[-1].content
+
+    assert "inspect_image: calls=1" in rendered
+    assert "image_url" in rendered
+    assert "<data-uri redacted media_type=image/png chars=6>" in rendered
+    assert "abcdef" not in rendered
+    assert "data:image/png;base64" not in rendered
+
+
+def test_structured_state_allows_prose_that_only_mentions_data_uri_syntax():
+    memory = StructuredStateMemory(
+        reducer=lambda _r, _h: {"note": "The page text mentions data:image/png;base64,AAAA."},
+        render_state=lambda state: state["note"],
+    )
+
+    rendered = memory.render(REQ, [_step("read", {})], _render_ctx())[-1].content
+
+    assert "mentions data:image/png;base64" in rendered
+
+
 def test_structured_state_rejects_transport_hidden_in_arbitrary_objects():  # AC-S6 fall-through hole
     """A plain (non-pydantic/dataclass) object OR a __slots__ object holding an ImageInput/bytes in
     an attribute must NOT slip past the byte-free guard at the arbitrary-object fall-through."""
@@ -301,35 +330,26 @@ def test_structured_state_rejects_transport_hidden_in_arbitrary_objects():  # AC
 
 
 def test_structured_state_rejects_opaque_default_repr_objects_loudly():  # codex 21:13 gate
-    """An object with NO readable state and the DEFAULT object repr renders as a non-deterministic
-    memory address (`<X object at 0x…>`). It must fail loudly, not silently pollute the prompt —
-    forcing the reducer to emit clean value/JSON state."""
+    """Unknown custom objects are not safe prompt state, even when they define ``__repr__``."""
 
     class EmptySlots:
         __slots__ = ()  # no readable attributes, inherits object.__repr__
 
     history = [_step("zoom", {"section": 1})]
 
-    for opaque in (object(), EmptySlots()):
-        memory = StructuredStateMemory(
-            reducer=lambda _r, _h, o=opaque: {"opaque": o},
-            render_state=lambda _s: "safe text",
-        )
-        with pytest.raises(ValueError, match="opaque object"):
-            memory.render(REQ, history, _render_ctx())
-
-    # An object with a CUSTOM (deterministic) repr and no attributes is fine — not opaque.
     class StableValue:
         __slots__ = ()
 
         def __repr__(self):
             return "StableValue()"
 
-    ok_memory = StructuredStateMemory(
-        reducer=lambda _r, _h: {"v": StableValue()},
-        render_state=lambda state: f"v={state['v']!r}",
-    )
-    assert "StableValue()" in ok_memory.render(REQ, history, _render_ctx())[-1].content
+    for opaque in (object(), EmptySlots(), StableValue()):
+        memory = StructuredStateMemory(
+            reducer=lambda _r, _h, o=opaque: {"opaque": o},
+            render_state=lambda _s: "safe text",
+        )
+        with pytest.raises(ValueError, match="unsupported"):
+            memory.render(REQ, history, _render_ctx())
 
 
 def test_structured_state_passes_attribute_less_value_objects_no_false_positive():  # anti-regression

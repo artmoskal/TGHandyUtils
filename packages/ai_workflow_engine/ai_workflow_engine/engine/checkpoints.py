@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Protocol
 
+from ai_workflow_engine.byte_safety import assert_byte_safe
 from ai_workflow_engine.models import WorkflowCheckpoint
 
 
@@ -74,22 +75,13 @@ class JsonlCheckpointStore:
 def assert_checkpoint_payload_safe(value: Any) -> None:
     """Reject raw bytes (and image transport payloads) before checkpoint state is persisted."""
 
-    if isinstance(value, (bytes, bytearray, memoryview)):
-        raise ValueError("checkpoint data must store refs, not raw bytes")
-    # ImageInput is a per-call transport object that may carry base64 image bytes; persistent
-    # state must keep byte-free EvidenceRefs instead (privacy invariant: no raw media at rest).
-    if value.__class__.__name__ == "ImageInput" and hasattr(value, "fingerprint"):
+    try:
+        assert_byte_safe(value, mode="persist", path="checkpoint")
+    except ValueError as exc:
         raise ValueError(
-            "checkpoint data must not contain ImageInput transport payloads; store EvidenceRefs"
-        )
-    if isinstance(value, dict):
-        for item in value.values():
-            assert_checkpoint_payload_safe(item)
-        return
-    if isinstance(value, (list, tuple, set)):
-        for item in value:
-            assert_checkpoint_payload_safe(item)
-        return
+            "checkpoint data must store byte-free JSON-like state and refs, not raw transport "
+            f"payloads; store EvidenceRefs for media/artifacts: {exc}"
+        ) from exc
 
 
 def jsonable_checkpoint_data(value: Any) -> Any:

@@ -1,12 +1,12 @@
 # MageQA — AI Workflow Engine Usage Guide
 
-> **PIN (2026-07-06):** pin tag `engine-v0.8.1` and build a wheel from it. The consumer model is
+> **PIN (2026-07-07):** pin tag `engine-v0.8.1` and build a wheel from it. The consumer model is
 > breaking-allowed tag-to-tag — do NOT track the live branch. The tag carries the full current
 > capability set (see **"What engine-v0.8.1 gives you"**):
 > cross-run memory, config-first observation (log→bundle→viewer; HTML rendering lives in the
 > separate `ai_workflow_viewer` package), strict prompt files, machine identity, and hardened seam
 > guards.
-> **Release gate: CLOSED 2026-07-06** — package version metadata is lockstep-guarded in both
+> **Release gate: CLOSED 2026-07-07** — package version metadata is lockstep-guarded in both
 > packages (engine 0.8.1, tools 0.3.0; pyproject ↔ `__version__` release-guard tests), the
 > one-call façade exposes the full run envelope (`return_result=True`), and console tool-flag
 > handling covers joined/kebab forms (regression-locked). The tag builds packages that report
@@ -16,11 +16,14 @@
 > So `0.7.0 -> 0.8.1` has **no additional breaking contract change**; it is an additive memory
 > upgrade plus custom-reducer hardening. If a branch is older than v0.7.0, read the v0.7.0 contract
 > changes below before re-pinning.
-> **v0.8.1 delta (2026-07-06, additive hardening):** custom memory reducers now fail loudly on
-> Pydantic-nested media/bytes, rendered `data:*;base64,` state, and opaque default-repr reducer
-> objects (`object()` / empty-slots values that would render as memory addresses). Value-like
-> attribute-less objects still pass. Unsafe `compacting(inner=structured_state)` is rejected in
-> favor of `structured_state(base=compacting)`; compacting wording is neutral for custom compactors.
+> **v0.8.1 delta (2026-07-07, additive hardening):** custom memory reducers and checkpoint payloads
+> now use the same fail-closed byte-safety guard. Pydantic/dataclass/computed/private fields,
+> mappings, concrete containers, scalar subclasses, enum values, exception args, partial args, and
+> object attributes are inspected; raw bytes/media transport, actual rendered `data:*;base64,`
+> state, iterators, unsafe mapping keys, wrapper-carried unsafe values, and opaque/arbitrary custom
+> objects fail loudly. Reducers should emit dict/list/scalar/value objects or evidence refs, not
+> product domain objects by repr. Unsafe `compacting(inner=structured_state)` is rejected in favor of
+> `structured_state(base=compacting)`; compacting wording is neutral for custom compactors.
 > **v0.8.0 delta (2026-07-05, additive):** T2 prompt-projection memory shipped for the GoPro
 > named-consumer request and is yours too: `structured_state` (derived working-state block for
 > weak-model agents), `windowed`, `compacting` modes + per-NODE `memory=` selection on

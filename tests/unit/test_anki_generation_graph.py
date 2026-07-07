@@ -270,6 +270,9 @@ async def test_graph_reuses_uploaded_image_by_default():
 
 @pytest.mark.unit
 async def test_graph_nodes_run_through_generic_capability_runtime(tmp_path):
+    import json
+    from pathlib import Path
+
     svc = Mock()
     svc.extract_cards.return_value = [AnkiCard(question="What is shown?", answer="A valve")]
     source = build_content_source([("U", "Valve diagram")], user_id=10, owner_name="U")
@@ -292,8 +295,28 @@ async def test_graph_nodes_run_through_generic_capability_runtime(tmp_path):
     assert graph.capability_registry.get("package_cards")[0].side_effects == ["local_write"]
     bundle_path = graph.last_observation_bundle_path()
     assert bundle_path
+    bundle_dir = Path(bundle_path)
+    for name in (
+        "trace.jsonl",
+        "details.jsonl",
+        "usage.jsonl",
+        "definition.json",
+        "artifacts.json",
+        "meta.json",
+    ):
+        assert (bundle_dir / name).exists(), f"missing observation bundle file: {name}"
+    meta = json.loads((bundle_dir / "meta.json").read_text(encoding="utf-8"))
+    assert meta["bundle_schema_version"] == 1
+    assert meta["status"] == "completed"
+    assert meta["trace_count"] == len((bundle_dir / "trace.jsonl").read_text().splitlines())
+    assert meta["detail_count"] == len((bundle_dir / "details.jsonl").read_text().splitlines())
     viewer = JsonlObservationViewer.from_run_bundle(bundle_path, title="Anki generation observation")
     run = viewer.source.read()
+    sequences = [record.sequence for record in run.records if record.sequence is not None]
+    assert sequences == sorted(sequences)
+    assert len(sequences) == len(set(sequences))
+    identities = [(record.type, record.event_id) for record in run.records if record.event_id]
+    assert len(identities) == len(set(identities))
     assert any(event.node == "parse_directives" and event.decision == "accepted" for event in run.trace_events)
     assert any(event.node == "package_cards" and event.decision == "accepted" for event in run.trace_events)
     observation = build_observation_graph(run.definition, run.trace_events, run.usage_events, run.details, run_id=run.run_id)
@@ -304,16 +327,21 @@ async def test_graph_nodes_run_through_generic_capability_runtime(tmp_path):
     assert details.details
     assert observation.details
     assert all(ref in observation.details for event in observation.timeline for ref in event.detail_refs)
-    assert "Valve diagram" in "\n".join(detail.text or "" for detail in observation.details.values())
+    detail_text = "\n".join(detail.text or "" for detail in observation.details.values())
+    assert "Valve diagram" in detail_text
+    assert "data:image" not in detail_text
+    assert "base64," not in detail_text
     html = viewer.html()
     assert "Anki generation observation" in html
     assert "flowchart TD" in html
     assert "Investigation Graph" in html
+    assert "Timeline" in html
     assert "Parse message directives" in html
     assert "Choose card type branch" in html
     assert "package_cards" in html
     assert "tool_payload" in html
     assert "Valve diagram" in html
+    assert "Copy raw" in html
 
 
 @pytest.mark.unit

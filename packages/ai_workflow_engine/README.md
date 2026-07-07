@@ -70,10 +70,12 @@ The platform is an implementation-agnostic workflow engine plus a set of tool li
   `MemoryStore`/`MemoryNamespace(product, tenant, subject, kind)`/`InMemoryMemoryStore` contract.
   `engine-v0.8.0` added the GoPro-proven prompt-memory policies: `StructuredStateMemory`,
   `WindowedMemory`, `CompactingMemory`, and per-node `memory=` selection. `engine-v0.8.1` hardens the
-  byte-free guard (traverses Pydantic/dataclass/arbitrary-object attributes; rejects rendered
-  data-URI media; rejects opaque default-repr objects that would render as memory addresses while
-  still allowing value-like attribute-less objects) and custom reducers/compactors with stricter
-  byte-free validation and loud rejection of unsafe compaction/structured-state composition.
+  byte-free guard behind memory and checkpoints: it walks Pydantic/dataclass/computed/private fields,
+  mappings, concrete containers, scalar subclasses, enum values, exception args, partial args, and
+  object attributes; rejects raw byte/media transport, actual rendered data-URI media, iterators, and
+  opaque/arbitrary objects; and accepts only explicit value objects or structured containers. Custom
+  reducers/compactors must emit safe prompt data or fail loudly, and unsafe
+  compaction/structured-state composition is rejected.
   Durable/semantic stores and broader workflow/project scopes remain deferred until a named
   consumer proves the need.
 - **Economics is part of the architecture.** Metered calls are budgeted explicitly; subscription or
@@ -177,8 +179,12 @@ The shipped memory slice is intentionally narrow and replay-safe:
   PURE reducer (default: per-tool calls/args/ok/error tallies; product reducers injectable with
   `reducer_label` for observability) and appends them as the last memory-produced message —
   the weak-model anti-repeat fix, proven behaviorally in tests. Reducer/renderer output is
-  validated byte-free LOUDLY (never silently stripped), including Pydantic-nested media/bytes and
-  rendered `data:*;base64,` state. Composes: `base=image_evicting`.
+  validated byte-free LOUDLY (never silently stripped). The shared guard rejects bytes, image
+  transport handles, actual rendered data-URI media, generators/iterators, unsafe mapping keys,
+  scalar/container subclasses with hidden unsafe attributes, Pydantic/dataclass/computed/private
+  unsafe fields, enum/exception/partial wrappers that carry unsafe values, and opaque custom objects.
+  Emit dict/list/scalar/value objects or evidence refs from reducers. Composes:
+  `base=image_evicting`.
 - `WindowedMemory(max_turns=N)` (v0.8.0) keeps the last N turns verbatim; dropped turns leave an
   activity tally + bounded excerpts of their outputs — findings survive by default, never a
   silent drop.

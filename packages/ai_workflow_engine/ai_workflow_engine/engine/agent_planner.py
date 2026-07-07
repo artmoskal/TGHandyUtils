@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -185,7 +186,11 @@ class LLMAgentPlanner:
         stats: dict[str, Any] = {}
         stats_fn = getattr(memory, "projection_stats", None)
         if callable(stats_fn):
-            stats = dict(stats_fn(request, history))
+            parameters = inspect.signature(stats_fn).parameters
+            if "messages" in parameters:
+                stats = dict(stats_fn(request, history, messages=messages))
+            else:
+                stats = dict(stats_fn(request, history))
         self._observation_capture().record(
             node=self.node_name,
             attempt=len(history) + 1,

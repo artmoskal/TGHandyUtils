@@ -960,6 +960,37 @@ async def test_structured_state_projection_metadata_counts_only():  # AC-S5
     assert "SECRET room" not in event.model_dump_json()
 
 
+async def test_structured_state_projection_metadata_does_not_rerun_reducer():
+    from ai_workflow_engine import StructuredStateMemory
+
+    calls = {"count": 0}
+
+    def reducer(_request, history):
+        calls["count"] += 1
+        return {"turns": len(history)}
+
+    trace = InMemoryTraceSink()
+    client = ScriptedLLM(LLMResponse(text='{"caption": "done"}'))
+    planner = _planner(
+        client,
+        memory=StructuredStateMemory(reducer=reducer),
+        trace_sink=trace,
+    )
+    context = _context()
+
+    with workflow_usage_scope(
+        WorkflowUsageContext(context.run_context, context.usage_summary, WorkflowBudget())
+    ):
+        decision = await planner.next_step(
+            context, AgentRunRequest(prompt="inventory", allowed_tools=[]), [_zoom_history(1)]
+        )
+
+    assert decision.action == "finish"
+    assert calls["count"] == 1
+    event = next(item for item in trace.events if item.phase == "memory:projection")
+    assert event.metadata["state_chars"] > 0
+
+
 async def test_builder_passes_memory_through_to_planner():  # R3 (AC-M2 gap)
     from ai_workflow_engine.memory import ImageEvictingMemory
 

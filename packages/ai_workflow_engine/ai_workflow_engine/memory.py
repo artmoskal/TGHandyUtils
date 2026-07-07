@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import inspect
 import json
-import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass
 from typing import Any, NamedTuple, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field, ValidationError
 
+from ai_workflow_engine.byte_safety import (
+    assert_byte_safe,
+    assert_prompt_text_safe,
+    redact_transport_data_uris,
+)
 from ai_workflow_engine.llm_protocol import ChatMessage, ToolCallRequest, ToolResult
 from ai_workflow_engine.models import AgentRunRequest, AgentToolStep, EvidenceRef
 from ai_workflow_engine.vision import ImageInput
@@ -373,8 +377,8 @@ def _call_args_summary(payload: Mapping[str, Any]) -> Any:
     if len(payload) == 1:
         value = next(iter(payload.values()))
         if isinstance(value, (str, int, float, bool)) or value is None:
-            return value
-    return json.dumps(dict(payload), sort_keys=True, default=str)
+            return redact_transport_data_uris(value)
+    return json.dumps(redact_transport_data_uris(dict(payload)), sort_keys=True, default=str)
 
 
 def default_state_renderer(state: Any) -> str:
@@ -395,14 +399,11 @@ def default_state_renderer(state: Any) -> str:
     return "\n".join(lines)
 
 
-_DATA_URI_BASE64_RE = re.compile(r"data:[^,\s;]+(?:;[^,\s]+)*;base64,", re.IGNORECASE)
-
-
 def _assert_state_output_safe(state: Any, rendered: Any, *, who: str) -> str:
     """Byte-free, LOUDLY (GoPro AC-S6): never silently strip content from a prompt."""
 
     try:
-        _assert_memory_projection_safe(state, path="state")
+        assert_byte_safe(state, mode="prompt", path="state")
     except ValueError as exc:
         raise ValueError(
             f"{who} reducer output must be byte-free (no raw bytes / ImageInput): {exc}"
@@ -413,106 +414,10 @@ def _assert_state_output_safe(state: Any, rendered: Any, *, who: str) -> str:
             "render state to compact text, never transport objects"
         )
     try:
-        _assert_memory_rendered_text_safe(rendered, path="rendered")
+        assert_prompt_text_safe(rendered, path="rendered")
     except ValueError as exc:
         raise ValueError(f"{who} rendered state must be byte-free: {exc}") from exc
     return rendered
-
-
-def _assert_memory_projection_safe(
-    value: Any, *, path: str, seen: set[int] | None = None
-) -> None:
-    """Validate memory-only prompt state without changing checkpoint persistence semantics."""
-
-    if seen is None:
-        seen = set()
-    if isinstance(value, (str, int, float, bool)) or value is None:
-        if isinstance(value, str):
-            _assert_memory_rendered_text_safe(value, path=path)
-        return
-    if isinstance(value, (bytes, bytearray, memoryview)):
-        raise ValueError(f"{path} contains raw bytes")
-    if isinstance(value, ImageInput):
-        raise ValueError(f"{path} contains ImageInput transport payload")
-    object_id = id(value)
-    if object_id in seen:
-        return
-    seen.add(object_id)
-    if isinstance(value, BaseModel):
-        for name in value.__class__.model_fields:
-            _assert_memory_projection_safe(getattr(value, name), path=f"{path}.{name}", seen=seen)
-        extra = getattr(value, "__pydantic_extra__", None)
-        if isinstance(extra, Mapping):
-            for key, item in extra.items():
-                _assert_memory_projection_safe(item, path=f"{path}.{key}", seen=seen)
-        private = getattr(value, "__pydantic_private__", None)
-        if isinstance(private, Mapping):
-            for key, item in private.items():
-                _assert_memory_projection_safe(item, path=f"{path}.{key}", seen=seen)
-        return
-    if is_dataclass(value) and not isinstance(value, type):
-        for field in fields(value):
-            _assert_memory_projection_safe(
-                getattr(value, field.name), path=f"{path}.{field.name}", seen=seen
-            )
-        return
-    if isinstance(value, Mapping):
-        for key, item in value.items():
-            _assert_memory_projection_safe(item, path=f"{path}.{key}", seen=seen)
-        return
-    if isinstance(value, (set, frozenset)):
-        for index, item in enumerate(value):
-            _assert_memory_projection_safe(item, path=f"{path}[{index}]", seen=seen)
-        return
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        for index, item in enumerate(value):
-            _assert_memory_projection_safe(item, path=f"{path}[{index}]", seen=seen)
-        return
-    # Arbitrary object: traverse its readable instance attributes (__dict__ + __slots__) so a
-    # transport payload hidden in an attribute (e.g. a plain class holding an ImageInput/bytes)
-    # is still caught.
-    attributes = _readable_object_attributes(value)
-    if attributes:
-        for name, item in attributes:
-            _assert_memory_projection_safe(item, path=f"{path}.{name}", seen=seen)
-        return
-    # No readable state. A value object with its OWN repr renders deterministically and passes
-    # (datetime/UUID/Decimal/Enum/numpy scalar/...); a type whitelist would false-positive on the
-    # ones a product legitimately uses (e.g. numpy confidence scores). A bare object that inherits
-    # the DEFAULT object repr renders as a non-deterministic memory address (`<X object at 0x…>`):
-    # reject it loudly so the reducer emits clean value/JSON/evidence state instead.
-    if type(value).__repr__ is object.__repr__:
-        raise ValueError(
-            f"{path} is an opaque object with no readable state and a non-deterministic default "
-            "repr; emit JSON-like scalars, value objects, or EvidenceRefs as memory state instead"
-        )
-
-
-def _readable_object_attributes(value: Any) -> list[tuple[str, Any]]:
-    """Instance attributes from ``__dict__`` and any declared ``__slots__`` across the MRO.
-    Unset slots (which hold nothing) are skipped; nothing here reads properties/descriptors."""
-
-    attributes: dict[str, Any] = {}
-    instance_dict = getattr(value, "__dict__", None)
-    if isinstance(instance_dict, Mapping):
-        attributes.update(instance_dict)
-    for klass in type(value).__mro__:
-        slots = getattr(klass, "__slots__", ())
-        if isinstance(slots, str):
-            slots = (slots,)
-        for slot in slots:
-            if slot in ("__dict__", "__weakref__") or slot in attributes:
-                continue
-            try:
-                attributes[slot] = getattr(value, slot)
-            except AttributeError:
-                continue  # declared-but-unset slot holds nothing
-    return list(attributes.items())
-
-
-def _assert_memory_rendered_text_safe(text: str, *, path: str) -> None:
-    if _DATA_URI_BASE64_RE.search(text):
-        raise ValueError(f"{path} contains data URI base64 media")
 
 
 class StructuredStateMemory:
@@ -559,10 +464,20 @@ class StructuredStateMemory:
         return messages
 
     def projection_stats(
-        self, request: AgentRunRequest, history: Sequence[AgentToolStep]
+        self,
+        request: AgentRunRequest,
+        history: Sequence[AgentToolStep],
+        *,
+        messages: Sequence[ChatMessage] | None = None,
     ) -> dict[str, Any]:
-        """Counts/labels only (AC-S5) — pure recompute, no state carried on the object."""
+        """Counts/labels only (AC-S5); prefer already-rendered messages to avoid a second reduce."""
 
+        state_block = self._state_block_from_messages(messages)
+        if state_block is not None:
+            return {
+                "state_chars": len(state_block),
+                "reducer_label": self.reducer_label,
+            }
         return {
             "state_chars": len(self._state_block(request, history)),
             "reducer_label": self.reducer_label,
@@ -574,6 +489,15 @@ class StructuredStateMemory:
             state, self.render_state(state), who="StructuredStateMemory"
         )
         return f"{self.heading}\n{rendered}"
+
+    def _state_block_from_messages(self, messages: Sequence[ChatMessage] | None) -> str | None:
+        if messages is None:
+            return None
+        for message in reversed(messages):
+            content = message.content
+            if isinstance(content, str) and content.startswith(f"{self.heading}\n"):
+                return content
+        return None
 
 
 class WindowedMemory:
