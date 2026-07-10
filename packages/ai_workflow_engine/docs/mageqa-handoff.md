@@ -74,7 +74,10 @@ production; the product-neutral examples include site-audit fan-out and the thre
 sibling `ai_workflow_tools` package ships CLI-agent + console-LLM support (`claude -p` / `codex exec`)
 and the media pack. See **"What engine-v0.8.1 gives you"** at the end for the full capability list.
 Not in v0.8 (deferred): durable/semantic memory STORES beyond the `MemoryStore` seam, FlowArtifact v1.5,
-ProcessArtifact/v2, browser/no-API executors.
+ProcessArtifact/v2, browser/no-API executors. v0.9.0 UPDATE: FlowArtifact v1.5a shipped — authored
+bounded `fanout` (max_items REQUIRED) + `build_flow_author_capability(...)`; true per-phase budget
+scopes (N1) remain explicitly FUTURE-STAGE (activation on a concrete MageQA workflow needing
+independent phase ceilings).
 Source needs: `/Users/artemm/PycharmProjects/MageQA/docs/17-qa-orchestrator-architecture.md`,
 `/Users/artemm/PycharmProjects/MageQA/docs/14-agentic-tester-architecture.md`.
 
@@ -92,7 +95,8 @@ the current tag.** MageQA already sits on v0.7.0, so there is no new breaking ch
 Re-pin, run the migration check above, and continue as designed. The useful new surface is optional:
 prompt-projection memory for long/deep browser-agent episodes, bounded windowing/compaction for
 large transcripts, and per-node `memory=` so only the workers that need state get it. Durable/semantic
-memory stores and FlowArtifact v1.5 authorable fan-out remain deferred.
+memory stores remain deferred; FlowArtifact v1.5a authored fan-out + the turnkey author shipped in
+v0.9.0 (subworkflow/general-IO authoring still deferred).
 
 Mapped to the MageQA shapes in this doc (browser episodes via `CliAgentCapability`+MCP,
 adjudicate/deepen loops, rubric/report text roles, artifact salvage, cost dashboards):
@@ -252,8 +256,9 @@ These points answer the review questions that matter before paying someone to mi
   must not decide engine state transitions.
 - **FlowArtifact boundary.** MageQA may let AI emit scenario plans and structured inputs for
   registered capabilities. Do not rely on AI-authored arbitrary workflows for the migration. Shipped
-  `FlowArtifact` v1 is constrained to registered steps/branches/evaluators; authorable fan-out,
-  subworkflow references, richer dataflow, and reusable generated process pipelines are v1.5/v2
+  `FlowArtifact` covers registered steps/branches/evaluators + (v0.9.0, v1.5a) bounded authored
+  `fanout` with REQUIRED max_items and the turnkey `build_flow_author_capability(...)`; subworkflow
+  references, richer dataflow, and reusable generated process pipelines are v1.5-remainder/v2
   future-stage.
 - **Viewer integration.** `ai_workflow_viewer` supports both static HTML artifacts and a small local
   HTTP/SSE server. For the MageQA product dashboard, either link/embed generated HTML for a run or

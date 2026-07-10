@@ -376,6 +376,9 @@ class WorkflowEngine:
             model_profiles=self.model_profiles,
             allowed_side_effects=allowed,
             max_nodes=max_nodes,
+            # Authoring and execution must not validate against different fanout bounds:
+            # these are the limits the flow will actually run under.
+            limits=self.default_profile.limits if self.default_profile is not None else None,
         )
         self.trace_sink.record(
             WorkflowTraceEvent(

@@ -491,6 +491,9 @@ class RuntimeLimits(BaseModel):
     max_output_tokens_per_call: Optional[int] = None
     max_images_per_call: Optional[int] = None
     max_estimated_usd_per_call: Optional[float] = None
+    # Structural ceiling on the item count an AI-AUTHORED fanout may declare (settled decision 5:
+    # configurable, default 100, engine absolute maximum 1000). Hand-written fanout is unaffected.
+    max_authored_fanout_items: int = Field(default=100, ge=1, le=1000)
 
 
 class SafetyPolicy(BaseModel):
@@ -579,6 +582,9 @@ class CapabilitySpec(BaseModel):
     metered: bool = False
     timeout_s: Optional[float] = None
     max_attempts: int = 1
+    # Canonical recursion-firewall marker (v0.9): a capability that AUTHORS flows may never be
+    # wired INSIDE an authored flow. Typed field — not metadata, not a handler attribute.
+    is_flow_author: bool = False
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
     def model_post_init(self, __context: Any) -> None:

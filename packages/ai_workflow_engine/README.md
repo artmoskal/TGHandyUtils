@@ -211,15 +211,26 @@ memory.
 ## Generated process authoring status
 
 `FlowArtifact` is shipped as constrained flow-as-data: an AI or deterministic builder can emit
-validated `step` / `branch` / `evaluate` machines over registered capabilities, and
+validated `step` / `branch` / `evaluate` / `fanout` machines over registered capabilities, and
 `engine.run_authored_flow(...)` runs them through the same executor, budgets, preflight, and trace
 as hand-written workflows. That is enough for a narrow goal compiler, but it is not full arbitrary
 pipeline authoring.
 
-Near-term scope is `FlowArtifact` v1.5: add authorable `fanout`, registered `subworkflow` references,
-and explicit `input_key` / `output_key` mapping while keeping the existing safety model. Authored
-flows still must not contain planner or flow-author capabilities, register tools, execute arbitrary
-code, or bypass side-effect/model-profile validation.
+**v1.5a (v0.9.0):** authored `fanout` is bounded by construction — `max_items` is REQUIRED
+(1..`limits.max_authored_fanout_items`, default 100, engine max 1000; oversize runtime lists fail
+loudly, never truncate) and `max_parallel` outside the profile cap is rejected, never clamped.
+Unknown/foreign fields on authored nodes are validation errors. The turnkey author loop ships as
+`build_flow_author_capability(llm, *, registry, model_profiles, limits, allowed_side_effects, ...)`
+→ `(CapabilitySpec(is_flow_author=True), handler)`: catalog-grounded prompt (wholesale-overridable
+via `prompt_template=`), typed `FlowAuthorRequest(goal, context)` input, TARGET-registry validation
+feeding a bounded repair loop, per-attempt metering/observation via the shared structured-LLM
+worker. `run_authored_flow` re-validates against the CURRENT effective limits, so stale artifacts
+authored under looser bounds are rejected before execution.
+
+The v1.5 remainder — registered `subworkflow` references and explicit `input_key` / `output_key`
+mapping — stays future-stage with the same safety model. Authored flows still must not contain
+planner or flow-author capabilities, register tools, execute arbitrary code, or bypass
+side-effect/model-profile validation.
 
 The endgame is a separate `ProcessArtifact` / `FlowArtifact` v2 for durable generated processing
 pipelines: richer DAG/dataflow, video/segment fan-out, artifact routing, workflow-memory scopes, and

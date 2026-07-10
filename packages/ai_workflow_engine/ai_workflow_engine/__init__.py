@@ -139,7 +139,15 @@ from ai_workflow_engine.model_binding import current_model_profile, model_profil
 from ai_workflow_engine.planning import PlanArtifact, PlanTask, render_plan
 from ai_workflow_engine.prompt_capture import PromptCapturingLLMClient
 from ai_workflow_engine.snapshot import MachineSnapshot
-from ai_workflow_engine.flow_authoring import FlowArtifact, FlowNodeSpec, build_definition_from_artifact, render_capability_catalog
+from ai_workflow_engine.flow_authoring import (
+    DEFAULT_FLOW_AUTHOR_PROMPT,
+    FlowArtifact,
+    FlowAuthorRequest,
+    FlowNodeSpec,
+    build_definition_from_artifact,
+    build_flow_author_capability,
+    render_capability_catalog,
+)
 from ai_workflow_engine.observation_bundle import (
     ObservationRunBundle,
     ObservationSequence,
@@ -351,8 +359,11 @@ __all__ = [
     "TeeUsageSink",
     "open_observation_run_bundle",
     "prune_observation_bundles",
+    "DEFAULT_FLOW_AUTHOR_PROMPT",
     "FlowArtifact",
+    "FlowAuthorRequest",
     "FlowNodeSpec",
+    "build_flow_author_capability",
     "build_definition_from_artifact",
     "render_prompt_manifest",
 ]

@@ -12,10 +12,13 @@ after compilation it runs through the same executor, preflight, budgets, and tra
 
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from ai_workflow_engine.byte_safety import assert_byte_safe
+from ai_workflow_engine.models import CapabilitySpec
 from ai_workflow_engine.workflow import (
     Fallback,
     Retrace,
@@ -27,12 +30,18 @@ from ai_workflow_engine.workflow import (
 
 
 class FlowNodeSpec(BaseModel):
-    """One node in an AI-authored flow. Kinds are a deliberate subset of the engine's."""
+    """One node in an AI-authored flow. Kinds are a deliberate subset of the engine's.
 
-    kind: Literal["step", "branch", "evaluate"] = "step"
+    Unknown fields are FORBIDDEN: an AI's typo'd field must fail validation (and feed the
+    repair loop), never silently disappear.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["step", "branch", "evaluate", "fanout"] = "step"
     id: str
     capability: Optional[str] = None          # step: defaults to id; branch: the decider;
-                                              # evaluate: the evaluator capability
+                                              # evaluate: the evaluator; fanout: the per-item cap
     target: Optional[str] = None              # evaluate: the evaluated capability
     branches: Dict[str, str] = Field(default_factory=dict)
     # Pre-set gates for authored loops: a label that closes a cycle MUST carry a bound here
@@ -49,15 +58,42 @@ class FlowNodeSpec(BaseModel):
     max_attempts: int = 2
     max_retrace: int = 1
     model_profile: Optional[str] = None
+    # kind="fanout" (FlowArtifact v1.5a): bounded per-item parallelism. ``max_items`` is
+    # REQUIRED for authored fanout — AI-chosen parallelism is cost-bounded by construction
+    # (settled decision 3/5); an oversize runtime list fails loudly, never truncates.
+    items_key: Optional[str] = None
+    max_parallel: Optional[int] = None
+    output_key: Optional[str] = None
+    max_items: Optional[int] = None
 
 
 class FlowArtifact(BaseModel):
     """Checkpoint-safe, validated-before-compiled description of an authored workflow."""
 
+    model_config = ConfigDict(extra="forbid")
+
     flow_id: str
     goal: str = ""
     nodes: List[FlowNodeSpec]
     metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+# Per-kind field discipline (validated via ``model_fields_set`` so defaults never trip it):
+# irrelevant fields are rejected in BOTH directions — a fanout carrying branch fields is as
+# invalid as a step carrying fanout fields.
+_FIELDS_BY_KIND: Dict[str, set] = {
+    "step": {"kind", "id", "capability", "model_profile"},
+    "branch": {
+        "kind", "id", "capability", "branches", "branch_bounds", "branch_exhausted",
+        "describe", "model_profile",
+    },
+    "evaluate": {
+        "kind", "id", "capability", "target", "on_reject", "retrace_to", "fallback",
+        "max_attempts", "max_retrace", "model_profile",
+    },
+    # No model_profile on fanout: the runtime fanout node binds the ITEM capability instead.
+    "fanout": {"kind", "id", "capability", "items_key", "max_parallel", "output_key", "max_items"},
+}
 
 
 def build_definition_from_artifact(
@@ -68,10 +104,13 @@ def build_definition_from_artifact(
     allowed_side_effects: List[str],
     max_nodes: int = 12,
     workflow_id: Optional[str] = None,
+    limits: Any = None,
 ) -> WorkflowDefinition:
     """Validate an authored flow exhaustively, then compile it via the normal builder.
 
     Every violation is collected and raised in ONE loud error — no partial compilation.
+    ``limits`` (RuntimeLimits of the profile the flow will EXECUTE under) bounds authored
+    fanout: authoring and execution must not validate against different bounds.
     """
 
     errors = _validate_flow_artifact(
@@ -80,6 +119,7 @@ def build_definition_from_artifact(
         model_profiles=model_profiles,
         allowed_side_effects=allowed_side_effects,
         max_nodes=max_nodes,
+        limits=limits,
     )
     if errors:
         raise WorkflowValidationError(errors)
@@ -94,6 +134,7 @@ def _validate_flow_artifact(
     model_profiles: Dict[str, Any],
     allowed_side_effects: List[str],
     max_nodes: int,
+    limits: Any = None,
 ) -> list[str]:
     errors: list[str] = []
     if not artifact.nodes:
@@ -113,6 +154,7 @@ def _validate_flow_artifact(
                 allowed_side_effects=allowed,
                 declared_ids=declared_ids,
                 step_ids_so_far=step_ids_so_far,
+                limits=limits,
             )
         )
         if spec.kind == "step":
@@ -139,9 +181,11 @@ def _validate_flow_node(
     allowed_side_effects: set[str],
     declared_ids: list[str],
     step_ids_so_far: set[str],
+    limits: Any = None,
 ) -> list[str]:
     label = f"node '{spec.id}'"
     errors: list[str] = []
+    errors.extend(_validate_kind_fields(spec))
     if spec.model_profile and spec.model_profile not in model_profiles:
         errors.append(f"{label}: unknown model profile '{spec.model_profile}'")
     if spec.kind == "step":
@@ -154,6 +198,59 @@ def _validate_flow_node(
         errors.extend(_validate_branch_spec(spec, registry, allowed_side_effects, declared_ids))
     elif spec.kind == "evaluate":
         errors.extend(_validate_evaluate_spec(spec, registry, allowed_side_effects, step_ids_so_far))
+    elif spec.kind == "fanout":
+        errors.extend(_validate_fanout_spec(spec, registry, allowed_side_effects, limits))
+    return errors
+
+
+def _validate_kind_fields(spec: FlowNodeSpec) -> list[str]:
+    """Both-direction field discipline: explicitly-set fields foreign to the node's kind are
+    rejected (a fanout carrying branch wiring is as invalid as a step carrying items_key)."""
+
+    allowed = _FIELDS_BY_KIND[spec.kind]
+    irrelevant = sorted(spec.model_fields_set - allowed)
+    if irrelevant:
+        return [
+            f"node '{spec.id}': field(s) {', '.join(irrelevant)} are not valid for kind "
+            f"'{spec.kind}'"
+        ]
+    return []
+
+
+def _validate_fanout_spec(
+    spec: FlowNodeSpec,
+    registry: Any,
+    allowed_side_effects: set[str],
+    limits: Any,
+) -> list[str]:
+    label = f"node '{spec.id}'"
+    errors: list[str] = []
+    errors.extend(
+        _validate_authored_capability(
+            label, spec.capability or spec.id, registry, allowed_side_effects
+        )
+    )
+    if not spec.items_key:
+        errors.append(f"{label}: fanout requires a non-empty items_key")
+
+    parallel_cap = getattr(limits, "max_parallel_children", None) or 4
+    if spec.max_parallel is not None and not 1 <= spec.max_parallel <= parallel_cap:
+        errors.append(
+            f"{label}: max_parallel={spec.max_parallel} must be between 1 and the effective "
+            f"max_parallel_children={parallel_cap} (rejected, never silently clamped)"
+        )
+
+    items_cap = getattr(limits, "max_authored_fanout_items", None) or 100
+    if spec.max_items is None:
+        errors.append(
+            f"{label}: authored fanout REQUIRES max_items — AI-chosen parallelism must be "
+            "cost-bounded by construction"
+        )
+    elif not 1 <= spec.max_items <= items_cap:
+        errors.append(
+            f"{label}: max_items={spec.max_items} must be between 1 and "
+            f"limits.max_authored_fanout_items={items_cap}"
+        )
     return errors
 
 
@@ -229,7 +326,9 @@ def _validate_authored_capability(
             f"{label}: capability '{name}' is a planner — authored flows may not contain "
             "AI-writers (use bounded planner depth instead)"
         )
-    if cap_spec.metadata.get("flow_author") is True or getattr(handler, "is_flow_author", False):
+    if cap_spec.is_flow_author:
+        # v0.9 clean contract: the typed CapabilitySpec.is_flow_author field is the ONLY
+        # flow-author marker (metadata/handler-attribute reads removed).
         errors.append(
             f"{label}: capability '{name}' authors flows — recursion through generated "
             "structure is forbidden"
@@ -252,6 +351,15 @@ def _compile_flow_artifact(
     for spec in artifact.nodes:
         if spec.kind == "step":
             builder.step(spec.id, capability=spec.capability, model_profile=spec.model_profile)
+        elif spec.kind == "fanout":
+            builder.fanout(
+                spec.id,
+                capability=spec.capability or spec.id,
+                items_key=spec.items_key,
+                max_parallel=spec.max_parallel,
+                max_items=spec.max_items,
+                output_key=spec.output_key,
+            )
         elif spec.kind == "branch":
             builder.branch(
                 spec.id,
@@ -305,9 +413,144 @@ def render_capability_catalog(registry: Any, allowed_side_effects: Optional[List
         if (
             spec.metadata.get("planner") is True
             or getattr(handler, "is_planner", False)
-            or spec.metadata.get("flow_author") is True
-            or getattr(handler, "is_flow_author", False)
+            or spec.is_flow_author
         ):
             entry += " [NOT-AUTHORABLE: AI-writers may not appear in authored flows]"
         lines.append(entry)
     return "\n".join(lines)
+
+
+# ------------------------------------------------------------------ turnkey author (v1.5a, 2.4)
+
+
+class FlowAuthorRequest(BaseModel):
+    """Typed input of the turnkey flow-author capability."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    goal: str
+    context: Dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("goal")
+    @classmethod
+    def _goal_must_be_substantial(cls, value: str) -> str:
+        if not value or not value.strip():
+            raise ValueError("flow author requires a non-empty goal")
+        return value
+
+
+# Model-agnostic default (settled decision 1 / D2): wholesale-overridable via prompt_template=.
+# {format_instructions} is injected by the structured node's parser (the FlowArtifact schema).
+DEFAULT_FLOW_AUTHOR_PROMPT = """You author ONE workflow as strict JSON (a FlowArtifact).
+
+GOAL:
+{goal}
+
+CONTEXT:
+{context}
+
+AVAILABLE CAPABILITIES — choose ONLY from these; entries marked DENIED or NOT-AUTHORABLE are forbidden:
+{catalog}
+
+HARD BOUNDS: at most {max_nodes} nodes. Any fanout node MUST declare max_items (1..{max_items_cap})
+and may declare max_parallel (1..{max_parallel_cap}). Unknown fields are rejected.
+
+{format_instructions}
+
+Emit ONLY the JSON object — no prose, no code fences."""
+
+
+def build_flow_author_capability(
+    llm: Any,
+    *,
+    registry: Any,
+    model_profiles: Optional[Dict[str, Any]] = None,
+    limits: Any = None,
+    allowed_side_effects: Optional[List[str]] = None,
+    max_nodes: int = 12,
+    max_repair_rounds: int = 2,
+    prompt_template: Optional[str] = None,
+    capability_name: str = "author_flow",
+) -> tuple:
+    """Turnkey flow-author capability: catalog → LLM → parse → TARGET-registry validation →
+    bounded repair → loud fail (settled design, 2026-07-10).
+
+    Composes the existing :class:`StructuredLLMNode` — model binding, budget checks,
+    prompt/response observation, per-attempt usage, parse/repair, and the final
+    ``StructuredOutputError`` are ONE mechanic, not a re-implementation. ``registry``/
+    ``model_profiles``/``limits``/``allowed_side_effects`` describe the PROCESSING engine the
+    artifact will run on; validation compiles against that target and discards the result
+    (``run_authored_flow`` re-validates at execution). Returns ``(CapabilitySpec, handler)`` —
+    the spec carries the canonical ``is_flow_author=True`` firewall marker.
+    """
+
+    from ai_workflow_engine.engine.llm_node import StructuredLLMNode
+
+    effective_profiles = dict(model_profiles or {})
+    effective_allowed = list(allowed_side_effects or [])
+    parallel_cap = getattr(limits, "max_parallel_children", None) or 4
+    items_cap = getattr(limits, "max_authored_fanout_items", None) or 100
+    catalog = render_capability_catalog(registry, effective_allowed)
+
+    def _validate_against_target(artifact: FlowArtifact) -> None:
+        # Raises WorkflowValidationError with the FULL error list — the structured node feeds
+        # it verbatim into the repair prompt; the compiled definition is deliberately discarded.
+        build_definition_from_artifact(
+            artifact,
+            registry=registry,
+            model_profiles=effective_profiles,
+            allowed_side_effects=effective_allowed,
+            max_nodes=max_nodes,
+            limits=limits,
+        )
+
+    node = StructuredLLMNode(
+        name=capability_name,
+        config=object(),
+        output_model=FlowArtifact,
+        prompt_template=prompt_template or DEFAULT_FLOW_AUTHOR_PROMPT,
+        input_variables=[
+            "goal", "context", "catalog", "max_nodes", "max_items_cap", "max_parallel_cap",
+        ],
+        llm=llm,
+        validator=_validate_against_target,
+        max_repair_rounds=max_repair_rounds,
+    )
+
+    async def author_flow(context: Any, payload: Any) -> Dict[str, Any]:
+        request = (
+            payload
+            if isinstance(payload, FlowAuthorRequest)
+            else FlowAuthorRequest.model_validate(payload or {})
+        )
+        # Privacy edges (both directions of the boundary): the request context feeds a prompt,
+        # and the artifact dict is checkpoint-safe state — JSON text can still carry a data URI,
+        # so neither is "byte-free by construction".
+        assert_byte_safe(request.context, mode="prompt", path="flow_author.context")
+        artifact = await node.run(
+            {
+                "goal": request.goal,
+                "context": json.dumps(request.context, sort_keys=True, default=str),
+                "catalog": catalog,
+                "max_nodes": max_nodes,
+                "max_items_cap": items_cap,
+                "max_parallel_cap": parallel_cap,
+            }
+        )
+        # exclude_unset: dump ONLY what the author actually wrote. A full dump would mark every
+        # default as explicitly-set on re-validation and trip the per-kind field discipline.
+        artifact_dict = artifact.model_dump(exclude_unset=True)
+        assert_byte_safe(artifact_dict, mode="prompt", path="flow_author.artifact")
+        return artifact_dict
+
+    spec = CapabilitySpec(
+        name=capability_name,
+        kind="llm",
+        description=(
+            "Author a FlowArtifact for the target engine (catalog-grounded, "
+            "target-validated, bounded repair)."
+        ),
+        metered=True,
+        is_flow_author=True,
+    )
+    return spec, author_flow

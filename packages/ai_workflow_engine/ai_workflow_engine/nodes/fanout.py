@@ -24,6 +24,18 @@ def build_fanout_node(services, definition: WorkflowDefinition, node: WorkflowNo
             )
             return services.record(state, node, failed, attempts=1, input_payload=items)
 
+        if node.max_items is not None and len(items) > node.max_items:
+            # Declared structural bound (required on AI-authored fanout): refuse loudly,
+            # NEVER truncate — silently processing a prefix would misreport coverage.
+            failed = CapabilityResult(
+                status="failed",
+                error=(
+                    f"fanout '{node.id}' received {len(items)} items, exceeding its declared "
+                    f"max_items={node.max_items} — refusing to truncate"
+                ),
+            )
+            return services.record(state, node, failed, attempts=1, input_payload=len(items))
+
         limit = node.max_parallel or (context.limits.max_parallel_children if context.limits else 4) or 4
         calls = [CapabilityCall(item_capability, item) for item in items]
         results = await gather_capabilities(services.runtime, calls, context, max_parallel=limit)

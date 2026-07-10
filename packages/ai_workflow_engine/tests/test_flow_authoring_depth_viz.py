@@ -116,7 +116,9 @@ def _authoring_engine():
     builder.register_capability(
         "author_flow",
         lambda ctx, p: p,
-        spec=CapabilitySpec(name="author_flow", kind="llm", metadata={"flow_author": True}),
+        # v0.9 clean contract: the typed is_flow_author field IS the marker (the old
+        # metadata={"flow_author": True} read was removed).
+        spec=CapabilitySpec(name="author_flow", kind="llm", is_flow_author=True),
     )
     return builder.build()
 
@@ -258,3 +260,473 @@ def test_workflow_to_mermaid_renders_structure_and_run_overlay():
 
     html = workflow_to_html(definition, _Result())
     assert "<html>" in html and "mermaid" in html and "viz_demo" in html
+
+
+# ------------------------------------------------- authored fanout (FlowArtifact v1.5a, task 2.3)
+
+from pydantic import ValidationError as _PydanticValidationError  # noqa: E402
+
+from ai_workflow_engine.models import RuntimeLimits as _RuntimeLimits  # noqa: E402
+
+
+def _fanout_engine(*, limits: "_RuntimeLimits | None" = None, fail_on: str | None = "b"):
+    """Engine with a collector + a per-item analyzer (fails on one item to prove isolation)."""
+
+    analyzed: list = []
+    builder = WorkflowEngineBuilder()
+    builder.register_capability(
+        "collect", lambda ctx, p: {"frames": ["a", "b", "c"]}, kind="deterministic"
+    )
+
+    def analyze(ctx, item):
+        if fail_on is not None and item == fail_on:
+            raise RuntimeError(f"analyzer choked on {item!r}")
+        analyzed.append(item)
+        return f"analyzed:{item}"
+
+    builder.register_capability("analyze", analyze, kind="deterministic")
+    builder.register_capability(
+        "a_planner", lambda ctx, p: p,
+        spec=CapabilitySpec(name="a_planner", kind="llm", metadata={"planner": True}),
+    )
+    profile = WorkflowProfile(
+        workflow_type="fanout_authoring",
+        limits=limits or _RuntimeLimits(),
+        safety=SafetyPolicy(allowed_side_effects=["read_only"]),
+    )
+    engine = builder.with_profile(profile).build()
+    return engine, analyzed
+
+
+def _fanout_artifact(**fanout_overrides):
+    fanout_node = {
+        "kind": "fanout",
+        "id": "analyze_frames",
+        "capability": "analyze",
+        "items_key": "collect.frames",
+        "max_parallel": 2,
+        "max_items": 5,
+    }
+    fanout_node.update(fanout_overrides)
+    return {
+        "flow_id": "frame_scan",
+        "goal": "collect frames then analyze each",
+        "nodes": [{"kind": "step", "id": "collect"}, fanout_node],
+    }
+
+
+async def test_authored_fanout_compiles_runs_bounded_with_partial_isolation():
+    engine, analyzed = _fanout_engine(fail_on="b")
+
+    result = await engine.run_authored_flow(_fanout_artifact(), {"source": "camera"})
+
+    assert result.status == "partial", "one failed item must isolate, not sink the fanout"
+    assert sorted(result.output) == ["analyzed:a", "analyzed:c"]
+    assert sorted(analyzed) == ["a", "c"]
+    fanout_events = [e for e in engine.trace_sink.events if e.decision == "fanout"]
+    assert fanout_events and fanout_events[0].metadata["max_parallel"] == 2
+    assert fanout_events[0].metadata == {
+        **fanout_events[0].metadata, "total": 3, "succeeded": 2, "failed": 1,
+    }
+
+
+async def test_authored_fanout_requires_max_items():
+    engine, _ = _fanout_engine()
+    artifact = _fanout_artifact()
+    del artifact["nodes"][1]["max_items"]
+
+    with pytest.raises(WorkflowValidationError, match="REQUIRES max_items"):
+        await engine.run_authored_flow(artifact, {})
+
+
+async def test_authored_fanout_rejects_non_positive_and_over_cap_max_items():
+    small_cap = _RuntimeLimits(max_authored_fanout_items=5)
+    engine, _ = _fanout_engine(limits=small_cap)
+
+    with pytest.raises(WorkflowValidationError, match="max_items=0 must be between 1 and"):
+        await engine.run_authored_flow(_fanout_artifact(max_items=0), {})
+    with pytest.raises(
+        WorkflowValidationError, match="max_items=6 must be between 1 and .*=5"
+    ):
+        await engine.run_authored_flow(_fanout_artifact(max_items=6), {})
+
+
+async def test_authored_fanout_rejects_invalid_max_parallel_never_clamps():
+    engine, _ = _fanout_engine()  # default max_parallel_children = 4
+
+    with pytest.raises(WorkflowValidationError, match="max_parallel=0 must be between 1 and"):
+        await engine.run_authored_flow(_fanout_artifact(max_parallel=0), {})
+    with pytest.raises(
+        WorkflowValidationError, match="max_parallel=99 .* never silently clamped"
+    ):
+        await engine.run_authored_flow(_fanout_artifact(max_parallel=99), {})
+
+
+async def test_authored_fanout_firewall_registration_and_side_effect_buckets():
+    engine, _ = _fanout_engine()
+
+    with pytest.raises(WorkflowValidationError, match="not registered"):
+        await engine.run_authored_flow(_fanout_artifact(capability="ghost_analyzer"), {})
+    with pytest.raises(WorkflowValidationError, match="AI-writers"):
+        await engine.run_authored_flow(_fanout_artifact(capability="a_planner"), {})
+    with pytest.raises(WorkflowValidationError, match="non-empty items_key"):
+        await engine.run_authored_flow(_fanout_artifact(items_key=""), {})
+
+
+async def test_authored_unknown_fields_are_forbidden():
+    engine, _ = _fanout_engine()
+    artifact = _fanout_artifact()
+    artifact["nodes"][1]["max_itemz"] = 3  # AI typo must FAIL validation, not vanish
+
+    with pytest.raises(_PydanticValidationError, match="max_itemz"):
+        await engine.run_authored_flow(artifact, {})
+
+
+async def test_irrelevant_per_kind_fields_rejected_both_directions():
+    engine, _ = _fanout_engine()
+
+    step_with_fanout_fields = {
+        "flow_id": "bad_step",
+        "nodes": [{"kind": "step", "id": "collect", "items_key": "x", "max_items": 3}],
+    }
+    with pytest.raises(WorkflowValidationError, match="not valid for kind 'step'"):
+        await engine.run_authored_flow(step_with_fanout_fields, {})
+
+    fanout_with_branch_fields = _fanout_artifact(branches={"x": "collect"})
+    with pytest.raises(WorkflowValidationError, match="not valid for kind 'fanout'"):
+        await engine.run_authored_flow(fanout_with_branch_fields, {})
+
+
+async def test_runtime_oversize_item_list_fails_loudly_never_truncates():
+    engine, analyzed = _fanout_engine(fail_on=None)
+    engine.register_capability(
+        "collect_many",
+        lambda ctx, p: {"frames": ["a", "b", "c", "d"]},
+        kind="deterministic",
+    )
+    artifact = {
+        "flow_id": "oversize",
+        "goal": "declared bound must hold at run time",
+        "nodes": [
+            {"kind": "step", "id": "collect_many"},
+            {
+                "kind": "fanout",
+                "id": "analyze_frames",
+                "capability": "analyze",
+                "items_key": "collect_many.frames",
+                "max_items": 3,
+            },
+        ],
+    }
+
+    result = await engine.run_authored_flow(artifact, {})
+
+    assert result.status == "failed"
+    assert "exceeding its declared max_items=3" in (result.error or "")
+    assert "refusing to truncate" in (result.error or "")
+    assert analyzed == [], "no item may be processed once the declared bound is exceeded"
+
+
+async def test_hand_written_fanout_unchanged_without_max_items():
+    builder = WorkflowEngineBuilder()
+    builder.register_capability(
+        "spread", lambda ctx, p: {"items": list(range(7))}, kind="deterministic"
+    )
+    builder.register_capability("double", lambda ctx, item: item * 2, kind="deterministic")
+    builder.register_workflow(
+        WorkflowBuilder("hand_fanout")
+        .step("spread")
+        .fanout("doubler", capability="double", items_key="spread.items")
+        .build()
+    )
+    engine = builder.build()
+
+    result = await engine.run("hand_fanout", {})
+
+    assert result.status == "completed"
+    assert sorted(result.output) == [0, 2, 4, 6, 8, 10, 12]
+
+
+# --------------------------------------- turnkey author + two-engine proof (tasks 2.4/2.5/2.1)
+
+import json as _json  # noqa: E402
+
+from ai_workflow_engine import LLMResponse, build_flow_author_capability  # noqa: E402
+from ai_workflow_engine.engine import InMemoryDetailSink as _DetailSink  # noqa: E402
+
+
+class ScriptedAuthorLLM:
+    """Plain-callable client returning scripted texts in order (repeats the last one)."""
+
+    provider_label = "scripted"
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.requests = []
+
+    async def __call__(self, request):
+        self.requests.append(request)
+        text = self.responses[min(len(self.requests) - 1, len(self.responses) - 1)]
+        return LLMResponse(text=text, input_tokens=7, output_tokens=13, total_tokens=20)
+
+
+def _good_artifact_json(**fanout_overrides):
+    fanout = {
+        "kind": "fanout",
+        "id": "analyze_frames",
+        "capability": "analyze",
+        "items_key": "collect.frames",
+        "max_parallel": 2,
+        "max_items": 5,
+    }
+    fanout.update(fanout_overrides)
+    return _json.dumps(
+        {
+            "flow_id": "frame_scan",
+            "goal": "collect frames then analyze each",
+            "nodes": [{"kind": "step", "id": "collect"}, fanout],
+        }
+    )
+
+
+def _author_engine_for(processing_engine, llm, **factory_overrides):
+    """Engine A hosting the PUBLIC factory built against engine B's target contract."""
+
+    target_limits = (
+        processing_engine.default_profile.limits
+        if processing_engine.default_profile is not None
+        else None
+    )
+    kwargs = dict(
+        registry=processing_engine.registry,
+        model_profiles=processing_engine.model_profiles,
+        limits=target_limits,
+        allowed_side_effects=["read_only"],
+        max_repair_rounds=1,
+    )
+    kwargs.update(factory_overrides)
+    spec, handler = build_flow_author_capability(llm, **kwargs)
+
+    builder = WorkflowEngineBuilder()
+    builder.register_capability_spec(spec, handler)
+    builder.register_workflow(WorkflowBuilder("authoring").step("author_flow").build())
+    return builder.build(), spec
+
+
+async def test_two_engine_proof_public_factory_authors_and_peer_engine_runs():
+    """Task 2.1: engine A's PUBLIC author capability emits the artifact; REAL engine B
+    validates and executes it — trace/usage intact, registry isolation loud, firewall locked."""
+
+    processing, analyzed = _fanout_engine(fail_on=None)
+    llm = ScriptedAuthorLLM([_good_artifact_json()])
+    author_engine, spec = _author_engine_for(processing, llm)
+
+    authored = await author_engine.run("authoring", {"goal": "scan the frames", "context": {}})
+
+    assert authored.status == "completed"
+    artifact_dict = authored.output
+    assert artifact_dict["flow_id"] == "frame_scan"
+    assert spec.is_flow_author is True
+    assert len(authored.usage.events) == 1, "authoring attempt must be metered on engine A"
+
+    executed = await processing.run_authored_flow(artifact_dict, {"source": "camera"})
+
+    assert executed.status == "completed"
+    assert sorted(executed.output) == ["analyzed:a", "analyzed:b", "analyzed:c"]
+    assert sorted(analyzed) == ["a", "b", "c"]
+    assert any(e.decision == "flow:authored" for e in processing.trace_sink.events)
+    assert any(e.decision == "fanout" for e in processing.trace_sink.events)
+
+
+async def test_two_engine_registry_isolation_rejects_foreign_capability():
+    processing, _ = _fanout_engine()
+    foreign = _json.loads(_good_artifact_json())
+    foreign["nodes"][1]["capability"] = "ghost_only_engine_c_has_this"
+
+    with pytest.raises(WorkflowValidationError, match="not registered"):
+        await processing.run_authored_flow(foreign, {})
+
+
+async def test_two_engine_firewall_rejects_author_capability_inside_authored_flow():
+    processing, _ = _fanout_engine()
+    spec, handler = build_flow_author_capability(
+        ScriptedAuthorLLM(["{}"]),
+        registry=processing.registry,
+        allowed_side_effects=["read_only"],
+    )
+    processing.register_capability_spec(spec, handler)
+    recursive = {
+        "flow_id": "recursive",
+        "nodes": [{"kind": "step", "id": "meta", "capability": "author_flow"}],
+    }
+
+    with pytest.raises(WorkflowValidationError, match="recursion through generated structure"):
+        await processing.run_authored_flow(recursive, {})
+
+
+async def test_stale_artifact_rejected_when_target_limits_shrink_after_authoring():
+    """Task 2.1(d): execution revalidates against the CURRENT target contract."""
+
+    processing, _ = _fanout_engine()
+    llm = ScriptedAuthorLLM([_good_artifact_json()])  # declares max_items=5
+    author_engine, _spec = _author_engine_for(processing, llm)
+    authored = await author_engine.run("authoring", {"goal": "scan", "context": {}})
+
+    processing.default_profile = processing.default_profile.model_copy(
+        update={"limits": _RuntimeLimits(max_authored_fanout_items=3)}
+    )
+
+    with pytest.raises(WorkflowValidationError, match="max_items=5 must be between 1 and .*=3"):
+        await processing.run_authored_flow(authored.output, {})
+
+
+async def test_author_repair_loop_feeds_validation_errors_and_recovers():
+    """Task 2.5(a): invalid first attempt → repair prompt carries the verbatim error →
+    second attempt is valid AND runs on the processing engine."""
+
+    processing, analyzed = _fanout_engine(fail_on=None)
+    bad = _good_artifact_json()
+    bad = bad.replace('"capability": "analyze"', '"capability": "ghost_analyzer"')
+    llm = ScriptedAuthorLLM([bad, _good_artifact_json()])
+    author_engine, _spec = _author_engine_for(processing, llm)
+
+    authored = await author_engine.run("authoring", {"goal": "scan", "context": {}})
+
+    assert authored.status == "completed"
+    assert len(llm.requests) == 2
+    repair_prompt = llm.requests[1].user
+    assert "ghost_analyzer" in repair_prompt and "not registered" in repair_prompt, (
+        "the repair prompt must carry the target-registry validation error verbatim"
+    )
+    executed = await processing.run_authored_flow(authored.output, {})
+    assert executed.status == "completed"
+    assert sorted(analyzed) == ["a", "b", "c"]
+
+
+async def test_author_exhaustion_fails_loudly_with_final_errors_and_per_attempt_usage():
+    """Task 2.5(b): always-invalid LLM → loud failure after exactly 1 + max_repair_rounds
+    attempts, one usage event per attempt, no double counting."""
+
+    processing, _ = _fanout_engine()
+    bad = _good_artifact_json().replace('"capability": "analyze"', '"capability": "ghost"')
+    llm = ScriptedAuthorLLM([bad])
+    author_engine, _spec = _author_engine_for(processing, llm, max_repair_rounds=2)
+
+    result = await author_engine.run("authoring", {"goal": "scan", "context": {}})
+
+    assert result.status == "failed"
+    assert "ghost" in (result.error or "") and "not registered" in (result.error or "")
+    assert len(llm.requests) == 3, "exactly 1 + max_repair_rounds attempts"
+    assert len(result.usage.events) == 3, "every attempt metered exactly once"
+
+
+async def test_author_rejects_byte_unsafe_context_and_data_uri_output():
+    """Task 2.5(c): privacy edges on BOTH sides of the boundary."""
+
+    processing, _ = _fanout_engine()
+    llm = ScriptedAuthorLLM([_good_artifact_json()])
+    author_engine, _spec = _author_engine_for(processing, llm)
+
+    unsafe_context = await author_engine.run(
+        "authoring", {"goal": "scan", "context": {"frame": b"raw-bytes"}}
+    )
+    assert unsafe_context.status == "failed"
+    assert "raw bytes" in (unsafe_context.error or "")
+    assert llm.requests == [], "unsafe context must be rejected BEFORE any prompt is sent"
+
+    data_uri_goal = _json.loads(_good_artifact_json())
+    data_uri_goal["goal"] = "data:image/png;base64,AAAA"
+    llm2 = ScriptedAuthorLLM([_json.dumps(data_uri_goal)])
+    author_engine2, _ = _author_engine_for(processing, llm2)
+    result = await author_engine2.run("authoring", {"goal": "scan", "context": {}})
+    assert result.status == "failed"
+    assert "data URI" in (result.error or "")
+
+
+async def test_author_observation_detail_contains_prompt_and_response():
+    """Task 2.5(d): the authoring attempt is observable — rendered prompt + response text."""
+
+    processing, _ = _fanout_engine(fail_on=None)
+    llm = ScriptedAuthorLLM([_good_artifact_json()])
+    target_limits = processing.default_profile.limits
+    spec, handler = build_flow_author_capability(
+        llm,
+        registry=processing.registry,
+        limits=target_limits,
+        allowed_side_effects=["read_only"],
+    )
+    detail_sink = _DetailSink()
+    builder = WorkflowEngineBuilder().with_detail_sink(detail_sink).with_detail_text_capture(True)
+    builder.register_capability_spec(spec, handler)
+    builder.register_workflow(WorkflowBuilder("authoring").step("author_flow").build())
+    author_engine = builder.build()
+
+    await author_engine.run("authoring", {"goal": "find the odd frame", "context": {}})
+
+    payloads = _json.dumps([[d.text, d.json_value] for d in detail_sink.details], default=str)
+    assert "find the odd frame" in payloads, "rendered prompt must be captured"
+    assert "frame_scan" in payloads, "LLM response must be captured"
+
+
+async def test_author_budget_blocks_repair_attempt_before_client_call():
+    """Task 2.5(e): a text-call ceiling denies the SECOND (repair) attempt pre-call."""
+
+    processing, _ = _fanout_engine()
+    bad = _good_artifact_json().replace('"capability": "analyze"', '"capability": "ghost"')
+    llm = ScriptedAuthorLLM([bad])
+    target_limits = processing.default_profile.limits
+    spec, handler = build_flow_author_capability(
+        llm,
+        registry=processing.registry,
+        limits=target_limits,
+        allowed_side_effects=["read_only"],
+        max_repair_rounds=2,
+    )
+    profile = WorkflowProfile(
+        workflow_type="authoring",
+        limits=_RuntimeLimits(max_text_calls=1),
+        safety=SafetyPolicy(allowed_side_effects=["read_only"]),
+    )
+    builder = WorkflowEngineBuilder().with_profile(profile)
+    builder.register_capability_spec(spec, handler)
+    builder.register_workflow(WorkflowBuilder("authoring").step("author_flow").build())
+    author_engine = builder.build()
+
+    result = await author_engine.run("authoring", {"goal": "scan", "context": {}})
+
+    assert result.status == "failed"
+    assert "max_text_calls" in (result.error or "")
+    assert len(llm.requests) == 1, "the repair attempt must be denied BEFORE the client is called"
+
+
+async def test_author_default_prompt_contract_and_wholesale_override():
+    """Task 2.5(f): first request carries catalog, goal, schema, and the effective bounds;
+    prompt_template= replaces the default wholesale and still renders strictly."""
+
+    processing, _ = _fanout_engine(
+        limits=_RuntimeLimits(max_parallel_children=3, max_authored_fanout_items=7)
+    )
+    llm = ScriptedAuthorLLM([_good_artifact_json(max_parallel=2, max_items=7)])
+    author_engine, _spec = _author_engine_for(processing, llm)
+
+    await author_engine.run("authoring", {"goal": "scan the odd frames", "context": {"cam": 3}})
+
+    first = llm.requests[0].user
+    assert "scan the odd frames" in first, "goal missing from the default prompt"
+    assert "- analyze (deterministic)" in first, "target capability catalog missing"
+    assert "FlowArtifact" in first or "flow_id" in first, "output schema missing"
+    assert "at most 12 nodes" in first
+    assert "1..7" in first and "1..3" in first, "effective fanout bounds missing"
+    assert '"cam": 3' in first, "request context missing"
+
+    override = ScriptedAuthorLLM([_good_artifact_json(max_parallel=2, max_items=7)])
+    engine2, _ = _author_engine_for(
+        processing,
+        override,
+        prompt_template=(
+            "CUSTOM AUTHOR {goal} | {context} | {catalog} | {max_nodes} | "
+            "{max_items_cap} | {max_parallel_cap} | {format_instructions}"
+        ),
+    )
+    await engine2.run("authoring", {"goal": "custom run", "context": {}})
+    assert override.requests[0].user.startswith("CUSTOM AUTHOR custom run")

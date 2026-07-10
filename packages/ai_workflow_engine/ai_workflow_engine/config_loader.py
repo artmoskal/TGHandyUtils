@@ -55,6 +55,7 @@ DEFAULT_ENV_OVERRIDES: dict[str, OverridePath] = {
     "MAX_OUTPUT_TOKENS_PER_CALL": ("workflow", "limits", "max_output_tokens_per_call"),
     "MAX_IMAGES_PER_CALL": ("workflow", "limits", "max_images_per_call"),
     "MAX_ESTIMATED_USD_PER_CALL": ("workflow", "limits", "max_estimated_usd_per_call"),
+    "MAX_AUTHORED_FANOUT_ITEMS": ("workflow", "limits", "max_authored_fanout_items"),
     "SCHEDULING_MODE": ("workflow", "scheduling", "mode"),
     "MAX_QUEUE_SIZE": ("workflow", "scheduling", "max_queue_size"),
     "STALE_AFTER_S": ("workflow", "scheduling", "stale_after_s"),

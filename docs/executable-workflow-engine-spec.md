@@ -398,16 +398,29 @@ The engine's transitions AI may *decide* (branch deciders, evaluator gates) and 
 **Generated-process authoring boundary (Artem + codex, 2026-06-20):** shipped `FlowArtifact` is **v1
 constrained flow-as-data**, NOT a full arbitrary pipeline builder. It fits a GoPro-style goal compiler
 when the generated process is a small validated machine over registered capabilities
-(step → branch → evaluate/retrace/fallback). It **cannot** author `fanout`/`subworkflow`/`human`/
+(step → branch → evaluate/retrace/fallback). It **cannot** author `subworkflow`/`human`/
 `planner` nodes and cannot invent/register tools.
 
-**`FlowArtifact` v1.5 — near-term small expansion [INTENDED].** After memory scope and
-artifact/evidence expectations are explicit enough not to be bypassed, widen the authorable subset
-only where the executor already has generic mechanics: authorable `fanout` over a registered item
-capability; authorable `subworkflow` over a registered workflow; explicit `input_key`/`output_key`
-mapping; same catalog/allow-list/model-profile/bounded-cycle/trace/preflight as v1; recursion
-firewall unchanged. This is the near-term scope because it gives GoPro/MageQA more goal-compiled
-shapes without changing the safety model.
+**`FlowArtifact` v1.5a — authored fanout + turnkey author. [BUILT v0.9.0]** The delivered SLICE of
+v1.5 (deliberately NOT "flow-as-data completion"): (a) authorable `fanout` over a registered item
+capability — `max_items` is REQUIRED (1..`limits.max_authored_fanout_items`, default 100, engine
+absolute max 1000) and an oversize runtime item list fails loudly, never truncates; declared
+`max_parallel` outside 1..`limits.max_parallel_children` is REJECTED, never clamped; unknown fields
+on `FlowArtifact`/`FlowNodeSpec` are forbidden and per-kind foreign fields are rejected in both
+directions. (b) `build_flow_author_capability(llm, *, registry, model_profiles, limits,
+allowed_side_effects, max_nodes, max_repair_rounds, prompt_template=)` — the turnkey author loop
+(catalog → LLM → parse → TARGET-registry validation → bounded repair → loud fail) composed over
+`StructuredLLMNode`, so model binding, budgets, per-attempt usage, prompt/response observation, and
+repair are ONE mechanic; the returned spec carries the CANONICAL typed firewall marker
+`CapabilitySpec.is_flow_author=True` (the legacy `metadata["flow_author"]`/handler-attribute reads
+were removed in v0.9). Authoring and execution validate against the SAME effective limits:
+`run_authored_flow` re-validates under the CURRENT target profile, so a stale artifact authored
+under looser bounds is rejected before any item capability starts. Two-engine handoff (author
+engine emits, peer engine validates+runs) is test-locked.
+
+**`FlowArtifact` v1.5 — remainder [INTENDED].** Authorable `subworkflow` over a registered
+workflow and explicit `input_key`/`output_key` mapping remain future v1.5 work; same
+catalog/allow-list/model-profile/bounded-cycle/trace/preflight as v1; recursion firewall unchanged.
 
 **`ProcessArtifact` / `FlowArtifact` v2 — endgame [FUTURE / discuss-later, KEPT not discarded].** Full
 generated pipelines may later add durable compile/register/reuse lifecycle, richer DAG/dataflow
@@ -545,7 +558,8 @@ requires a deliberate, user-approved decision — never drift:
 | Workflow memory T1 | **[BUILT/PARTIAL]** `AgentMemory` seam, `FullReplayMemory`, `ImageEvictingMemory`, `MemoryStore`, `MemoryNamespace(product, tenant, subject, kind)`, `InMemoryMemoryStore`, canonical modes `full_replay` / `image_evicting`, and S0 snapshot/resume determinism proof | Keep memory as prompt input, never control. Do not add aliases or hidden model calls. |
 | Workflow memory T2 prompt policies | **[BUILT v0.8.0; HARDENED v0.8.1]** `StructuredStateMemory` + `WindowedMemory` + `CompactingMemory` + per-node `memory=` selection (GoPro P1 named-consumer request; AC-S1..S6 test-locked) | Shared fail-closed byte-safety validation traverses Pydantic/dataclass/computed/private fields, mappings, concrete containers, scalar subclasses, enum values, exception args, partial args, and object attributes; raw bytes/media transport, actual rendered data-URI media, iterators, unsafe keys, unsafe wrapper values, and opaque/arbitrary custom objects fail loudly. Reducers emit dict/list/scalar/value objects or evidence refs, not domain objects by repr. Memory stays input-never-control; compactor is code; unsafe `compacting(inner=structured_state)` fails loudly — use `structured_state(base=compacting)` |
 | Workflow memory T3 | **[INTENDED/deferred]** durable stores, semantic search, LangGraphStore adapter, planner/subworkflow/project scopes | Named consumer + replay/privacy/budget proof, as before |
-| `FlowArtifact` v1.5 (authorable fanout/subworkflow + io-mapping) | [INTENDED] §6 — additive, small | After memory/artifact contracts solid + GoPro need |
+| `FlowArtifact` v1.5a (authorable bounded fanout + turnkey author factory) | **[BUILT v0.9.0]** §6 — max_items REQUIRED, reject-never-clamp, two-engine handoff test-locked | Shipped; v1.5 remainder below |
+| `FlowArtifact` v1.5 remainder (authorable subworkflow + io-mapping) | [INTENDED] §6 — additive, small | After v1.5a proves out + GoPro need |
 | `ProcessArtifact` / FlowArtifact v2 | **[FUTURE / discuss-later — KEPT]** §6 endgame | Separate spec + explicit approval after v1.5 |
 | Worker-contract seam tightening | **[PARTIAL]** §5 principle live; literal envelope unification is rejected for now | Add adapter metadata only when a concrete feature needs it: memory scope, artifact expectations, cost/timeout policy, validation hooks |
 | Image+reference+QC → L2 pack | Production-proven inside Anki product code | 2nd consumer (§11 #4 bar) |

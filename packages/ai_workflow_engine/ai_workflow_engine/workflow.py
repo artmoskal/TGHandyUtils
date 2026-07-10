@@ -156,10 +156,13 @@ class WorkflowNode(BaseModel):
     decider: Optional[str] = None
 
     # kind="fanout": run ``item_capability`` once per item from ``fan_items_key`` with bounded
-    # parallelism and partial-failure isolation; gather into ``output_key``.
+    # parallelism and partial-failure isolation; gather into ``output_key``. ``max_items`` is a
+    # declared structural bound on the item COUNT (None = unbounded, the hand-written default;
+    # AI-authored flows are REQUIRED to declare it): an oversize list fails loudly, never truncates.
     fan_items_key: Optional[str] = None
     item_capability: Optional[str] = None
     max_parallel: Optional[int] = None
+    max_items: Optional[int] = None
 
     # kind="evaluate": run ``target_capability`` under ``evaluator`` with bounded
     # retry/retrace/fallback. ``on_reject`` selects the policy; ``fallback_capability`` is the
@@ -811,6 +814,7 @@ class WorkflowBuilder:
         capability: str,
         items_key: str,
         max_parallel: Optional[int] = None,
+        max_items: Optional[int] = None,
         output_key: Optional[str] = None,
         inject_plan: bool = False,
         inject_machine: bool = False,
@@ -824,6 +828,7 @@ class WorkflowBuilder:
                 item_capability=capability,
                 fan_items_key=items_key,
                 max_parallel=max_parallel,
+                max_items=max_items,
                 output_key=output_key,
                 inject_plan=inject_plan,
                 inject_machine=inject_machine,

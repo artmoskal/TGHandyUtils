@@ -87,6 +87,17 @@ package ships CLI-agent + console-LLM support (`claude -p` / `codex exec`) and t
 **"What engine-v0.8.1 gives you"** at the end for the full capability list.
 Not in v0.8 (deferred): durable/semantic memory STORES beyond the `MemoryStore` seam, FlowArtifact v1.5,
 ProcessArtifact/v2, browser/no-API executors.
+v0.9.0 UPDATE — FlowArtifact v1.5a SHIPPED (the S1 goal-compiler slice): authored `fanout` over a
+registered item capability (max_items REQUIRED, 1..limits.max_authored_fanout_items default 100 /
+engine max 1000; oversize runtime lists fail loudly, never truncate; max_parallel rejected — never
+clamped — outside 1..limits.max_parallel_children) + the turnkey author
+`build_flow_author_capability(llm, *, registry, model_profiles, limits, allowed_side_effects, ...)`
+returning `(CapabilitySpec(is_flow_author=True), handler)` with typed `FlowAuthorRequest(goal,
+context)`, catalog-grounded overridable prompt, TARGET-registry validation feeding bounded repair,
+per-attempt metering/observation. `run_authored_flow` re-validates under the CURRENT effective
+limits (stale artifacts rejected). Two-engine handoff (author engine -> processing engine) is
+test-locked. STILL future: authorable subworkflow + general input/output mapping (v1.5 remainder),
+ProcessArtifact/v2.
 Source needs: `/Users/artemm/PycharmProjects/gopro-streaming/docs/architecture/workflow-execution-engine-requirements.md`,
 `/Users/artemm/PycharmProjects/gopro-streaming/docs/universal_event_descriptor/HOME_INVENTORY_CASE.md`.
 
@@ -180,9 +191,12 @@ These points answer the review questions that matter before wiring the sidecar o
   The engine owns queue/drop/cancel behavior and keeps the backend slot until the worker really
   completes.
 - **Goal compiler boundary.** GoPro may use AI to emit structured plans, scenario inputs, or a
-  constrained `FlowArtifact` for registered capabilities. Do not rely on fully arbitrary AI-authored
-  process pipelines for the migration: authorable fan-out/subworkflow and reusable generated process
-  artifacts remain v1.5/v2 future-stage.
+  constrained `FlowArtifact` for registered capabilities. v0.9.0 widens the authorable subset with
+  bounded `fanout` (v1.5a) and ships the turnkey author capability, so the S1 goal compiler can be
+  two engines: an author engine hosting `build_flow_author_capability(...)` wired to the PROCESSING
+  engine's registry/limits, and the processing engine executing via `run_authored_flow`. Do not rely
+  on fully arbitrary AI-authored process pipelines: authorable subworkflow/general IO mapping and
+  reusable generated process artifacts remain v1.5-remainder/v2 future-stage.
 - **Observation and evidence are engine-owned.** Configure observation once in application YAML; the
   engine writes the bundle, archives returned `WorkflowArtifact`s under `artifacts/`, and reports
   `result.observation_bundle_path`. A GoPro dashboard or sidecar UI should read the bundle/viewer
