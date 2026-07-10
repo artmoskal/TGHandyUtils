@@ -1,12 +1,12 @@
 ## Testing Rules - MUST FOLLOW
-- **ALWAYS use ./test.sh, ./test_batch.sh, or ./test_all_batches.sh from project root** - NO EXCEPTIONS
+- **ALWAYS use ./test.sh from project root** - NO EXCEPTIONS (test_batch.sh / test_all_batches.sh do NOT exist)
 - **NEVER use direct pytest commands**
 - **NEVER use docker-compose test commands directly**
 - **NEVER use python -m pytest**
 - For large test suites that timeout, use batch testing:
-  - `./test_batch.sh 50 0` - Run first 50 tests
-  - `./test_all_batches.sh` - Run all tests in batches automatically
-- If you need to run specific tests, use the batch scripts or ask user first
+  - `./test.sh unit --batch 50` - Run unit tests in batches of 50
+  - `./test.sh unit --batch 50 --start 100` - Continue from test 100
+- If you need to run specific tests, use `./test.sh unit -- --cov-fail-under=0 -q <path>` or ask user first
 
 ## Why These Rules Exist
 - test.sh handles all container setup/cleanup properly
