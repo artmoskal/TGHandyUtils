@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 
 def _model_or_dict(value: Any) -> dict[str, Any]:
@@ -14,6 +17,13 @@ def _model_or_dict(value: Any) -> dict[str, Any]:
         try:
             dumped = value.model_dump()
         except Exception:
+            # Cost-honesty: a provider payload whose dump explodes must not VANISH silently —
+            # the summary degrades to no-detail, but the loss is visible in the logs.
+            logger.warning(
+                "provider usage payload of type %s failed model_dump(); token details dropped",
+                type(value).__name__,
+                exc_info=True,
+            )
             return {}
         return dumped if isinstance(dumped, dict) else {}
     return {}

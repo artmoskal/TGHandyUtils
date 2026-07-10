@@ -21,7 +21,7 @@ from ai_workflow_engine.budget import (
     WorkflowBudget,
     WorkflowBudgetExceeded,
     WorkflowUsageContext,
-    budget_from_config,
+    budget_from_limits,
     check_budget_before_call,
     check_images_per_call,
     check_input_tokens_per_call,
@@ -79,17 +79,12 @@ def invoke_metered_chat(
     notional_usd: Optional[float] = None,
     provider: str = "openai",
 ) -> Any:
-    """Invoke a LangChain chat model and record usage metadata when the provider returns it."""
+    """Invoke a LangChain chat model and record usage metadata when the provider returns it.
+
+    Budget checks run UNCONDITIONALLY (v0.9): the former usage-tracking flag bypass is gone —
+    disabling product usage display must never disable engine budget gates.
+    """
     message_list = list(messages)
-    if config is not None and not getattr(config, "WORKFLOW_USAGE_TRACKING_ENABLED", True):
-        _record_metered_chat_request(node, message_list, attempt, model, metadata)
-        try:
-            output = llm.invoke(message_list)
-        except Exception as exc:
-            _record_metered_chat_error(node, exc, attempt, model, metadata)
-            raise
-        _record_metered_chat_response(node, output, attempt, model, metadata)
-        return output
     check_input_tokens_per_call(estimate_text_tokens(message_list), node)
     check_budget_before_call("chat", node)
     _record_metered_chat_request(node, message_list, attempt, model, metadata)

@@ -120,6 +120,28 @@ def test_summary_formatting_separates_billed_from_subscription_value():
     assert "billed (API): $0.0100" in rendered
     assert "subscription: ~$0.2000 plan value, no extra charge" in rendered
     assert "~$0.2000" in rendered.splitlines()[3]  # subscription ROW carries the ~ marker
+    # GATE-A money-honesty rider (v0.9): the two cost classes are NEVER summed into one number.
+    assert "0.2100" not in rendered and "$0.21" not in rendered
+
+
+def test_provider_detail_dump_failure_warns_instead_of_vanishing(caplog):
+    """Task 1.4: a provider usage payload whose model_dump() raises must degrade LOUDLY —
+    token details may drop, but never silently (cost-honesty)."""
+
+    import logging
+
+    from ai_workflow_engine.usage_support import _model_or_dict
+
+    class ExplodingUsage:
+        def model_dump(self):
+            raise RuntimeError("boom")
+
+    with caplog.at_level(logging.WARNING, logger="ai_workflow_engine.usage_support"):
+        assert _model_or_dict(ExplodingUsage()) == {}
+
+    assert any("ExplodingUsage" in record.getMessage() for record in caplog.records), (
+        "the dropped payload type must be named in a warning"
+    )
 
 
 def test_summary_formatting_pure_subscription_run_shows_true_zero_billed():

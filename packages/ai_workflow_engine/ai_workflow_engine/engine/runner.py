@@ -12,7 +12,7 @@ from ai_workflow_engine.models import WorkflowGoal, WorkflowRunContext, Workflow
 from ai_workflow_engine.usage import (
     UsageSink,
     WorkflowUsageContext,
-    budget_from_config,
+    budget_from_limits,
     workflow_usage_scope,
 )
 
@@ -81,7 +81,7 @@ class WorkflowRunner:
             usage_context = WorkflowUsageContext(
                 ctx,
                 usage_summary,
-                budget_from_config(self.config, limits=limits),
+                budget_from_limits(limits),
                 usage_sink=self.usage_sink,
             )
             with workflow_run_context_scope(ctx), workflow_usage_scope(usage_context):
@@ -148,15 +148,13 @@ class WorkflowRunner:
 
     @staticmethod
     def _is_recursion_exhaustion(exc: Exception) -> bool:
-        """Detect LangGraph recursion-limit failures without making LangGraph a package import."""
+        """LangGraph is a declared dependency — detect its recursion-limit failure by type,
+        never by class-name/message heuristics (a lookalike error must not be swallowed
+        into the consumer's recursion fallback)."""
 
-        exc_type = exc.__class__.__name__
-        exc_module = getattr(exc.__class__, "__module__", "")
-        return (
-            exc_type == "GraphRecursionError"
-            or "GRAPH_RECURSION_LIMIT" in str(exc)
-            or (exc_type.endswith("RecursionError") and "langgraph" in exc_module)
-        )
+        from langgraph.errors import GraphRecursionError
+
+        return isinstance(exc, GraphRecursionError)
 
     @staticmethod
     def _log(event: str, ctx: WorkflowRunContext, payload: Dict[str, Any]) -> None:

@@ -101,8 +101,9 @@ class AsyncConfigGraph:
         return {"ok": True, **state}
 
 
-class GraphRecursionError(Exception):
-    pass
+# Task 1.5: the runner detects recursion exhaustion by TYPE (real langgraph error) — a
+# locally-faked same-named class would no longer (and must no longer) trigger the fallback.
+from langgraph.errors import GraphRecursionError  # noqa: E402
 
 
 class RecursingGraph:
@@ -1776,34 +1777,34 @@ async def test_workflow_runner_collects_usage_summary():
 
 
 async def test_workflow_runner_blocks_text_calls_over_budget():
-    config = SimpleNamespace(
-        WORKFLOW_USAGE_TRACKING_ENABLED=True,
-        WORKFLOW_MAX_TEXT_CALLS_PER_RUN=1,
-        WORKFLOW_MAX_IMAGE_CALLS_PER_RUN=1,
-        WORKFLOW_MAX_ESTIMATED_USD_PER_RUN=0,
-        WORKFLOW_MODEL_PRICE_OVERRIDES_JSON="",
-    )
+    # v0.9 clean contract: ceilings come from typed limits (engine_context), never from
+    # host-config attributes; config remains a pricing/model source only.
+    config = SimpleNamespace(WORKFLOW_MODEL_PRICE_OVERRIDES_JSON="")
     goal = WorkflowGoal(workflow_type="test_workflow", objective="Track usage")
+    engine_context = SimpleNamespace(limits=RuntimeLimits(max_text_calls=1))
 
     with pytest.raises(WorkflowBudgetExceeded):
-        await WorkflowRunner(config=config).run(UsageGraph(config=config, calls=2), {}, goal=goal)
+        await WorkflowRunner(config=config).run(
+            UsageGraph(config=config, calls=2), {"engine_context": engine_context}, goal=goal
+        )
 
 
 async def test_workflow_runner_aborts_after_estimated_usd_cap_before_second_paid_call():
     config = SimpleNamespace(
-        WORKFLOW_USAGE_TRACKING_ENABLED=True,
-        WORKFLOW_MAX_TEXT_CALLS_PER_RUN=16,
-        WORKFLOW_MAX_IMAGE_CALLS_PER_RUN=1,
-        WORKFLOW_MAX_ESTIMATED_USD_PER_RUN=5,
         WORKFLOW_MODEL_PRICE_OVERRIDES_JSON=(
             '{"unit-model": {"input_per_1m": 600000, "output_per_1m": 0}}'
         ),
     )
     goal = WorkflowGoal(workflow_type="test_workflow", objective="Prove live-spend cap")
     graph = UsageGraph(config=config, calls=2)
+    engine_context = SimpleNamespace(
+        limits=RuntimeLimits(max_text_calls=16, max_image_calls=1, max_estimated_usd=5)
+    )
 
     with pytest.raises(WorkflowBudgetExceeded, match=r"\$6\.000000 > \$5\.000000"):
-        await WorkflowRunner(config=config).run(graph, {}, goal=goal)
+        await WorkflowRunner(config=config).run(
+            graph, {"engine_context": engine_context}, goal=goal
+        )
 
     assert graph.llm.calls == 1
 
@@ -2546,6 +2547,101 @@ async def test_executor_branch_invalid_label_fails_loudly():
     assert result.status == "failed"
     assert "invalid label" in (result.error or "")
     assert any(e.node == "route" and e.metadata.get("valid") is False for e in result.trace)
+
+
+def test_recursion_exhaustion_detected_by_type_not_lookalikes():
+    """Task 1.5: langgraph is a declared dependency — detect its recursion error by TYPE.
+    A lookalike (same class name, same magic string, foreign module) must NOT be swallowed
+    into the consumer's recursion fallback."""
+
+    from langgraph.errors import GraphRecursionError
+
+    from ai_workflow_engine.engine.runner import WorkflowRunner
+
+    assert WorkflowRunner._is_recursion_exhaustion(
+        GraphRecursionError("hit GRAPH_RECURSION_LIMIT")
+    )
+
+    lookalike_cls = type("GraphRecursionError", (RuntimeError,), {})
+    assert not WorkflowRunner._is_recursion_exhaustion(
+        lookalike_cls("GRAPH_RECURSION_LIMIT reached")
+    )
+
+
+# --- task 1.2: input_key validation — build-time + run-time fail-loud -------------------
+
+
+def test_workflow_definition_flags_unknown_input_key():
+    with pytest.raises(WorkflowValidationError, match="input_key 'tpyo'"):
+        WorkflowBuilder("ik_typo").step("a").step("b", input_key="tpyo").build()
+
+
+def test_input_key_accepts_node_ids_output_aliases_and_original_input():
+    definition = (
+        WorkflowBuilder("ik_ok")
+        .step("a", output_key="alias")
+        .step("b", input_key="a")
+        .step("c", input_key="alias")
+        .step("d", input_key="__input__")
+        .build()
+    )
+
+    assert definition.validate_graph() == []
+
+
+async def test_input_key_of_node_skipped_by_branch_fails_loudly():
+    """Declared-but-not-run on this path: pre-1.2 this silently fed None as the payload."""
+
+    engine = (
+        WorkflowEngineBuilder()
+        .register_capability(
+            "route", lambda ctx, p: BranchDecision(label="fast"), kind="deterministic"
+        )
+        .register_capability("slow_cap", lambda ctx, p: "slow-result", kind="deterministic")
+        .register_capability("fast_cap", lambda ctx, p: f"fast:{p}", kind="deterministic")
+        .register_workflow(
+            WorkflowBuilder("ik_skip")
+            .branch("route", {"fast": "fast_step", "slow": "slow_step"})
+            .step("slow_step", capability="slow_cap")
+            .step("fast_step", capability="fast_cap", input_key="slow_step")
+            .build()
+        )
+        .build()
+    )
+
+    with pytest.raises(KeyError, match="has no recorded output"):
+        await engine.run("ik_skip", {"x": 1})
+
+
+async def test_input_key_with_present_none_output_stays_valid():
+    """A recorded None output is legitimate data — only a MISSING key is a wiring error."""
+
+    saw = {}
+
+    def _reader(ctx, payload):
+        saw["payload"] = payload
+        return "read-none-ok"
+
+    engine = (
+        WorkflowEngineBuilder()
+        .register_capability(
+            "none_cap", lambda ctx, p: _CapabilityResult(output=None), kind="deterministic"
+        )
+        .register_capability("reader", _reader, kind="deterministic")
+        .register_workflow(
+            WorkflowBuilder("ik_none")
+            .step("a", capability="none_cap")
+            .step("b", capability="reader", input_key="a")
+            .build()
+        )
+        .build()
+    )
+
+    result = await engine.run("ik_none", {"x": 1})
+
+    assert result.status == "completed"
+    assert saw["payload"] is None
+    assert result.output == "read-none-ok"
 
 
 # ======================================================================================

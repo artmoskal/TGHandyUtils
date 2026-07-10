@@ -152,6 +152,40 @@ def test_byte_safety_rejects_opaque_objects_even_with_custom_repr():
         assert_byte_safe(ReprOnly(), mode="prompt")
 
 
+def test_byte_safety_rejects_image_input_subclasses():
+    """Task 1.6 / review residual R1: the old NAME-based check let `class Img(ImageInput)`
+    walk through as a plain pydantic model whose base64 `data` str passed byte-safety."""
+
+    class SneakyImage(ImageInput):
+        pass
+
+    sneaky = SneakyImage(source="base64", data="aGk=", media_type="image/png")
+
+    with pytest.raises(ValueError, match="ImageInput"):
+        assert_byte_safe(sneaky, mode="prompt")
+    with pytest.raises(ValueError, match="ImageInput"):
+        assert_byte_safe({"nested": [sneaky]}, mode="persist")
+
+
+def test_byte_safety_validates_range_in_constant_time():
+    """Task 1.6 / review residual R5: a range can only yield ints — validation must be O(1).
+    Deterministic guard: an alarm kills the element-by-element walk (minutes at 1e9), while
+    the constant-time path returns in microseconds. Not a wall-clock micro-benchmark."""
+
+    import signal
+
+    def _timeout(_signum, _frame):
+        raise TimeoutError("range validation did not return promptly — element walk is back")
+
+    previous = signal.signal(signal.SIGALRM, _timeout)
+    signal.alarm(15)
+    try:
+        assert_byte_safe({"r": range(1_000_000_000)}, mode="prompt")
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
+
+
 def test_byte_safety_allows_explicit_value_types_and_refs():
     assert_byte_safe(
         {

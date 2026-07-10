@@ -125,7 +125,11 @@ def _assert_byte_safe(
         _walk_iterable(value, mode=mode, path=path, seen=seen)
         _walk_instance_attributes(value, mode=mode, path=path, seen=seen)
         return
-    if isinstance(value, (list, tuple, range)):
+    if isinstance(value, range):
+        # A range can only ever yield ints and cannot be subclassed or carry attributes —
+        # validating it is O(1); walking a range(5_000_000) element-by-element stalls runs.
+        return
+    if isinstance(value, (list, tuple)):
         _walk_iterable(value, mode=mode, path=path, seen=seen)
         _walk_instance_attributes(value, mode=mode, path=path, seen=seen)
         return
@@ -293,4 +297,8 @@ def _redact_data_uri(text: str) -> str:
 
 
 def _is_image_input(value: Any) -> bool:
-    return value.__class__.__name__ == "ImageInput" and callable(getattr(value, "fingerprint", None))
+    # Call-time import: a module-level one would cycle (vision → engine → checkpoints → here).
+    # isinstance (not a name check) so ImageInput SUBCLASSES cannot smuggle transport payloads.
+    from ai_workflow_engine.vision import ImageInput
+
+    return isinstance(value, ImageInput)

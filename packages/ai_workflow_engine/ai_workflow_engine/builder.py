@@ -573,6 +573,9 @@ class WorkflowEngine:
         return plan
 
 
+_OBSERVATION_UNSET: Any = object()
+
+
 class WorkflowEngineBuilder:
     """Fluent IoC builder that assembles a :class:`WorkflowEngine`."""
 
@@ -588,6 +591,9 @@ class WorkflowEngineBuilder:
         self._model_profiles: Dict[str, ModelProfile] = {}
         self._capabilities: List[Tuple[CapabilitySpec, CapabilityHandler]] = []
         self._workflows: List[Tuple[WorkflowDefinition, Optional[WorkflowProfile]]] = []
+        # Sentinel: distinguishes "no override" (config's observation applies) from an explicit
+        # with_observation(None) opt-out. Resolved only at build() time so call order never matters.
+        self._observation: Any = _OBSERVATION_UNSET
 
     # -- configuration ------------------------------------------------------------
     def with_config(self, config: Union[str, Path, WorkflowConfigBundle]) -> "WorkflowEngineBuilder":
@@ -625,6 +631,12 @@ class WorkflowEngineBuilder:
 
     def with_profile(self, profile: WorkflowProfile) -> "WorkflowEngineBuilder":
         self._default_profile = profile
+        return self
+
+    def with_observation(self, observation: Optional[ObservationConfig]) -> "WorkflowEngineBuilder":
+        """Explicit observation override; ``None`` disables even when config enables it."""
+
+        self._observation = observation
         return self
 
     def with_model_profile(self, profile: ModelProfile) -> "WorkflowEngineBuilder":
@@ -685,6 +697,10 @@ class WorkflowEngineBuilder:
 
     # -- finalize -----------------------------------------------------------------
     def build(self) -> WorkflowEngine:
+        if self._observation is not _OBSERVATION_UNSET:
+            observation = self._observation
+        else:
+            observation = self._config.observation if self._config is not None else None
         engine = WorkflowEngine(
             trace_sink=self._trace_sink,
             detail_sink=self._detail_sink,
@@ -695,6 +711,7 @@ class WorkflowEngineBuilder:
             default_profile=self._default_profile,
             model_profiles=self._model_profiles,
             prompt_root=self._prompt_root,
+            observation=observation,
         )
         for spec, handler in self._capabilities:
             engine.register_capability_spec(spec, handler)

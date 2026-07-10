@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 from langchain_core.messages import HumanMessage
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from ai_workflow_engine import (
     ImageInput,
@@ -20,6 +20,7 @@ from ai_workflow_engine.usage import (
     WorkflowBudget,
     WorkflowBudgetExceeded,
     WorkflowUsageContext,
+    budget_from_limits,
     check_budget_before_call,
     invoke_metered_chat,
     workflow_usage_scope,
@@ -281,6 +282,170 @@ def test_budget_matrix_limits_load_from_yaml_profile_and_env_overrides():
     assert bundle.profile.limits.max_output_tokens_per_call == 4_000
     assert bundle.profile.limits.max_images_per_call == 3
     assert bundle.profile.limits.max_estimated_usd_per_call == 0.10
+
+
+# --- task 1.3a: typed limits are the ONE budget source (v0.9 clean contract) -------------
+
+
+def test_budget_from_limits_maps_typed_ceilings_including_new_call_counts():
+    limits = RuntimeLimits(
+        max_text_calls=3,
+        max_image_calls=2,
+        max_estimated_usd=1.5,
+        max_worker_calls=7,
+        max_input_tokens_per_call=100,
+        max_output_tokens_per_call=200,
+        max_images_per_call=4,
+        max_estimated_usd_per_call=0.5,
+    )
+
+    budget = budget_from_limits(limits)
+
+    # max_text_calls/max_image_calls could NOT come from typed limits before v0.9 —
+    # they only existed as host-config duck-reads.
+    assert budget.max_text_calls == 3
+    assert budget.max_image_calls == 2
+    assert budget.max_estimated_usd == 1.5
+    assert budget.max_worker_calls == 7
+    assert budget.max_input_tokens_per_call == 100
+    assert budget.max_output_tokens_per_call == 200
+    assert budget.max_images_per_call == 4
+    assert budget.max_estimated_usd_per_call == 0.5
+    assert budget_from_limits(None) == WorkflowBudget()
+
+
+def test_budget_from_limits_rejects_host_config_shapes_loudly():
+    host_config = SimpleNamespace(
+        WORKFLOW_MAX_TEXT_CALLS_PER_RUN=16, WORKFLOW_USAGE_TRACKING_ENABLED=False
+    )
+
+    with pytest.raises(TypeError, match="no longer a budget source"):
+        budget_from_limits(host_config)
+
+
+def test_engine_zero_ceiling_is_a_hard_zero_cap():
+    """Engine `0` means zero allowed calls — never "no cap" (that is the PRODUCT boundary's
+    convention, normalized to None before the engine)."""
+
+    budget = budget_from_limits(RuntimeLimits(max_text_calls=0))
+    usage_context = WorkflowUsageContext(
+        WorkflowRunContext(workflow_id="wf", workflow_type="budget"),
+        WorkflowUsageSummary(),
+        budget,
+    )
+
+    with workflow_usage_scope(usage_context):
+        with pytest.raises(WorkflowBudgetExceeded):
+            check_budget_before_call("chat", "first_call")
+
+
+def test_usage_tracking_flag_no_longer_bypasses_budget_checks():
+    """Pre-v0.9 defect: WORKFLOW_USAGE_TRACKING_ENABLED=False skipped check_budget_before_call
+    inside invoke_metered_chat entirely. Budgets now enforce unconditionally, pre-call."""
+
+    llm = FakeLangChainUsageLLM()
+    usage_context = WorkflowUsageContext(
+        WorkflowRunContext(workflow_id="wf", workflow_type="budget"),
+        WorkflowUsageSummary(),
+        WorkflowBudget(max_text_calls=0),
+    )
+    flag_off_config = SimpleNamespace(WORKFLOW_USAGE_TRACKING_ENABLED=False)
+
+    with workflow_usage_scope(usage_context):
+        with pytest.raises(WorkflowBudgetExceeded):
+            invoke_metered_chat(
+                llm,
+                [HumanMessage(content="hi")],
+                node="flag_off_node",
+                config=flag_off_config,
+            )
+
+    assert llm.messages == [], "budget must deny BEFORE the provider is invoked"
+
+
+def test_limits_env_overrides_route_text_and_image_call_ceilings():
+    bundle = load_workflow_config(
+        defaults={"workflow": {"workflow_type": "budget_profile"}},
+        env={
+            "WORKFLOW_MAX_TEXT_CALLS_PER_RUN": "5",
+            "WORKFLOW_MAX_IMAGE_CALLS": "2",
+        },
+    )
+
+    assert bundle.profile.limits.max_text_calls == 5
+    assert bundle.profile.limits.max_image_calls == 2
+
+
+def test_runtime_limits_reject_unknown_keys():
+    """A typo'd ceiling must never silently mean 'unlimited'."""
+
+    with pytest.raises(ValidationError):
+        RuntimeLimits(maxx_text_calls=1)
+
+
+# --- task 1.3b: cumulative worker accounting + failed-attempt parity ---------------------
+
+
+def test_max_worker_calls_survives_summary_serialization_roundtrip():
+    """Pre-v0.9 defect: the worker counter lived only on the in-memory context, so
+    suspend/resume silently regranted the whole allowance."""
+
+    budget = WorkflowBudget(max_worker_calls=3)
+    first = WorkflowUsageContext(
+        WorkflowRunContext(workflow_id="wf", workflow_type="budget"),
+        WorkflowUsageSummary(),
+        budget,
+    )
+    with workflow_usage_scope(first):
+        check_budget_before_call("chat", "one")
+        check_budget_before_call("agent", "two")
+
+    restored_summary = WorkflowUsageSummary.model_validate(first.summary.model_dump())
+    resumed = WorkflowUsageContext(
+        WorkflowRunContext(workflow_id="wf", workflow_type="budget"),
+        restored_summary,
+        budget,
+    )
+
+    assert resumed.worker_call_count == 2, "resume lost the worker-call spend"
+    with workflow_usage_scope(resumed):
+        check_budget_before_call("external", "three")
+        with pytest.raises(WorkflowBudgetExceeded, match="max_worker_calls"):
+            check_budget_before_call("chat", "four")
+
+
+async def test_failed_plain_callable_attempt_records_event_like_langchain_path():
+    """Failed-attempt accounting parity between the two LLM transports: a raising
+    plain-callable client must leave the same honest trail as a raising LangChain client —
+    a usage event with success=False and NO invented token/cost values."""
+
+    class ExplodingCallable:
+        async def __call__(self, request: LLMRequest) -> LLMResponse:
+            raise RuntimeError("plain transport down")
+
+    node = StructuredLLMNode(
+        name="exploding",
+        config=object(),
+        output_model=Label,
+        prompt_template="Classify {item}.",
+        input_variables=["item"],
+        llm=ExplodingCallable(),
+    )
+    usage_context = WorkflowUsageContext(
+        WorkflowRunContext(workflow_id="wf", workflow_type="budget"),
+        WorkflowUsageSummary(),
+        WorkflowBudget(),
+    )
+
+    with workflow_usage_scope(usage_context):
+        with pytest.raises(Exception, match="plain transport down"):
+            await node.run({"item": "q"})
+
+    failed = [event for event in usage_context.summary.events if event.success is False]
+    assert failed, "plain-callable failure left no usage event (LangChain path records one)"
+    event = failed[0]
+    assert event.total_tokens == 0 and event.input_tokens == 0 and event.output_tokens == 0
+    assert event.estimated_usd is None, "failed attempt must not invent cost"
 
 
 async def test_input_token_cap_denies_structured_node_before_llm_call():

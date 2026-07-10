@@ -182,15 +182,25 @@ def record_observation(
             severity=severity,
         )
         if detail_sink is not None and capture_text:
-            detail = _build_observation_detail(
-                event_id=event.event_id,
-                run_id=run_id,
-                kind=kind,
-                payload=safe_payload,
-                digest=digest,
-                privacy=privacy,
-            )
-            event = event.model_copy(update={"detail_refs": [detail.detail_id]})
+            # Detail projection gets its OWN guard: a detail bug must cost the detail only —
+            # dropping the whole trace EVENT with it would blind the run exactly when it
+            # misbehaves (the audit's sharpening of the documented log-and-skip policy).
+            try:
+                detail = _build_observation_detail(
+                    event_id=event.event_id,
+                    run_id=run_id,
+                    kind=kind,
+                    payload=safe_payload,
+                    digest=digest,
+                    privacy=privacy,
+                )
+                event = event.model_copy(update={"detail_refs": [detail.detail_id]})
+            except Exception:
+                logger.warning(
+                    "observation detail projection failed — recording bare trace event",
+                    exc_info=True,
+                )
+                detail = None
     except Exception:
         logger.warning("observation detail projection failed", exc_info=True)
         return None

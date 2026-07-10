@@ -407,12 +407,7 @@ class AnkiGenerationGraph:
         return WorkflowProfile(
             workflow_type="anki_generation",
             requested_capabilities=self.capability_registry.names(),
-            limits=RuntimeLimits(
-                max_steps=32,
-                max_retries=self.max_quality_repairs_per_run,
-                max_parallel_children=1,
-                max_estimated_usd=self._optional_float_config(config, "WORKFLOW_MAX_ESTIMATED_USD_PER_RUN"),
-            ),
+            limits=self._engine_limits(config),
             safety=SafetyPolicy(
                 allowed_side_effects=["read_only", "local_write", "external_call", "notification"]
             ),
@@ -789,12 +784,7 @@ class AnkiGenerationGraph:
                 "uploaded_image_count": len(source.images),
                 "default_count_policy": "prefer_fewer_cards",
             },
-            limits=RuntimeLimits(
-                max_steps=32,
-                max_retries=self.max_quality_repairs_per_run,
-                max_parallel_children=1,
-                max_estimated_usd=self._optional_float_config(config, "WORKFLOW_MAX_ESTIMATED_USD_PER_RUN"),
-            ),
+            limits=self._engine_limits(config),
             safety=SafetyPolicy(
                 allowed_side_effects=[
                     "read_only",
@@ -805,6 +795,25 @@ class AnkiGenerationGraph:
             ),
         )
         return RuntimePlanCompiler().compile(profile, self.capability_registry)
+
+    def _engine_limits(self, config: Any) -> RuntimeLimits:
+        """Typed budget boundary (v0.9 migration): the engine no longer duck-reads
+        WORKFLOW_MAX_* off the app config — every ceiling crosses the product boundary HERE,
+        once, with the app's ``0 = no cap`` convention normalized to typed ``None``."""
+
+        return RuntimeLimits(
+            max_steps=32,
+            max_retries=self.max_quality_repairs_per_run,
+            max_parallel_children=1,
+            max_text_calls=self._optional_int_config(config, "WORKFLOW_MAX_TEXT_CALLS_PER_RUN"),
+            max_image_calls=self._optional_int_config(config, "WORKFLOW_MAX_IMAGE_CALLS_PER_RUN"),
+            max_worker_calls=self._optional_int_config(config, "WORKFLOW_MAX_WORKER_CALLS_PER_RUN"),
+            max_input_tokens_per_call=self._optional_int_config(config, "WORKFLOW_MAX_INPUT_TOKENS_PER_CALL"),
+            max_output_tokens_per_call=self._optional_int_config(config, "WORKFLOW_MAX_OUTPUT_TOKENS_PER_CALL"),
+            max_images_per_call=self._optional_int_config(config, "WORKFLOW_MAX_IMAGES_PER_CALL"),
+            max_estimated_usd=self._optional_float_config(config, "WORKFLOW_MAX_ESTIMATED_USD_PER_RUN"),
+            max_estimated_usd_per_call=self._optional_float_config(config, "WORKFLOW_MAX_ESTIMATED_USD_PER_CALL"),
+        )
 
     @staticmethod
     def _optional_float_config(config: Any, name: str) -> Optional[float]:
@@ -818,6 +827,18 @@ class AnkiGenerationGraph:
         # App-config convention: 0 (the config.py default) means "no cap". The engine treats
         # 0.0 as a HARD zero-spend cap (WP3 budget semantics), so translate at this boundary —
         # passing 0.0 through killed every metered call with "exceeded: $x > $0.000000".
+        return parsed if parsed > 0 else None
+
+    @staticmethod
+    def _optional_int_config(config: Any, name: str) -> Optional[int]:
+        value = getattr(config, name, None)
+        if value in (None, ""):
+            return None
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return None
+        # Same boundary rule as the float helper: app-level 0 means "no cap" → typed None.
         return parsed if parsed > 0 else None
 
     @staticmethod

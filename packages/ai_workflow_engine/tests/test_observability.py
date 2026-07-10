@@ -414,3 +414,39 @@ def test_observation_graph_filters_selected_run_and_referenced_details():
     assert [entry.event_id for entry in graph.timeline] == [run_1_event.event_id]
     assert graph.nodes["plan"].total_tokens == 3
     assert list(graph.details) == ["detail-1"]
+
+
+def test_detail_projection_failure_still_records_bare_trace_event(monkeypatch, caplog):
+    """Task 1.7: a detail-projection bug must cost the DETAIL only — pre-fix, the whole
+    trace EVENT was dropped with it, blinding the run exactly when it misbehaved."""
+
+    import logging
+
+    from ai_workflow_engine import observability_capture as oc
+
+    trace_sink = InMemoryTraceSink()
+    detail_sink = InMemoryDetailSink()
+
+    def _boom(**_kwargs):
+        raise RuntimeError("detail projection bug")
+
+    monkeypatch.setattr(oc, "_build_observation_detail", _boom)
+
+    with caplog.at_level(logging.WARNING, logger="ai_workflow_engine.observability_capture"):
+        result = oc.record_observation(
+            trace_sink,
+            detail_sink,
+            node="obs_node",
+            phase="llm:response",
+            kind="llm_response",
+            payload={"text": "hello"},
+            capture_text=True,
+        )
+
+    assert result is not None, "the bare event must still be recorded"
+    event, detail = result
+    assert detail is None
+    assert event.detail_refs == []
+    assert [e.node for e in trace_sink.events] == ["obs_node"]
+    assert len(detail_sink.details) == 0
+    assert any("bare trace event" in r.getMessage() for r in caplog.records)

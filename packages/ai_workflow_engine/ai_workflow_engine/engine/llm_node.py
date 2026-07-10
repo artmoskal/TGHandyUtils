@@ -209,6 +209,27 @@ class StructuredLLMNode:
         fallback = getattr(self.config, self.default_model_attr, self.default_model)
         return getattr(self.config, self.model_attr, fallback)
 
+    def _record_failed_callable_usage(self, client: Any, exc: Exception, attempt: int) -> None:
+        """Failed-attempt parity with the LangChain transport: a raising plain-callable client
+        leaves the same honest usage trail — success=False, zero tokens, no invented cost."""
+
+        from ai_workflow_engine.models import WorkflowUsageEvent
+        from ai_workflow_engine.usage_events import record_usage_event
+
+        record_usage_event(
+            WorkflowUsageEvent(
+                operation="chat",
+                provider=getattr(client, "provider_label", None) or "custom",
+                node=self.name,
+                model=str(self._model_name() or ""),
+                attempt=attempt,
+                success=False,
+                error=str(exc)[:500],
+                cost_class=getattr(client, "cost_class", None) or "metered",
+                metadata={"output_model": self.output_model.__name__, "transport": "plain_callable"},
+            )
+        )
+
     async def run(
         self,
         values: dict[str, Any],
@@ -333,6 +354,7 @@ class StructuredLLMNode:
                         response = await client(request)
                 except Exception as exc:
                     self._record_llm_error(attempt, exc, profile, transport="plain_callable")
+                    self._record_failed_callable_usage(client, exc, attempt)
                     raise
                 self._record_callable_response(request, response, attempt, profile)
                 record_callable_usage(

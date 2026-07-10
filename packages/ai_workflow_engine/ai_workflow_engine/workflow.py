@@ -364,7 +364,24 @@ class WorkflowDefinition(BaseModel):
         errors.extend(_validate_transitions(self.transitions, nodes_by_id, known))
         errors.extend(_validate_cycle_gates(ids, self.transitions, known))
         errors.extend(_validate_injected_machine_descriptions(self.nodes, self.transitions))
+        errors.extend(_validate_input_keys(self.nodes, known))
         return errors
+
+
+def _validate_input_keys(nodes: List["WorkflowNode"], known: set[str]) -> List[str]:
+    """An input_key must be resolvable at run time: the original input (``__input__``), a node
+    id, or a declared output_key alias. A typo here used to silently feed ``None`` as the payload."""
+
+    aliases = {node.output_key for node in nodes if node.output_key}
+    allowed = known | aliases | {"__input__"}
+    errors: List[str] = []
+    for node in nodes:
+        if node.input_key and node.input_key not in allowed:
+            errors.append(
+                f"node '{node.id}' input_key '{node.input_key}' references no known node id, "
+                f"output_key alias, or '__input__' — it would silently read None at run time"
+            )
+    return errors
 
 
 def _validate_injected_machine_descriptions(

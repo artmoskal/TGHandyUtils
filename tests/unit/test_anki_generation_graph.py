@@ -1547,3 +1547,36 @@ def test_zero_budget_config_means_no_cap_not_zero_spend():
     assert helper(_Cfg(), "WORKFLOW_MAX_ESTIMATED_USD_PER_RUN") == 2.5
     _Cfg.WORKFLOW_MAX_ESTIMATED_USD_PER_RUN = ""
     assert helper(_Cfg(), "WORKFLOW_MAX_ESTIMATED_USD_PER_RUN") is None
+
+
+@pytest.mark.unit
+def test_engine_limits_cross_typed_boundary_with_zero_meaning_no_cap():
+    """v0.9 typed-budget migration: every WORKFLOW_MAX_* ceiling crosses into typed
+    RuntimeLimits via _engine_limits — app `0` (no cap) becomes typed None, real values
+    pass through, and the engine reads ONLY the typed profile (no duck-read remains)."""
+    from services.content.anki_generation_graph import AnkiGenerationGraph
+
+    class _Cfg:
+        WORKFLOW_MAX_TEXT_CALLS_PER_RUN = 16
+        WORKFLOW_MAX_IMAGE_CALLS_PER_RUN = 1
+        WORKFLOW_MAX_ESTIMATED_USD_PER_RUN = 0  # app convention: 0 = no cap
+        WORKFLOW_MAX_WORKER_CALLS_PER_RUN = 0  # 0 = no cap
+        WORKFLOW_MAX_INPUT_TOKENS_PER_CALL = 20000
+
+    svc = Mock()
+    svc.config = _Cfg()
+    graph = AnkiGenerationGraph(svc)
+
+    limits = graph._workflow_profile().limits
+
+    assert limits.max_text_calls == 16
+    assert limits.max_image_calls == 1
+    assert limits.max_estimated_usd is None
+    assert limits.max_worker_calls is None
+    assert limits.max_input_tokens_per_call == 20000
+
+    from ai_workflow_engine.budget import budget_from_limits
+
+    budget = budget_from_limits(limits)
+    assert budget.max_text_calls == 16
+    assert budget.max_estimated_usd is None

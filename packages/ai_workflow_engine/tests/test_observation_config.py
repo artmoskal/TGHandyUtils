@@ -94,6 +94,90 @@ observation:
     assert not any("observation" in warning for warning in bundle.warnings)
 
 
+def _observation_yaml(tmp_path, bundle_dir):
+    config = tmp_path / "app.yaml"
+    config.write_text(
+        f"""
+workflow:
+  workflow_type: demo
+observation:
+  enabled: true
+  bundle_dir: {bundle_dir}
+""",
+        encoding="utf-8",
+    )
+    return config
+
+
+def _register_and_run(engine, flow_id):
+    engine.register_capability("solo", _noop, kind="deterministic")
+    engine.register_workflow(WorkflowBuilder(flow_id).step("solo").build())
+    return asyncio.run(engine.run(flow_id, {"x": 1}))
+
+
+def test_builder_and_from_config_observation_parity(tmp_path):
+    """Task 1.1: the fluent builder honors the YAML `observation:` block exactly like from_config."""
+
+    from pathlib import Path
+
+    config = _observation_yaml(tmp_path, tmp_path / "bundles")
+
+    via_config = _register_and_run(WorkflowEngine.from_config(config), "cfg_flow")
+    via_builder = _register_and_run(
+        WorkflowEngineBuilder().with_config(config).build(), "builder_flow"
+    )
+
+    assert via_config.observation_bundle_path, "from_config lost the observation block"
+    assert via_builder.observation_bundle_path, (
+        "fluent builder dropped the YAML observation: block (pre-1.1 defect)"
+    )
+    meta = json.loads(
+        (Path(via_builder.observation_bundle_path) / "meta.json").read_text()
+    )
+    assert meta["status"] == "completed"
+
+
+def test_builder_with_observation_none_disables_config_observation(tmp_path):
+    """Explicit with_observation(None) opts out even when the config enables observation."""
+
+    bundles = tmp_path / "bundles"
+    config = _observation_yaml(tmp_path, bundles)
+
+    result = _register_and_run(
+        WorkflowEngineBuilder().with_config(config).with_observation(None).build(),
+        "optout_flow",
+    )
+
+    assert result.observation_bundle_path is None
+    assert not bundles.exists(), "bundle dir written despite explicit with_observation(None)"
+
+
+def test_builder_with_observation_override_wins_regardless_of_order(tmp_path):
+    """The explicit override beats the config's observation whether set before or after with_config."""
+
+    from pathlib import Path
+
+    config = _observation_yaml(tmp_path, tmp_path / "config-bundles")
+    override_dir = tmp_path / "override-bundles"
+    override = ObservationConfig(enabled=True, bundle_dir=str(override_dir))
+
+    before = _register_and_run(
+        WorkflowEngineBuilder().with_observation(override).with_config(config).build(),
+        "before_flow",
+    )
+    after = _register_and_run(
+        WorkflowEngineBuilder().with_config(config).with_observation(override).build(),
+        "after_flow",
+    )
+
+    for result in (before, after):
+        assert result.observation_bundle_path, "override observation did not open a bundle"
+        assert Path(result.observation_bundle_path).parent == override_dir
+    assert not (tmp_path / "config-bundles").exists(), (
+        "config observation dir used despite explicit override"
+    )
+
+
 def test_enabled_observation_auto_opens_routes_and_finalizes(tmp_path):
     engine = WorkflowEngine(
         observation=ObservationConfig(enabled=True, bundle_dir=str(tmp_path), retention_limit=5),

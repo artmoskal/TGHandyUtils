@@ -18,6 +18,7 @@ Public concepts: ``WorkflowExecutor``, ``NodeExecutionState``, ``NodeResult``,
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from typing import Any, Awaitable, Callable, Dict, List, Optional, TypedDict
 
@@ -28,6 +29,8 @@ from ai_workflow_engine.engine.capabilities import (
     CapabilityRuntime,
     gather_capabilities,
 )
+
+logger = logging.getLogger(__name__)
 from ai_workflow_engine.engine.runner import WorkflowRunner
 from ai_workflow_engine.engine.scheduler import WorkflowScheduler
 from ai_workflow_engine.model_binding import model_profile_scope
@@ -558,7 +561,16 @@ class WorkflowExecutor:
                 return label if label in node.branches else "__invalid__"
         elif node.kind == "evaluate":
             def route(state: Dict[str, Any]) -> str:
-                return state.get("routes", {}).get(node.id, "halt")
+                routes = state.get("routes", {})
+                if node.id not in routes:
+                    # Engine invariant: the evaluate handler ALWAYS sets a route. A missing
+                    # entry is a plumbing bug — defaulting to "halt" here would end the run
+                    # cleanly and hide it.
+                    raise KeyError(
+                        f"evaluate node '{node.id}' produced no route decision — engine "
+                        "invariant violated"
+                    )
+                return routes[node.id]
         else:
             def route(state: Dict[str, Any]) -> str:
                 if state.get("routes", {}).get(node.id) == "halt":
@@ -669,7 +681,14 @@ class WorkflowExecutor:
     @staticmethod
     def _node_input(state: Dict[str, Any], node: WorkflowNode) -> Any:
         if node.input_key:
-            return state.get("node_outputs", {}).get(node.input_key)
+            outputs = state.get("node_outputs", {})
+            if node.input_key not in outputs:
+                raise KeyError(
+                    f"node '{node.id}' input_key '{node.input_key}' has no recorded output on "
+                    "this path — the referenced node has not run yet; a legitimately-None output "
+                    "would be present, so this is a wiring error, not empty data"
+                )
+            return outputs[node.input_key]
         return state.get(RUNNING_PAYLOAD)
 
     @staticmethod
@@ -847,7 +866,13 @@ class WorkflowExecutor:
             status = "partial"
         else:
             status = "completed"
-        usage = final_state.get("usage_summary") or WorkflowUsageSummary()
+        usage = final_state.get("usage_summary")
+        if usage is None:
+            # Runner always seeds the summary; absence means a plumbing bug upstream. Report
+            # an empty summary rather than crash the result build, but never silently — a
+            # fabricated $0 would read as cost truth.
+            logger.warning("run produced no usage_summary — reporting an empty one (plumbing bug?)")
+            usage = WorkflowUsageSummary()
         snapshot: Optional[MachineSnapshot] = None
         if status == "requires_user_input":
             suspended = next(

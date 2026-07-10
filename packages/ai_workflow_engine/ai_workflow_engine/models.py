@@ -314,6 +314,10 @@ class WorkflowUsageSummary(BaseModel):
     """Aggregated usage/cost view for one workflow run."""
 
     events: List[WorkflowUsageEvent] = Field(default_factory=list)
+    # Pre-call worker-op counter (chat/agent/external under a max_worker_calls cap). Lives on
+    # the SERIALIZED summary — not on the transient usage context — so suspend/resume keeps the
+    # cumulative-budget promise instead of silently regranting the whole allowance.
+    worker_call_count: int = 0
 
     def add_event(self, event: WorkflowUsageEvent) -> None:
         self.events.append(event)
@@ -465,13 +469,22 @@ class SchedulingPolicy(BaseModel):
 
 
 class RuntimeLimits(BaseModel):
-    """Per-run limits that bound loops, tool calls, and paid work."""
+    """Per-run limits that bound loops, tool calls, and paid work.
+
+    The ONE budget source (v0.9 clean contract): ceilings configured here enforce
+    unconditionally. ``0`` is an honest hard-zero cap; "no cap" = leave the field None.
+    Unknown keys are rejected — a typo'd ceiling must never silently mean "unlimited".
+    """
+
+    model_config = ConfigDict(extra="forbid")
 
     max_steps: int = 32
     max_retries: int = 1
     max_retrace: int = 1
     max_parallel_children: int = 4
     timeout_s: Optional[float] = None
+    max_text_calls: Optional[int] = None
+    max_image_calls: Optional[int] = None
     max_estimated_usd: Optional[float] = None
     max_worker_calls: Optional[int] = None
     max_input_tokens_per_call: Optional[int] = None

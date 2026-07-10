@@ -8,12 +8,11 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from ai_workflow_engine.models import WorkflowRunContext, WorkflowUsageEvent, WorkflowUsageSummary
-from ai_workflow_engine.usage_support import (
-    _limit_float,
-    _limit_int,
-    _positive_float,
-    _positive_int,
+from ai_workflow_engine.models import (
+    RuntimeLimits,
+    WorkflowRunContext,
+    WorkflowUsageEvent,
+    WorkflowUsageSummary,
 )
 
 logger = logging.getLogger(__name__)
@@ -46,7 +45,16 @@ class WorkflowUsageContext:
     budget: WorkflowBudget
     # Typed as Any: the UsageSink protocol lives in usage_events (avoids a module cycle).
     usage_sink: Optional[Any] = None
-    worker_call_count: int = 0
+
+    @property
+    def worker_call_count(self) -> int:
+        """Delegates to the serialized summary so resume keeps the cap cumulative."""
+
+        return self.summary.worker_call_count
+
+    @worker_call_count.setter
+    def worker_call_count(self, value: int) -> None:
+        self.summary.worker_call_count = value
 
 
 _ACTIVE_USAGE: ContextVar[Optional[WorkflowUsageContext]] = ContextVar("workflow_usage", default=None)
@@ -65,44 +73,31 @@ def current_usage_context() -> Optional[WorkflowUsageContext]:
     return _ACTIVE_USAGE.get()
 
 
-def budget_from_config(config: Any, *, limits: Any = None) -> WorkflowBudget:
-    if config is not None and not getattr(config, "WORKFLOW_USAGE_TRACKING_ENABLED", True):
-        return WorkflowBudget()
-    if limits is None and config is not None:
-        profile = getattr(config, "profile", None)
-        limits = getattr(profile, "limits", None)
-    config_budget = WorkflowBudget(
-        max_text_calls=_positive_int(getattr(config, "WORKFLOW_MAX_TEXT_CALLS_PER_RUN", None)),
-        max_image_calls=_positive_int(getattr(config, "WORKFLOW_MAX_IMAGE_CALLS_PER_RUN", None)),
-        max_estimated_usd=_positive_float(getattr(config, "WORKFLOW_MAX_ESTIMATED_USD_PER_RUN", None)),
-        max_worker_calls=_positive_int(getattr(config, "WORKFLOW_MAX_WORKER_CALLS_PER_RUN", None)),
-        max_input_tokens_per_call=_positive_int(getattr(config, "WORKFLOW_MAX_INPUT_TOKENS_PER_CALL", None)),
-        max_output_tokens_per_call=_positive_int(getattr(config, "WORKFLOW_MAX_OUTPUT_TOKENS_PER_CALL", None)),
-        max_images_per_call=_positive_int(getattr(config, "WORKFLOW_MAX_IMAGES_PER_CALL", None)),
-        max_estimated_usd_per_call=_positive_float(
-            getattr(config, "WORKFLOW_MAX_ESTIMATED_USD_PER_CALL", None)
-        ),
-    )
+def budget_from_limits(limits: Optional[RuntimeLimits]) -> WorkflowBudget:
+    """Budgets come from typed ``profile.limits`` ONLY (v0.9 clean contract).
+
+    The legacy host-config duck-read (``WORKFLOW_MAX_*`` attributes) and the
+    ``WORKFLOW_USAGE_TRACKING_ENABLED`` silent kill-switch are gone: ceilings enforce
+    whenever configured. ``0`` is an honest hard-zero cap; "no cap" = leave the field None.
+    """
+
     if limits is None:
-        return config_budget
+        return WorkflowBudget()
+    if not isinstance(limits, RuntimeLimits):
+        raise TypeError(
+            f"budget_from_limits expects RuntimeLimits or None, got {type(limits).__name__} — "
+            "host/app config objects are no longer a budget source; put ceilings in "
+            "workflow.limits (profile or definition)"
+        )
     return WorkflowBudget(
-        max_text_calls=config_budget.max_text_calls,
-        max_image_calls=config_budget.max_image_calls,
-        max_estimated_usd=_limit_float(getattr(limits, "max_estimated_usd", None), config_budget.max_estimated_usd),
-        max_worker_calls=_limit_int(getattr(limits, "max_worker_calls", None), config_budget.max_worker_calls),
-        max_input_tokens_per_call=_limit_int(
-            getattr(limits, "max_input_tokens_per_call", None),
-            config_budget.max_input_tokens_per_call,
-        ),
-        max_output_tokens_per_call=_limit_int(
-            getattr(limits, "max_output_tokens_per_call", None),
-            config_budget.max_output_tokens_per_call,
-        ),
-        max_images_per_call=_limit_int(getattr(limits, "max_images_per_call", None), config_budget.max_images_per_call),
-        max_estimated_usd_per_call=_limit_float(
-            getattr(limits, "max_estimated_usd_per_call", None),
-            config_budget.max_estimated_usd_per_call,
-        ),
+        max_text_calls=limits.max_text_calls,
+        max_image_calls=limits.max_image_calls,
+        max_estimated_usd=limits.max_estimated_usd,
+        max_worker_calls=limits.max_worker_calls,
+        max_input_tokens_per_call=limits.max_input_tokens_per_call,
+        max_output_tokens_per_call=limits.max_output_tokens_per_call,
+        max_images_per_call=limits.max_images_per_call,
+        max_estimated_usd_per_call=limits.max_estimated_usd_per_call,
     )
 
 

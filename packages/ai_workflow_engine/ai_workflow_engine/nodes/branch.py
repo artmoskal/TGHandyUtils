@@ -4,10 +4,13 @@ Mechanical split of the executor god-file (spec §2c#5). Handlers receive a narr
 ``NodeExecutionServices`` boundary object (``services``) — never the executor itself.
 """
 from __future__ import annotations
+import logging
 from typing import Any, Dict, Optional
 from ai_workflow_engine.models import CapabilityContext, CapabilityResult, WorkflowTraceEvent
 from ai_workflow_engine.workflow import BranchDecision, WorkflowDefinition, WorkflowNode
 from ai_workflow_engine._runtime_state import CONTEXT, RUNNING_PAYLOAD
+
+logger = logging.getLogger(__name__)
 
 
 def build_branch_node(services, definition: WorkflowDefinition, node: WorkflowNode):
@@ -27,7 +30,11 @@ def build_branch_node(services, definition: WorkflowDefinition, node: WorkflowNo
         valid = label in node.branches
         try:
             decision_policy = services.runtime.registry.get(decider)[0].kind
-        except Exception:
+        except KeyError:
+            # Trace metadata only (never control flow). Reachable only when the registry
+            # changed between invoke and lookup (custom runtimes); anything OTHER than a
+            # missing entry is an engine bug and now propagates instead of hiding.
+            logger.debug("branch '%s': decider %r not in registry for trace metadata", node.id, decider)
             decision_policy = None
 
         # Pre-set loop gates: a bounded decision transition counts its traversals; exceeding
