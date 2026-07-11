@@ -87,7 +87,9 @@ package ships CLI-agent + console-LLM support (`claude -p` / `codex exec`) and t
 **"What engine-v0.8.1 gives you"** at the end for the full capability list.
 Not in v0.8 (deferred): durable/semantic memory STORES beyond the `MemoryStore` seam, FlowArtifact v1.5,
 ProcessArtifact/v2, browser/no-API executors.
-v0.9.0 UPDATE — FlowArtifact v1.5a SHIPPED (the S1 goal-compiler slice): authored `fanout` over a
+v0.9 BRANCH UPDATE — FlowArtifact v1.5a IMPLEMENTED ON BRANCH (pending independent acceptance +
+the `engine-v0.9.0` tag; do NOT consume until that tag exists — `engine-v0.8.1` stays your pin).
+The S1 goal-compiler slice: authored `fanout` over a
 registered item capability (max_items REQUIRED, 1..limits.max_authored_fanout_items default 100 /
 engine max 1000; oversize runtime lists fail loudly, never truncate; max_parallel rejected — never
 clamped — outside 1..limits.max_parallel_children) + the turnkey author
@@ -98,6 +100,17 @@ per-attempt metering/observation. `run_authored_flow` re-validates under the CUR
 limits (stale artifacts rejected). Two-engine handoff (author engine -> processing engine) is
 test-locked. STILL future: authorable subworkflow + general input/output mapping (v1.5 remainder),
 ProcessArtifact/v2.
+**v0.9 migration notes (apply ONLY when `engine-v0.9.0` exists; `engine-v0.8.1` is the current pin):**
+strict `RuntimeLimits` (unknown limit keys now fail config load); typed limits are the ONLY budget
+source (`budget_from_limits(RuntimeLimits|None)` — host-config/duck-typed objects are rejected; the
+old usage-tracking flag no longer disables engine budgets); firewall markers are typed
+`CapabilitySpec.is_planner`/`is_flow_author` fields (metadata/handler-attribute markers are ignored;
+`CapabilitySpec` rejects unknown fields); application `0 = no cap` is normalized at the PRODUCT
+boundary while engine `RuntimeLimits(...=0)` is an honest hard-zero cap; failed provider attempts now
+consume call budgets and emit zero-cost/zero-token failure events on BOTH transports; `FlowArtifact`
+nodes are a discriminated per-kind schema (plain `model_dump()`/`model_validate()` round-trips are
+guaranteed; foreign/unknown node fields fail loudly).
+
 Source needs: `/Users/artemm/PycharmProjects/gopro-streaming/docs/architecture/workflow-execution-engine-requirements.md`,
 `/Users/artemm/PycharmProjects/gopro-streaming/docs/universal_event_descriptor/HOME_INVENTORY_CASE.md`.
 

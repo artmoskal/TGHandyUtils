@@ -218,6 +218,7 @@ class WorkflowExecutor:
         recursion_limit: Optional[int] = None,
         observation_bundle: Any = None,
         terminal_status: Optional[Callable[[WorkflowRunResult], Optional[str]]] = None,
+        intro_trace_events: Optional[List[WorkflowTraceEvent]] = None,
     ) -> WorkflowRunResult:
         """Execute ``definition`` from ``payload`` under ``context`` and return the envelope.
 
@@ -257,6 +258,13 @@ class WorkflowExecutor:
         # Top-level run: WorkflowRunner installs the usage/budget scope + lifecycle logging.
         try:
             with observation_capture_scope(self.runtime.observation), run_session_scope(session):
+                # Run-birth provenance (R7): caller-supplied intro events are recorded INSIDE
+                # the session, run-id stamped, so they appear in result.trace and the bundle.
+                run_id = str(context.run_context.workflow_id)
+                for intro_event in intro_trace_events or ():
+                    self.runtime.trace_sink.record(
+                        intro_event.model_copy(update={"run_id": run_id})
+                    )
                 final_state = await self.runner.run(
                     compiled,
                     self._initial_state(payload, context),

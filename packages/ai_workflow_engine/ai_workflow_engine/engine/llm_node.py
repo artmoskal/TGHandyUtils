@@ -209,24 +209,39 @@ class StructuredLLMNode:
         fallback = getattr(self.config, self.default_model_attr, self.default_model)
         return getattr(self.config, self.model_attr, fallback)
 
-    def _record_failed_callable_usage(self, client: Any, exc: Exception, attempt: int) -> None:
+    def _record_failed_callable_usage(
+        self, client: Any, exc: Exception, attempt: int, profile: Any = None
+    ) -> None:
         """Failed-attempt parity with the LangChain transport: a raising plain-callable client
-        leaves the same honest usage trail — success=False, zero tokens, no invented cost."""
+        leaves the same honest usage trail — success=False, zero tokens, no invented cost.
+
+        R8: attribution uses the SAME resolved identity as the request/error observation path —
+        when a ``ModelProfile`` routed this call, the failure event carries the routed model,
+        provider, and profile name; anonymous non-profile callables keep the fallback identity.
+        """
 
         from ai_workflow_engine.models import WorkflowUsageEvent
         from ai_workflow_engine.usage_events import record_usage_event
 
+        model = profile.model if profile is not None else str(self._model_name() or "")
+        provider = getattr(client, "provider_label", None) or (
+            profile.provider if profile is not None else None
+        ) or "custom"
+        metadata = {"output_model": self.output_model.__name__, "transport": "plain_callable"}
+        if profile is not None:
+            metadata["model_profile"] = profile.name
+
         record_usage_event(
             WorkflowUsageEvent(
                 operation="chat",
-                provider=getattr(client, "provider_label", None) or "custom",
+                provider=provider,
                 node=self.name,
-                model=str(self._model_name() or ""),
+                model=model,
                 attempt=attempt,
                 success=False,
                 error=str(exc)[:500],
                 cost_class=getattr(client, "cost_class", None) or "metered",
-                metadata={"output_model": self.output_model.__name__, "transport": "plain_callable"},
+                metadata=metadata,
             )
         )
 
@@ -354,7 +369,7 @@ class StructuredLLMNode:
                         response = await client(request)
                 except Exception as exc:
                     self._record_llm_error(attempt, exc, profile, transport="plain_callable")
-                    self._record_failed_callable_usage(client, exc, attempt)
+                    self._record_failed_callable_usage(client, exc, attempt, profile)
                     raise
                 self._record_callable_response(request, response, attempt, profile)
                 record_callable_usage(

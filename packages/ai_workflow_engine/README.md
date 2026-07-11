@@ -60,6 +60,15 @@ The platform is an implementation-agnostic workflow engine plus a set of tool li
   GoPro video/pipeline planning, and MageQA QA-session planning must all fit the same contracts.
   Simple workflows stay one-step simple; complex workflows opt into planners, fan-out, agents,
   subworkflows, memory, scheduling, evidence, and retrace without forking the runtime.
+- **The complexity gradient is not a simplicity veto.** We minimize the concepts/configuration that
+  each consumer is forced to carry, not the engine's feature count or internal sophistication.
+  Approved functionality may add substantial, well-owned complexity when it centralizes universal
+  mechanics or enables complex consumers cleanly. Do not cite this Soul to reject, defer, remove, or
+  silently reduce a feature merely because it is complex: name a concrete coupling, boundedness,
+  replay, side-effect, or ownership problem and preserve the requested capability unless the user
+  explicitly chooses a scope cut. Keep simple paths simple through opt-in seams; keep complex paths
+  fully capable through typed contracts, tests, observability, and degradation checks. Module/import/
+  class counts alone are never grounds to strip functionality.
 - **Workflow memory is not just conversation history.** The target model lets agents, planner
   nodes, and subworkflows opt into scoped memory of retries, discovered evidence, rejected plan
   branches, produced artifacts, evaluator decisions, and what worked or failed across runs. Memory
@@ -216,7 +225,8 @@ validated `step` / `branch` / `evaluate` / `fanout` machines over registered cap
 as hand-written workflows. That is enough for a narrow goal compiler, but it is not full arbitrary
 pipeline authoring.
 
-**v1.5a (v0.9.0):** authored `fanout` is bounded by construction — `max_items` is REQUIRED
+**v1.5a (implemented on branch, pending the `engine-v0.9.0` tag — pin `engine-v0.8.1` until then):**
+authored `fanout` is bounded by construction — `max_items` is REQUIRED
 (1..`limits.max_authored_fanout_items`, default 100, engine max 1000; oversize runtime lists fail
 loudly, never truncate) and `max_parallel` outside the profile cap is rejected, never clamped.
 Unknown/foreign fields on authored nodes are validation errors. The turnkey author loop ships as
@@ -226,6 +236,18 @@ via `prompt_template=`), typed `FlowAuthorRequest(goal, context)` input, TARGET-
 feeding a bounded repair loop, per-attempt metering/observation via the shared structured-LLM
 worker. `run_authored_flow` re-validates against the CURRENT effective limits, so stale artifacts
 authored under looser bounds are rejected before execution.
+
+
+**v0.9 migration notes (apply ONLY when `engine-v0.9.0` exists; `engine-v0.8.1` is the current pin):**
+strict `RuntimeLimits` (unknown limit keys now fail config load); typed limits are the ONLY budget
+source (`budget_from_limits(RuntimeLimits|None)` — host-config/duck-typed objects are rejected; the
+old usage-tracking flag no longer disables engine budgets); firewall markers are typed
+`CapabilitySpec.is_planner`/`is_flow_author` fields (metadata/handler-attribute markers are ignored;
+`CapabilitySpec` rejects unknown fields); application `0 = no cap` is normalized at the PRODUCT
+boundary while engine `RuntimeLimits(...=0)` is an honest hard-zero cap; failed provider attempts now
+consume call budgets and emit zero-cost/zero-token failure events on BOTH transports; `FlowArtifact`
+nodes are a discriminated per-kind schema (plain `model_dump()`/`model_validate()` round-trips are
+guaranteed; foreign/unknown node fields fail loudly).
 
 The v1.5 remainder — registered `subworkflow` references and explicit `input_key` / `output_key`
 mapping — stays future-stage with the same safety model. Authored flows still must not contain

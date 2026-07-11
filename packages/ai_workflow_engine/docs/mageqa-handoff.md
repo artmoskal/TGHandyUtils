@@ -74,10 +74,22 @@ production; the product-neutral examples include site-audit fan-out and the thre
 sibling `ai_workflow_tools` package ships CLI-agent + console-LLM support (`claude -p` / `codex exec`)
 and the media pack. See **"What engine-v0.8.1 gives you"** at the end for the full capability list.
 Not in v0.8 (deferred): durable/semantic memory STORES beyond the `MemoryStore` seam, FlowArtifact v1.5,
-ProcessArtifact/v2, browser/no-API executors. v0.9.0 UPDATE: FlowArtifact v1.5a shipped — authored
+ProcessArtifact/v2, browser/no-API executors. v0.9 BRANCH UPDATE (implemented on branch, pending acceptance + the `engine-v0.9.0` tag — pin
+`engine-v0.8.1` until then): FlowArtifact v1.5a — authored
 bounded `fanout` (max_items REQUIRED) + `build_flow_author_capability(...)`; true per-phase budget
 scopes (N1) remain explicitly FUTURE-STAGE (activation on a concrete MageQA workflow needing
 independent phase ceilings).
+**v0.9 migration notes (apply ONLY when `engine-v0.9.0` exists; `engine-v0.8.1` is the current pin):**
+strict `RuntimeLimits` (unknown limit keys now fail config load); typed limits are the ONLY budget
+source (`budget_from_limits(RuntimeLimits|None)` — host-config/duck-typed objects are rejected; the
+old usage-tracking flag no longer disables engine budgets); firewall markers are typed
+`CapabilitySpec.is_planner`/`is_flow_author` fields (metadata/handler-attribute markers are ignored;
+`CapabilitySpec` rejects unknown fields); application `0 = no cap` is normalized at the PRODUCT
+boundary while engine `RuntimeLimits(...=0)` is an honest hard-zero cap; failed provider attempts now
+consume call budgets and emit zero-cost/zero-token failure events on BOTH transports; `FlowArtifact`
+nodes are a discriminated per-kind schema (plain `model_dump()`/`model_validate()` round-trips are
+guaranteed; foreign/unknown node fields fail loudly).
+
 Source needs: `/Users/artemm/PycharmProjects/MageQA/docs/17-qa-orchestrator-architecture.md`,
 `/Users/artemm/PycharmProjects/MageQA/docs/14-agentic-tester-architecture.md`.
 

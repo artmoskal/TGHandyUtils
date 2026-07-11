@@ -2,7 +2,8 @@
 
 Status: **authoritative spec** — this is what we build. Supersedes any "primitive kit" reading.
 Author: Claude, 2026-06-08 · Cleanup pass: 2026-06-20 (renumbered to reading order; identity fixed;
-EXISTS-vs-INTENDED marked; implementation history moved to Appendix A).
+EXISTS-vs-INTENDED marked; implementation history moved to Appendix A) · Complexity-governance
+clarification: 2026-07-11.
 Reading rule: if any sentence here conflicts with another doc, **this doc wins** until merged.
 Sections run in reading order §0→§13; **Appendix A** holds implementation history/changelog.
 **Status legend used throughout:** **[BUILT]** shipped + tested · **[PARTIAL]** real but not unified/
@@ -37,9 +38,41 @@ exist (the bricks); this spec builds **the framework that runs workflows** (the 
 **North-star scale requirement:** the same engine must cover the whole complexity gradient — a
 one-step Todoist reminder, Anki card generation, GoPro arbitrary video-processing / pipeline
 planning, MageQA QA-session planning, and QA-plan authoring from smoke-test results. Simple cases
-must stay simple — a single `step` or `branch` with registered capabilities must not pay for planner,
-memory, agent, media, or scheduler machinery it did not opt into. Complex cases scale by adding
-declared mechanics, not by forking the engine or rebuilding product-side orchestration.
+must stay simple — a single `step` or `branch` with registered capabilities must not have to
+understand, configure, or activate planner, memory, agent, media, or scheduling behavior it did not
+select. Negligible inert plumbing may remain inside the one canonical executor when splitting it
+would create a second runtime or more complexity than it saves. Complex cases scale by adding declared
+mechanics, not by forking the engine or rebuilding product-side orchestration.
+
+**Complexity governance / anti-golem rule (user, 2026-07-11):** optimize **mandatory adopter
+complexity and cross-feature coupling**, not feature count, internal line count, import count, or the
+mere presence of sophisticated architecture. The engine is allowed — and expected — to become
+internally substantial when that complexity implements explicitly approved functionality, moves a
+universal mechanic out of products, preserves correctness/observability/replay, or gives complex
+consumers a clean extension seam. "Simple workflows stay simple" means a simple consumer need not
+understand, configure, wire, or execute unrelated advanced facilities. It does **not** mean advanced
+facilities must be rejected, reduced to a toy version, or kept out of the engine.
+
+Rules for applying this principle:
+
+- The Soul/North Star is **not a simplicity veto**. An agent may not reject, defer, remove, or silently
+  narrow requested functionality merely because it adds code, concepts, modules, or internal
+  architecture. Pushback must identify a concrete harm — mandatory adopter ceremony, duplicated
+  mechanics, cross-layer coupling, unbounded state/cost, hidden side effects, broken replay, or an
+  untestable ownership boundary — and state what functionality its alternative would lose. A scope or
+  functionality cut remains a user decision.
+- Prefer **complexity paid once in the owning layer**: universal workflow mechanics belong in the
+  domain-neutral engine; reusable but non-universal capabilities belong in optional services/packs;
+  product semantics stay in domain packs. Advanced features should be independently selectable where
+  that materially reduces adopter burden. They do not require a separate package, lazy import, base
+  class, or abstraction when that separation adds more complexity than it removes.
+- Prevent a knot, not a powerful engine: no product special cases in core, parallel execution paths,
+  stringly hidden contracts, circular ownership, or features that require unrelated consumers to
+  change configuration/state models. New complexity needs an explicit owner, typed boundary,
+  bounded behavior, tests, observability, and a degradation statement for existing workflows.
+- Metrics such as module count, import count, class cohesion, or startup time are diagnostic evidence,
+  never grounds by themselves to delete or downgrade functionality. The binding acceptance question is
+  whether simple consumers remain simple **and** complex consumers retain the full approved capability.
 
 **Architecture finding (Artem + codex, 2026-06-19):** "core" means **domain-neutral**, not
 artificially tiny. Complexity belongs in the engine when it is universal workflow machinery
@@ -401,7 +434,8 @@ when the generated process is a small validated machine over registered capabili
 (step → branch → evaluate/retrace/fallback). It **cannot** author `subworkflow`/`human`/
 `planner` nodes and cannot invent/register tools.
 
-**`FlowArtifact` v1.5a — authored fanout + turnkey author. [BUILT v0.9.0]** The delivered SLICE of
+**`FlowArtifact` v1.5a — authored fanout + turnkey author. [IMPLEMENTED ON BRANCH — pending
+independent acceptance + the `engine-v0.9.0` tag; `engine-v0.8.1` remains the consumer pin]** The delivered SLICE of
 v1.5 (deliberately NOT "flow-as-data completion"): (a) authorable `fanout` over a registered item
 capability — `max_items` is REQUIRED (1..`limits.max_authored_fanout_items`, default 100, engine
 absolute max 1000) and an oversize runtime item list fails loudly, never truncates; declared
@@ -412,8 +446,8 @@ allowed_side_effects, max_nodes, max_repair_rounds, prompt_template=)` — the t
 (catalog → LLM → parse → TARGET-registry validation → bounded repair → loud fail) composed over
 `StructuredLLMNode`, so model binding, budgets, per-attempt usage, prompt/response observation, and
 repair are ONE mechanic; the returned spec carries the CANONICAL typed firewall marker
-`CapabilitySpec.is_flow_author=True` (the legacy `metadata["flow_author"]`/handler-attribute reads
-were removed in v0.9). Authoring and execution validate against the SAME effective limits:
+`CapabilitySpec.is_flow_author=True`; BOTH firewall halves are typed fields in v0.9 —
+`CapabilitySpec.is_planner` replaced the stringly `metadata["planner"]`/handler-attribute reads too. Authoring and execution validate against the SAME effective limits:
 `run_authored_flow` re-validates under the CURRENT target profile, so a stale artifact authored
 under looser bounds is rejected before any item capability starts. Two-engine handoff (author
 engine emits, peer engine validates+runs) is test-locked.
@@ -558,7 +592,7 @@ requires a deliberate, user-approved decision — never drift:
 | Workflow memory T1 | **[BUILT/PARTIAL]** `AgentMemory` seam, `FullReplayMemory`, `ImageEvictingMemory`, `MemoryStore`, `MemoryNamespace(product, tenant, subject, kind)`, `InMemoryMemoryStore`, canonical modes `full_replay` / `image_evicting`, and S0 snapshot/resume determinism proof | Keep memory as prompt input, never control. Do not add aliases or hidden model calls. |
 | Workflow memory T2 prompt policies | **[BUILT v0.8.0; HARDENED v0.8.1]** `StructuredStateMemory` + `WindowedMemory` + `CompactingMemory` + per-node `memory=` selection (GoPro P1 named-consumer request; AC-S1..S6 test-locked) | Shared fail-closed byte-safety validation traverses Pydantic/dataclass/computed/private fields, mappings, concrete containers, scalar subclasses, enum values, exception args, partial args, and object attributes; raw bytes/media transport, actual rendered data-URI media, iterators, unsafe keys, unsafe wrapper values, and opaque/arbitrary custom objects fail loudly. Reducers emit dict/list/scalar/value objects or evidence refs, not domain objects by repr. Memory stays input-never-control; compactor is code; unsafe `compacting(inner=structured_state)` fails loudly — use `structured_state(base=compacting)` |
 | Workflow memory T3 | **[INTENDED/deferred]** durable stores, semantic search, LangGraphStore adapter, planner/subworkflow/project scopes | Named consumer + replay/privacy/budget proof, as before |
-| `FlowArtifact` v1.5a (authorable bounded fanout + turnkey author factory) | **[BUILT v0.9.0]** §6 — max_items REQUIRED, reject-never-clamp, two-engine handoff test-locked | Shipped; v1.5 remainder below |
+| `FlowArtifact` v1.5a (authorable bounded fanout + turnkey author factory) | **[IMPLEMENTED on branch — pending acceptance + tag]** §6 — max_items REQUIRED, reject-never-clamp, two-engine handoff test-locked | Tag `engine-v0.9.0` flips this to BUILT; v1.5 remainder below |
 | `FlowArtifact` v1.5 remainder (authorable subworkflow + io-mapping) | [INTENDED] §6 — additive, small | After v1.5a proves out + GoPro need |
 | `ProcessArtifact` / FlowArtifact v2 | **[FUTURE / discuss-later — KEPT]** §6 endgame | Separate spec + explicit approval after v1.5 |
 | Worker-contract seam tightening | **[PARTIAL]** §5 principle live; literal envelope unification is rejected for now | Add adapter metadata only when a concrete feature needs it: memory scope, artifact expectations, cost/timeout policy, validation hooks |

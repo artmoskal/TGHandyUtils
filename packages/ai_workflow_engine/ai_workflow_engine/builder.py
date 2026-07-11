@@ -39,6 +39,7 @@ from ai_workflow_engine.models import (
     WorkflowProfile,
     WorkflowRunContext,
 )
+from ai_workflow_engine.byte_safety import assert_byte_safe
 from ai_workflow_engine.flow_authoring import FlowArtifact, build_definition_from_artifact
 from ai_workflow_engine.prompt_rendering import PromptRenderService
 from ai_workflow_engine.observation_bundle import open_observation_run_bundle
@@ -367,6 +368,10 @@ class WorkflowEngine:
         """
 
         flow = artifact if isinstance(artifact, FlowArtifact) else FlowArtifact.model_validate(artifact)
+        # R7: the PUBLIC execution entry validates the COMPLETE artifact — goal, node fields,
+        # metadata — before any compile, trace, or bundle write. The author factory's output
+        # guard protects only factory-authored artifacts; this one protects everything.
+        assert_byte_safe(flow.model_dump(), mode="prompt", path="authored_flow")
         allowed: List[str] = []
         if self.default_profile is not None:
             allowed = list(self.default_profile.safety.allowed_side_effects)
@@ -380,18 +385,19 @@ class WorkflowEngine:
             # these are the limits the flow will actually run under.
             limits=self.default_profile.limits if self.default_profile is not None else None,
         )
-        self.trace_sink.record(
-            WorkflowTraceEvent(
-                node=definition.workflow_id,
-                decision="flow:authored",
-                metadata={
-                    "flow_id": flow.flow_id,
-                    "goal": flow.goal,
-                    "nodes": [f"{n.kind}:{n.id}" for n in flow.nodes],
-                },
-            )
+        # R7: provenance belongs to the RUN — the event is recorded inside the run session
+        # (run-id stamped, present in result.trace and the observation bundle), never as an
+        # orphan on the global sink before the run exists.
+        provenance = WorkflowTraceEvent(
+            node=definition.workflow_id,
+            decision="flow:authored",
+            metadata={
+                "flow_id": flow.flow_id,
+                "goal": flow.goal,
+                "nodes": [f"{n.kind}:{n.id}" for n in flow.nodes],
+            },
         )
-        return await self.run(definition, payload, **run_kwargs)
+        return await self.run(definition, payload, intro_trace_events=[provenance], **run_kwargs)
 
     # ---------------------------------------------------------------- execution
     async def run(
@@ -407,6 +413,7 @@ class WorkflowEngine:
         recursion_limit: Optional[int] = None,
         observation_bundle: Any = None,
         terminal_status: Optional[Any] = None,
+        intro_trace_events: Optional[List[WorkflowTraceEvent]] = None,
     ) -> WorkflowRunResult:
         definition = self._resolve(workflow)
         context = self._run_context_for(
@@ -438,6 +445,7 @@ class WorkflowEngine:
             recursion_limit=recursion_limit,
             observation_bundle=observation_bundle,
             terminal_status=terminal_status,
+            intro_trace_events=intro_trace_events,
         )
 
     async def resume(

@@ -574,3 +574,78 @@ def test_estimate_text_tokens_counts_chat_message_content_not_repr():
     )
     estimate = estimate_text_tokens([tooled])
     assert 15 <= estimate <= 40  # content+arguments based, not str(repr) of the whole model
+
+
+# ------------------------------ Phase R8: failed routed-call attribution parity
+
+
+async def test_failed_routed_plain_callable_reports_routed_model_and_profile():
+    """R8 (review finding #20): when a ModelProfile routes the client, the FAILED-attempt
+    usage event must carry the routed model/profile identity — not the node's default model."""
+
+    from ai_workflow_engine import ModelProfile
+    from ai_workflow_engine.model_binding import model_profile_scope
+
+    class ExplodingRoutedClient:
+        provider_label = "chatgpt_browser"
+
+        async def __call__(self, request: LLMRequest) -> LLMResponse:
+            raise RuntimeError("routed transport down")
+
+    node = StructuredLLMNode(
+        name="routed_exploder",
+        config=object(),
+        output_model=Label,
+        prompt_template="Classify {item}.",
+        input_variables=["item"],
+        llm_factory=lambda config, model, temperature: ExplodingRoutedClient(),
+    )
+    usage_context = WorkflowUsageContext(
+        WorkflowRunContext(workflow_id="wf", workflow_type="budget"),
+        WorkflowUsageSummary(),
+        WorkflowBudget(),
+    )
+    routed = ModelProfile(name="browser_route", provider="chatgpt_browser", model="routed-model")
+
+    with workflow_usage_scope(usage_context):
+        with model_profile_scope(routed):
+            with pytest.raises(Exception, match="routed transport down"):
+                await node.run({"item": "q"})
+
+    failed = [e for e in usage_context.summary.events if e.success is False]
+    assert failed, "routed failure left no usage event"
+    event = failed[0]
+    assert event.model == "routed-model", "failure must carry the ROUTED model, not the default"
+    assert event.provider == "chatgpt_browser"
+    assert event.metadata["model_profile"] == "browser_route"
+    assert event.total_tokens == 0 and event.estimated_usd is None
+
+
+async def test_failed_anonymous_callable_keeps_fallback_attribution():
+    """Regression pair: non-profile callables retain the current fallback identity."""
+
+    class ExplodingCallable:
+        async def __call__(self, request: LLMRequest) -> LLMResponse:
+            raise RuntimeError("plain transport down")
+
+    node = StructuredLLMNode(
+        name="anon_exploder",
+        config=object(),
+        output_model=Label,
+        prompt_template="Classify {item}.",
+        input_variables=["item"],
+        llm=ExplodingCallable(),
+    )
+    usage_context = WorkflowUsageContext(
+        WorkflowRunContext(workflow_id="wf", workflow_type="budget"),
+        WorkflowUsageSummary(),
+        WorkflowBudget(),
+    )
+
+    with workflow_usage_scope(usage_context):
+        with pytest.raises(Exception, match="plain transport down"):
+            await node.run({"item": "q"})
+
+    event = [e for e in usage_context.summary.events if e.success is False][0]
+    assert event.provider == "custom"
+    assert "model_profile" not in event.metadata

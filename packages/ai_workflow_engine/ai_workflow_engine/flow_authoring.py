@@ -13,9 +13,9 @@ after compilation it runs through the same executor, preflight, budgets, and tra
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Literal, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
 from ai_workflow_engine.byte_safety import assert_byte_safe
 from ai_workflow_engine.models import CapabilitySpec, RuntimeLimits
@@ -33,20 +33,31 @@ from ai_workflow_engine.workflow import (
 )
 
 
-class FlowNodeSpec(BaseModel):
-    """One node in an AI-authored flow. Kinds are a deliberate subset of the engine's.
+# FlowArtifact nodes are a Pydantic-native DISCRIMINATED union (R6): each kind admits ONLY its
+# own fields (extra="forbid"), so per-kind field discipline lives in the schema itself and an
+# ordinary `model_dump()` → `model_validate()` round-trip is loss- and surprise-free — no
+# caller-sensitive `model_fields_set` inspection, no hidden `exclude_unset` serialization ritual.
 
-    Unknown fields are FORBIDDEN: an AI's typo'd field must fail validation (and feed the
-    repair loop), never silently disappear.
-    """
+
+class StepFlowNode(BaseModel):
+    """Authored step: run one registered capability (defaults to the node id)."""
 
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal["step", "branch", "evaluate", "fanout"] = "step"
+    kind: Literal["step"] = "step"
     id: str
-    capability: Optional[str] = None          # step: defaults to id; branch: the decider;
-                                              # evaluate: the evaluator; fanout: the per-item cap
-    target: Optional[str] = None              # evaluate: the evaluated capability
+    capability: Optional[str] = None
+    model_profile: Optional[str] = None
+
+
+class BranchFlowNode(BaseModel):
+    """Authored decision state: the decider capability picks among declared labels."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["branch"]
+    id: str
+    capability: Optional[str] = None          # the decider; defaults to the node id
     branches: Dict[str, str] = Field(default_factory=dict)
     # Pre-set gates for authored loops: a label that closes a cycle MUST carry a bound here
     # (the engine's cycle-gate validation rejects it otherwise); optionally map a bounded label
@@ -56,48 +67,73 @@ class FlowNodeSpec(BaseModel):
     # Self-description per label ("take when ..."): flows into Transition.description so authored
     # machines are navigable by machine card exactly like hand-written ones.
     describe: Dict[str, str] = Field(default_factory=dict)
+    model_profile: Optional[str] = None
+
+
+class EvaluateFlowNode(BaseModel):
+    """Authored evaluator gate over an earlier capability, with bounded reject policy."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["evaluate"]
+    id: str
+    capability: Optional[str] = None          # the evaluator; defaults to the node id
+    target: Optional[str] = None              # the evaluated capability
     on_reject: Optional[Literal["retry", "retrace", "fallback"]] = None
     retrace_to: Optional[str] = None
     fallback: Optional[str] = None
     max_attempts: int = 2
     max_retrace: int = 1
     model_profile: Optional[str] = None
-    # kind="fanout" (FlowArtifact v1.5a): bounded per-item parallelism. ``max_items`` is
-    # REQUIRED for authored fanout — AI-chosen parallelism is cost-bounded by construction
-    # (settled decision 3/5); an oversize runtime list fails loudly, never truncates.
+
+
+class FanoutFlowNode(BaseModel):
+    """Authored bounded fan-out (v1.5a): ``max_items`` is REQUIRED by validation — AI-chosen
+    parallelism is cost-bounded by construction; oversize runtime lists fail loudly."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["fanout"]
+    id: str
+    capability: Optional[str] = None          # the per-item capability; defaults to the node id
     items_key: Optional[str] = None
     max_parallel: Optional[int] = None
     output_key: Optional[str] = None
     max_items: Optional[int] = None
 
 
+FlowNode = Annotated[
+    Union[StepFlowNode, BranchFlowNode, EvaluateFlowNode, FanoutFlowNode],
+    Field(discriminator="kind"),
+]
+
+_FLOW_NODE_ADAPTER: TypeAdapter = TypeAdapter(FlowNode)
+
+
+def FlowNodeSpec(**data: Any) -> Any:
+    """Construct one authored-flow node (public compat constructor over the union).
+
+    ``FlowNodeSpec(kind="step", id="x")`` keeps working and returns the kind-specific model;
+    ``kind`` defaults to ``"step"`` as before.
+    """
+
+    data.setdefault("kind", "step")
+    return _FLOW_NODE_ADAPTER.validate_python(data)
+
+
 class FlowArtifact(BaseModel):
-    """Checkpoint-safe, validated-before-compiled description of an authored workflow."""
+    """Checkpoint-safe, validated-before-compiled description of an authored workflow.
+
+    Nodes are a discriminated union — a plain ``model_dump()``/``model_dump_json()`` round-trips
+    through ``model_validate``/``model_validate_json`` without changing validity (R6 contract).
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     flow_id: str
     goal: str = ""
-    nodes: List[FlowNodeSpec]
+    nodes: List[FlowNode]
     metadata: Dict[str, Any] = Field(default_factory=dict)
-
-
-# Per-kind field discipline (validated via ``model_fields_set`` so defaults never trip it):
-# irrelevant fields are rejected in BOTH directions — a fanout carrying branch fields is as
-# invalid as a step carrying fanout fields.
-_FIELDS_BY_KIND: Dict[str, set] = {
-    "step": {"kind", "id", "capability", "model_profile"},
-    "branch": {
-        "kind", "id", "capability", "branches", "branch_bounds", "branch_exhausted",
-        "describe", "model_profile",
-    },
-    "evaluate": {
-        "kind", "id", "capability", "target", "on_reject", "retrace_to", "fallback",
-        "max_attempts", "max_retrace", "model_profile",
-    },
-    # No model_profile on fanout: the runtime fanout node binds the ITEM capability instead.
-    "fanout": {"kind", "id", "capability", "items_key", "max_parallel", "output_key", "max_items"},
-}
 
 
 def build_definition_from_artifact(
@@ -189,9 +225,11 @@ def _validate_flow_node(
 ) -> list[str]:
     label = f"node '{spec.id}'"
     errors: list[str] = []
-    errors.extend(_validate_kind_fields(spec))
-    if spec.model_profile and spec.model_profile not in model_profiles:
-        errors.append(f"{label}: unknown model profile '{spec.model_profile}'")
+    # Per-kind field discipline lives in the SCHEMA now (discriminated union, extra="forbid"
+    # per kind) — no runtime model_fields_set inspection (R6). Fanout has no model_profile.
+    model_profile = getattr(spec, "model_profile", None)
+    if model_profile and model_profile not in model_profiles:
+        errors.append(f"{label}: unknown model profile '{model_profile}'")
     if spec.kind == "step":
         errors.extend(
             _validate_authored_capability(
@@ -205,20 +243,6 @@ def _validate_flow_node(
     elif spec.kind == "fanout":
         errors.extend(_validate_fanout_spec(spec, registry, allowed_side_effects, limits))
     return errors
-
-
-def _validate_kind_fields(spec: FlowNodeSpec) -> list[str]:
-    """Both-direction field discipline: explicitly-set fields foreign to the node's kind are
-    rejected (a fanout carrying branch wiring is as invalid as a step carrying items_key)."""
-
-    allowed = _FIELDS_BY_KIND[spec.kind]
-    irrelevant = sorted(spec.model_fields_set - allowed)
-    if irrelevant:
-        return [
-            f"node '{spec.id}': field(s) {', '.join(irrelevant)} are not valid for kind "
-            f"'{spec.kind}'"
-        ]
-    return []
 
 
 def _validate_fanout_spec(
@@ -494,7 +518,6 @@ def build_flow_author_capability(
     effective_limits = limits if isinstance(limits, RuntimeLimits) else _DEFAULT_LIMITS
     parallel_cap = effective_limits.max_parallel_children
     items_cap = effective_limits.max_authored_fanout_items
-    catalog = render_capability_catalog(registry, effective_allowed)
 
     def _validate_against_target(artifact: FlowArtifact) -> None:
         # Raises WorkflowValidationError with the FULL error list — the structured node feeds
@@ -533,6 +556,10 @@ def build_flow_author_capability(
         # the goal hole the adversarial review found).
         assert_byte_safe(request.goal, mode="prompt", path="flow_author.goal")
         assert_byte_safe(request.context, mode="prompt", path="flow_author.context")
+        # R9 — one coherent target contract: the catalog is rendered AT EACH INVOCATION from
+        # the SAME live registry the validator compiles against. A construction-time snapshot
+        # advertised capabilities that validation no longer agreed on (and hid new ones).
+        catalog = render_capability_catalog(registry, effective_allowed)
         artifact = await node.run(
             {
                 "goal": request.goal,
@@ -543,9 +570,9 @@ def build_flow_author_capability(
                 "max_parallel_cap": parallel_cap,
             }
         )
-        # exclude_unset: dump ONLY what the author actually wrote. A full dump would mark every
-        # default as explicitly-set on re-validation and trip the per-kind field discipline.
-        artifact_dict = artifact.model_dump(exclude_unset=True)
+        # Canonical plain dump (R6): the discriminated schema round-trips ordinary
+        # serialization — no caller-facing exclude_unset ritual.
+        artifact_dict = artifact.model_dump()
         assert_byte_safe(artifact_dict, mode="prompt", path="flow_author.artifact")
         return artifact_dict
 

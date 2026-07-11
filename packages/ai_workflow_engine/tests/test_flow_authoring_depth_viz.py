@@ -383,17 +383,20 @@ async def test_authored_unknown_fields_are_forbidden():
 
 
 async def test_irrelevant_per_kind_fields_rejected_both_directions():
+    """R6: per-kind field discipline lives in the discriminated SCHEMA — foreign fields fail
+    pydantic validation with a useful location, in both directions."""
+
     engine, _ = _fanout_engine()
 
     step_with_fanout_fields = {
         "flow_id": "bad_step",
         "nodes": [{"kind": "step", "id": "collect", "items_key": "x", "max_items": 3}],
     }
-    with pytest.raises(WorkflowValidationError, match="not valid for kind 'step'"):
+    with pytest.raises(_PydanticValidationError, match="items_key"):
         await engine.run_authored_flow(step_with_fanout_fields, {})
 
     fanout_with_branch_fields = _fanout_artifact(branches={"x": "collect"})
-    with pytest.raises(WorkflowValidationError, match="not valid for kind 'fanout'"):
+    with pytest.raises(_PydanticValidationError, match="branches"):
         await engine.run_authored_flow(fanout_with_branch_fields, {})
 
 
@@ -848,3 +851,179 @@ async def test_unknown_placeholder_in_override_fails_before_provider():
     assert result.status == "failed"
     assert "nonexistent_var" in (result.error or "")
     assert llm.requests == [], "template errors must never reach the provider"
+
+
+# --------------------------------- Phase R6: normal serializable discriminated FlowArtifact
+
+
+def _per_kind_artifact() -> FlowArtifact:
+    return FlowArtifact(
+        flow_id="round_trip",
+        goal="cover every kind",
+        nodes=[
+            {"kind": "step", "id": "fetch"},
+            {"kind": "branch", "id": "route",
+             "branches": {"long": "summarize", "short": "expand"},
+             "branch_bounds": {"long": 2}, "describe": {"long": "take when long"}},
+            {"kind": "step", "id": "summarize"},
+            {"kind": "evaluate", "id": "gate", "target": "summarize", "on_reject": "retry"},
+            {"kind": "step", "id": "expand"},
+            {"kind": "fanout", "id": "spread", "capability": "analyze",
+             "items_key": "fetch.frames", "max_parallel": 2, "max_items": 5},
+        ],
+        metadata={"origin": "test"},
+    )
+
+
+def test_flow_artifact_ordinary_round_trip_preserves_validity_and_equality():
+    """R6 (review finding #17): model_dump()->model_validate() and the JSON pair must
+    round-trip EVERY node kind without changing validity — no exclude_unset ritual."""
+
+    artifact = _per_kind_artifact()
+
+    via_python = FlowArtifact.model_validate(artifact.model_dump())
+    via_json = FlowArtifact.model_validate_json(artifact.model_dump_json())
+
+    assert via_python == artifact
+    assert via_json == artifact
+    # the round-tripped artifact still validates against a registry with these capabilities
+    kinds = [node.kind for node in via_python.nodes]
+    assert kinds == ["step", "branch", "step", "evaluate", "step", "fanout"]
+
+
+async def test_round_tripped_artifact_executes_on_peer_engine():
+    """The serialized handoff: dump on engine A's side, validate+run on engine B."""
+
+    processing, analyzed = _fanout_engine(fail_on=None)
+    artifact = FlowArtifact.model_validate(_fanout_artifact())
+
+    wire_dict = artifact.model_dump()
+    rehydrated = FlowArtifact.model_validate_json(artifact.model_dump_json())
+    assert rehydrated == artifact
+
+    result = await processing.run_authored_flow(wire_dict, {"source": "camera"})
+
+    assert result.status == "completed"
+    assert sorted(analyzed) == ["a", "b", "c"]
+
+
+def test_flow_node_spec_compat_constructor_returns_kind_models():
+    step = FlowNodeSpec(id="s")  # kind defaults to step, as before
+    fanout = FlowNodeSpec(kind="fanout", id="f", items_key="x.items", max_items=3)
+
+    assert step.kind == "step" and type(step).__name__ == "StepFlowNode"
+    assert fanout.kind == "fanout" and fanout.max_items == 3
+
+
+# ------------------------------ Phase R7: run-scoped provenance + direct-entry byte-safety
+
+
+async def test_flow_authored_provenance_lives_inside_the_run():
+    """R7 (review finding #18): flow:authored is recorded THROUGH the run session —
+    run-id stamped, present in result.trace, and never an orphan on the global sink."""
+
+    processing, _ = _fanout_engine(fail_on=None)
+
+    result = await processing.run_authored_flow(_fanout_artifact(), {"source": "cam"})
+
+    in_result = [e for e in result.trace if e.decision == "flow:authored"]
+    assert len(in_result) == 1, "exactly one provenance event in the run result"
+    assert in_result[0].run_id, "provenance must carry the run id"
+    assert in_result[0].metadata["flow_id"] == "frame_scan"
+
+    in_global = [e for e in processing.trace_sink.events if e.decision == "flow:authored"]
+    assert len(in_global) == 1, "no orphan duplicate on the global sink"
+    assert in_global[0].run_id == in_result[0].run_id
+
+
+async def test_flow_authored_provenance_reaches_the_observation_bundle(tmp_path):
+    from ai_workflow_engine import ObservationConfig, WorkflowEngineBuilder as _WEB
+
+    builder = _WEB()
+    builder.register_capability(
+        "collect", lambda ctx, p: {"frames": ["a"]}, kind="deterministic"
+    )
+    builder.register_capability("analyze", lambda ctx, item: f"ok:{item}", kind="deterministic")
+    profile = WorkflowProfile(
+        workflow_type="fanout_authoring",
+        limits=_RuntimeLimits(),
+        safety=SafetyPolicy(allowed_side_effects=["read_only"]),
+    )
+    engine = builder.with_profile(profile).with_observation(
+        ObservationConfig(enabled=True, bundle_dir=str(tmp_path / "bundles"))
+    ).build()
+
+    result = await engine.run_authored_flow(_fanout_artifact(), {"source": "cam"})
+
+    assert result.observation_bundle_path
+    from pathlib import Path as _P
+
+    trace_lines = (_P(result.observation_bundle_path) / "trace.jsonl").read_text()
+    assert "flow:authored" in trace_lines, "provenance must be part of the run's bundle"
+
+
+async def test_direct_run_authored_flow_rejects_unsafe_artifact_before_anything(tmp_path):
+    """R7 (review finding #19): the PUBLIC execution entry validates the complete artifact —
+    a data-URI goal or byte-bearing metadata fails before compile, trace, or bundle writes."""
+
+    from ai_workflow_engine import ObservationConfig, WorkflowEngineBuilder as _WEB
+
+    builder = _WEB()
+    builder.register_capability(
+        "collect", lambda ctx, p: {"frames": ["a"]}, kind="deterministic"
+    )
+    builder.register_capability("analyze", lambda ctx, item: item, kind="deterministic")
+    profile = WorkflowProfile(
+        workflow_type="fanout_authoring",
+        limits=_RuntimeLimits(),
+        safety=SafetyPolicy(allowed_side_effects=["read_only"]),
+    )
+    bundles = tmp_path / "bundles"
+    engine = builder.with_profile(profile).with_observation(
+        ObservationConfig(enabled=True, bundle_dir=str(bundles))
+    ).build()
+
+    unsafe_goal = _fanout_artifact()
+    unsafe_goal["goal"] = "data:image/png;base64,AAAA"
+    with pytest.raises(ValueError, match="data URI"):
+        await engine.run_authored_flow(unsafe_goal, {})
+
+    unsafe_meta = _fanout_artifact()
+    unsafe_meta["metadata"] = {"thumb": b"raw-bytes"}
+    with pytest.raises((ValueError, _PydanticValidationError)):
+        await engine.run_authored_flow(unsafe_meta, {})
+
+    assert not bundles.exists(), "no bundle may be opened for a rejected unsafe artifact"
+    assert engine.trace_sink.events == [], "no trace event may precede artifact validation"
+
+
+# ------------------------------------ Phase R9: catalog/validator one coherent target contract
+
+
+async def test_capability_registered_after_factory_is_visible_and_authorable():
+    """R9 (review finding #21): the prompt catalog renders per invocation from the SAME live
+    registry validation uses — late registrations are advertised AND validate."""
+
+    processing, analyzed = _fanout_engine(fail_on=None)
+    artifact_using_late_cap = _good_artifact_json().replace(
+        '"capability": "analyze"', '"capability": "late_analyzer"'
+    )
+    llm = ScriptedAuthorLLM([artifact_using_late_cap])
+    author_engine, _spec = _author_engine_for(processing, llm)
+
+    # capability arrives AFTER build_flow_author_capability() was constructed
+    processing.register_capability(
+        "late_analyzer", lambda ctx, item: f"late:{item}", kind="deterministic"
+    )
+
+    authored = await author_engine.run("authoring", {"goal": "scan", "context": {}})
+
+    assert authored.status == "completed", (
+        "validation must accept the late capability the catalog now advertises"
+    )
+    assert "late_analyzer" in llm.requests[0].user, (
+        "the prompt catalog must include capabilities registered after factory construction"
+    )
+    executed = await processing.run_authored_flow(authored.output, {})
+    assert executed.status == "completed"
+    assert sorted(executed.output) == ["late:a", "late:b", "late:c"]
