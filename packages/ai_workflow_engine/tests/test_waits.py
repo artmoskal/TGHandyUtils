@@ -820,3 +820,61 @@ async def test_registration_failure_projects_a_failed_node_in_the_bundle(tmp_pat
         if e.metadata.get("failure_kind") == "wait_registration_failed"
     ]
     assert failure_events, "the typed failure kind must be in the bundle"
+
+
+# ================================================== W2A: lifecycle ownership boundary
+
+
+def test_wait_runtime_never_imports_the_executor():
+    """W2A.3: the lifecycle service is executor-free by construction — the resume path is
+    an injected port; a compile-time fake satisfies it without any executor import."""
+
+    import ast
+    from pathlib import Path
+
+    import ai_workflow_engine.wait_runtime as wait_runtime_module
+    from ai_workflow_engine.wait_runtime import ClaimedResumePort
+
+    tree = ast.parse(Path(wait_runtime_module.__file__).read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module and "executor" in node.module:
+            raise AssertionError(f"wait_runtime imports executor: {node.module}")
+        if isinstance(node, ast.Import) and any("executor" in a.name for a in node.names):
+            raise AssertionError("wait_runtime imports executor")
+
+    class FakeResumePort:
+        async def __call__(self, snapshot_json: str, event):
+            return {"resumed": True}
+
+    assert isinstance(FakeResumePort(), ClaimedResumePort)
+
+
+async def test_registration_mechanics_live_in_the_lifecycle_service():
+    """W2A.2: identity/reuse/receipt validation are the SERVICE's — callable without any
+    executor; W2 behavior stays identical through the delegation (covered by the whole
+    W2/W2R suite running unchanged in this same file)."""
+
+    from datetime import timedelta
+
+    from ai_workflow_engine import InMemoryWaitCoordinator
+    from ai_workflow_engine.snapshot import MachineSnapshot
+    from ai_workflow_engine.wait_runtime import DurableWaitRuntime, WaitRegistrationRequest
+
+    clock = _clock()
+    runtime = DurableWaitRuntime(InMemoryWaitCoordinator(clock=clock), clock=clock)
+    snapshot_json = MachineSnapshot(
+        workflow_id="wf", suspended_node="gate", node_status={}, routes={},
+        node_results=[], artifacts=[],
+    ).model_dump_json()
+    request = WaitRegistrationRequest(
+        run_id="run-1", workflow_id="wf", definition_digest="abc123", suspended_node="gate",
+        occurrence=0, policy=DurableWaitPolicy(timeout_s=60), snapshot_json=snapshot_json,
+    )
+
+    first = await runtime.register_suspension(request)
+    assert first.reused is False
+    assert first.handle.wait_id == "run-1--gate--0"
+    assert first.deadline_at == clock() + timedelta(seconds=60)
+
+    again = await runtime.register_suspension(request)
+    assert again.reused is True and again.handle.wait_id == first.handle.wait_id

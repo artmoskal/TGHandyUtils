@@ -225,6 +225,7 @@ def test_branch_without_inject_machine_keeps_describe_optional():
 
 FORBIDDEN_SIMPLE_TIER_MODULES = [
     "ai_workflow_engine.waits",
+    "ai_workflow_engine.wait_runtime",
     "ai_workflow_engine.memory",
     "ai_workflow_engine.flow_authoring",
     "ai_workflow_engine.vision",
@@ -400,6 +401,10 @@ def test_engine_package_has_no_module_level_import_cycles():
     LAYER_FORBIDDEN = {
         "ai_workflow_engine.transport_models": ("ai_workflow_engine.vision", "ai_workflow_engine.llm_protocol", "ai_workflow_engine.engine"),
         "ai_workflow_engine.llm_protocol": ("ai_workflow_engine.vision", "ai_workflow_engine.engine"),
+        # W2A.3: the lifecycle service must NEVER import machine execution — the resume
+        # path is an injected port, not an import.
+        "ai_workflow_engine.wait_runtime": ("ai_workflow_engine.executor",),
+        "ai_workflow_engine.waits": ("ai_workflow_engine.executor",),
     }
     layering = [
         f"{module} -> {edge}"

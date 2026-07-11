@@ -180,9 +180,11 @@ class WorkflowEngine:
 
     @property
     def wait_coordinator(self) -> Any:
-        """Read-only view of the composed durable-wait coordinator (owner: executor)."""
+        """Read-only view of the composed durable-wait coordinator (owner: the executor's
+        DurableWaitRuntime lifecycle service)."""
 
-        return getattr(self.executor, "wait_coordinator", None)
+        runtime = getattr(self.executor, "wait_runtime", None)
+        return runtime.coordinator if runtime is not None else None
 
     @property
     def prompt_renderer(self) -> "PromptRenderService":
@@ -803,7 +805,11 @@ class WorkflowEngineBuilder:
             engine.register_workflow(definition, profile=profile)
         coordinator = getattr(self, "_wait_coordinator", None)
         if coordinator is not None:
-            # W2R.1: ONE owner — the executor; the engine exposes a read-only delegate.
-            engine.executor.wait_coordinator = coordinator
-            engine.executor.wait_clock = getattr(self, "_wait_clock", None)
+            # W2A: ONE lifecycle owner — DurableWaitRuntime on the executor; the engine
+            # exposes a read-only delegate. Only wait-selecting products pay this import.
+            from ai_workflow_engine.wait_runtime import DurableWaitRuntime  # call-time
+
+            engine.executor.wait_runtime = DurableWaitRuntime(
+                coordinator, clock=getattr(self, "_wait_clock", None)
+            )
         return engine

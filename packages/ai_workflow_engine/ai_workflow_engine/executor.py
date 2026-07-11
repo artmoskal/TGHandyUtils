@@ -882,7 +882,7 @@ class WorkflowExecutor:
             return "; ".join(structural)
         for node in definition.nodes:
             if (node.wait_policy or {}).get("mode") == "durable" and (
-                getattr(self, "wait_coordinator", None) is None
+                getattr(self, "wait_runtime", None) is None
             ):
                 # W2.1: durable waits execute ONLY with a configured coordinator — fail
                 # before any capability runs; local/no-wait workflows need zero wait config.
@@ -1053,27 +1053,19 @@ class WorkflowExecutor:
         policy_dict = node.wait_policy or {}
         if policy_dict.get("mode") != "durable":
             return None
-        coordinator = getattr(self, "wait_coordinator", None)
-        if coordinator is None:
+        wait_runtime = getattr(self, "wait_runtime", None)
+        if wait_runtime is None:
             raise RuntimeError(
                 f"durable wait '{suspended}' suspended without a configured WaitCoordinator"
             )
-        from datetime import datetime, timedelta, timezone
-
         from ai_workflow_engine.byte_safety import assert_byte_safe
-        from ai_workflow_engine.waits import DurableWaitPolicy, WaitReceipt, WaitRecord
+        from ai_workflow_engine.wait_runtime import WaitRegistrationRequest
+        from ai_workflow_engine.waits import DurableWaitPolicy
 
         policy = DurableWaitPolicy.model_validate(policy_dict)
         snapshot = self._build_snapshot(definition, suspended, final_state)
-        snapshot_payload = snapshot.model_dump()
-        assert_byte_safe(snapshot_payload, mode="persist", path="durable_wait.snapshot")
-        # W2R.2: ONE durable-wait time source — engine record stamps and coordinator
-        # due/health share the injected clock (UTC now by default).
-        wait_clock = getattr(self, "wait_clock", None)
-        now = wait_clock() if wait_clock is not None else datetime.now(timezone.utc)
+        assert_byte_safe(snapshot.model_dump(), mode="persist", path="durable_wait.snapshot")
         run_id = str(context.run_context.workflow_id)
-        # W2R.3: DETERMINISTIC identity — retrying the SAME logical suspension reuses one
-        # registration; a LATER occurrence of the same node gets a distinct index.
         occurrence = max(
             0,
             sum(
@@ -1083,65 +1075,40 @@ class WorkflowExecutor:
             )
             - 1,  # the CURRENT suspension is already recorded; index prior ones
         )
-        wait_id = f"{run_id}--{suspended}--{occurrence}"
-        existing = await coordinator.get(wait_id)
-        if existing is not None:
-            # crash-after-register retry: reuse the committed registration untouched
-            record = existing
-        else:
-            record = WaitRecord(
-                wait_id=wait_id,
+        # W2A.2: identity, reuse, receipt validation, and clock live in ONE lifecycle
+        # owner; the executor detects, builds the snapshot, delegates, and records.
+        outcome = await wait_runtime.register_suspension(
+            WaitRegistrationRequest(
                 run_id=run_id,
                 workflow_id=definition.workflow_id,
+                definition_digest=definition.definition_digest(),
                 suspended_node=suspended,
+                occurrence=occurrence,
                 policy=policy,
-                created_at=now,
-                deadline_at=now + timedelta(seconds=policy.timeout_s),
+                snapshot_json=snapshot.model_dump_json(),
             )
-            raw_receipt = await coordinator.register(record, snapshot.model_dump_json())
-            # W2R.1: the attestation boundary is the CLOSED model — duck objects with
-            # matching attributes are not receipts.
-            receipt = (
-                raw_receipt
-                if isinstance(raw_receipt, WaitReceipt)
-                else WaitReceipt.model_validate(raw_receipt)
-            )
-            if (
-                receipt.wait_id != record.wait_id
-                or receipt.wait_version != record.version
-                or receipt.accepted_deadline != record.deadline_at
-            ):
-                raise RuntimeError(
-                    f"wait registration attestation mismatch for '{suspended}': "
-                    f"{receipt.registration_id!r} does not echo the registered wait"
-                )
+        )
         self.runtime.trace_sink.record(
             WorkflowTraceEvent(
                 node=suspended,
-                decision="wait:registered" if existing is None else "wait:registration_reused",
+                decision="wait:registration_reused" if outcome.reused else "wait:registered",
                 run_id=run_id,
                 metadata={
-                    "wait_id": record.wait_id,
-                    "deadline_at": record.deadline_at.isoformat(),
+                    "wait_id": outcome.handle.wait_id,
+                    "deadline_at": outcome.deadline_at.isoformat(),
                     **(
                         {
-                            "adapter_id": receipt.adapter_id,
-                            "registration_id": receipt.registration_id,
+                            "adapter_id": outcome.adapter_id,
+                            "registration_id": outcome.registration_id,
                         }
-                        if existing is None
+                        if not outcome.reused
                         else {}
                     ),
                 },
             )
         )
-        return WaitHandle(
-            wait_id=record.wait_id,
-            run_id=record.run_id,
-            workflow_id=record.workflow_id,
-            suspended_node=suspended,
-            deadline_at=record.deadline_at,
-            status="pending",
-        )
+        return outcome.handle
+
 
     def _envelope(
         self,
