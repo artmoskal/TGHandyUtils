@@ -20,7 +20,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Dict, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 
 __all__ = [
     "WAIT_STATUSES",
@@ -45,8 +45,8 @@ WaitStatus = Literal["pending", "claimed", "completed", "failed", "cancelled"]
 ResolutionKind = Literal["signal", "timeout"]
 
 
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class LocalWaitPolicy(BaseModel):
@@ -105,6 +105,17 @@ class WaitEvent(BaseModel):
     event_id: str
     payload: Any = None
 
+    @field_validator("payload")
+    @classmethod
+    def _payload_byte_safe(cls, value: Any) -> Any:
+        # W1R.1: durable coordinators PERSIST this — raw bytes/media are unrepresentable,
+        # enforced with the engine's canonical persisted-state rule.
+        if value is not None:
+            from ai_workflow_engine.byte_safety import assert_byte_safe  # dependency-light leaf
+
+            assert_byte_safe(value, mode="persist", path="wait_event.payload")
+        return value
+
     @field_validator("event_id")
     @classmethod
     def _non_empty(cls, value: str) -> str:
@@ -125,8 +136,8 @@ class WaitRecord(BaseModel):
     policy: DurableWaitPolicy
     status: WaitStatus = "pending"
     resolution_kind: Optional[ResolutionKind] = None  # set only when an event WINS (C5)
-    created_at: str = Field(default_factory=_utc_now)
-    deadline_at: str
+    created_at: AwareDatetime = Field(default_factory=_utc_now)
+    deadline_at: AwareDatetime
     version: int = Field(default=1, ge=1)
     resume_attempts: int = Field(default=0, ge=0)
 
@@ -142,7 +153,7 @@ class WaitReceipt(BaseModel):
     registration_id: str
     wait_id: str
     wait_version: int = Field(ge=1)
-    accepted_deadline: str
+    accepted_deadline: AwareDatetime
     adapter_id: str
 
 
@@ -154,8 +165,8 @@ class WaitClaim(BaseModel):
     wait_id: str
     wait_version: int = Field(ge=1)
     event_id: str
-    claimed_at: str = Field(default_factory=_utc_now)
-    lease_expires_at: Optional[str] = None
+    claimed_at: AwareDatetime = Field(default_factory=_utc_now)
+    lease_expires_at: Optional[AwareDatetime] = None
 
 
 class WaitHandle(BaseModel):
@@ -167,7 +178,7 @@ class WaitHandle(BaseModel):
     run_id: str
     workflow_id: str
     suspended_node: str
-    deadline_at: str
+    deadline_at: AwareDatetime
     status: WaitStatus = "pending"
 
 
@@ -179,4 +190,4 @@ class WaitHealth(BaseModel):
     pending: int = Field(ge=0)
     claimed: int = Field(ge=0)
     overdue: int = Field(ge=0)
-    oldest_pending_deadline: Optional[str] = None
+    oldest_pending_deadline: Optional[AwareDatetime] = None

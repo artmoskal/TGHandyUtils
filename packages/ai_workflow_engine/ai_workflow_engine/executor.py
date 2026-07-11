@@ -23,7 +23,7 @@ from contextvars import ContextVar
 import uuid
 from typing import Any, Awaitable, Callable, Dict, List, Optional, TypedDict
 
-from pydantic import model_validator, BaseModel, ConfigDict, Field
+from pydantic import field_validator, model_validator, BaseModel, ConfigDict, Field
 
 from ai_workflow_engine.engine.capabilities import (
     CapabilityCall,
@@ -159,13 +159,48 @@ class WorkflowRunResult(BaseModel):
     snapshot: Optional[MachineSnapshot] = None
     wait_handle: Optional[Any] = None
 
+    @field_validator("wait_handle")
+    @classmethod
+    def _typed_handle(cls, value: Any) -> Any:
+        # W1R.2: the handle is TYPED — arbitrary dicts cannot masquerade. Call-time import
+        # keeps the executor out of the simple-tier waits dependency (no-wait results are None).
+        if value is None:
+            return value
+        from ai_workflow_engine.waits import WaitHandle  # call-time (leaf discipline)
+
+        if isinstance(value, WaitHandle):
+            return value
+        return WaitHandle.model_validate(value)
+
     @model_validator(mode="after")
-    def _one_public_wait_door(self) -> "WorkflowRunResult":
-        if self.snapshot is not None and self.wait_handle is not None:
+    def _status_dependent_wait_door(self) -> "WorkflowRunResult":
+        return self._assert_wait_doors()
+
+    def _assert_wait_doors(self) -> "WorkflowRunResult":
+        """W1R.2 invariant: requires_user_input carries EXACTLY ONE public door (local
+        snapshot XOR durable handle); every other status carries NEITHER."""
+
+        has_snapshot = self.snapshot is not None
+        has_handle = self.wait_handle is not None
+        if self.status == "requires_user_input":
+            if has_snapshot == has_handle:  # both or neither
+                raise ValueError(
+                    "requires_user_input must carry exactly one public wait door — "
+                    f"snapshot={has_snapshot}, wait_handle={has_handle}"
+                )
+        elif has_snapshot or has_handle:
             raise ValueError(
-                "a run result may carry a LOCAL snapshot or a DURABLE wait_handle — never both"
+                f"status {self.status!r} must carry no wait door — "
+                f"snapshot={has_snapshot}, wait_handle={has_handle}"
             )
         return self
+
+    def model_copy(self, *, update: Optional[Dict[str, Any]] = None, deep: bool = False) -> "WorkflowRunResult":
+        # engine update paths (status overrides, bundle-path stamps) cannot bypass the
+        # door invariant through unchecked model_copy
+        copied = super().model_copy(update=update, deep=deep)
+        copied._assert_wait_doors()
+        return copied
 
     def node(self, node_id: str) -> Optional[NodeResult]:
         for record in reversed(self.node_results):

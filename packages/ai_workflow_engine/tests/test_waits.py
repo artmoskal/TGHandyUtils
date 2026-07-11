@@ -63,7 +63,7 @@ def test_wait_vocabulary_is_closed_and_overdue_is_not_a_status():
     assert "expired" not in WAIT_STATUSES, "resolution reason is separate from status (C5)"
     base = dict(
         wait_id="w", run_id="r", workflow_id="wf", suspended_node="n",
-        policy=DurableWaitPolicy(timeout_s=1), deadline_at="t",
+        policy=DurableWaitPolicy(timeout_s=1), deadline_at="2026-07-11T13:00:00+00:00",
     )
     with pytest.raises(ValidationError):
         WaitRecord(**base, status="overdue")
@@ -263,13 +263,111 @@ def test_run_result_never_carries_both_public_wait_doors():
         workflow_id="w", suspended_node="ask", node_status={}, routes={},
         node_results=[], artifacts=[],
     )
-    with pytest.raises(ValidationError, match="never both"):
+    with pytest.raises(ValidationError, match="exactly one public wait door"):
         WorkflowRunResult(
             workflow_id="w",
             status="requires_user_input",
             snapshot=snapshot,
             wait_handle=WaitHandle(
                 wait_id="x", run_id="r", workflow_id="w",
-                suspended_node="ask", deadline_at="t",
+                suspended_node="ask", deadline_at="2026-07-11T13:00:00+00:00",
             ),
         )
+
+
+# ------------------------------------------------- W1R: independent-gate reproducers
+
+
+def test_wait_event_payload_rejects_raw_bytes_and_media():
+    """W1R.1 (codex reproducer): durable coordinators persist the payload — raw bytes and
+    transport media are unrepresentable at model construction."""
+
+    from ai_workflow_engine import ImageInput
+
+    with pytest.raises(ValidationError):
+        WaitEvent(kind="signal", event_id="e1", payload=b"raw-bytes")
+    with pytest.raises(ValidationError):
+        WaitEvent(kind="signal", event_id="e1", payload={"nested": [b"raw"]})
+    with pytest.raises(ValidationError):
+        WaitEvent(
+            kind="signal",
+            event_id="e1",
+            payload={"img": ImageInput(source="base64", data="QUFB", media_type="image/png")},
+        )
+    ok = WaitEvent(kind="signal", event_id="e1", payload={"approved": True, "note": "fine"})
+    assert ok.payload["approved"] is True
+
+
+def test_wait_timestamps_must_be_timezone_aware_datetimes():
+    """W1R.1 (codex reproducer): 'not-a-date' and naive datetimes fail; aware ISO strings
+    parse and JSON round-trip losslessly."""
+
+    from datetime import datetime, timezone
+
+    base = dict(
+        wait_id="w", run_id="r", workflow_id="wf", suspended_node="n",
+        policy=DurableWaitPolicy(timeout_s=1),
+    )
+    with pytest.raises(ValidationError):
+        WaitRecord(**base, deadline_at="not-a-date")
+    with pytest.raises(ValidationError):
+        WaitRecord(**base, deadline_at=datetime(2026, 7, 11, 13, 0, 0))  # naive
+    record = WaitRecord(**base, deadline_at="2026-07-11T13:00:00+00:00")
+    assert record.deadline_at.tzinfo is not None
+    reloaded = WaitRecord.model_validate_json(record.model_dump_json())
+    assert reloaded == record
+    with pytest.raises(ValidationError):
+        WaitReceipt(
+            registration_id="x", wait_id="w", wait_version=1,
+            accepted_deadline="tomorrow-ish", adapter_id="a",
+        )
+    assert WaitHealth(pending=0, claimed=0, overdue=0, oldest_pending_deadline=None)
+
+
+def test_run_result_wait_door_matrix_is_status_dependent_and_typed():
+    """W1R.2 (codex reproducer): exactly-one door on requires_user_input; NO door on any
+    other status; forged dict handles rejected; model_copy cannot bypass."""
+
+    from datetime import datetime, timezone
+
+    from ai_workflow_engine.executor import WorkflowRunResult
+    from ai_workflow_engine.snapshot import MachineSnapshot
+
+    snapshot = MachineSnapshot(
+        workflow_id="w", suspended_node="ask", node_status={}, routes={},
+        node_results=[], artifacts=[],
+    )
+    handle = WaitHandle(
+        wait_id="x", run_id="r", workflow_id="w", suspended_node="ask",
+        deadline_at=datetime(2026, 7, 11, 13, 0, tzinfo=timezone.utc),
+    )
+
+    # suspended with NEITHER door
+    with pytest.raises(ValidationError, match="exactly one public wait door"):
+        WorkflowRunResult(workflow_id="w", status="requires_user_input")
+    # suspended with BOTH doors
+    with pytest.raises(ValidationError):
+        WorkflowRunResult(
+            workflow_id="w", status="requires_user_input", snapshot=snapshot, wait_handle=handle
+        )
+    # completed carrying a snapshot / failed carrying a handle
+    with pytest.raises(ValidationError, match="must carry no wait door"):
+        WorkflowRunResult(workflow_id="w", status="completed", snapshot=snapshot)
+    with pytest.raises(ValidationError, match="must carry no wait door"):
+        WorkflowRunResult(workflow_id="w", status="failed", wait_handle=handle)
+    # forged dict pretending to be a handle
+    with pytest.raises(ValidationError):
+        WorkflowRunResult(
+            workflow_id="w", status="requires_user_input", wait_handle={"anything": "goes"}
+        )
+
+    # valid local and durable envelopes serialize
+    local = WorkflowRunResult(workflow_id="w", status="requires_user_input", snapshot=snapshot)
+    durable = WorkflowRunResult(workflow_id="w", status="requires_user_input", wait_handle=handle)
+    assert local.snapshot is not None and durable.wait_handle.wait_id == "x"
+
+    # model_copy bypass is closed: flipping status away with a door attached fails loudly
+    with pytest.raises(ValueError, match="must carry no wait door"):
+        local.model_copy(update={"status": "completed"})
+    completed = local.model_copy(update={"status": "completed", "snapshot": None})
+    assert completed.status == "completed"
