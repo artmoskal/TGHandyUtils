@@ -43,6 +43,9 @@ class CliAgentRequest(BaseModel):
     )
     model: Optional[str] = None
     reasoning_effort: Optional[str] = None
+    # Q0.1: typed pre-call CLI budget cap (claude --max-budget-usd). Positive-only at the
+    # schema; None = no CLI cap. codex_exec has no such flag and rejects a set value loudly.
+    cli_max_budget_usd: Optional[float] = Field(default=None, gt=0)
     extra_argv: List[str] = Field(default_factory=list)
     subscription_mode: bool = True
     expect_json_result: bool = True

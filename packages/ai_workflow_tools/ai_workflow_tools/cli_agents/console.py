@@ -14,6 +14,7 @@ from ai_workflow_engine.llm_protocol import ChatMessage, LLMRequest, LLMResponse
 
 from .capability import parse_cli_process_output
 from .flavors import claude_p, codex_exec
+from .assembly import claude_control_argv
 from .models import CliAgentInvocation, CliFlavor
 
 logger = logging.getLogger(__name__)
@@ -48,11 +49,15 @@ class ConsoleLLMClient:
         subscription_mode: bool = True,
         extra_argv: Sequence[str] = (),
         external_runner: ExternalProcessCapability | None = None,
+        cli_max_budget_usd: float | None = None,
     ) -> None:
+        if cli_max_budget_usd is not None and cli_max_budget_usd <= 0:
+            raise ValueError(f"cli_max_budget_usd must be positive, got {cli_max_budget_usd}")
         self.flavor = flavor
         self.timeout_s = timeout_s
         self.subscription_mode = subscription_mode
         self.extra_argv = list(extra_argv)
+        self.cli_max_budget_usd = cli_max_budget_usd
         self.external_runner = external_runner or ExternalProcessCapability()
         # Usage-event attribution for the engine's plain-callable metering path.
         self.provider_label = flavor.name
@@ -78,6 +83,19 @@ class ConsoleLLMClient:
                     # Read would let hostile prompt content steer the agent into reading
                     # anything visible to the process (e.g. /app/.env in the bot container).
                     extra_argv = [*extra_argv, "--allowedTools", "Read(./inputs/**)"]
+            if self.flavor.name == claude_p.name:
+                # Q0.1: the routed profile model becomes a REAL --model argv control (the
+                # response label below reads the same source, so label == request).
+                extra_argv = [
+                    *claude_control_argv(
+                        _model_from_request(request), self.cli_max_budget_usd, extra_argv
+                    ),
+                    *extra_argv,
+                ]
+            elif self.cli_max_budget_usd is not None:
+                raise ValueError(
+                    f"{self.flavor.name} does not support cli_max_budget_usd (no CLI budget flag)"
+                )
             invocation = _build_console_invocation(self.flavor, prompt, Path(workspace), extra_argv)
             external = await self.external_runner(
                 None,

@@ -565,3 +565,75 @@ async def test_console_caller_joined_tool_flag_suppresses_default_no_tools(
     assert "--tools" not in record["argv"], (
         "an explicit =-joined tool flag must suppress the appended --tools \"\" default"
     )
+
+
+# ------------------------------ Q0.1: console path typed model + CLI budget controls
+
+
+async def test_console_claude_routed_model_and_budget_become_real_argv(
+    fake_cli_path, monkeypatch, tmp_path
+):
+    """Q0.1 (codex Q-C1): the console path previously only LABELED the response with the
+    routed model — now the same source becomes a real `--model` control, and the typed
+    budget cap lands as `--max-budget-usd`."""
+
+    from ai_workflow_engine.llm_protocol import LLMRequest
+
+    record_path = _configure_fake_cli(monkeypatch, tmp_path, mode="envelope")
+    client = ConsoleLLMClient(
+        _fake_flavor(claude_p, fake_cli_path), cli_max_budget_usd=0.10
+    )
+
+    response = await client(
+        LLMRequest(user="Classify mug.", metadata={"model_profile": {"model": "sonnet"}})
+    )
+
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    model_at = record["argv"].index("--model")
+    assert record["argv"][model_at + 1] == "sonnet"
+    budget_at = record["argv"].index("--max-budget-usd")
+    assert record["argv"][budget_at + 1] == "0.1"
+    assert response.model == "sonnet", "label and argv must come from the SAME source"
+
+
+async def test_console_claude_without_profile_or_budget_keeps_prior_argv(
+    fake_cli_path, monkeypatch, tmp_path
+):
+    """Degradation pair: no routed profile + no budget -> argv exactly as before Q0.1."""
+
+    from ai_workflow_engine.llm_protocol import LLMRequest
+
+    record_path = _configure_fake_cli(monkeypatch, tmp_path, mode="envelope")
+    client = ConsoleLLMClient(_fake_flavor(claude_p, fake_cli_path))
+
+    await client(LLMRequest(user="Classify mug."))
+
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert "--model" not in record["argv"]
+    assert "--max-budget-usd" not in record["argv"]
+
+
+async def test_console_budget_is_positive_only_and_non_claude_rejects_it(fake_cli_path):
+    with pytest.raises(ValueError, match="cli_max_budget_usd must be positive"):
+        ConsoleLLMClient(_fake_flavor(claude_p, fake_cli_path), cli_max_budget_usd=0)
+
+    from ai_workflow_engine.llm_protocol import LLMRequest
+
+    client = ConsoleLLMClient(
+        _fake_flavor(codex_exec, fake_cli_path), cli_max_budget_usd=0.10
+    )
+    with pytest.raises(ValueError, match="does not support cli_max_budget_usd"):
+        await client(LLMRequest(user="x"))
+
+
+async def test_console_claude_conflicting_raw_model_flag_is_loud(fake_cli_path, monkeypatch, tmp_path):
+    from ai_workflow_engine.llm_protocol import LLMRequest
+
+    _configure_fake_cli(monkeypatch, tmp_path, mode="envelope")
+    client = ConsoleLLMClient(
+        _fake_flavor(claude_p, fake_cli_path), extra_argv=["--model", "haiku"]
+    )
+    with pytest.raises(ValueError, match="conflicting --model"):
+        await client(
+            LLMRequest(user="x", metadata={"model_profile": {"model": "sonnet"}})
+        )

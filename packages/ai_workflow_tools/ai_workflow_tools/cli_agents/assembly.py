@@ -42,6 +42,38 @@ def build_cli_agent_invocation(flavor: CliFlavor, request: CliAgentRequest) -> C
     raise ValueError(f"unsupported CLI flavor: {flavor.name}")
 
 
+def claude_control_argv(
+    model: "str | None",
+    cli_max_budget_usd: "float | None",
+    existing_argv: "list[str] | tuple[str, ...]",
+) -> "list[str]":
+    """Q0.1: typed Claude control flags — the ONE mapping both the capability and console
+    paths use. A typed value plus the same raw flag in caller argv is a CONFLICT (loud),
+    never a silent duplicate the CLI resolves arbitrarily. Zero/negative budgets are
+    rejected here too (belt for callers that bypass the pydantic schema)."""
+
+    controls: list[str] = []
+    if model:
+        _reject_raw_flag_conflict(existing_argv, "--model", typed_source="model")
+        controls.extend(["--model", model])
+    if cli_max_budget_usd is not None:
+        if cli_max_budget_usd <= 0:
+            raise ValueError(f"cli_max_budget_usd must be positive, got {cli_max_budget_usd}")
+        _reject_raw_flag_conflict(
+            existing_argv, "--max-budget-usd", typed_source="cli_max_budget_usd"
+        )
+        controls.extend(["--max-budget-usd", f"{cli_max_budget_usd}"])
+    return controls
+
+
+def _reject_raw_flag_conflict(argv, flag: str, *, typed_source: str) -> None:
+    if any(item == flag or item.startswith(f"{flag}=") for item in argv):
+        raise ValueError(
+            f"conflicting {flag}: set via typed {typed_source}= AND raw extra_argv — "
+            "pass exactly one"
+        )
+
+
 def _build_claude_p_invocation(flavor: CliFlavor, request: CliAgentRequest) -> CliAgentInvocation:
     workspace = _ensure_workspace(request.workspace_dir)
     config_path = workspace / "mcp_config.json"
@@ -65,12 +97,17 @@ def _build_claude_p_invocation(flavor: CliFlavor, request: CliAgentRequest) -> C
         argv.extend(["--tools", ""])
     else:
         argv.extend(["--allowedTools", *request.allowed_tools])
+    # Q0.1: typed model + CLI budget are REAL argv controls, not post-hoc labels.
+    argv.extend(claude_control_argv(request.model, request.cli_max_budget_usd, request.extra_argv))
     argv.extend(["--output-format", "json", *request.extra_argv])
     return CliAgentInvocation(argv=argv, stdin_data=request.prompt, mcp_config_path=str(config_path))
 
 
 def _build_codex_exec_invocation(flavor: CliFlavor, request: CliAgentRequest) -> CliAgentInvocation:
     resolve_effective_tools(flavor, request)  # loud rejection of non-None allowed_tools
+    if request.cli_max_budget_usd is not None:
+        # Q0.1: no codex budget flag exists — a silent drop would fake a cost cap.
+        raise ValueError("codex_exec does not support cli_max_budget_usd (no CLI budget flag)")
     workspace = _ensure_workspace(request.workspace_dir)
     result_file = workspace / "codex-last-message.txt"
 

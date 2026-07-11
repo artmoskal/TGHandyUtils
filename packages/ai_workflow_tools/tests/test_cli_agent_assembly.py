@@ -206,3 +206,91 @@ def test_preset_constants_round_trip_and_share_one_source_of_truth(tmp_path):
         ),
     )
     assert no_tools.argv[no_tools.argv.index("--tools") + 1] == ""
+
+
+# ------------------------------ Q0.1: typed Claude model + CLI budget argv controls
+
+
+def test_claude_p_maps_typed_model_and_budget_to_real_argv(tmp_path):
+    """Q0.1 (codex Q-C1): the typed request fields become REAL argv controls — before this,
+    Claude ran its default model while the response was merely labeled with the routed one."""
+
+    invocation = build_cli_agent_invocation(
+        claude_p,
+        CliAgentRequest(
+            prompt="classify",
+            workspace_dir=str(tmp_path),
+            model="sonnet",
+            cli_max_budget_usd=0.10,
+        ),
+    )
+
+    model_at = invocation.argv.index("--model")
+    assert invocation.argv[model_at + 1] == "sonnet"
+    budget_at = invocation.argv.index("--max-budget-usd")
+    assert invocation.argv[budget_at + 1] == "0.1"
+    # controls precede the caller extra_argv tail and appear exactly once
+    assert invocation.argv.count("--model") == 1
+    assert invocation.argv.count("--max-budget-usd") == 1
+
+
+def test_claude_p_omits_control_flags_when_fields_unset(tmp_path):
+    """Degradation pair: unset typed fields leave argv EXACTLY as before Q0.1."""
+
+    invocation = build_cli_agent_invocation(
+        claude_p, CliAgentRequest(prompt="classify", workspace_dir=str(tmp_path))
+    )
+    assert "--model" not in invocation.argv
+    assert "--max-budget-usd" not in invocation.argv
+
+
+def test_claude_p_rejects_conflicting_raw_flags_pre_spawn(tmp_path):
+    with pytest.raises(ValueError, match="conflicting --model"):
+        build_cli_agent_invocation(
+            claude_p,
+            CliAgentRequest(
+                prompt="x",
+                workspace_dir=str(tmp_path),
+                model="sonnet",
+                extra_argv=["--model", "haiku"],
+            ),
+        )
+    with pytest.raises(ValueError, match="conflicting --max-budget-usd"):
+        build_cli_agent_invocation(
+            claude_p,
+            CliAgentRequest(
+                prompt="x",
+                workspace_dir=str(tmp_path),
+                cli_max_budget_usd=0.10,
+                extra_argv=["--max-budget-usd=0.5"],
+            ),
+        )
+
+
+def test_cli_budget_is_positive_only_and_codex_rejects_it(tmp_path):
+    import pydantic
+
+    with pytest.raises(pydantic.ValidationError):
+        CliAgentRequest(prompt="x", workspace_dir=str(tmp_path), cli_max_budget_usd=0)
+    with pytest.raises(pydantic.ValidationError):
+        CliAgentRequest(prompt="x", workspace_dir=str(tmp_path), cli_max_budget_usd=-1.0)
+
+    with pytest.raises(ValueError, match="codex_exec does not support cli_max_budget_usd"):
+        build_cli_agent_invocation(
+            codex_exec,
+            CliAgentRequest(
+                prompt="x", workspace_dir=str(tmp_path), cli_max_budget_usd=0.10
+            ),
+        )
+
+
+def test_codex_exec_argv_unchanged_when_budget_unset(tmp_path):
+    """Q0.1 AC: codex behavior is unchanged — same argv as before the field existed."""
+
+    invocation = build_cli_agent_invocation(
+        codex_exec,
+        CliAgentRequest(prompt="investigate", workspace_dir=str(tmp_path), model="o4-mini"),
+    )
+    assert "--max-budget-usd" not in invocation.argv
+    model_at = invocation.argv.index("--model")
+    assert invocation.argv[model_at + 1] == "o4-mini"
