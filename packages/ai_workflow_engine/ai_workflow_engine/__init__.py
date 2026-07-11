@@ -16,6 +16,8 @@ __version__ = "0.8.1"
 if TYPE_CHECKING:
     from ai_workflow_engine.waits import (
         DurableWaitPolicy,
+        InMemoryWaitCoordinator,
+        WaitCoordinator,
         LocalWaitPolicy,
         WaitClaim,
         WaitEvent,
@@ -279,6 +281,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "InMemoryMemoryStore": ("ai_workflow_engine.memory", "InMemoryMemoryStore"),
     "InMemoryTraceSink": ("ai_workflow_engine.engine", "InMemoryTraceSink"),
     "InMemoryUsageSink": ("ai_workflow_engine.usage", "InMemoryUsageSink"),
+    "InMemoryWaitCoordinator": ("ai_workflow_engine.waits", "InMemoryWaitCoordinator"),
     "JsonlCheckpointStore": ("ai_workflow_engine.engine", "JsonlCheckpointStore"),
     "JsonlDetailSink": ("ai_workflow_engine.engine", "JsonlDetailSink"),
     "JsonlExternalWriteSink": ("ai_workflow_engine.engine", "JsonlExternalWriteSink"),
@@ -340,6 +343,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "UsageSink": ("ai_workflow_engine.usage", "UsageSink"),
     "WEAK_MODEL_CLEANER": ("ai_workflow_engine.parsing", "WEAK_MODEL_CLEANER"),
     "WaitClaim": ("ai_workflow_engine.waits", "WaitClaim"),
+    "WaitCoordinator": ("ai_workflow_engine.waits", "WaitCoordinator"),
     "WaitEvent": ("ai_workflow_engine.waits", "WaitEvent"),
     "WaitHandle": ("ai_workflow_engine.waits", "WaitHandle"),
     "WaitHealth": ("ai_workflow_engine.waits", "WaitHealth"),
@@ -410,8 +414,10 @@ _EXPORTS: dict[str, tuple[str, str]] = {
 
 __all__ = [
     "DurableWaitPolicy",
+    "InMemoryWaitCoordinator",
     "LocalWaitPolicy",
     "WaitClaim",
+    "WaitCoordinator",
     "WaitEvent",
     "WaitHandle",
     "WaitHealth",

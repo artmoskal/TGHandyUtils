@@ -215,7 +215,7 @@ async def test_durable_wait_execution_is_blocked_until_w2_registration():
     result = await engine.run("durable_flow", {})
 
     assert result.status in ("failed", "rejected")
-    assert "coordinator registration" in (result.error or "")
+    assert "WaitCoordinator" in (result.error or "")
     assert calls["gate"] == 0, "preflight must reject BEFORE any capability executes"
     assert result.snapshot is None and result.wait_handle is None
 
@@ -411,3 +411,189 @@ def test_model_copy_updates_are_fully_validated_not_just_door_checked():
     # status-neutral copies stay equivalent
     stamped = durable.model_copy(update={"observation_bundle_path": "/tmp/b"})
     assert stamped.wait_handle == handle and stamped.observation_bundle_path == "/tmp/b"
+
+
+# ============================================================ W2: coordinator + registration
+
+
+def _clock():
+    from datetime import datetime, timezone
+
+    return lambda: datetime(2026, 7, 11, 12, 0, 0, tzinfo=timezone.utc)
+
+
+def _durable_engine(coordinator=None):
+    from ai_workflow_engine import InMemoryWaitCoordinator, WorkflowEngineBuilder
+
+    builder = WorkflowEngineBuilder()
+    if coordinator is not None:
+        builder.with_wait_coordinator(coordinator)
+    from pydantic import BaseModel as _BM
+
+    class _Gate(_BM):
+        status: str = "pending"
+
+    builder.register_capability("gate", lambda ctx, p: _Gate())
+    builder.register_capability("escalate", lambda ctx, p: {"escalated": True})
+    builder.register_workflow(
+        WorkflowBuilder("durable_flow")
+        .human("gate", wait_policy=DurableWaitPolicy(timeout_s=60), timeout_to="escalate")
+        .step("escalate")
+        .build()
+    )
+    return builder.build()
+
+
+async def test_registered_durable_wait_returns_handle_only_and_traces_registration():
+    """W2.3 happy path: register BEFORE exposing — the public result carries a matching
+    typed handle, NO snapshot, and the run trace records the registration."""
+
+    from ai_workflow_engine import InMemoryWaitCoordinator
+
+    coordinator = InMemoryWaitCoordinator(clock=_clock())
+    engine = _durable_engine(coordinator)
+
+    result = await engine.run("durable_flow", {})
+
+    assert result.status == "requires_user_input"
+    assert result.snapshot is None, "a registered wait must NEVER expose the raw snapshot"
+    handle = result.wait_handle
+    assert handle is not None and handle.suspended_node == "gate"
+    stored = await coordinator.get(handle.wait_id)
+    assert stored is not None and stored.status == "pending"
+    assert stored.deadline_at == handle.deadline_at, "handle must echo the registered deadline"
+    assert coordinator.snapshot_json(handle.wait_id), "the coordinator owns the snapshot"
+    assert any(e.decision == "wait:registered" for e in result.trace), (
+        "registration must be traced inside the run"
+    )
+    assert coordinator.health().pending == 1
+
+
+async def test_registration_failure_fails_the_run_with_no_public_door():
+    """W2.3 failure pair: adapter raise AND attestation mismatch each convert the run to
+    FAILED with neither snapshot nor handle; the bundle direction stays truthful."""
+
+    from ai_workflow_engine import InMemoryWaitCoordinator
+
+    class ExplodingCoordinator(InMemoryWaitCoordinator):
+        async def register(self, record, snapshot_json):
+            raise RuntimeError("outbox transaction failed")
+
+    engine = _durable_engine(ExplodingCoordinator(clock=_clock()))
+    result = await engine.run("durable_flow", {})
+    assert result.status == "failed"
+    assert "registration failed" in (result.error or "")
+    assert result.snapshot is None and result.wait_handle is None
+    assert any(e.decision == "wait:registration_failed" for e in result.trace)
+
+    class ForgingCoordinator(InMemoryWaitCoordinator):
+        async def register(self, record, snapshot_json):
+            receipt = await super().register(record, snapshot_json)
+            return receipt.model_copy(update={"wait_version": receipt.wait_version + 1})
+
+    engine2 = _durable_engine(ForgingCoordinator(clock=_clock()))
+    result2 = await engine2.run("durable_flow", {})
+    assert result2.status == "failed"
+    assert "attestation mismatch" in (result2.error or "")
+    assert result2.snapshot is None and result2.wait_handle is None
+
+
+async def test_durable_without_coordinator_still_fails_before_any_capability():
+    """W2.1: the W1 hard block became coordinator-conditional — absent coordinator still
+    fails preflight; local/no-wait engines need zero wait configuration."""
+
+    engine = _durable_engine(coordinator=None)
+    result = await engine.run("durable_flow", {})
+    assert result.status in ("failed", "rejected")
+    assert "WaitCoordinator" in (result.error or "")
+
+
+def test_builder_rejects_non_conforming_coordinators_loudly():
+    from ai_workflow_engine import WorkflowEngineBuilder
+
+    with pytest.raises(TypeError, match="WaitCoordinator protocol"):
+        WorkflowEngineBuilder().with_wait_coordinator(object())
+
+
+async def test_in_memory_coordinator_is_deterministic_and_never_self_fires():
+    """W2.2: injected clock, deterministic due(now), duplicate semantics — and a source
+    guard: no task/thread/sleep/timer/poll anywhere in the waits module."""
+
+    from datetime import timedelta
+    from pathlib import Path
+
+    import ai_workflow_engine.waits as waits_module
+    from ai_workflow_engine import InMemoryWaitCoordinator
+    from ai_workflow_engine.testing.wait_contract import run_wait_registration_conformance
+
+    clock = _clock()
+    await run_wait_registration_conformance(
+        lambda: InMemoryWaitCoordinator(clock=clock), clock=clock
+    )
+
+    coordinator = InMemoryWaitCoordinator(clock=clock)
+    from ai_workflow_engine.waits import DurableWaitPolicy as DWP, WaitRecord
+
+    now = clock()
+    record = WaitRecord(
+        wait_id="w-due", run_id="r", workflow_id="wf", suspended_node="g",
+        policy=DWP(timeout_s=30), created_at=now, deadline_at=now + timedelta(seconds=30),
+    )
+    await coordinator.register(record, "{}")
+    assert coordinator.due(now) == []
+    assert [r.wait_id for r in coordinator.due(now + timedelta(seconds=31))] == ["w-due"]
+
+    source = Path(waits_module.__file__).read_text(encoding="utf-8")
+    for forbidden in ("create_task", "Thread(", "sleep(", "Timer(", "while True"):
+        assert forbidden not in source, f"no self-firing machinery in waits.py: {forbidden}"
+
+
+async def test_broken_adapters_fail_conformance_by_named_invariant():
+    """W2.4: deliberately broken fakes each trip the specific invariant they violate."""
+
+    from ai_workflow_engine import InMemoryWaitCoordinator
+    from ai_workflow_engine.testing.wait_contract import run_wait_registration_conformance
+
+    clock = _clock()
+
+    class WrongDeadline(InMemoryWaitCoordinator):
+        async def register(self, record, snapshot_json):
+            receipt = await super().register(record, snapshot_json)
+            from datetime import timedelta
+
+            return receipt.model_copy(
+                update={"accepted_deadline": receipt.accepted_deadline + timedelta(seconds=1)}
+            )
+
+    class SilentReplace(InMemoryWaitCoordinator):
+        async def register(self, record, snapshot_json):
+            self._records.pop(record.wait_id, None)
+            self._snapshots.pop(record.wait_id, None)
+            self._receipts.pop(record.wait_id, None)
+            return await super().register(record, snapshot_json)
+
+    class NotIdempotent(InMemoryWaitCoordinator):
+        _n = 0
+
+        async def register(self, record, snapshot_json):
+            self._records.pop(record.wait_id, None)
+            self._snapshots.pop(record.wait_id, None)
+            self._receipts.pop(record.wait_id, None)
+            receipt = await super().register(record, snapshot_json)
+            type(self)._n += 1
+            return receipt.model_copy(update={"registration_id": f"reg-{type(self)._n}"})
+
+    class Amnesiac(InMemoryWaitCoordinator):
+        async def get(self, wait_id):
+            return None
+
+    for broken, fragment in (
+        (WrongDeadline, "ACCEPTED deadline"),
+        (SilentReplace, "rejected"),
+        (NotIdempotent, "idempotent"),
+        (Amnesiac, "retrievable"),
+    ):
+        with pytest.raises(AssertionError, match=fragment.split()[0]):
+            await run_wait_registration_conformance(
+                lambda broken=broken: broken(clock=clock), clock=clock
+            )

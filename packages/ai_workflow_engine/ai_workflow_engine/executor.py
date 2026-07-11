@@ -336,11 +336,38 @@ class WorkflowExecutor:
                     recursion_fallback=recursion_fallback,
                     session=session,
                 )
+                # W2.3: durable suspensions register BEFORE anything is exposed. A
+                # registration failure converts the run to FAILED with NO public wait door
+                # (the bundle finalizes failed; no orphan snapshot/handle is representable).
+                try:
+                    durable_handle = await self._maybe_register_durable_wait(
+                        definition, final_state, context
+                    )
+                except Exception as registration_error:
+                    durable_handle = None
+                    self.runtime.trace_sink.record(
+                        WorkflowTraceEvent(
+                            node=definition.workflow_id,
+                            decision="wait:registration_failed",
+                            error=str(registration_error)[:500],
+                            run_id=str(context.run_context.workflow_id),
+                        )
+                    )
+                    final_state = {
+                        **final_state,
+                        "status": "failed",
+                        "error": f"durable wait registration failed: {registration_error}",
+                    }
         except Exception:
             # The run raised: the bundle must still close, truthfully, as failed.
             session.close("failed")
             raise
         envelope = self._envelope(definition, final_state, session=session)
+        if durable_handle is not None:
+            # handle-only public result for registered waits (C1): validated model_copy
+            envelope = envelope.model_copy(
+                update={"snapshot": None, "wait_handle": durable_handle}
+            )
         if terminal_status is not None:
             # B-post2: the hook must never desynchronize the durable record from the returned
             # result, and a raising hook must never leave the bundle unfinalized.
@@ -834,14 +861,14 @@ class WorkflowExecutor:
         if structural:
             return "; ".join(structural)
         for node in definition.nodes:
-            if (node.wait_policy or {}).get("mode") == "durable":
-                # W1 contract boundary: durable waits are DECLARED machine data now, but
-                # execution requires coordinator registration (W2). Fail before any
-                # capability runs — never suspend a durable wait into a raw public snapshot.
+            if (node.wait_policy or {}).get("mode") == "durable" and (
+                getattr(self, "wait_coordinator", None) is None
+            ):
+                # W2.1: durable waits execute ONLY with a configured coordinator — fail
+                # before any capability runs; local/no-wait workflows need zero wait config.
                 return (
-                    f"durable wait '{node.id}' requires coordinator registration, which "
-                    "lands with W2 — configure a WaitCoordinator once available; only "
-                    "LocalWaitPolicy waits are executable in W1"
+                    f"durable wait '{node.id}' requires a configured WaitCoordinator — "
+                    "compose one via WorkflowEngineBuilder.with_wait_coordinator(...)"
                 )
         known_caps = set(self.runtime.registry.names())
         for node in definition.nodes:
@@ -943,6 +970,126 @@ class WorkflowExecutor:
         return 25 + len(definition.nodes) * (2 + loops)
 
     # ---------------------------------------------------------------- envelopes
+    def _build_snapshot(
+        self, definition: WorkflowDefinition, suspended: str, final_state: Dict[str, Any]
+    ) -> MachineSnapshot:
+        node_results: List[NodeResult] = list(final_state.get("node_results", []))
+        plan = final_state.get("plan_artifact")
+        if plan is not None and hasattr(plan, "model_dump"):
+            plan = plan.model_dump()
+        goal = final_state.get("workflow_goal")
+        usage = final_state.get("usage_summary") or WorkflowUsageSummary()
+        snapshot_run_context = final_state.get("workflow_context")
+        return MachineSnapshot(
+            workflow_id=definition.workflow_id,
+            suspended_node=suspended,
+            payload=final_state.get(RUNNING_PAYLOAD),
+            node_outputs=dict(final_state.get("node_outputs", {})),
+            node_inputs=dict(final_state.get("node_inputs", {})),
+            node_status=dict(final_state.get("node_status", {})),
+            routes=dict(final_state.get("routes", {})),
+            branch_decisions=dict(final_state.get("branch_decisions", {})),
+            eval_counters={
+                k: dict(v) for k, v in final_state.get("eval_counters", {}).items()
+            },
+            transition_counts=dict(final_state.get("transition_counts", {})),
+            attempts=dict(final_state.get("attempts", {})),
+            node_results=[r.model_dump() for r in node_results],
+            artifacts=[
+                a.model_dump() if hasattr(a, "model_dump") else a
+                for a in final_state.get("artifacts", [])
+            ],
+            plan_artifact=plan,
+            usage=usage.model_dump() if hasattr(usage, "model_dump") else {},
+            fallback_reason=final_state.get("fallback_reason"),
+            goal=goal.model_dump() if hasattr(goal, "model_dump") else None,
+            run_context=(
+                snapshot_run_context.model_dump()
+                if hasattr(snapshot_run_context, "model_dump")
+                else None
+            ),
+        )
+
+    async def _maybe_register_durable_wait(
+        self,
+        definition: WorkflowDefinition,
+        final_state: Dict[str, Any],
+        context: CapabilityContext,
+    ) -> Optional[WaitHandle]:
+        """W2.3: a DURABLE suspension is registered with its coordinator BEFORE the engine
+        exposes anything. Returns the typed handle on success; raises on any registration
+        failure (the run then fails with NO public door); returns None for non-durable."""
+
+        if final_state.get("status") == "failed":
+            return None
+        node_results = list(final_state.get("node_results", []))
+        suspended = next(
+            (r.node_id for r in reversed(node_results) if r.status == "requires_user_input"),
+            None,
+        )
+        if suspended is None:
+            return None
+        node = definition.node(suspended)
+        policy_dict = node.wait_policy or {}
+        if policy_dict.get("mode") != "durable":
+            return None
+        coordinator = getattr(self, "wait_coordinator", None)
+        if coordinator is None:
+            raise RuntimeError(
+                f"durable wait '{suspended}' suspended without a configured WaitCoordinator"
+            )
+        import uuid as _uuid
+        from datetime import datetime, timedelta, timezone
+
+        from ai_workflow_engine.byte_safety import assert_byte_safe
+        from ai_workflow_engine.waits import DurableWaitPolicy, WaitRecord
+
+        policy = DurableWaitPolicy.model_validate(policy_dict)
+        snapshot = self._build_snapshot(definition, suspended, final_state)
+        snapshot_payload = snapshot.model_dump()
+        assert_byte_safe(snapshot_payload, mode="persist", path="durable_wait.snapshot")
+        now = datetime.now(timezone.utc)
+        record = WaitRecord(
+            wait_id=_uuid.uuid4().hex,
+            run_id=str(context.run_context.workflow_id),
+            workflow_id=definition.workflow_id,
+            suspended_node=suspended,
+            policy=policy,
+            created_at=now,
+            deadline_at=now + timedelta(seconds=policy.timeout_s),
+        )
+        receipt = await coordinator.register(record, snapshot.model_dump_json())
+        if (
+            receipt.wait_id != record.wait_id
+            or receipt.wait_version != record.version
+            or receipt.accepted_deadline != record.deadline_at
+        ):
+            raise RuntimeError(
+                f"wait registration attestation mismatch for '{suspended}': "
+                f"{receipt.registration_id!r} does not echo the registered wait"
+            )
+        self.runtime.trace_sink.record(
+            WorkflowTraceEvent(
+                node=suspended,
+                decision="wait:registered",
+                run_id=str(context.run_context.workflow_id),
+                metadata={
+                    "wait_id": record.wait_id,
+                    "deadline_at": record.deadline_at.isoformat(),
+                    "adapter_id": receipt.adapter_id,
+                    "registration_id": receipt.registration_id,
+                },
+            )
+        )
+        return WaitHandle(
+            wait_id=record.wait_id,
+            run_id=record.run_id,
+            workflow_id=record.workflow_id,
+            suspended_node=suspended,
+            deadline_at=record.deadline_at,
+            status="pending",
+        )
+
     def _envelope(
         self,
         definition: WorkflowDefinition,
@@ -978,40 +1125,7 @@ class WorkflowExecutor:
                 None,
             )
             if suspended is not None:
-                plan = final_state.get("plan_artifact")
-                if plan is not None and hasattr(plan, "model_dump"):
-                    plan = plan.model_dump()
-                goal = final_state.get("workflow_goal")
-                snapshot_run_context = final_state.get("workflow_context")
-                snapshot = MachineSnapshot(
-                    workflow_id=definition.workflow_id,
-                    suspended_node=suspended,
-                    payload=final_state.get(RUNNING_PAYLOAD),
-                    node_outputs=dict(final_state.get("node_outputs", {})),
-                    node_inputs=dict(final_state.get("node_inputs", {})),
-                    node_status=dict(final_state.get("node_status", {})),
-                    routes=dict(final_state.get("routes", {})),
-                    branch_decisions=dict(final_state.get("branch_decisions", {})),
-                    eval_counters={
-                        k: dict(v) for k, v in final_state.get("eval_counters", {}).items()
-                    },
-                    transition_counts=dict(final_state.get("transition_counts", {})),
-                    attempts=dict(final_state.get("attempts", {})),
-                    node_results=[r.model_dump() for r in node_results],
-                    artifacts=[
-                        a.model_dump() if hasattr(a, "model_dump") else a
-                        for a in final_state.get("artifacts", [])
-                    ],
-                    plan_artifact=plan,
-                    usage=usage.model_dump() if hasattr(usage, "model_dump") else {},
-                    fallback_reason=final_state.get("fallback_reason"),
-                    goal=goal.model_dump() if hasattr(goal, "model_dump") else None,
-                    run_context=(
-                        snapshot_run_context.model_dump()
-                        if hasattr(snapshot_run_context, "model_dump")
-                        else None
-                    ),
-                )
+                snapshot = self._build_snapshot(definition, suspended, final_state)
         return WorkflowRunResult(
             workflow_id=definition.workflow_id,
             status=status,

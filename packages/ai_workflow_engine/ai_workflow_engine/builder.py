@@ -674,6 +674,21 @@ class WorkflowEngineBuilder:
         self._usage_sink = sink
         return self
 
+    def with_wait_coordinator(self, coordinator: Any) -> "WorkflowEngineBuilder":
+        """W2.1: the ONE composition-root seam for durable waits. Loudly rejects objects
+        that do not satisfy the WaitCoordinator protocol; local/no-wait products never call
+        this and never load the waits module."""
+
+        from ai_workflow_engine.waits import WaitCoordinator  # call-time (leaf discipline)
+
+        if not isinstance(coordinator, WaitCoordinator):
+            raise TypeError(
+                f"{type(coordinator).__name__} does not satisfy the WaitCoordinator protocol "
+                "(async register/get + due/health)"
+            )
+        self._wait_coordinator = coordinator
+        return self
+
     def with_checkpoint_store(self, store: CheckpointStore) -> "WorkflowEngineBuilder":
         self._checkpoint_store = store
         return self
@@ -766,4 +781,9 @@ class WorkflowEngineBuilder:
             engine.register_capability_spec(spec, handler)
         for definition, profile in self._workflows:
             engine.register_workflow(definition, profile=profile)
+        coordinator = getattr(self, "_wait_coordinator", None)
+        if coordinator is not None:
+            # W2.1: the executor owns preflight + registration; one seam, set at build
+            engine.wait_coordinator = coordinator
+            engine.executor.wait_coordinator = coordinator
         return engine

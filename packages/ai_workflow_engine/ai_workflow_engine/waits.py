@@ -18,11 +18,13 @@ terminal status — a passed deadline proves nothing about timeout processing.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Dict, Literal, Optional, Union
+from typing import Any, Dict, Literal, Optional, Protocol, Union, runtime_checkable
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 
 __all__ = [
+    "WaitCoordinator",
+    "InMemoryWaitCoordinator",
     "WAIT_STATUSES",
     "RESOLUTION_KINDS",
     "LocalWaitPolicy",
@@ -177,3 +179,90 @@ class WaitHealth(BaseModel):
     claimed: int = Field(ge=0)
     overdue: int = Field(ge=0)
     oldest_pending_deadline: Optional[AwareDatetime] = None
+
+
+# ====================================================================== W2: coordinator
+
+
+@runtime_checkable
+class WaitCoordinator(Protocol):
+    """Product-owned durable-wait store/transport seam (W2). The engine calls REGISTER
+    before exposing any durable suspension and trusts the attestation like it trusts a
+    capability handler; delivery/claim mechanics land in W3. Implementations must persist
+    wait state and timeout intent atomically IN THEIR OWN transactional domain (C2/C3)."""
+
+    async def register(self, record: WaitRecord, snapshot_json: str) -> WaitReceipt: ...
+
+    async def get(self, wait_id: str) -> Optional[WaitRecord]: ...
+
+    def due(self, now: Any) -> list: ...
+
+    def health(self) -> WaitHealth: ...
+
+
+class InMemoryWaitCoordinator:
+    """Deterministic reference implementation (W2.2): dict store + asyncio lock + INJECTED
+    clock. It never fires anything itself — no task, thread, sleep, timer, or poll; timeouts
+    are delivered explicitly by the caller/tests (`due(now)` merely reports)."""
+
+    adapter_id = "in_memory"
+
+    def __init__(self, *, clock: Any) -> None:
+        import asyncio
+
+        if clock is None or not callable(clock):
+            raise ValueError("InMemoryWaitCoordinator requires an injected clock callable")
+        self._clock = clock
+        self._lock = asyncio.Lock()
+        self._records: Dict[str, WaitRecord] = {}
+        self._snapshots: Dict[str, str] = {}
+        self._receipts: Dict[str, WaitReceipt] = {}
+
+    async def register(self, record: WaitRecord, snapshot_json: str) -> WaitReceipt:
+        async with self._lock:
+            existing = self._records.get(record.wait_id)
+            if existing is not None:
+                if existing == record and self._snapshots.get(record.wait_id) == snapshot_json:
+                    return self._receipts[record.wait_id]  # idempotent crash/retry re-register
+                raise ValueError(
+                    f"wait {record.wait_id!r} is already registered with DIFFERENT content — "
+                    "duplicate registrations must be identical"
+                )
+            receipt = WaitReceipt(
+                registration_id=f"reg-{record.wait_id}",
+                wait_id=record.wait_id,
+                wait_version=record.version,
+                accepted_deadline=record.deadline_at,
+                adapter_id=self.adapter_id,
+            )
+            self._records[record.wait_id] = record
+            self._snapshots[record.wait_id] = snapshot_json
+            self._receipts[record.wait_id] = receipt
+            return receipt
+
+    async def get(self, wait_id: str) -> Optional[WaitRecord]:
+        async with self._lock:
+            return self._records.get(wait_id)
+
+    def snapshot_json(self, wait_id: str) -> Optional[str]:
+        return self._snapshots.get(wait_id)
+
+    def due(self, now: Any) -> list:
+        return [
+            record
+            for record in self._records.values()
+            if record.status == "pending" and record.deadline_at <= now
+        ]
+
+    def health(self) -> WaitHealth:
+        pending = [r for r in self._records.values() if r.status == "pending"]
+        claimed = [r for r in self._records.values() if r.status == "claimed"]
+        now = self._clock()
+        overdue = [r for r in pending if r.deadline_at <= now]
+        oldest = min((r.deadline_at for r in pending), default=None)
+        return WaitHealth(
+            pending=len(pending),
+            claimed=len(claimed),
+            overdue=len(overdue),
+            oldest_pending_deadline=oldest,
+        )
