@@ -113,6 +113,10 @@ class QualificationConfig(BaseModel):
     model: str = "sonnet"
     live: bool = False
     per_invocation_budget_usd: float = 0.10
+    # Staged-vision calls are TOOL SESSIONS (claude reads the image file: measured 4 turns,
+    # total_cost_usd 0.112 on sonnet, 2026-07-11 envelope evidence) — they get their own
+    # pre-call cap; the suite ceiling still bounds the total.
+    vision_invocation_budget_usd: float = 0.20
     suite_budget_usd: float = 0.50
     max_worker_calls: int = 6
     per_invocation_timeout_s: float = 180.0
@@ -121,7 +125,11 @@ class QualificationConfig(BaseModel):
     scenarios: tuple = KNOWN_SCENARIOS
 
     @field_validator(
-        "per_invocation_budget_usd", "suite_budget_usd", "per_invocation_timeout_s", "suite_timeout_s"
+        "per_invocation_budget_usd",
+        "vision_invocation_budget_usd",
+        "suite_budget_usd",
+        "per_invocation_timeout_s",
+        "suite_timeout_s",
     )
     @classmethod
     def _finite_positive(cls, value: float):

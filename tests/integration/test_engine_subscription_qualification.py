@@ -62,11 +62,16 @@ def test_live_cross_consumer_subscription_qualification():
     def provider_factory(scenario: str, role: str):
         from ai_workflow_tools.cli_agents import ConsoleLLMClient, claude_p
 
+        budget = (
+            config.vision_invocation_budget_usd
+            if role == "frame_inspector"  # staged-vision = tool session (measured ~$0.11)
+            else config.per_invocation_budget_usd
+        )
         return ConsoleLLMClient(
             claude_p,
             timeout_s=config.per_invocation_timeout_s,
             subscription_mode=True,
-            cli_max_budget_usd=config.per_invocation_budget_usd,
+            cli_max_budget_usd=budget,
         )
 
     runners = {

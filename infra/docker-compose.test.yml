@@ -9,6 +9,10 @@ services:
     environment:
       # Python path for imports
       - PYTHONPATH=/app:/app/packages/ai_workflow_engine:/app/packages/ai_workflow_tools:/app/packages/ai_workflow_viewer
+      # Double opt-in pass-through for the live engine qualification suite (Q1.2):
+      # both must be exported on the HOST shell; .env alone must not enable paid runs.
+      - ALLOW_PAID_TESTS=${ALLOW_PAID_TESTS:-}
+      - RUN_ENGINE_SUBSCRIPTION_QUALIFICATION=${RUN_ENGINE_SUBSCRIPTION_QUALIFICATION:-}
     volumes:
       # Mount source code for development
       - ../:/app

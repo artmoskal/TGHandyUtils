@@ -119,7 +119,27 @@ class ConsoleLLMClient:
             output = external.output if isinstance(external.output, dict) else {}
             if output.get("returncode") != 0:
                 stderr = str(output.get("stderr") or "")
-                raise RuntimeError(f"console CLI exited {output.get('returncode')}: {stderr[-800:]}")
+                # Cost honesty on ABORTED calls: claude still emits a result envelope with
+                # the consumed notional (e.g. error_max_budget_usd) — surface it instead of
+                # discarding it, so the operator sees what the failed attempt actually burnt.
+                aborted = parse_cli_process_output(self.flavor, output)
+                subtype = ""
+                try:
+                    import json as _json
+
+                    envelope = _json.loads(str(output.get("stdout") or ""))
+                    subtype = str(envelope.get("subtype") or "") if isinstance(envelope, dict) else ""
+                except (ValueError, TypeError):
+                    pass
+                consumed = (
+                    f"; consumed notional ~${aborted.notional_cost_usd:.4f}"
+                    if aborted.notional_cost_usd is not None
+                    else ""
+                )
+                raise RuntimeError(
+                    f"console CLI exited {output.get('returncode')}"
+                    f"{f' ({subtype})' if subtype else ''}{consumed}: {stderr[-800:]}"
+                )
             parsed = parse_cli_process_output(self.flavor, output)
             logger.info(
                 "console_llm_call flavor=%s tokens_in=%s tokens_out=%s cost_usd=%s duration_ms=%s",

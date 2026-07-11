@@ -10,10 +10,6 @@ services:
     environment:
       - PYTHONPATH=/app
       - TEST_TYPE=integration  # Marker for integration tests
-      # Double opt-in pass-through for the live engine qualification suite (Q1.2):
-      # both must be exported on the HOST shell; .env alone must not enable paid runs.
-      - ALLOW_PAID_TESTS=${ALLOW_PAID_TESTS:-}
-      - RUN_ENGINE_SUBSCRIPTION_QUALIFICATION=${RUN_ENGINE_SUBSCRIPTION_QUALIFICATION:-}
     volumes:
       - ../:/app
       - ./test-results:/app/test-results
