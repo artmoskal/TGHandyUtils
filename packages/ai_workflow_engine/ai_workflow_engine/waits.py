@@ -23,6 +23,7 @@ from typing import Any, Dict, Literal, Optional, Protocol, Union, runtime_checka
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 
 __all__ = [
+    "WaitClaimOutcome",
     "WaitCoordinator",
     "InMemoryWaitCoordinator",
     "WAIT_STATUSES",
@@ -184,6 +185,24 @@ class WaitClaim(BaseModel):
     lease_expires_at: Optional[AwareDatetime] = None
 
 
+class WaitClaimOutcome(BaseModel):
+    """W3.1: typed result of an atomic claim attempt — never an untyped error for losers.
+
+    - ``claimed``: this caller owns processing (single active claimant; lease set).
+    - ``duplicate``: the SAME event id was already accepted — idempotent, no execution.
+    - ``already_processing``: a DIFFERENT event lost the race while a live claim exists.
+    - ``terminal``: the wait already resolved — late events get the terminal state, never
+      a re-execution.
+    - ``attempts_exhausted``: bounded recovery ran out — the engine fails wait AND run.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["claimed", "duplicate", "already_processing", "terminal", "attempts_exhausted"]
+    record: WaitRecord
+    claim: Optional[WaitClaim] = None
+
+
 class WaitHealth(BaseModel):
     """Product-neutral coordinator health surface; ``overdue`` is DERIVED, never stored."""
 
@@ -211,6 +230,13 @@ class WaitCoordinator(Protocol):
 
     async def load_snapshot(self, wait_id: str) -> Optional[str]: ...
 
+    async def claim_event(self, wait_id: str, event: WaitEvent, *, lease_until: Any) -> WaitClaimOutcome: ...
+
+    async def complete(self, wait_id: str, claim: WaitClaim, *, resolution_kind: str) -> WaitRecord: ...
+
+    async def fail(self, wait_id: str, claim: WaitClaim, *, error: str) -> WaitRecord: ...
+
+
     async def due(self, now: Any) -> list: ...
 
     async def health(self) -> WaitHealth: ...
@@ -236,6 +262,9 @@ class InMemoryWaitCoordinator:
         self._records: Dict[str, WaitRecord] = state.setdefault("records", {})
         self._snapshots: Dict[str, str] = state.setdefault("snapshots", {})
         self._receipts: Dict[str, WaitReceipt] = state.setdefault("receipts", {})
+        self._accepted_events: Dict[str, str] = state.setdefault("accepted_events", {})
+        self._leases: Dict[str, Any] = state.setdefault("leases", {})
+        self._claims: Dict[str, WaitClaim] = state.setdefault("claims", {})
         self._state = state
 
     async def register(self, record: WaitRecord, snapshot_json: str) -> WaitReceipt:
@@ -273,6 +302,170 @@ class InMemoryWaitCoordinator:
     async def load_snapshot(self, wait_id: str) -> Optional[str]:
         async with self._lock:
             return self._snapshots.get(wait_id)
+
+    async def claim_event(self, wait_id: str, event: WaitEvent, *, lease_until: Any) -> WaitClaimOutcome:
+        async with self._lock:
+            record = self._records.get(wait_id)
+            if record is None:
+                raise KeyError(f"unknown wait id {wait_id!r}")
+            accepted = self._accepted_events.get(wait_id)
+            if record.status in ("completed", "failed", "cancelled"):
+                kind = "duplicate" if accepted == event.event_id else "terminal"
+                return WaitClaimOutcome(kind=kind, record=record.model_copy(deep=True))
+            if record.status == "claimed":
+                lease = self._leases.get(wait_id)
+                now = self._clock()
+                if accepted == event.event_id and (lease is None or lease > now):
+                    return WaitClaimOutcome(kind="duplicate", record=record.model_copy(deep=True))
+                if lease is not None and lease > now:
+                    return WaitClaimOutcome(
+                        kind="already_processing", record=record.model_copy(deep=True)
+                    )
+                # lease expired: reclaim (crash recovery) — bounded below
+            if record.resume_attempts >= record.policy.max_resume_attempts:
+                failed = record.model_copy(
+                    update={"status": "failed", "version": record.version + 1}
+                )
+                self._records[wait_id] = failed
+                return WaitClaimOutcome(kind="attempts_exhausted", record=failed.model_copy(deep=True))
+            claimed = record.model_copy(
+                update={
+                    "status": "claimed",
+                    "version": record.version + 1,
+                    "resume_attempts": record.resume_attempts + 1,
+                }
+            )
+            self._records[wait_id] = claimed
+            self._accepted_events[wait_id] = event.event_id
+            self._leases[wait_id] = lease_until
+            claim = WaitClaim(
+                wait_id=wait_id,
+                wait_version=claimed.version,
+                event_id=event.event_id,
+                claimed_at=self._clock(),
+                lease_expires_at=lease_until,
+            )
+            self._claims[wait_id] = claim.model_copy(deep=True)
+            return WaitClaimOutcome(
+                kind="claimed", record=claimed.model_copy(deep=True), claim=claim.model_copy(deep=True)
+            )
+
+    async def complete(self, wait_id: str, claim: WaitClaim, *, resolution_kind: str) -> WaitRecord:
+        return await self._terminalize(wait_id, claim, status="completed", resolution_kind=resolution_kind)
+
+    async def fail(self, wait_id: str, claim: WaitClaim, *, error: str) -> WaitRecord:
+        return await self._terminalize(wait_id, claim, status="failed", resolution_kind=None)
+
+    async def _terminalize(
+        self, wait_id: str, claim: WaitClaim, *, status: str, resolution_kind: Optional[str]
+    ) -> WaitRecord:
+        async with self._lock:
+            record = self._records.get(wait_id)
+            if record is None:
+                raise KeyError(f"unknown wait id {wait_id!r}")
+            stored_claim = self._claims.get(wait_id)
+            if (
+                record.status != "claimed"
+                or stored_claim is None
+                or stored_claim.event_id != claim.event_id
+                or stored_claim.wait_version != claim.wait_version
+            ):
+                raise ValueError(
+                    f"stale claimant: claim token does not own wait {wait_id!r} (CAS "
+                    "mismatch) — a terminalized or reclaimed wait is never overwritten"
+                )
+            terminal = record.model_copy(
+                update={
+                    "status": status,
+                    "version": record.version + 1,
+                    "resolution_kind": resolution_kind,
+                }
+            )
+            self._records[wait_id] = terminal
+            self._leases.pop(wait_id, None)
+            return terminal.model_copy(deep=True)
+
+    async def claim_event(self, wait_id: str, event: WaitEvent, *, lease_until: Any) -> WaitClaimOutcome:
+        async with self._lock:
+            record = self._records.get(wait_id)
+            if record is None:
+                raise KeyError(f"unknown wait id {wait_id!r}")
+            accepted = self._accepted_events.get(wait_id)
+            if record.status in ("completed", "failed", "cancelled"):
+                kind = "duplicate" if accepted == event.event_id else "terminal"
+                return WaitClaimOutcome(kind=kind, record=record.model_copy(deep=True))
+            if record.status == "claimed":
+                lease = self._leases.get(wait_id)
+                now = self._clock()
+                if accepted == event.event_id and (lease is None or lease > now):
+                    return WaitClaimOutcome(kind="duplicate", record=record.model_copy(deep=True))
+                if lease is not None and lease > now:
+                    return WaitClaimOutcome(
+                        kind="already_processing", record=record.model_copy(deep=True)
+                    )
+                # lease expired: reclaim (crash recovery) — bounded below
+            if record.resume_attempts >= record.policy.max_resume_attempts:
+                failed = record.model_copy(
+                    update={"status": "failed", "version": record.version + 1}
+                )
+                self._records[wait_id] = failed
+                return WaitClaimOutcome(kind="attempts_exhausted", record=failed.model_copy(deep=True))
+            claimed = record.model_copy(
+                update={
+                    "status": "claimed",
+                    "version": record.version + 1,
+                    "resume_attempts": record.resume_attempts + 1,
+                }
+            )
+            self._records[wait_id] = claimed
+            self._accepted_events[wait_id] = event.event_id
+            self._leases[wait_id] = lease_until
+            claim = WaitClaim(
+                wait_id=wait_id,
+                wait_version=claimed.version,
+                event_id=event.event_id,
+                claimed_at=self._clock(),
+                lease_expires_at=lease_until,
+            )
+            self._claims[wait_id] = claim.model_copy(deep=True)
+            return WaitClaimOutcome(
+                kind="claimed", record=claimed.model_copy(deep=True), claim=claim.model_copy(deep=True)
+            )
+
+    async def complete(self, wait_id: str, claim: WaitClaim, *, resolution_kind: str) -> WaitRecord:
+        return await self._terminalize(wait_id, claim, status="completed", resolution_kind=resolution_kind)
+
+    async def fail(self, wait_id: str, claim: WaitClaim, *, error: str) -> WaitRecord:
+        return await self._terminalize(wait_id, claim, status="failed", resolution_kind=None)
+
+    async def _terminalize(
+        self, wait_id: str, claim: WaitClaim, *, status: str, resolution_kind: Optional[str]
+    ) -> WaitRecord:
+        async with self._lock:
+            record = self._records.get(wait_id)
+            if record is None:
+                raise KeyError(f"unknown wait id {wait_id!r}")
+            stored_claim = self._claims.get(wait_id)
+            if (
+                record.status != "claimed"
+                or stored_claim is None
+                or stored_claim.event_id != claim.event_id
+                or stored_claim.wait_version != claim.wait_version
+            ):
+                raise ValueError(
+                    f"stale claimant: claim token does not own wait {wait_id!r} (CAS "
+                    "mismatch) — a terminalized or reclaimed wait is never overwritten"
+                )
+            terminal = record.model_copy(
+                update={
+                    "status": status,
+                    "version": record.version + 1,
+                    "resolution_kind": resolution_kind,
+                }
+            )
+            self._records[wait_id] = terminal
+            self._leases.pop(wait_id, None)
+            return terminal.model_copy(deep=True)
 
     async def due(self, now: Any) -> list:
         async with self._lock:

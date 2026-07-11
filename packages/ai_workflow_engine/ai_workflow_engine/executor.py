@@ -454,6 +454,21 @@ class WorkflowExecutor:
         steer the compiled graph) to the suspended node, execute it live with the resume event,
         then run on normally. Restored usage seeds the run scope, so budgets stay cumulative."""
 
+        # W3.2/W3.4: durable deliveries arrive wrapped — unwrap ONCE here so the whole
+        # resumed run (not just the wait node) carries the stable wait/event-derived
+        # idempotency context, and the wait node sees only the inner payload.
+        if isinstance(event_payload, dict) and "__wait_delivery__" in event_payload:
+            delivery = event_payload["__wait_delivery__"]
+            context = context.model_copy(
+                update={
+                    "metadata": {
+                        **context.metadata,
+                        "wait_idempotency": f"{delivery['wait_id']}:{delivery['event_id']}",
+                        "wait_delivery": dict(delivery),
+                    }
+                }
+            )
+            event_payload = event_payload.get("payload")
         if snapshot.workflow_id != definition.workflow_id:
             raise ValueError(
                 f"snapshot is for workflow '{snapshot.workflow_id}', not '{definition.workflow_id}'"
@@ -653,6 +668,10 @@ class WorkflowExecutor:
                 "__next__": lg_end if (nxt is None or nxt.target == END) else nxt.target,
                 "__halt__": lg_end,
             }
+            timeout_t = next((t for t in outs if t.policy == "on_timeout"), None)
+            if timeout_t is not None:
+                # W3.2: the DECLARED timeout route is executable machine data
+                path_map["__timeout__"] = lg_end if timeout_t.target == END else timeout_t.target
         graph.add_conditional_edges(node.id, self._route_for(node), path_map)
 
     @staticmethod
@@ -696,6 +715,8 @@ class WorkflowExecutor:
             def route(state: Dict[str, Any]) -> str:
                 if state.get("routes", {}).get(node.id) == "halt":
                     return "__halt__"
+                if state.get("routes", {}).get(node.id) == "__timeout__":
+                    return "__timeout__"
                 if state.get("node_status", {}).get(node.id) == "failed":
                     return "__halt__"
                 return "__next__"

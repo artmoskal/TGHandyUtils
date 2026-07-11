@@ -614,6 +614,9 @@ def test_builder_rejects_sync_impostor_coordinators():
         def register(self, record, snapshot_json): ...
         def get(self, wait_id): ...
         def load_snapshot(self, wait_id): ...
+        def claim_event(self, wait_id, event, *, lease_until): ...
+        def complete(self, wait_id, claim, *, resolution_kind): ...
+        def fail(self, wait_id, claim, *, error): ...
         def due(self, now): return []
         def health(self): ...
 
@@ -1065,3 +1068,304 @@ async def test_duplicate_receipt_is_a_defensive_result():
     duplicate.adapter_id = "also-corrupted"
     third = await coordinator.register(record, "{}")
     assert third.adapter_id == "in_memory"
+
+
+# ================================================== W3: delivery, leases, crash recovery
+
+
+def _delivery_engine(shared=None, *, clock=None):
+    """Durable flow with a REAL post-wait step so deliveries continue the machine."""
+
+    from pydantic import BaseModel as _BM
+
+    from ai_workflow_engine import InMemoryWaitCoordinator, WorkflowEngineBuilder
+
+    clock = clock or _clock()
+    coordinator = InMemoryWaitCoordinator(clock=clock, shared_state=shared if shared is not None else {})
+
+    class Gate(_BM):
+        status: str
+        value: str = ""
+
+    def gate(context, _payload):
+        event = context.metadata.get("resume_event")
+        if event is None:
+            return Gate(status="pending")
+        return Gate(status="answered", value=str(event))
+
+    def finish(context, payload):
+        return {
+            "answer": payload.value,
+            "wait_idempotency": context.metadata.get("wait_idempotency"),
+        }
+
+    def escalate(context, _payload):
+        return {"escalated": True, "wait_idempotency": context.metadata.get("wait_idempotency")}
+
+    builder = WorkflowEngineBuilder().with_wait_coordinator(coordinator, clock=clock)
+    builder.register_capability("gate", gate)
+    builder.register_capability("finish", finish)
+    builder.register_capability("escalate", escalate)
+    builder.register_workflow(
+        WorkflowBuilder("durable_flow")
+        .human("gate", wait_policy=DurableWaitPolicy(timeout_s=60), timeout_to="escalate")
+        .step("finish")
+        .step("escalate")
+        .build()
+    )
+    return builder.build(), coordinator
+
+
+async def test_signal_delivery_resumes_the_machine_and_terminalizes_the_wait():
+    """W3.2 E2E: signal → claim → private resume → suspended capability re-enters with the
+    payload → run completes → wait completed with resolution_kind=signal; the stable
+    wait/event idempotency context is visible to post-wait capabilities (W3.4)."""
+
+    engine, coordinator = _delivery_engine()
+    first = await engine.run("durable_flow", {})
+    wait_id = first.wait_handle.wait_id
+
+    outcome = await engine.deliver_wait_event(
+        wait_id, {"kind": "signal", "event_id": "evt-1", "payload": "approved"}
+    )
+
+    assert outcome.kind == "executed"
+    assert outcome.run_result.status == "completed"
+    assert outcome.run_result.output["answer"] == "approved"
+    assert outcome.run_result.output["wait_idempotency"] == f"{wait_id}:evt-1", (
+        "post-wait capabilities must see the stable wait/event idempotency context"
+    )
+    stored = await coordinator.get(wait_id)
+    assert stored.status == "completed" and stored.resolution_kind == "signal"
+
+
+async def test_timeout_delivery_takes_the_declared_transition_without_reentering_the_gate():
+    """W3.2 E2E: timeout → the DECLARED on_timeout route runs (escalate), the wait
+    capability is NOT re-entered, and the wait resolves with resolution_kind=timeout."""
+
+    engine, coordinator = _delivery_engine()
+    first = await engine.run("durable_flow", {})
+    wait_id = first.wait_handle.wait_id
+
+    outcome = await engine.deliver_wait_event(
+        wait_id, {"kind": "timeout", "event_id": "evt-t", "payload": None}
+    )
+
+    assert outcome.kind == "executed"
+    assert outcome.run_result.status == "completed"
+    assert outcome.run_result.output.get("escalated") is True, (
+        f"timeout must take the declared route: {outcome.run_result.output}"
+    )
+    assert outcome.run_result.output["wait_idempotency"] == f"{wait_id}:evt-t"
+    stored = await coordinator.get(wait_id)
+    assert stored.status == "completed" and stored.resolution_kind == "timeout"
+    assert any(e.decision == "wait:timeout_route" for e in outcome.run_result.trace)
+
+
+async def test_duplicate_and_late_events_are_idempotent_reports_not_reexecution():
+    """W3.1: the same event id is a duplicate report; a DIFFERENT late event on a resolved
+    wait gets the terminal state — neither executes anything."""
+
+    engine, _coordinator = _delivery_engine()
+    first = await engine.run("durable_flow", {})
+    wait_id = first.wait_handle.wait_id
+
+    executed = await engine.deliver_wait_event(
+        wait_id, {"kind": "signal", "event_id": "evt-1", "payload": "approved"}
+    )
+    assert executed.kind == "executed"
+
+    duplicate = await engine.deliver_wait_event(
+        wait_id, {"kind": "signal", "event_id": "evt-1", "payload": "approved"}
+    )
+    assert duplicate.kind == "duplicate" and duplicate.run_result is None
+
+    late = await engine.deliver_wait_event(
+        wait_id, {"kind": "timeout", "event_id": "evt-late", "payload": None}
+    )
+    assert late.kind == "terminal" and late.run_result is None
+    assert late.wait_status == "completed" and late.resolution_kind == "signal"
+
+
+async def test_signal_vs_timeout_race_yields_exactly_one_execution():
+    """W3.1 (real race): a start barrier releases signal and timeout deliveries
+    concurrently — exactly ONE executes; the loser gets an honest typed report."""
+
+    import asyncio
+
+    engine, coordinator = _delivery_engine()
+    first = await engine.run("durable_flow", {})
+    wait_id = first.wait_handle.wait_id
+
+    barrier = asyncio.Barrier(2)
+
+    async def deliver(event):
+        await barrier.wait()
+        return await engine.deliver_wait_event(wait_id, event)
+
+    signal, timeout = await asyncio.gather(
+        deliver({"kind": "signal", "event_id": "evt-s", "payload": "yes"}),
+        deliver({"kind": "timeout", "event_id": "evt-t", "payload": None}),
+    )
+
+    kinds = sorted([signal.kind, timeout.kind])
+    assert kinds.count("executed") == 1, f"exactly one winner required: {kinds}"
+    loser = signal if timeout.kind == "executed" else timeout
+    assert loser.kind in ("already_processing", "terminal"), loser.kind
+    stored = await coordinator.get(wait_id)
+    assert stored.status == "completed"
+    winner = signal if signal.kind == "executed" else timeout
+    assert stored.resolution_kind == winner.resolution_kind
+
+
+async def test_lease_expiry_allows_reclaim_and_attempts_are_bounded():
+    """W3.3: a crashed claimant's lease expires → the SAME event can reclaim and finish;
+    attempts are bounded by max_resume_attempts — exhaustion fails the wait."""
+
+    from datetime import datetime, timedelta, timezone
+
+    from ai_workflow_engine.waits import WaitEvent
+
+    current = {"now": datetime(2036, 1, 1, tzinfo=timezone.utc)}
+    clock = lambda: current["now"]  # noqa: E731
+    engine, coordinator = _delivery_engine(clock=clock)
+    first = await engine.run("durable_flow", {})
+    wait_id = first.wait_handle.wait_id
+    runtime = engine.executor.wait_runtime
+
+    # claim then simulate a crash (no complete); lease still live -> different event loses
+    event = WaitEvent(kind="signal", event_id="evt-crash", payload="yes")
+    claimed = await coordinator.claim_event(
+        wait_id, event, lease_until=clock() + timedelta(seconds=300)
+    )
+    assert claimed.kind == "claimed"
+    blocked = await runtime.deliver(wait_id, event, current_digest="whatever")
+    assert blocked.kind == "duplicate", "same event under a LIVE lease is a duplicate report"
+
+    # lease expires -> the same event reclaims and the delivery finishes the machine
+    current["now"] += timedelta(seconds=301)
+    outcome = await engine.deliver_wait_event(
+        wait_id, {"kind": "signal", "event_id": "evt-crash", "payload": "yes"}
+    )
+    assert outcome.kind == "executed"
+    stored = await coordinator.get(wait_id)
+    assert stored.status == "completed"
+    assert stored.resume_attempts == 2, "each claim counts toward bounded recovery"
+
+
+async def test_attempt_exhaustion_fails_the_wait():
+    """W3.3: max_resume_attempts crossings end the wait failed — no infinite reclaim."""
+
+    from datetime import datetime, timedelta, timezone
+
+    from ai_workflow_engine.waits import WaitEvent
+
+    current = {"now": datetime(2036, 1, 1, tzinfo=timezone.utc)}
+    clock = lambda: current["now"]  # noqa: E731
+    engine, coordinator = _delivery_engine(clock=clock)
+    first = await engine.run("durable_flow", {})
+    wait_id = first.wait_handle.wait_id
+
+    event = WaitEvent(kind="signal", event_id="evt-x", payload="y")
+    for _ in range(3):  # default max_resume_attempts=3: claim, crash, lease-expire
+        claimed = await coordinator.claim_event(
+            wait_id, event, lease_until=clock() + timedelta(seconds=1)
+        )
+        assert claimed.kind == "claimed"
+        current["now"] += timedelta(seconds=2)
+
+    exhausted = await engine.deliver_wait_event(
+        wait_id, {"kind": "signal", "event_id": "evt-x", "payload": "y"}
+    )
+    assert exhausted.kind == "attempts_exhausted"
+    assert (await coordinator.get(wait_id)).status == "failed"
+
+
+async def test_changed_machine_is_rejected_at_delivery():
+    """W3.2: the stored definition digest must match the CURRENTLY registered definition —
+    a changed graph fails the wait instead of replaying old state through new structure."""
+
+    shared: dict = {}
+    engine, _coordinator = _delivery_engine(shared)
+    first = await engine.run("durable_flow", {})
+    wait_id = first.wait_handle.wait_id
+
+    changed, coordinator2 = _delivery_engine(shared)
+    changed.register_workflow(
+        WorkflowBuilder("durable_flow")
+        .human("gate", wait_policy=DurableWaitPolicy(timeout_s=60), timeout_to="escalate")
+        .step("finish")
+        .step("extra_step", capability="finish")
+        .step("escalate")
+        .build()
+    )
+
+    outcome = await changed.deliver_wait_event(
+        wait_id, {"kind": "signal", "event_id": "evt-1", "payload": "yes"}
+    )
+    assert outcome.kind == "rejected"
+    assert "digest" in outcome.detail
+    assert (await coordinator2.get(wait_id)).status == "failed"
+
+
+async def test_durable_handle_cannot_be_used_as_a_raw_snapshot():
+    """W3.2 direct-bypass probe: no API accepts the handle as a snapshot."""
+
+    engine, _coordinator = _delivery_engine()
+    first = await engine.run("durable_flow", {})
+
+    with pytest.raises(Exception):
+        await engine.resume(first.wait_handle, "yes")  # typed handle is not a snapshot
+
+
+async def test_stale_claimant_cannot_terminalize_after_reclaim():
+    """W3.1 CAS: a claimant whose lease expired and whose wait was RECLAIMED holds a stale
+    token — its complete/fail must raise, never overwrite the new claimant's state."""
+
+    from datetime import datetime, timedelta, timezone
+
+    from ai_workflow_engine.waits import WaitEvent
+
+    current = {"now": datetime(2036, 1, 1, tzinfo=timezone.utc)}
+    clock = lambda: current["now"]  # noqa: E731
+    engine, coordinator = _delivery_engine(clock=clock)
+    first = await engine.run("durable_flow", {})
+    wait_id = first.wait_handle.wait_id
+
+    event = WaitEvent(kind="signal", event_id="evt-s", payload="y")
+    stale = await coordinator.claim_event(wait_id, event, lease_until=clock() + timedelta(seconds=1))
+    assert stale.kind == "claimed"
+    current["now"] += timedelta(seconds=2)  # stale claimant's lease expires
+    fresh = await coordinator.claim_event(wait_id, event, lease_until=clock() + timedelta(seconds=300))
+    assert fresh.kind == "claimed" and fresh.claim.wait_version > stale.claim.wait_version
+
+    with pytest.raises(ValueError, match="stale claimant"):
+        await coordinator.complete(wait_id, stale.claim, resolution_kind="signal")
+    completed = await coordinator.complete(wait_id, fresh.claim, resolution_kind="signal")
+    assert completed.status == "completed"
+
+
+async def test_different_event_cannot_steal_a_live_lease():
+    """W3.1: while a claim's lease is LIVE, a different event id gets already_processing —
+    it can never steal the claim or double-execute."""
+
+    from datetime import datetime, timedelta, timezone
+
+    from ai_workflow_engine.waits import WaitEvent
+
+    current = {"now": datetime(2036, 1, 1, tzinfo=timezone.utc)}
+    clock = lambda: current["now"]  # noqa: E731
+    engine, coordinator = _delivery_engine(clock=clock)
+    first = await engine.run("durable_flow", {})
+    wait_id = first.wait_handle.wait_id
+
+    held = await coordinator.claim_event(
+        wait_id, WaitEvent(kind="signal", event_id="evt-a", payload="y"),
+        lease_until=clock() + timedelta(seconds=300),
+    )
+    assert held.kind == "claimed"
+    thief = await coordinator.claim_event(
+        wait_id, WaitEvent(kind="timeout", event_id="evt-b", payload=None),
+        lease_until=clock() + timedelta(seconds=300),
+    )
+    assert thief.kind == "already_processing" and thief.claim is None

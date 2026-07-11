@@ -178,6 +178,27 @@ class WorkflowEngine:
         self._profiles: Dict[str, WorkflowProfile] = {}
         self._plans: Dict[str, RuntimePlan] = {}
 
+    async def deliver_wait_event(self, wait_id: str, event: Any) -> Any:
+        """W3.2: the ONE public door for durable continuation (signal or timeout).
+
+        Returns a typed ``WaitDeliveryOutcome``: executed runs carry the resumed
+        ``WorkflowRunResult``; duplicate/late/racing deliveries get honest terminal
+        reports without re-execution. The registered definition digest must match the
+        CURRENTLY registered definition — a changed machine is rejected, never replayed."""
+
+        runtime = getattr(self.executor, "wait_runtime", None)
+        if runtime is None:
+            raise RuntimeError(
+                "deliver_wait_event requires a configured WaitCoordinator — compose one "
+                "via WorkflowEngineBuilder.with_wait_coordinator(...)"
+            )
+        record = await runtime.coordinator.get(wait_id)
+        if record is None:
+            raise KeyError(f"unknown wait id {wait_id!r}")
+        current = self.workflows.get(record.workflow_id)
+        current_digest = current.definition_digest() if current is not None else None
+        return await runtime.deliver(wait_id, event, current_digest=current_digest)
+
     @property
     def wait_coordinator(self) -> Any:
         """Read-only view of the composed durable-wait coordinator (owner: the executor's
@@ -810,6 +831,10 @@ class WorkflowEngineBuilder:
             from ai_workflow_engine.wait_runtime import DurableWaitRuntime  # call-time
 
             engine.executor.wait_runtime = DurableWaitRuntime(
-                coordinator, clock=getattr(self, "_wait_clock", None)
+                coordinator,
+                clock=getattr(self, "_wait_clock", None),
+                # W3.2: the ONLY door back into machine execution — an injected port,
+                # never an import (engine.resume accepts snapshot JSON + event).
+                resume_port=engine.resume,
             )
         return engine

@@ -18,6 +18,32 @@ def build_human_node(services, definition: WorkflowDefinition, node: WorkflowNod
         payload = services.node_input(state, node)
         resume_event = state.get("resume_event")
         if (
+            isinstance(resume_event, dict)
+            and resume_event.get("__wait_timeout__")  # wait_runtime.WAIT_TIMEOUT_MARKER
+            and state.get("resume_suspended_node") == node.id
+            and not state.get("machine_replay_done")
+        ):
+            # W3.2: TIMEOUT resolution takes the DECLARED on_timeout transition — the wait
+            # capability is NOT re-entered; the node resolves with resolution_kind=timeout.
+            services.runtime.trace_sink.record(
+                WorkflowTraceEvent(
+                    node=node.id,
+                    decision="wait:timeout_route",
+                    metadata={"event_id": str(resume_event.get("event_id", ""))},
+                )
+            )
+            timeout_result = CapabilityResult(
+                status="accepted",
+                output={"status": "timeout", "event_id": resume_event.get("event_id")},
+                metadata={"resolution_kind": "timeout"},
+            )
+            update = services.record(
+                state, node, timeout_result, attempts=1, input_payload=None
+            )
+            update["routes"] = {**state.get("routes", {}), node.id: "__timeout__"}
+            update["machine_replay_done"] = True
+            return update
+        if (
             resume_event is not None
             and state.get("resume_suspended_node") == node.id
             and not state.get("machine_replay_done")

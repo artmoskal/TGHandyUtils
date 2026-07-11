@@ -11,7 +11,7 @@ timer, or poll. This is not a second runtime; it never executes a machine itself
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Optional, Protocol, runtime_checkable
+from typing import Any, Callable, Literal, Optional, Protocol, runtime_checkable
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 
@@ -21,9 +21,15 @@ from ai_workflow_engine.waits import DurableWaitPolicy, WaitReceipt, WaitRecord
 __all__ = [
     "ClaimedResumePort",
     "DurableWaitRuntime",
+    "WAIT_TIMEOUT_MARKER",
+    "WaitDeliveryOutcome",
     "WaitRegistrationOutcome",
     "WaitRegistrationRequest",
 ]
+
+# Internal resume-event marker for timeout deliveries: the suspended node takes its
+# DECLARED on_timeout transition instead of re-entering the wait capability.
+WAIT_TIMEOUT_MARKER = "__wait_timeout__"
 
 
 @runtime_checkable
@@ -68,6 +74,22 @@ class WaitRegistrationOutcome(BaseModel):
     registration_id: Optional[str] = None
 
 
+class WaitDeliveryOutcome(BaseModel):
+    """W3.2: typed result of `deliver_wait_event` — losers and late events get honest
+    terminal reports, never re-execution and never an untyped error."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
+
+    kind: Literal[
+        "executed", "duplicate", "already_processing", "terminal", "rejected", "attempts_exhausted"
+    ]
+    wait_id: str
+    resolution_kind: Optional[Literal["signal", "timeout"]] = None
+    wait_status: str
+    detail: str = ""
+    run_result: Optional[Any] = None  # WorkflowRunResult when kind == "executed"
+
+
 class DurableWaitRuntime:
     """Registration mechanics (W2); claim/terminal lifecycle joins here in W3."""
 
@@ -96,6 +118,91 @@ class DurableWaitRuntime:
 
         preimage = f"{len(run_id)}:{run_id}|{len(suspended_node)}:{suspended_node}|{occurrence}"
         return "wait-" + hashlib.sha256(preimage.encode("utf-8")).hexdigest()[:32]
+
+    async def deliver(
+        self,
+        wait_id: str,
+        event: Any,
+        *,
+        current_digest: Optional[str],
+        lease_seconds: float = 300.0,
+    ) -> WaitDeliveryOutcome:
+        """W3.2/W3.3: the ONE delivery path — atomic claim, digest check, snapshot load,
+        private resume through the injected port, then terminalize. At-least-once with
+        idempotent effects; a terminalized claim is never executed again."""
+
+        from ai_workflow_engine.waits import WaitEvent
+
+        event = event if isinstance(event, WaitEvent) else WaitEvent.model_validate(event)
+        if self._resume_port is None:
+            raise RuntimeError(
+                "deliver_wait_event requires a composed resume port — build the engine via "
+                "WorkflowEngineBuilder.with_wait_coordinator(...)"
+            )
+        lease_until = self.now() + timedelta(seconds=lease_seconds)
+        outcome = await self.coordinator.claim_event(wait_id, event, lease_until=lease_until)
+        if outcome.kind != "claimed":
+            return WaitDeliveryOutcome(
+                kind=outcome.kind,
+                wait_id=wait_id,
+                wait_status=outcome.record.status,
+                resolution_kind=outcome.record.resolution_kind,
+                detail=f"claim returned {outcome.kind}",
+            )
+        record, claim = outcome.record, outcome.claim
+        # W3.2: a changed machine is REJECTED, never replayed through a new graph.
+        if current_digest is None or record.definition_digest != current_digest:
+            failed = await self.coordinator.fail(
+                wait_id, claim, error="definition digest mismatch at delivery"
+            )
+            return WaitDeliveryOutcome(
+                kind="rejected",
+                wait_id=wait_id,
+                wait_status=failed.status,
+                detail=(
+                    f"registered digest {record.definition_digest!r} does not match the "
+                    f"currently registered definition {current_digest!r}"
+                ),
+            )
+        snapshot_json = await self.coordinator.load_snapshot(wait_id)
+        if not snapshot_json:
+            failed = await self.coordinator.fail(wait_id, claim, error="stored snapshot missing")
+            return WaitDeliveryOutcome(
+                kind="rejected", wait_id=wait_id, wait_status=failed.status,
+                detail="stored snapshot missing — adapter integrity failure",
+            )
+        if event.kind == "timeout":
+            resume_event: Any = {WAIT_TIMEOUT_MARKER: True, "event_id": event.event_id}
+        else:
+            resume_event = event.payload
+        # stable wait/event-derived idempotency context (W3.4) rides the resume event
+        # envelope so external writes can key retries deterministically.
+        run_result = await self._resume_port(  # type: ignore[misc]
+            snapshot_json,
+            {
+                "__wait_delivery__": {
+                    "wait_id": wait_id,
+                    "event_id": event.event_id,
+                    "kind": event.kind,
+                },
+                "payload": resume_event,
+            },
+        )
+        if run_result.status in ("completed", "partial", "requires_user_input"):
+            terminal = await self.coordinator.complete(
+                wait_id, claim, resolution_kind=event.kind
+            )
+        else:
+            terminal = await self.coordinator.fail(
+                wait_id, claim, error=str(run_result.error or "resumed run failed")[:500]
+            )
+        return WaitDeliveryOutcome(
+            kind="executed",
+            wait_id=wait_id,
+            wait_status=terminal.status,
+            resolution_kind=terminal.resolution_kind,
+            run_result=run_result,
+        )
 
     async def register_suspension(self, request: WaitRegistrationRequest) -> WaitRegistrationOutcome:
         wait_id = self.wait_id_for(request.run_id, request.suspended_node, request.occurrence)
