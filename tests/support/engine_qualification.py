@@ -537,28 +537,59 @@ def render_suite_report_html(report: SuiteReport) -> str:
 
 
 def export_evidence_and_clean_worktree(worktree: "str", destination: "str") -> str:
-    """QRF operational contract: copy the paid evidence OUT of the disposable worktree,
-    VERIFY it landed, remove the staged/transient files, and leave the worktree clean enough
-    for a NON-FORCED `git worktree remove`. Returns the exported evidence directory.
+    """QRF.3c operational contract: export the paid evidence OUT of the disposable worktree
+    and clean it for a NON-FORCED `git worktree remove` — with verification tied to the
+    EXACT CURRENT SOURCE RUNS, never to whatever already sits in the destination.
 
-    Anything unexpectedly left behind makes the non-forced removal fail LOUDLY — that is the
-    point: forced cleanup can silently destroy evidence; this procedure cannot."""
+    Order of guarantees (each failure leaves the source evidence untouched):
+      1. every CURRENT source run must carry its own qualification-summary.json BEFORE any
+         copy — a stale summary from an older exported run can never bless an incomplete one;
+      2. the destination must lie OUTSIDE the worktree (no self-deletion trap) and each run
+         copies to a FRESH directory — an existing run-id is a loud collision, never a merge;
+      3. every copied summary is byte-compared against its source; only after ALL verify does
+         the helper remove the staged .env and transient test output."""
 
     import shutil
     from pathlib import Path
 
-    tree = Path(worktree)
+    tree = Path(worktree).resolve()
+    dest_root = Path(destination).resolve()
+    if dest_root == tree or tree in dest_root.parents:
+        raise QualificationError(
+            f"destination {dest_root} lies inside the disposable worktree {tree} — the export "
+            "would be destroyed by cleanup; choose a destination outside"
+        )
     evidence = tree / "infra" / "test-results" / "engine-subscription-qualification"
     if not evidence.is_dir():
         raise QualificationError(f"no qualification evidence under {evidence}")
-    exported = Path(destination) / "engine-subscription-qualification"
-    shutil.copytree(evidence, exported, dirs_exist_ok=True)
-    summaries = list(exported.glob("*/qualification-summary.json"))
-    if not summaries:
+    source_runs = sorted(d for d in evidence.iterdir() if d.is_dir())
+    if not source_runs:
+        raise QualificationError(f"no qualification run directories under {evidence}")
+    incomplete = [d.name for d in source_runs if not (d / "qualification-summary.json").is_file()]
+    if incomplete:
         raise QualificationError(
-            f"exported evidence has no qualification-summary.json under {exported} — refusing cleanup"
+            f"current source runs without their own qualification-summary.json: {incomplete} — "
+            "refusing to copy or clean; the run is incomplete"
         )
-    # staged/transient files created by the release run — removed AFTER verified export
+    exported = dest_root / "engine-subscription-qualification"
+    exported.mkdir(parents=True, exist_ok=True)  # the ROOT may exist; run dirs must not
+    for run in source_runs:
+        target = exported / run.name
+        if target.exists():
+            raise QualificationError(
+                f"destination already contains run id {run.name!r} — evidence directories are "
+                "never merged or overwritten; move the prior export aside first"
+            )
+        shutil.copytree(run, target)
+    for run in source_runs:
+        source_bytes = (run / "qualification-summary.json").read_bytes()
+        copied = exported / run.name / "qualification-summary.json"
+        if not copied.is_file() or copied.read_bytes() != source_bytes:
+            raise QualificationError(
+                f"exported summary for run {run.name!r} failed byte verification against its "
+                "source — source evidence left untouched"
+            )
+    # only now is the current evidence demonstrably durable outside the worktree
     shutil.rmtree(tree / "infra" / "test-results", ignore_errors=True)
     (tree / ".env").unlink(missing_ok=True)
     return str(exported)

@@ -642,3 +642,112 @@ def test_worktree_export_procedure_preserves_evidence_and_allows_nonforced_remov
     with pytest.raises(QualificationError, match="no qualification evidence"):
         export_evidence_and_clean_worktree(str(worktree2), str(exported_root))
     git("worktree", "remove", str(worktree2))
+
+
+@pytest.mark.unit
+def test_stale_destination_summary_cannot_bless_an_incomplete_current_run(tmp_path):
+    """QRF.3c.1 (codex reproducer): destination already holds an OLD valid summary; the
+    CURRENT run has none — the helper must refuse BEFORE copying or deleting anything, and
+    the incomplete run's only local evidence must survive."""
+
+    import json
+
+    from tests.support.engine_qualification import (
+        QualificationError,
+        export_evidence_and_clean_worktree,
+    )
+
+    worktree = tmp_path / "wt"
+    current = worktree / "infra" / "test-results" / "engine-subscription-qualification" / "runNEW"
+    current.mkdir(parents=True)
+    (current / "index.html").write_text("<html>only artifact — incomplete</html>", encoding="utf-8")
+    (worktree / ".env").write_text("SECRET=1", encoding="utf-8")
+
+    dest = tmp_path / "dest"
+    old_run = dest / "engine-subscription-qualification" / "runOLD"
+    old_run.mkdir(parents=True)
+    (old_run / "qualification-summary.json").write_text(
+        json.dumps({"completed": True}), encoding="utf-8"
+    )
+
+    with pytest.raises(QualificationError, match="without their own qualification-summary"):
+        export_evidence_and_clean_worktree(str(worktree), str(dest))
+
+    assert (current / "index.html").exists(), "the incomplete run's ONLY evidence must survive"
+    assert (worktree / ".env").exists(), "no cleanup may run on a failed verification"
+    assert not (dest / "engine-subscription-qualification" / "runNEW").exists(), (
+        "nothing may be copied for an incomplete run"
+    )
+
+
+@pytest.mark.unit
+def test_export_rejects_destination_inside_worktree_and_run_id_collisions(tmp_path):
+    """QRF.3c.2: a destination under the disposable worktree is a self-deletion trap; an
+    existing destination run id is a loud collision — run directories are never merged."""
+
+    import json
+
+    from tests.support.engine_qualification import (
+        QualificationError,
+        export_evidence_and_clean_worktree,
+    )
+
+    worktree = tmp_path / "wt"
+    run = worktree / "infra" / "test-results" / "engine-subscription-qualification" / "runX"
+    run.mkdir(parents=True)
+    (run / "qualification-summary.json").write_text(json.dumps({"completed": True}), encoding="utf-8")
+
+    with pytest.raises(QualificationError, match="inside the disposable worktree"):
+        export_evidence_and_clean_worktree(str(worktree), str(worktree / "exports"))
+
+    dest = tmp_path / "dest"
+    collision = dest / "engine-subscription-qualification" / "runX"
+    collision.mkdir(parents=True)
+    (collision / "qualification-summary.json").write_text(
+        json.dumps({"completed": False, "older": True}), encoding="utf-8"
+    )
+
+    with pytest.raises(QualificationError, match="never merged or overwritten"):
+        export_evidence_and_clean_worktree(str(worktree), str(dest))
+
+    assert json.loads(
+        (collision / "qualification-summary.json").read_text(encoding="utf-8")
+    )["older"] is True, "prior evidence must remain byte-identical after a collision refusal"
+    assert (run / "qualification-summary.json").exists(), "source evidence untouched"
+
+
+@pytest.mark.unit
+def test_export_verifies_copied_summary_bytes_before_cleaning(tmp_path, monkeypatch):
+    """QRF.3c.3: a copy that lands corrupted fails byte verification — cleanup never runs
+    and the source evidence stays untouched."""
+
+    import json
+    import pathlib
+    import shutil
+
+    from tests.support import engine_qualification as eq
+
+    worktree = tmp_path / "wt"
+    run = worktree / "infra" / "test-results" / "engine-subscription-qualification" / "runX"
+    run.mkdir(parents=True)
+    (run / "qualification-summary.json").write_text(json.dumps({"completed": True}), encoding="utf-8")
+    (worktree / ".env").write_text("SECRET=1", encoding="utf-8")
+
+    original_copytree = shutil.copytree
+
+    def corrupting_copytree(src, dst, **kwargs):
+        result = original_copytree(src, dst, **kwargs)
+        summary = pathlib.Path(dst) / "qualification-summary.json"
+        if summary.exists():
+            summary.write_text("{corrupted}", encoding="utf-8")
+        return result
+
+    # the helper does `import shutil` inside the function — patching the stdlib module
+    # attribute is exactly the boundary it will read
+    monkeypatch.setattr(shutil, "copytree", corrupting_copytree)
+
+    with pytest.raises(eq.QualificationError, match="failed byte verification"):
+        eq.export_evidence_and_clean_worktree(str(worktree), str(tmp_path / "dest"))
+
+    assert (run / "qualification-summary.json").exists(), "source evidence untouched"
+    assert (worktree / ".env").exists(), "cleanup must not run after failed verification"
