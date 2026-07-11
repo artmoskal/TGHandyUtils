@@ -726,8 +726,8 @@ class WorkflowExecutor:
             return outputs[node.input_key]
         return state.get(RUNNING_PAYLOAD)
 
-    @staticmethod
     def _record(
+        self,
         state: Dict[str, Any],
         node: WorkflowNode,
         result: CapabilityResult,
@@ -759,6 +759,19 @@ class WorkflowExecutor:
             artifact_ids=[artifact.artifact_id for artifact in result.artifacts],
         )
         node_results = [*state.get("node_results", []), record]
+        # Q4.2 root cause: terminal node status previously lived ONLY in state/NodeResult —
+        # bundles carried no terminal event, so viewers could only guess "running". The
+        # terminal status is now part of the run's trace record; error text rides along only
+        # when the node actually failed (the viewer treats any error as failure).
+        self.runtime.trace_sink.record(
+            WorkflowTraceEvent(
+                node=node.id,
+                attempt=attempts,
+                decision=f"node:{status}",
+                error=(error or result.error) if status == "failed" else None,
+                metadata={"kind": node.kind, **({"branch_label": branch_label} if branch_label else {})},
+            )
+        )
         update: Dict[str, Any] = {
             RUNNING_PAYLOAD: result.output,
             "node_outputs": node_outputs,

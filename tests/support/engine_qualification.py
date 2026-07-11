@@ -83,9 +83,17 @@ def _read_claude_cli_version() -> str:
     return proc.stdout.strip()
 
 
-def _read_git_dirty() -> bool:
+def _read_git_dirty(cwd: "str | None" = None) -> bool:
+    # Q-R3 (codex-agreed procedure): TRACKED-files-only cleanliness — "evidence maps to one
+    # source revision" is a statement about tracked source. Untracked runtime files (.env
+    # staged into the release worktree, docs/_discussion/ workspace, test outputs) are not
+    # source and must not make a release run unrunnable.
     proc = subprocess.run(
-        ["git", "status", "--porcelain"], capture_output=True, text=True, timeout=30
+        ["git", "status", "--porcelain", "--untracked-files=no"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        cwd=cwd,
     )
     if proc.returncode != 0:
         raise RuntimeError(f"git status failed: {proc.stderr.strip()[-300:]}")
@@ -129,14 +137,19 @@ def classify_scenario_exception(exc: BaseException) -> str:
 
     if isinstance(exc, ScenarioSemanticError):
         return "semantic"
+    # Q-R4: a transport that classified ITSELF wins outright; heuristics only for untyped
+    # exceptions — and explicit timeout evidence beats generic return codes.
+    typed_kind = str(getattr(exc, "failure_kind", "") or "")
+    if typed_kind in FAILURE_CLASSES:
+        return typed_kind
     subtype = str(getattr(exc, "cli_subtype", "") or "")
     if subtype == "error_max_budget_usd":
         return "cap"
-    if getattr(exc, "returncode", None) is not None or subtype:
-        return "provider"
     message = str(exc).lower()
     if "timeout" in message or "timed out" in message:
         return "timeout"
+    if getattr(exc, "returncode", None) is not None or subtype:
+        return "provider"
     if "console cli" in message or "external process" in message or "transport" in message:
         return "provider"
     return "harness"
@@ -149,24 +162,33 @@ KNOWN_SCENARIOS = (
     "slackazz_triage",
 )
 
-# Q-R1 (amended contract, user budget clarification 2026-07-11): the suite ceilings are the
-# EXPECTED TARGET; the DECLARED per-scenario worst case below is the finite emergency bound
-# proof — (max attempted paid calls, max notional) assuming every structured worker burns
-# its one repair and vision calls hit the vision cap. Suite worst case for all four:
-# 10 calls / $1.20 notional. The runner refuses to START a suite whose declared worst case
-# exceeds the configured emergency maximum — bounded by construction, never by luck.
-SCENARIO_WORST_CASE = {
-    "anki_basic_card": (2, 2 * 0.10),
-    "mageqa_local_audit": (4, 4 * 0.10),
-    "gopro_frame_inspection": (2, 2 * 0.20),
-    "slackazz_triage": (2, 2 * 0.10),
+# Q-R1 (amended contract + codex re-verification): the suite ceilings are the EXPECTED
+# TARGET; the DECLARED worst case is STRUCTURAL (how many calls of which ROLE each scenario
+# can spawn, assuming every structured worker burns its one repair) and is PRICED from the
+# VALIDATED CONFIG's per-invocation caps — never from a second hard-coded price table, so a
+# raised cap raises the declared bound and can trip the emergency gate. With defaults:
+# 10 calls / $1.20. The runner refuses to START a suite whose declared worst case exceeds
+# the configured emergency maximum — bounded by construction, never by luck.
+SCENARIO_WORST_CASE_CALLS = {
+    "anki_basic_card": {"completion": 2},
+    "mageqa_local_audit": {"completion": 4},
+    "gopro_frame_inspection": {"vision": 2},
+    "slackazz_triage": {"completion": 2},
 }
 
 
-def declared_worst_case(scenarios) -> tuple:
-    calls = sum(SCENARIO_WORST_CASE[name][0] for name in scenarios)
-    notional = round(sum(SCENARIO_WORST_CASE[name][1] for name in scenarios), 6)
-    return calls, notional
+def declared_worst_case(scenarios, config: "QualificationConfig") -> tuple:
+    price = {
+        "completion": config.per_invocation_budget_usd,
+        "vision": config.vision_invocation_budget_usd,
+    }
+    calls = 0
+    notional = 0.0
+    for name in scenarios:
+        for role, count in SCENARIO_WORST_CASE_CALLS[name].items():
+            calls += count
+            notional += count * price[role]
+    return calls, round(notional, 6)
 
 
 class QualificationConfig(BaseModel):
@@ -317,7 +339,7 @@ def run_qualification_suite(
     started = now()
     # Q-R1 (amended): refuse to START work whose DECLARED worst case exceeds the finite
     # emergency bound — spend that has not happened yet is the only spend a gate can stop.
-    worst_calls, worst_notional = declared_worst_case(config.scenarios)
+    worst_calls, worst_notional = declared_worst_case(config.scenarios, config)
     if worst_calls > config.emergency_max_worker_calls or (
         worst_notional > config.emergency_max_notional_usd
     ):

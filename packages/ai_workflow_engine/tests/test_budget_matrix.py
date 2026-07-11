@@ -768,3 +768,47 @@ async def test_failed_call_records_the_burn_a_typed_transport_error_carries():
     assert usage_context.summary.notional_usd == pytest.approx(2 * 0.112174), (
         "every aborted attempt's burn aggregates into the run's notional total"
     )
+
+
+async def test_failed_metered_console_cost_is_booked_as_metered_not_notional():
+    """Q-R2 failed-metered (codex reproducer): a failed METERED CLI call's consumed cost is
+    real money — booked to estimated_usd under cost_class=metered, never smuggled into the
+    subscription-notional column."""
+
+    class MeteredAbortError(RuntimeError):
+        cli_subtype = "error_max_budget_usd"
+        notional_usd = 0.0421  # transport reports "consumed cost"; class decides the column
+
+    class AbortingMeteredClient:
+        provider_label = "metered_cli"
+        cost_class = "metered"
+
+        async def __call__(self, request: LLMRequest) -> LLMResponse:
+            raise MeteredAbortError("cli exited 1 (error_max_budget_usd)")
+
+    node = StructuredLLMNode(
+        name="metered_abort",
+        config=object(),
+        output_model=Label,
+        prompt_template="Classify {item}.",
+        input_variables=["item"],
+        llm=AbortingMeteredClient(),
+    )
+    usage_context = WorkflowUsageContext(
+        WorkflowRunContext(workflow_id="wf", workflow_type="budget"),
+        WorkflowUsageSummary(),
+        WorkflowBudget(),
+    )
+
+    with workflow_usage_scope(usage_context):
+        with pytest.raises(Exception, match="error_max_budget_usd"):
+            await node.run({"item": "q"})
+
+    failed = [e for e in usage_context.summary.events if e.success is False]
+    assert failed, "aborted metered call left no usage event"
+    for event in failed:
+        assert event.cost_class == "metered"
+        assert event.estimated_usd == pytest.approx(0.0421), "metered burn -> metered column"
+        assert event.notional_usd is None, "no phantom subscription value on metered calls"
+    assert usage_context.summary.metered_usd == pytest.approx(len(failed) * 0.0421)
+    assert usage_context.summary.notional_usd is None

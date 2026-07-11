@@ -379,14 +379,12 @@ def test_cli_cap_abort_maps_to_cap_class_with_burn(tmp_path):
     config = QualificationConfig(output_dir=str(tmp_path / "out"), live=True)
 
     async def aborted(_config):
-        error = ConsoleCliError(
+        raise ConsoleCliError(
             "console CLI exited 1 (error_max_budget_usd); consumed notional ~$0.1122: ",
             cli_subtype="error_max_budget_usd",
             notional_usd=0.1122,
             returncode=1,
-        )
-        error.worker_calls = 1
-        raise error
+        )  # NO monkeypatched attributes — the typed contract carries the attempt count
 
     runners = {name: aborted for name in config.scenarios}
     with pytest.raises(ConsoleCliError):
@@ -416,16 +414,16 @@ def test_suite_refuses_to_start_when_declared_worst_case_exceeds_emergency_bound
         run_qualification_suite,
     )
 
-    calls, notional = declared_worst_case(
-        ("anki_basic_card", "mageqa_local_audit", "gopro_frame_inspection", "slackazz_triage")
-    )
-    assert calls == 10 and notional == pytest.approx(1.20), (
-        "the DOCUMENTED suite worst case is 10 calls / $1.20 — update SCENARIO_WORST_CASE "
-        "and the plan doc together if a scenario legitimately grows"
-    )
-
     config = QualificationConfig(
         output_dir=str(tmp_path / "out"), emergency_max_worker_calls=9
+    )
+    calls, notional = declared_worst_case(
+        ("anki_basic_card", "mageqa_local_audit", "gopro_frame_inspection", "slackazz_triage"),
+        config,
+    )
+    assert calls == 10 and notional == pytest.approx(1.20), (
+        "the DOCUMENTED default worst case is 10 calls / $1.20 — update the structural "
+        "declaration and the plan doc together if a scenario legitimately grows"
     )
     started = {"any": False}
 
@@ -437,3 +435,117 @@ def test_suite_refuses_to_start_when_declared_worst_case_exceeds_emergency_bound
     with pytest.raises(QualificationError, match="emergency maximum"):
         run_qualification_suite(config, runners, identity=_ledger_identity())
     assert not started["any"]
+
+
+# ============================== Q-R re-verification reproducers (codex, now permanent)
+
+
+@pytest.mark.unit
+def test_declared_emergency_cost_tracks_configured_invocation_caps(tmp_path):
+    """Q-R1 (codex reproducer): raising the invocation caps RAISES the declared worst case —
+    no second price table can certify a stale bound; the emergency gate must trip."""
+
+    from tests.support.engine_qualification import (
+        QualificationConfig,
+        QualificationError,
+        declared_worst_case,
+        run_qualification_suite,
+    )
+
+    config = QualificationConfig(
+        output_dir=str(tmp_path / "out"),
+        per_invocation_budget_usd=0.50,
+        vision_invocation_budget_usd=0.80,
+    )
+    calls, notional = declared_worst_case(config.scenarios, config)
+    assert calls == 10
+    assert notional == pytest.approx(8 * 0.50 + 2 * 0.80), (
+        "declared cost must be computed FROM the configured caps"
+    )
+
+    async def must_not_start(_config):
+        raise AssertionError("no scenario may start past a stale emergency bound")
+
+    runners = {name: must_not_start for name in config.scenarios}
+    with pytest.raises(QualificationError, match="emergency maximum"):
+        run_qualification_suite(config, runners, identity=_ledger_identity())
+
+
+@pytest.mark.unit
+def test_real_typed_cli_error_counts_the_attempt_without_test_monkeypatch(tmp_path):
+    """Q-R2 (codex reproducer): a production-constructed ConsoleCliError carries its attempt
+    count intrinsically — the ledger persists 1 attempted call, not zero."""
+
+    import json
+    from pathlib import Path
+
+    from ai_workflow_tools.cli_agents import ConsoleCliError
+
+    from tests.support.engine_qualification import QualificationConfig, run_qualification_suite
+
+    config = QualificationConfig(output_dir=str(tmp_path / "out"), live=True)
+
+    async def aborted(_config):
+        raise ConsoleCliError("console CLI exited 1: transport down", returncode=1)
+
+    runners = {name: aborted for name in config.scenarios}
+    with pytest.raises(ConsoleCliError):
+        run_qualification_suite(config, runners, identity=_ledger_identity())
+    persisted = json.loads(
+        (Path(config.output_dir) / "qualification-summary.json").read_text(encoding="utf-8")
+    )
+    assert persisted["outcomes"][0]["worker_calls"] == 1, (
+        "a real spawned-and-failed call is ATTEMPTED spend without any test monkeypatch"
+    )
+    assert persisted["worker_calls_total"] == 1
+
+
+@pytest.mark.unit
+def test_timeout_transport_failure_is_not_mislabeled_provider(tmp_path):
+    """Q-R4 (codex reproducer): a timeout-shaped typed error with a return code classifies
+    as timeout — explicit timeout evidence beats generic return-code heuristics."""
+
+    from ai_workflow_tools.cli_agents import ConsoleCliError
+
+    from tests.support.engine_qualification import classify_scenario_exception
+
+    typed = ConsoleCliError(
+        "external process timed out", returncode=-15, failure_kind="timeout"
+    )
+    assert classify_scenario_exception(typed) == "timeout"
+
+    # even an UNTYPED timeout message with a returncode attribute must not become provider
+    class LegacyTimeout(RuntimeError):
+        returncode = -15
+
+    assert classify_scenario_exception(LegacyTimeout("external process timed out")) == "timeout"
+
+
+@pytest.mark.unit
+def test_tracked_only_dirty_check_ignores_untracked_but_catches_tracked_edits(tmp_path):
+    """Q-R3 (agreed procedure): untracked runtime files (staged .env, workspace docs) do not
+    make a release run unrunnable; a MODIFIED TRACKED file still fails the gate."""
+
+    import subprocess
+
+    from tests.support.engine_qualification import _read_git_dirty
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args):
+        subprocess.run(
+            ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+            cwd=repo, check=True, capture_output=True,
+        )
+
+    git("init", "-q")
+    (repo / "tracked.txt").write_text("v1", encoding="utf-8")
+    git("add", "tracked.txt")
+    git("commit", "-q", "-m", "init")
+
+    (repo / ".env").write_text("SECRET=1", encoding="utf-8")  # staged runtime-only file
+    assert _read_git_dirty(cwd=str(repo)) is False, "untracked files are not source dirt"
+
+    (repo / "tracked.txt").write_text("v2", encoding="utf-8")
+    assert _read_git_dirty(cwd=str(repo)) is True, "tracked edits ARE source dirt"

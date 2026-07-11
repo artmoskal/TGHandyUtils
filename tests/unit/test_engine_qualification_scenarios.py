@@ -309,3 +309,31 @@ def test_suite_persists_partial_report_and_stops_on_scenario_failure(tmp_path):
         "the failed scenario's burn must be persisted for the ledger"
     )
     assert persisted["identity"]["finished_at"], "stopped suites stamp finished_at too"
+
+
+async def test_completed_mageqa_viewer_has_no_nodes_left_running(tmp_path):
+    """Q4.2 (codex reproducer): a COMPLETED hermetic MageQA run projects a truthful graph —
+    no node is left 'running'; the failed-child fanout shows partial, steps show completed,
+    and the flow:authored pseudo-node is terminal."""
+
+    from ai_workflow_viewer import FileEventSource, build_observation_graph
+
+    fakes = _fakes()
+    outcome = await run_mageqa_local_audit(_config(tmp_path), _factory(fakes), tmp_path)
+    assert outcome.status == "passed"
+
+    run_data = FileEventSource(outcome.bundle_path).read()
+    graph = build_observation_graph(
+        run_data.definition,
+        run_data.trace_events,
+        run_data.usage_events,
+        run_data.details,
+        run_id=run_data.run_id,
+    )
+    statuses = {node_id: node.status for node_id, node in graph.nodes.items()}
+    running = [n for n, status in statuses.items() if status == "running"]
+    assert not running, f"completed run must leave no node 'running': {statuses}"
+    assert statuses.get("probe") == "partial", (
+        f"the fanout with one real child failure must project partial: {statuses}"
+    )
+    assert statuses.get("collect_pages") == "completed"

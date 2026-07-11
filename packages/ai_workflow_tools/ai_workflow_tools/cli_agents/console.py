@@ -51,12 +51,19 @@ class ConsoleCliError(RuntimeError):
         notional_usd: "float | None" = None,
         returncode: "int | None" = None,
         num_turns: "int | None" = None,
+        failure_kind: str = "",
+        worker_calls: int = 1,
     ) -> None:
         super().__init__(message)
         self.cli_subtype = cli_subtype
         self.notional_usd = notional_usd
         self.returncode = returncode
         self.num_turns = num_turns
+        # Q-R4: the transport CLASSIFIES itself at the source (cap|timeout|provider) —
+        # downstream never guesses from return codes. Q-R2: one raised error == one spawned
+        # attempt; the count is part of the typed contract, never a dynamic afterthought.
+        self.failure_kind = failure_kind
+        self.worker_calls = worker_calls
 
 
 class ConsoleLLMClient:
@@ -397,12 +404,20 @@ def _console_failure(flavor: CliFlavor, external: Any, output: dict) -> "Console
         else ""
     )
     base = external.error or f"console CLI exited with status {external.status}"
+    lowered = f"{base} {stderr}".lower()
+    if subtype == "error_max_budget_usd":
+        failure_kind = "cap"
+    elif "timed out" in lowered or "timeout" in lowered:
+        failure_kind = "timeout"
+    else:
+        failure_kind = "provider"
     return ConsoleCliError(
         f"{base}{f' ({subtype})' if subtype else ''}{consumed}: {stderr[-800:]}",
         cli_subtype=subtype,
         notional_usd=aborted.notional_cost_usd,
         returncode=returncode if isinstance(returncode, int) else None,
         num_turns=aborted.num_turns,
+        failure_kind=failure_kind,
     )
 
 

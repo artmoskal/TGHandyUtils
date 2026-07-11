@@ -331,6 +331,8 @@ def _rich_graph_css() -> str:
 .graph-node.run-status-running { border-left: 5px solid #d97706; }
 .graph-node.run-status-failed { border-left: 5px solid #dc2626; }
 .graph-node.run-status-not_started { border-left: 5px solid #94a3b8; }
+.graph-node.run-status-partial { border-left: 5px solid #ca8a04; }
+.graph-node.run-status-suspended { border-left: 5px solid #7c3aed; }
 .graph-node.kind-branch { background: #f0fdf4; }
 .graph-node.kind-terminal { background: #f8fafc; }
 .node-topline { display: flex; gap: 6px; align-items: center; justify-content: space-between; margin-bottom: 6px; }
@@ -1115,12 +1117,30 @@ def _next_status(current: str, event: WorkflowTraceEvent) -> str:
     if event.error or event.severity == "error":
         return "failed"
     decision = event.decision or ""
+    # Terminal node-status events (engine executor, Q4.2): decision == "node:<status>" is
+    # authoritative — the run RECORDED how this node ended; never leave it "running".
+    if decision.startswith("node:"):
+        terminal = decision[len("node:"):]
+        if terminal in {"accepted", "completed"}:
+            return "completed"
+        if terminal in {"failed", "rejected"}:
+            return "failed"
+        if terminal == "partial":
+            return "partial"
+        if terminal == "requires_user_input":
+            return "suspended"
+        return current
+    if decision == "flow:authored":
+        # run-birth announcement on a pseudo-node — terminal by definition
+        return "completed"
     if decision == "start":
         return "running" if current == "not_started" else current
     if decision in {"accepted", "valid", "answered", "provisional"}:
         return "completed"
     if decision in {"failed", "rejected", "denied"}:
         return "failed"
+    if decision == "partial":
+        return "partial"
     if decision:
         return current if current != "not_started" else "running"
     return current

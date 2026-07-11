@@ -6,6 +6,19 @@ Run (double opt-in, both REQUIRED — either missing means this module SKIPS):
       ./test.sh integration -- --cov-fail-under=0 -q \
       tests/integration/test_engine_subscription_qualification.py
 
+RELEASE PROCEDURE (Q-R3, codex-agreed): run from a DETACHED CLEAN WORKTREE of the reviewed
+commit, with runtime secrets staged explicitly (they are gitignored and thus absent):
+
+    git worktree add --detach /tmp/qualification-<commit> <commit>
+    cp .env /tmp/qualification-<commit>/.env        # runtime-only; stays gitignored
+    cd /tmp/qualification-<commit>
+    ALLOW_PAID_TESTS=1 RUN_ENGINE_SUBSCRIPTION_QUALIFICATION=1 ./test.sh integration -- ...
+    git worktree remove --force /tmp/qualification-<commit>
+
+The dirty gate checks TRACKED files only (evidence maps to one source revision; staged
+secrets and test outputs are not source), so the worktree passes by construction while a
+modified checkout fails.
+
 Caps (settled in docs/_discussion/2026-07-11-engine-cross-consumer-live-qualification-plan.md):
 model alias `sonnet`, $0.10/invocation via `--max-budget-usd`, $0.50 suite ceiling, 6 worker
 calls, 180 s/invocation, 15 min suite. Outputs (manifest, four bundles, viewer pages,

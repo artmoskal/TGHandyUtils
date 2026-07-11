@@ -233,9 +233,9 @@ class StructuredLLMNode:
         # Q-R2: a typed transport error may carry what the ABORTED call actually consumed
         # (e.g. claude aborts on --max-budget-usd AFTER burning turns) — record it, never
         # drop it; money honesty covers failures too.
-        failed_notional = getattr(exc, "notional_usd", None)
-        if not isinstance(failed_notional, (int, float)):
-            failed_notional = None
+        consumed_usd = getattr(exc, "notional_usd", None)
+        if not isinstance(consumed_usd, (int, float)):
+            consumed_usd = None
         failure_subtype = getattr(exc, "cli_subtype", None)
         if failure_subtype:
             metadata["cli_subtype"] = str(failure_subtype)
@@ -243,6 +243,13 @@ class StructuredLLMNode:
         if isinstance(failed_turns, int):
             metadata["cli_num_turns"] = failed_turns
 
+        # Q-R2 (failed-metered): the consumed cost is booked to the field its RESOLVED cost
+        # class owns — a failed METERED CLI call is real money (estimated_usd), a failed
+        # subscription call is plan value (notional_usd); never cross-booked.
+        resolved_cost_class = (
+            getattr(client, "cost_class", None)
+            or ("subscription_notional" if getattr(client, "subscription_mode", False) else "metered")
+        )
         record_usage_event(
             WorkflowUsageEvent(
                 operation="chat",
@@ -252,18 +259,12 @@ class StructuredLLMNode:
                 attempt=attempt,
                 success=False,
                 error=str(exc)[:500],
-                notional_usd=failed_notional,
+                notional_usd=consumed_usd if resolved_cost_class == "subscription_notional" else None,
+                estimated_usd=consumed_usd if resolved_cost_class == "metered" else None,
                 # R14: honor BOTH client honesty markers — subscription-backed clients (e.g.
                 # the claude -p console client) expose subscription_mode, not cost_class; a
                 # failed subscription call must never be booked as metered spend.
-                cost_class=(
-                    getattr(client, "cost_class", None)
-                    or (
-                        "subscription_notional"
-                        if getattr(client, "subscription_mode", False)
-                        else "metered"
-                    )
-                ),
+                cost_class=resolved_cost_class,
                 metadata=metadata,
             )
         )
