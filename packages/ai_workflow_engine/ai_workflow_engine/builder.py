@@ -14,7 +14,21 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple, Union, runtime_checkable
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Protocol,
+    Tuple,
+    Union,
+    runtime_checkable,
+)
+
+if TYPE_CHECKING:
+    from ai_workflow_engine.prompt_rendering import PromptRenderService
 
 from ai_workflow_engine.config_loader import ObservationConfig, WorkflowConfigBundle, load_workflow_config
 from ai_workflow_engine.engine.capabilities import (
@@ -159,13 +173,13 @@ class WorkflowEngine:
         self.config = config
         self.default_profile = default_profile
         self.prompt_root = prompt_root
-        self._prompt_renderer: Optional[Any] = None
+        self._prompt_renderer: Optional["PromptRenderService"] = None
         self.workflows: Dict[str, WorkflowDefinition] = {}
         self._profiles: Dict[str, WorkflowProfile] = {}
         self._plans: Dict[str, RuntimePlan] = {}
 
     @property
-    def prompt_renderer(self) -> Any:
+    def prompt_renderer(self) -> "PromptRenderService":
         """Strict prompt-file renderer rooted at ``prompt_root`` (loud when unconfigured)."""
 
         if self.prompt_root is None:

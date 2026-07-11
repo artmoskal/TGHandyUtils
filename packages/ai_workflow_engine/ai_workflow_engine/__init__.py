@@ -5,9 +5,209 @@
 # no lite package; every name below still resolves exactly as before.
 
 from importlib import import_module
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 __version__ = "0.8.1"
+
+
+# F-C1 (typed public surface): the SAME export map, statically visible. Type checkers
+# resolve every public name to its concrete type here; at runtime PEP 562 below stays
+# the only import path. A contract guard asserts this block never drifts from _EXPORTS.
+if TYPE_CHECKING:
+    from ai_workflow_engine.builder import WorkflowEngine, WorkflowEngineBuilder, WorkflowPack
+    from ai_workflow_engine.config_loader import (
+        ObservationConfig,
+        WorkflowConfigBundle,
+        WorkflowConfigError,
+        WorkflowConfigLoader,
+        assert_no_config_secrets,
+        load_workflow_config,
+    )
+    from ai_workflow_engine.convenience import run_single_llm, run_single_step
+    from ai_workflow_engine.engine import (
+        AgentCapability,
+        AgentEpisodePlanner,
+        AsyncQueueDetailSink,
+        AsyncQueueTraceSink,
+        CallbackTraceSink,
+        CapabilityCall,
+        CapabilityRegistry,
+        CapabilityRuntime,
+        CheckpointStore,
+        DetailSink,
+        EvaluationController,
+        EvaluationPlanner,
+        ExternalAdapterCapability,
+        ExternalProcessCapability,
+        ExternalProcessRequest,
+        HumanClarificationCapability,
+        HumanClarificationChannel,
+        InMemoryCheckpointStore,
+        InMemoryDetailSink,
+        InMemoryExternalWriteSink,
+        InMemoryHumanClarificationChannel,
+        InMemoryTraceSink,
+        JsonlCheckpointStore,
+        JsonlDetailSink,
+        JsonlExternalWriteSink,
+        JsonlTraceSink,
+        LLMAgentPlanner,
+        ReplayPlanner,
+        RuntimePlanCompiler,
+        SchedulingDecision,
+        StructuredLLMNode,
+        StructuredOutputError,
+        TeeDetailSink,
+        TeeTraceSink,
+        TraceSink,
+        WorkflowDecisionPlanner,
+        WorkflowInstrument,
+        WorkflowInstrumentRegistry,
+        WorkflowLoopController,
+        WorkflowRunner,
+        WorkflowScheduler,
+        WorkflowStepPlanner,
+        WorkflowSupervisor,
+        artifact_result,
+        assert_checkpoint_payload_safe,
+        build_llm_agent_capability,
+        capability_context_for_goal,
+        cleanup_artifacts,
+        format_trace_events,
+        gather_capabilities,
+    )
+    from ai_workflow_engine.executor import (
+        CapabilityBindingError,
+        NodeExecutionState,
+        NodeResult,
+        UnsupportedNodeError,
+        WorkflowExecutor,
+        WorkflowRunResult,
+    )
+    from ai_workflow_engine.flow_authoring import (
+        BranchFlowNode,
+        DEFAULT_FLOW_AUTHOR_PROMPT,
+        EvaluateFlowNode,
+        FanoutFlowNode,
+        FlowArtifact,
+        FlowAuthorRequest,
+        FlowNode,
+        FlowNodeSpec,
+        StepFlowNode,
+        build_definition_from_artifact,
+        build_flow_author_capability,
+        render_capability_catalog,
+    )
+    from ai_workflow_engine.llm_protocol import (
+        ChatMessage,
+        LLMCallable,
+        LLMRequest,
+        LLMResponse,
+        ToolCallRequest,
+        ToolResult,
+        ToolSpec,
+        is_plain_llm_callable,
+    )
+    from ai_workflow_engine.memory import (
+        AgentMemory,
+        AgentMemoryRenderContext,
+        CompactingMemory,
+        FullReplayMemory,
+        ImageEvictingMemory,
+        InMemoryMemoryStore,
+        MemoryNamespace,
+        MemoryRecord,
+        MemoryStore,
+        StructuredStateMemory,
+        WindowedMemory,
+        default_rule_based_compactor,
+        default_state_renderer,
+        default_tool_state_reducer,
+        render_full_replay_messages,
+        resolve_agent_memory,
+    )
+    from ai_workflow_engine.model_binding import current_model_profile, model_profile_scope
+    from ai_workflow_engine.models import (
+        AgentRunRequest,
+        AgentRunResult,
+        AgentStepDecision,
+        AgentToolCall,
+        AgentToolStep,
+        CapabilityContext,
+        CapabilityResult,
+        CapabilitySpec,
+        ClarificationOption,
+        EvidenceRef,
+        ExternalWriteRequest,
+        ExternalWriteResult,
+        HumanClarificationRequest,
+        HumanClarificationResponse,
+        ModelProfile,
+        ObservationDetail,
+        RuntimePlan,
+        SessionState,
+        WorkflowArtifact,
+        WorkflowCheckpoint,
+        WorkflowGoal,
+        WorkflowProfile,
+        WorkflowResult,
+        WorkflowTraceEvent,
+        WorkflowUsageEvent,
+        WorkflowUsageSummary,
+    )
+    from ai_workflow_engine.node_services import NodeExecutionServices, NodeSchedulingServices
+    from ai_workflow_engine.observation_bundle import (
+        ObservationRunBundle,
+        ObservationSequence,
+        SequencedDetailSink,
+        SequencedTraceSink,
+        SequencedUsageSink,
+        open_observation_run_bundle,
+        prune_observation_bundles,
+    )
+    from ai_workflow_engine.parsing import (
+        WEAK_MODEL_CLEANER,
+        compose_cleaners,
+        extract_fenced_json,
+        extract_first_json_object,
+        strip_think_tags,
+    )
+    from ai_workflow_engine.planning import PlanArtifact, PlanTask, render_plan
+    from ai_workflow_engine.prompt_capture import PromptCapturingLLMClient
+    from ai_workflow_engine.prompt_loader import PromptTemplateLoader, load_prompt_template
+    from ai_workflow_engine.prompt_rendering import (
+        PromptRef,
+        PromptRenderError,
+        PromptRenderResult,
+        PromptRenderService,
+        PromptRenderer,
+    )
+    from ai_workflow_engine.snapshot import MachineSnapshot
+    from ai_workflow_engine.transport_models import ImageInput
+    from ai_workflow_engine.usage import (
+        AsyncQueueUsageSink,
+        InMemoryUsageSink,
+        JsonlUsageSink,
+        TeeUsageSink,
+        UsageSink,
+    )
+    from ai_workflow_engine.vision import StructuredVisionLLMNode
+    from ai_workflow_engine.viz import render_prompt_manifest
+    from ai_workflow_engine.workflow import (
+        BranchDecision,
+        END,
+        Fallback,
+        Replan,
+        Retrace,
+        Retry,
+        SubworkflowRef,
+        Transition,
+        WorkflowBuilder,
+        WorkflowDefinition,
+        WorkflowNode,
+        WorkflowValidationError,
+        render_machine_card,
+    )
 
 _EXPORTS: dict[str, tuple[str, str]] = {
     "AgentCapability": ("ai_workflow_engine.engine", "AgentCapability"),
@@ -60,7 +260,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "HumanClarificationRequest": ("ai_workflow_engine.models", "HumanClarificationRequest"),
     "HumanClarificationResponse": ("ai_workflow_engine.models", "HumanClarificationResponse"),
     "ImageEvictingMemory": ("ai_workflow_engine.memory", "ImageEvictingMemory"),
-    "ImageInput": ("ai_workflow_engine.vision", "ImageInput"),
+    "ImageInput": ("ai_workflow_engine.transport_models", "ImageInput"),
     "InMemoryCheckpointStore": ("ai_workflow_engine.engine", "InMemoryCheckpointStore"),
     "InMemoryDetailSink": ("ai_workflow_engine.engine", "InMemoryDetailSink"),
     "InMemoryExternalWriteSink": ("ai_workflow_engine.engine", "InMemoryExternalWriteSink"),

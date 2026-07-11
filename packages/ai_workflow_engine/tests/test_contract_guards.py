@@ -300,30 +300,61 @@ def test_engine_package_has_no_module_level_import_cycles():
     prefix = "ai_workflow_engine"
     graph: dict[str, set[str]] = {}
 
-    def module_name(path: Path) -> str:
+    def module_parts(path: Path) -> tuple[list[str], bool]:
         rel = path.relative_to(package_root.parent).with_suffix("")
         parts = list(rel.parts)
-        if parts[-1] == "__init__":
+        is_package = parts[-1] == "__init__"
+        if is_package:
             parts = parts[:-1]
-        return ".".join(parts)
+        return parts, is_package
 
-    def top_level_engine_imports(tree: ast.Module) -> set[str]:
+    def _is_type_checking_if(node: ast.If) -> bool:
+        test = node.test
+        return (isinstance(test, ast.Name) and test.id == "TYPE_CHECKING") or (
+            isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
+        )
+
+    def top_level_engine_imports(tree: ast.Module, parts: list[str], is_package: bool) -> set[str]:
+        # F-C4: module-level means EVERY statement outside def/class — including try/except
+        # and runtime `if` bodies; only `if TYPE_CHECKING:` is a non-runtime edge. Relative
+        # imports resolve against the module's package so they are edges too.
+        package = parts if is_package else parts[:-1]
         found: set[str] = set()
-        for node in tree.body:  # module level only — function bodies are runtime-local
-            if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith(prefix):
-                found.add(node.module)
-            elif isinstance(node, ast.Import):
-                for alias in node.names:
-                    if alias.name.startswith(prefix):
-                        found.add(alias.name)
-            elif isinstance(node, ast.If):
-                continue  # TYPE_CHECKING blocks etc. are not runtime edges
+
+        def visit(statements) -> None:
+            for node in statements:
+                if isinstance(node, ast.ImportFrom):
+                    if node.level == 0:
+                        module = node.module or ""
+                    else:
+                        base = package[: len(package) - (node.level - 1)]
+                        module = ".".join(base + (node.module.split(".") if node.module else []))
+                    if module.startswith(prefix):
+                        found.add(module)
+                elif isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if alias.name.startswith(prefix):
+                            found.add(alias.name)
+                elif isinstance(node, ast.If):
+                    if _is_type_checking_if(node):
+                        visit(node.orelse)  # the else-branch of TYPE_CHECKING IS runtime
+                    else:
+                        visit(node.body)
+                        visit(node.orelse)
+                elif isinstance(node, ast.Try):
+                    visit(node.body)
+                    for handler in node.handlers:
+                        visit(handler.body)
+                    visit(node.orelse)
+                    visit(node.finalbody)
+
+        visit(tree.body)
         return found
 
     for path in sorted(package_root.rglob("*.py")):
-        name = module_name(path)
+        parts, is_package = module_parts(path)
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        graph[name] = top_level_engine_imports(tree)
+        graph[".".join(parts)] = top_level_engine_imports(tree, parts, is_package)
 
     # Tarjan SCC
     index_counter = [0]
@@ -379,9 +410,10 @@ def test_engine_package_has_no_module_level_import_cycles():
 
 
 async def test_complexity_gradient_matrix_contract():
-    """F1.4: one guard for the gradient — the medium tier registers a pack with no engine
-    edit; the advanced tier opts into fanout+memory+observation independently; every tier
-    runs the same executor contract. (The simple tier is the subprocess test above.)"""
+    """F1.4/F-C3: one guard for the gradient — the medium tier registers a pack with no
+    engine edit; the advanced tier opts into fanout + PER-NODE MEMORY + observation
+    independently (the memory policy is real and its delivery is asserted, not implied);
+    every tier runs the same executor contract. (Simple tier = the subprocess test above.)"""
 
     from ai_workflow_engine import (
         ObservationConfig,
@@ -406,19 +438,31 @@ async def test_complexity_gradient_matrix_contract():
         builder = WorkflowEngineBuilder().with_observation(
             ObservationConfig(enabled=True, bundle_dir=tmp)
         )
+        seen_memory: dict = {}
+
+        async def summarize(context, items):
+            seen_memory["policy"] = context.metadata.get("agent_memory")
+            return {"total": sum(items)}
+
         builder.register_capability("spread", lambda ctx, p: {"items": [1, 2, 3]}, kind="deterministic")
         builder.register_capability("double", lambda ctx, item: item * 2, kind="deterministic")
+        builder.register_capability("summarize", summarize, kind="deterministic")
         builder.register_workflow(
             WorkflowBuilder("advanced_flow")
             .step("spread")
             .fanout("fan", capability="double", items_key="spread.items", max_parallel=2)
+            .step("summarize", memory={"mode": "structured_state"})
             .build()
         )
         advanced = builder.build()
         adv = await advanced.run("advanced_flow", {})
         assert adv.status == "completed"
-        assert sorted(adv.output) == [2, 4, 6]
+        assert adv.output == {"total": 12}
         assert adv.observation_bundle_path, "advanced tier opted into observation"
+        assert seen_memory["policy"] == {"mode": "structured_state"}, (
+            "the advanced tier must DECLARE a real per-node memory policy and the engine "
+            "must DELIVER it to the capability context — memory opted in, not implied"
+        )
 
 
 def test_packaging_ships_types_pins_and_a_standalone_viewer():
@@ -460,3 +504,76 @@ def test_packaging_ships_types_pins_and_a_standalone_viewer():
             elif isinstance(node, _ast.Import) and any(a.name.startswith("ai_workflow_viewer") for a in node.names):
                 offenders.append(f"{path}:{node.lineno}")
     assert offenders == [], f"engine imports the viewer: {offenders}"
+
+
+def test_static_typing_surface_matches_lazy_exports_exactly():
+    """F-C1: py.typed is only honest if type checkers SEE the public names. Both lazy
+    __init__ modules must carry an `if TYPE_CHECKING:` import block whose bound names equal
+    the _EXPORTS map exactly — no missing name (checker sees Any), no extra name (advertises
+    something runtime cannot deliver). Sources must match the runtime map too."""
+
+    import ast
+    from pathlib import Path
+
+    import ai_workflow_engine
+    import ai_workflow_engine.engine as engine_pkg
+
+    for module in (ai_workflow_engine, engine_pkg):
+        tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+        static: dict[str, tuple[str, str]] = {}
+        for node in tree.body:
+            if not (isinstance(node, ast.If) and getattr(node.test, "id", "") == "TYPE_CHECKING"):
+                continue
+            for stmt in node.body:
+                assert isinstance(stmt, ast.ImportFrom), (
+                    f"{module.__name__}: TYPE_CHECKING block must contain only from-imports"
+                )
+                for alias in stmt.names:
+                    bound = alias.asname or alias.name
+                    static[bound] = (stmt.module, alias.name)
+        assert static, f"{module.__name__} has no TYPE_CHECKING static export block"
+        runtime = module._EXPORTS
+        missing = sorted(set(runtime) - set(static))
+        extra = sorted(set(static) - set(runtime))
+        assert not missing, f"{module.__name__}: exports invisible to type checkers: {missing}"
+        assert not extra, f"{module.__name__}: static-only names runtime cannot deliver: {extra}"
+        drifted = sorted(
+            name for name, source in static.items() if tuple(runtime[name]) != tuple(source)
+        )
+        assert not drifted, f"{module.__name__}: static source drifted from _EXPORTS: {drifted}"
+
+
+def test_top_level_image_input_import_stays_on_the_transport_leaf():
+    """F-C2: `from ai_workflow_engine import ImageInput` is the canonical lightweight DTO
+    import — it must resolve via transport_models WITHOUT dragging vision, the LangChain
+    node, or memory into the process."""
+
+    import json
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    import ai_workflow_engine
+
+    package_parent = str(Path(ai_workflow_engine.__file__).resolve().parents[1])
+    script = (
+        "import json, sys\n"
+        "from ai_workflow_engine import ImageInput\n"
+        "img = ImageInput(source='path', data='/tmp/x.png', media_type='image/png')\n"
+        "heavy = [m for m in ('ai_workflow_engine.vision', 'ai_workflow_engine.engine.llm_node',"
+        " 'ai_workflow_engine.memory', 'langchain_core') if m in sys.modules]\n"
+        "print(json.dumps(heavy))\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        cwd=package_parent,
+        timeout=120,
+    )
+    assert proc.returncode == 0, f"probe failed: {proc.stderr}"
+    loaded = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert loaded == [], (
+        f"top-level ImageInput dragged heavy modules into the process: {loaded} — the export "
+        "must point at the transport leaf, not the vision façade"
+    )

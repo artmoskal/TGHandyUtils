@@ -5,7 +5,66 @@
 # no lite package; every name below still resolves exactly as before.
 
 from importlib import import_module
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+
+# F-C1 (typed public surface): the SAME export map, statically visible. Type checkers
+# resolve every public name to its concrete type here; at runtime PEP 562 below stays
+# the only import path. A contract guard asserts this block never drifts from _EXPORTS.
+if TYPE_CHECKING:
+    from ai_workflow_engine.engine.agent import AgentCapability, AgentEpisodePlanner
+    from ai_workflow_engine.engine.agent_planner import (
+        LLMAgentPlanner,
+        ReplayPlanner,
+        build_llm_agent_capability,
+    )
+    from ai_workflow_engine.engine.artifacts import cleanup_artifacts
+    from ai_workflow_engine.engine.capabilities import (
+        AsyncQueueDetailSink,
+        AsyncQueueTraceSink,
+        CallbackTraceSink,
+        CapabilityCall,
+        CapabilityRegistry,
+        CapabilityRuntime,
+        DetailSink,
+        InMemoryDetailSink,
+        InMemoryTraceSink,
+        JsonlDetailSink,
+        JsonlTraceSink,
+        RuntimePlanCompiler,
+        TeeDetailSink,
+        TeeTraceSink,
+        TraceSink,
+        artifact_result,
+        capability_context_for_goal,
+        format_trace_events,
+        gather_capabilities,
+    )
+    from ai_workflow_engine.engine.checkpoints import (
+        CheckpointStore,
+        InMemoryCheckpointStore,
+        JsonlCheckpointStore,
+        assert_checkpoint_payload_safe,
+    )
+    from ai_workflow_engine.engine.evaluator import EvaluationController, EvaluationPlanner
+    from ai_workflow_engine.engine.external import (
+        ExternalAdapterCapability,
+        ExternalProcessCapability,
+        ExternalProcessRequest,
+        InMemoryExternalWriteSink,
+        JsonlExternalWriteSink,
+    )
+    from ai_workflow_engine.engine.human import (
+        HumanClarificationCapability,
+        HumanClarificationChannel,
+        InMemoryHumanClarificationChannel,
+    )
+    from ai_workflow_engine.engine.instruments import WorkflowInstrument, WorkflowInstrumentRegistry
+    from ai_workflow_engine.engine.llm_node import StructuredLLMNode, StructuredOutputError
+    from ai_workflow_engine.engine.loop import WorkflowLoopController, WorkflowStepPlanner
+    from ai_workflow_engine.engine.runner import WorkflowRunner
+    from ai_workflow_engine.engine.scheduler import SchedulingDecision, WorkflowScheduler
+    from ai_workflow_engine.engine.supervisor import WorkflowDecisionPlanner, WorkflowSupervisor
 
 _EXPORTS: dict[str, tuple[str, str]] = {
     "AgentCapability": ("ai_workflow_engine.engine.agent", "AgentCapability"),
