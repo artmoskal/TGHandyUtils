@@ -568,7 +568,7 @@ def test_console_error_rejects_nonpositive_attempts_and_unknown_kinds():
 
     from ai_workflow_tools.cli_agents import ConsoleCliError
 
-    for bad_calls in (0, -1, 1.5, "1"):
+    for bad_calls in (0, -1, 1.5, "1", True):  # bool is an int subclass — still rejected
         with pytest.raises(ValueError, match="worker_calls"):
             ConsoleCliError("x", worker_calls=bad_calls)
 
@@ -578,3 +578,67 @@ def test_console_error_rejects_nonpositive_attempts_and_unknown_kinds():
 
     ok = ConsoleCliError("x", failure_kind="timeout", worker_calls=2)
     assert ok.failure_kind == "timeout" and ok.worker_calls == 2
+
+
+@pytest.mark.unit
+def test_worktree_export_procedure_preserves_evidence_and_allows_nonforced_removal(tmp_path):
+    """QRF operational contract (codex): the release cleanup NEVER forces — evidence is
+    exported and VERIFIED, staged transients are removed, and a plain (non-forced)
+    `git worktree remove` succeeds. Anything unexpectedly left behind fails removal loudly."""
+
+    import json
+    import subprocess
+
+    from tests.support.engine_qualification import (
+        QualificationError,
+        export_evidence_and_clean_worktree,
+    )
+
+    main = tmp_path / "main"
+    main.mkdir()
+
+    def git(*args, cwd=main):
+        return subprocess.run(
+            ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+            cwd=cwd, check=True, capture_output=True, text=True,
+        )
+
+    git("init", "-q")
+    (main / "src.txt").write_text("v1", encoding="utf-8")
+    (main / ".gitignore").write_text(".env\n", encoding="utf-8")
+    git("add", "src.txt", ".gitignore")
+    git("commit", "-q", "-m", "init")
+
+    worktree = tmp_path / "release-wt"
+    git("worktree", "add", "--detach", str(worktree), "HEAD")
+
+    # simulate the release run: staged secrets + paid evidence inside the worktree
+    (worktree / ".env").write_text("SECRET=1", encoding="utf-8")
+    run_dir = worktree / "infra" / "test-results" / "engine-subscription-qualification" / "runX"
+    run_dir.mkdir(parents=True)
+    (run_dir / "qualification-summary.json").write_text(
+        json.dumps({"completed": True}), encoding="utf-8"
+    )
+    (run_dir / "index.html").write_text("<html>evidence</html>", encoding="utf-8")
+
+    exported_root = tmp_path / "exported"
+    exported_root.mkdir()
+    exported = export_evidence_and_clean_worktree(str(worktree), str(exported_root))
+
+    # evidence survived, verified
+    summary = (
+        exported_root / "engine-subscription-qualification" / "runX" / "qualification-summary.json"
+    )
+    assert summary.exists() and json.loads(summary.read_text(encoding="utf-8"))["completed"]
+    assert exported == str(exported_root / "engine-subscription-qualification")
+
+    # NON-forced removal succeeds — the contract's whole point
+    git("worktree", "remove", str(worktree))
+    assert not worktree.exists()
+
+    # and the guard is real: without evidence the helper refuses to clean anything
+    worktree2 = tmp_path / "release-wt2"
+    git("worktree", "add", "--detach", str(worktree2), "HEAD")
+    with pytest.raises(QualificationError, match="no qualification evidence"):
+        export_evidence_and_clean_worktree(str(worktree2), str(exported_root))
+    git("worktree", "remove", str(worktree2))

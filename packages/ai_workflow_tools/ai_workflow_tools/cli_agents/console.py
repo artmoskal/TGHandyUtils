@@ -63,7 +63,7 @@ class ConsoleCliError(RuntimeError):
             )
         # QRF.2: one raised error represents AT LEAST one spawned paid attempt — zero or
         # negative counts would undercount spend and are rejected loudly.
-        if not isinstance(worker_calls, int) or worker_calls < 1:
+        if type(worker_calls) is not int or worker_calls < 1:  # bool is an int subclass — rejected
             raise ValueError(f"worker_calls must be a positive int, got {worker_calls!r}")
         self.cli_subtype = cli_subtype
         self.notional_usd = notional_usd

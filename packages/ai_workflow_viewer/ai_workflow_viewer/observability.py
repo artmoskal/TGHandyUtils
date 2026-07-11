@@ -1134,7 +1134,8 @@ def _next_status(current: str, event: WorkflowTraceEvent) -> str:
         return "failed"
     decision = event.decision or ""
     if decision == "flow:authored":
-        # run-birth announcement on a pseudo-node — terminal by definition
+        # LEGACY BUNDLES ONLY: pre-typed-field events carried no node_status; new engine
+        # events set node_status="completed" and never reach this branch.
         return "completed"
     if decision == "start":
         return "running" if current == "not_started" else current

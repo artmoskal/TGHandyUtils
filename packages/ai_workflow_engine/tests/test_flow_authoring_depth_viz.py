@@ -1300,3 +1300,31 @@ async def test_nested_run_inside_authored_flow_does_not_inherit_provenance():
     assert len(stamped) == 1, (
         "the nested plain run must NOT inherit authored provenance — consume-once"
     )
+
+
+async def test_new_flow_authored_events_carry_typed_status_with_legacy_fallback():
+    """QRF follow-up (codex): NEW flow:authored events carry node_status='completed' (typed
+    lifecycle everywhere); decision-text inference remains ONLY for legacy bundles."""
+
+    from ai_workflow_engine.models import WorkflowTraceEvent
+    from ai_workflow_viewer import build_observation_graph
+
+    processing, _analyzed = _fanout_engine(fail_on=None)
+    artifact = FlowArtifact.model_validate(_json.loads(_good_artifact_json()))
+    result = await processing.run_authored_flow(artifact, {})
+    assert result.status == "completed"
+
+    authored_events = [e for e in result.trace if e.decision == "flow:authored"]
+    assert authored_events, "authored run must record provenance"
+    assert all(e.node_status == "completed" for e in authored_events), (
+        "NEW provenance events must carry the TYPED terminal status"
+    )
+
+    # legacy bundle shape: decision only, no typed field — the viewer still completes it
+    definition = WorkflowBuilder("legacy_flow").step("s").build()
+    legacy = WorkflowTraceEvent(node="legacy_flow", decision="flow:authored", run_id="r1")
+    assert legacy.node_status is None
+    graph = build_observation_graph(definition, [legacy], run_id="r1")
+    assert graph.nodes["legacy_flow"].status == "completed", (
+        "legacy bundles without the typed field must still project terminal"
+    )

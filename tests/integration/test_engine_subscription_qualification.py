@@ -13,12 +13,13 @@ commit, with runtime secrets staged explicitly (they are gitignored and thus abs
     cp .env /tmp/qualification-<commit>/.env        # runtime-only; gitignored => invisible to porcelain
     cd /tmp/qualification-<commit>
     ALLOW_PAID_TESTS=1 RUN_ENGINE_SUBSCRIPTION_QUALIFICATION=1 ./test.sh integration -- ...
-    # QRF: COPY THE PAID EVIDENCE OUT AND VERIFY IT BEFORE REMOVING THE WORKTREE —
-    # removal deletes everything inside, including the bundles Q4.2 must inspect.
-    cp -R infra/test-results/engine-subscription-qualification \
-          <main-checkout>/infra/test-results/
-    test -f <main-checkout>/infra/test-results/engine-subscription-qualification/<run-id>/qualification-summary.json
-    git worktree remove --force /tmp/qualification-<commit>   # --force: staged .env + outputs remain
+    # QRF: export + cleanup via the TESTED helper (copies evidence out, VERIFIES the
+    # summary exists, removes the staged .env and test outputs) — then a NON-FORCED
+    # removal; anything unexpectedly left behind fails removal loudly instead of being
+    # silently destroyed:
+    python -c "from tests.support.engine_qualification import export_evidence_and_clean_worktree as x; \
+               x('/tmp/qualification-<commit>', '<main-checkout>/infra/test-results')"
+    git worktree remove /tmp/qualification-<commit>           # NO --force, by contract
 
 The dirty gate is STRICT full porcelain: gitignored files (.env) never appear in it, so the
 worktree passes clean by construction, while ANY untracked source override or tracked edit

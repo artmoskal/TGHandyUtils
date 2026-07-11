@@ -284,6 +284,9 @@ class WorkflowExecutor:
                         WorkflowTraceEvent(
                             node=definition.workflow_id,
                             decision="flow:authored",
+                            # the announcement is terminal the instant it is recorded — NEW
+                            # events carry the TYPED lifecycle; string inference is legacy-only
+                            node_status="completed",
                             run_id=str(context.run_context.workflow_id),
                             metadata=dict(_authored_provenance),
                         )

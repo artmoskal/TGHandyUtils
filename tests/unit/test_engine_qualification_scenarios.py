@@ -382,3 +382,4 @@ def test_failed_node_error_is_projected_once():
     graph = build_observation_graph(definition, events, run_id="r1")
     assert graph.nodes["boom"].status == "failed"
     assert graph.nodes["boom"].errors == ["kaput"], "same evidence text appears exactly once"
+

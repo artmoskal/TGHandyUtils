@@ -534,3 +534,31 @@ def render_suite_report_html(report: SuiteReport) -> str:
     # re-persist AFTER generation so disk and memory agree.
     persist_suite_report(report)
     return str(index)
+
+
+def export_evidence_and_clean_worktree(worktree: "str", destination: "str") -> str:
+    """QRF operational contract: copy the paid evidence OUT of the disposable worktree,
+    VERIFY it landed, remove the staged/transient files, and leave the worktree clean enough
+    for a NON-FORCED `git worktree remove`. Returns the exported evidence directory.
+
+    Anything unexpectedly left behind makes the non-forced removal fail LOUDLY — that is the
+    point: forced cleanup can silently destroy evidence; this procedure cannot."""
+
+    import shutil
+    from pathlib import Path
+
+    tree = Path(worktree)
+    evidence = tree / "infra" / "test-results" / "engine-subscription-qualification"
+    if not evidence.is_dir():
+        raise QualificationError(f"no qualification evidence under {evidence}")
+    exported = Path(destination) / "engine-subscription-qualification"
+    shutil.copytree(evidence, exported, dirs_exist_ok=True)
+    summaries = list(exported.glob("*/qualification-summary.json"))
+    if not summaries:
+        raise QualificationError(
+            f"exported evidence has no qualification-summary.json under {exported} — refusing cleanup"
+        )
+    # staged/transient files created by the release run — removed AFTER verified export
+    shutil.rmtree(tree / "infra" / "test-results", ignore_errors=True)
+    (tree / ".env").unlink(missing_ok=True)
+    return str(exported)
