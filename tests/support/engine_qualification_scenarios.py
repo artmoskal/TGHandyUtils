@@ -250,6 +250,7 @@ async def run_mageqa_local_audit(
     from types import SimpleNamespace
 
     from ai_workflow_engine import (
+    LocalWaitPolicy,
         FlowArtifact,
         WorkflowBuilder,
         WorkflowEngineBuilder,
@@ -516,7 +517,7 @@ async def run_slackazz_triage(
 
     from types import SimpleNamespace
 
-    from ai_workflow_engine import WorkflowBuilder
+    from ai_workflow_engine import LocalWaitPolicy, WorkflowBuilder
     from ai_workflow_engine.engine.llm_node import StructuredLLMNode
 
     started = time.monotonic()
@@ -577,7 +578,7 @@ async def run_slackazz_triage(
         WorkflowBuilder("slackazz_triage")
         .step("classify_message")
         .step("draft_reply")
-        .human("approval")
+        .human("approval", wait_policy=LocalWaitPolicy())
         .step("finalize_draft")
         .build()
     )

@@ -224,6 +224,7 @@ def test_branch_without_inject_machine_keeps_describe_optional():
 # ---------------------------------------------- Phase F: import surface + cycles + gradient
 
 FORBIDDEN_SIMPLE_TIER_MODULES = [
+    "ai_workflow_engine.waits",
     "ai_workflow_engine.memory",
     "ai_workflow_engine.flow_authoring",
     "ai_workflow_engine.vision",

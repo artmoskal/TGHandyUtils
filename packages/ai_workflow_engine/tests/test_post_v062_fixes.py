@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from ai_workflow_engine import WorkflowBuilder, WorkflowEngineBuilder, WorkflowGoal
+from ai_workflow_engine import LocalWaitPolicy
 from ai_workflow_engine.models import RuntimeLimits
 
 pytestmark = pytest.mark.unit
@@ -103,7 +104,7 @@ def test_resume_partial_context_override_is_rejected_loudly():
         return SimpleNamespace(status="pending")
 
     builder.register_capability("ask", ask, kind="deterministic")
-    builder.register_workflow(WorkflowBuilder("strict_resume_wf").human("ask").build())
+    builder.register_workflow(WorkflowBuilder("strict_resume_wf").human("ask", wait_policy=LocalWaitPolicy()).build())
     engine = builder.build()
 
     async def scenario():
@@ -144,7 +145,7 @@ def test_resume_preserves_original_goal_and_run_identity():
     builder.register_capability("work", work, kind="deterministic")
     builder.register_capability("ask", ask, kind="deterministic")
     builder.register_workflow(
-        WorkflowBuilder("identity_wf").step("work").human("ask").build()
+        WorkflowBuilder("identity_wf").step("work").human("ask", wait_policy=LocalWaitPolicy()).build()
     )
     engine = builder.build()
 

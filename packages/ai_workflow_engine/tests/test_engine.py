@@ -2127,7 +2127,8 @@ async def test_workflow_decision_planner_repairs_bad_json_once():
 # Executable workflow engine — P1: WorkflowDefinition + WorkflowBuilder (AC-1)
 # ======================================================================================
 
-from ai_workflow_engine import (  # noqa: E402
+from ai_workflow_engine import (
+    LocalWaitPolicy,  # noqa: E402
     END,
     Fallback,
     Replan,
@@ -2159,7 +2160,7 @@ def _home_inventory_builder() -> WorkflowBuilder:
         .step("extract_items")
         .evaluate("quality_gate", on_reject=Retrace("select_evidence"))
         .step("write_inventory")
-        .human("ask_location")
+        .human("ask_location", wait_policy=LocalWaitPolicy())
         .step("fallback_or_fail")
     )
 
@@ -2865,7 +2866,7 @@ async def test_subworkflow_failure_boundary_halts_parent():
 
 def _clarify_engine(channel: InMemoryHumanClarificationChannel) -> WorkflowEngine:
     human_cap = HumanClarificationCapability(channel, name="ask")
-    workflow = WorkflowBuilder("clarify").human("ask").step("use_answer").build()
+    workflow = WorkflowBuilder("clarify").human("ask", wait_policy=LocalWaitPolicy()).step("use_answer").build()
     builder = WorkflowEngineBuilder()
     builder.register_capability("ask", human_cap)
     builder.register_capability(

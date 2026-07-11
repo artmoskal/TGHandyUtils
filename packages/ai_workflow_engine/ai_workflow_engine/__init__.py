@@ -14,6 +14,16 @@ __version__ = "0.8.1"
 # resolve every public name to its concrete type here; at runtime PEP 562 below stays
 # the only import path. A contract guard asserts this block never drifts from _EXPORTS.
 if TYPE_CHECKING:
+    from ai_workflow_engine.waits import (
+        DurableWaitPolicy,
+        LocalWaitPolicy,
+        WaitClaim,
+        WaitEvent,
+        WaitHandle,
+        WaitHealth,
+        WaitReceipt,
+        WaitRecord,
+    )
     from ai_workflow_engine.builder import WorkflowEngine, WorkflowEngineBuilder, WorkflowPack
     from ai_workflow_engine.config_loader import (
         ObservationConfig,
@@ -238,6 +248,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "CompactingMemory": ("ai_workflow_engine.memory", "CompactingMemory"),
     "DEFAULT_FLOW_AUTHOR_PROMPT": ("ai_workflow_engine.flow_authoring", "DEFAULT_FLOW_AUTHOR_PROMPT"),
     "DetailSink": ("ai_workflow_engine.engine", "DetailSink"),
+    "DurableWaitPolicy": ("ai_workflow_engine.waits", "DurableWaitPolicy"),
     "END": ("ai_workflow_engine.workflow", "END"),
     "EvaluateFlowNode": ("ai_workflow_engine.flow_authoring", "EvaluateFlowNode"),
     "EvaluationController": ("ai_workflow_engine.engine", "EvaluationController"),
@@ -277,6 +288,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "LLMCallable": ("ai_workflow_engine.llm_protocol", "LLMCallable"),
     "LLMRequest": ("ai_workflow_engine.llm_protocol", "LLMRequest"),
     "LLMResponse": ("ai_workflow_engine.llm_protocol", "LLMResponse"),
+    "LocalWaitPolicy": ("ai_workflow_engine.waits", "LocalWaitPolicy"),
     "MachineSnapshot": ("ai_workflow_engine.snapshot", "MachineSnapshot"),
     "MemoryNamespace": ("ai_workflow_engine.memory", "MemoryNamespace"),
     "MemoryRecord": ("ai_workflow_engine.memory", "MemoryRecord"),
@@ -327,6 +339,12 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "UnsupportedNodeError": ("ai_workflow_engine.executor", "UnsupportedNodeError"),
     "UsageSink": ("ai_workflow_engine.usage", "UsageSink"),
     "WEAK_MODEL_CLEANER": ("ai_workflow_engine.parsing", "WEAK_MODEL_CLEANER"),
+    "WaitClaim": ("ai_workflow_engine.waits", "WaitClaim"),
+    "WaitEvent": ("ai_workflow_engine.waits", "WaitEvent"),
+    "WaitHandle": ("ai_workflow_engine.waits", "WaitHandle"),
+    "WaitHealth": ("ai_workflow_engine.waits", "WaitHealth"),
+    "WaitReceipt": ("ai_workflow_engine.waits", "WaitReceipt"),
+    "WaitRecord": ("ai_workflow_engine.waits", "WaitRecord"),
     "WindowedMemory": ("ai_workflow_engine.memory", "WindowedMemory"),
     "WorkflowArtifact": ("ai_workflow_engine.models", "WorkflowArtifact"),
     "WorkflowBuilder": ("ai_workflow_engine.workflow", "WorkflowBuilder"),
@@ -391,6 +409,14 @@ _EXPORTS: dict[str, tuple[str, str]] = {
 }
 
 __all__ = [
+    "DurableWaitPolicy",
+    "LocalWaitPolicy",
+    "WaitClaim",
+    "WaitEvent",
+    "WaitHandle",
+    "WaitHealth",
+    "WaitReceipt",
+    "WaitRecord",
     "run_single_llm",
     "run_single_step",
     "END",

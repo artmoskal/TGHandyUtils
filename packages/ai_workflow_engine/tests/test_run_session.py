@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from ai_workflow_engine import (
+    LocalWaitPolicy,
     InMemoryDetailSink,
     InMemoryTraceSink,
     WorkflowBuilder,
@@ -120,7 +121,7 @@ def test_resume_rebuilds_session_without_reexecuting_completed_nodes():
     builder.register_capability("ask", ask, kind="deterministic")
     builder.register_capability("finish", finish, kind="deterministic")
     builder.register_workflow(
-        WorkflowBuilder("resume_wf").step("work").human("ask").step("finish").build()
+        WorkflowBuilder("resume_wf").step("work").human("ask", wait_policy=LocalWaitPolicy()).step("finish").build()
     )
     engine = builder.build()
 

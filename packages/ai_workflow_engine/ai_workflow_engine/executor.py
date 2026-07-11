@@ -23,7 +23,7 @@ from contextvars import ContextVar
 import uuid
 from typing import Any, Awaitable, Callable, Dict, List, Optional, TypedDict
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import model_validator, BaseModel, ConfigDict, Field
 
 from ai_workflow_engine.engine.capabilities import (
     CapabilityCall,
@@ -153,9 +153,19 @@ class WorkflowRunResult(BaseModel):
     trace: List[WorkflowTraceEvent] = Field(default_factory=list)
     # Where this run's durable observation bundle lives (set when a bundle was attached).
     observation_bundle_path: Optional[str] = None
-    # Durable suspension: set ONLY when status == "requires_user_input" — feed it back through
-    # engine.resume(snapshot, event) to continue the machine without re-executing anything.
+    # LOCAL suspension: set ONLY when status == "requires_user_input" AND the wait is a
+    # LocalWaitPolicy — feed it back through engine.resume(snapshot, event). Registered
+    # DURABLE waits expose wait_handle INSTEAD (C1/W1.4): exactly one of the two, never both.
     snapshot: Optional[MachineSnapshot] = None
+    wait_handle: Optional[Any] = None
+
+    @model_validator(mode="after")
+    def _one_public_wait_door(self) -> "WorkflowRunResult":
+        if self.snapshot is not None and self.wait_handle is not None:
+            raise ValueError(
+                "a run result may carry a LOCAL snapshot or a DURABLE wait_handle — never both"
+            )
+        return self
 
     def node(self, node_id: str) -> Optional[NodeResult]:
         for record in reversed(self.node_results):
@@ -797,6 +807,16 @@ class WorkflowExecutor:
         structural = definition.validate_graph()
         if structural:
             return "; ".join(structural)
+        for node in definition.nodes:
+            if (node.wait_policy or {}).get("mode") == "durable":
+                # W1 contract boundary: durable waits are DECLARED machine data now, but
+                # execution requires coordinator registration (W2). Fail before any
+                # capability runs — never suspend a durable wait into a raw public snapshot.
+                return (
+                    f"durable wait '{node.id}' requires coordinator registration, which "
+                    "lands with W2 — configure a WaitCoordinator once available; only "
+                    "LocalWaitPolicy waits are executable in W1"
+                )
         known_caps = set(self.runtime.registry.names())
         for node in definition.nodes:
             if node.kind not in KNOWN_NODE_KINDS:

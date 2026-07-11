@@ -7,6 +7,7 @@ import json
 import pytest
 
 from ai_workflow_engine import (
+    LocalWaitPolicy,
     CapabilityResult,
     EvidenceRef,
     ObservationConfig,
@@ -421,7 +422,7 @@ async def test_resumed_run_opens_its_own_bundle_and_finalizes_completed(tmp_path
     builder.register_capability("ask", ask, kind="deterministic")
     builder.register_capability("finish", lambda ctx, p: {"done": True}, kind="deterministic")
     builder.register_workflow(
-        WorkflowBuilder("resume_bundle_flow").human("ask").step("finish").build()
+        WorkflowBuilder("resume_bundle_flow").human("ask", wait_policy=LocalWaitPolicy()).step("finish").build()
     )
     engine = builder.build()
 

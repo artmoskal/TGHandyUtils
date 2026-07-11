@@ -97,6 +97,10 @@ def workflow_to_mermaid(
         elif t.policy == "on_reject":
             bound = f" \u2264{t.max_traversals}" if t.max_traversals else ""
             lines.append(f"    {src} -.->|{t.label}{bound}| {dst}")
+        elif t.policy == "on_timeout":
+            # W1.3: the declared durable-timeout route is machine data — rendered distinctly
+            label = t.description or "on timeout"
+            lines.append(f"    {src} -.->|\u23f0 {label}| {dst}")
         else:
             # the evaluate node's sequential continuation is already drawn as its accept route
             if definition.node(t.source).kind == "evaluate":

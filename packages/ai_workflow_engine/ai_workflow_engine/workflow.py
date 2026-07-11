@@ -165,6 +165,10 @@ class WorkflowNode(BaseModel):
     # silent rewrite to 1 downstream.
     max_parallel: Optional[int] = Field(default=None, ge=1)
     max_items: Optional[int] = Field(default=None, ge=1)
+    # W1: EXPLICIT wait intent on wait-capable (human) nodes — normalized policy dict
+    # ({"mode": "local"} | {"mode": "durable", ...}); REQUIRED on human nodes, forbidden
+    # elsewhere; validated via call-time import so no-wait consumers never load waits.py.
+    wait_policy: Optional[Dict[str, Any]] = None
 
     # kind="evaluate": run ``target_capability`` under ``evaluator`` with bounded
     # retry/retrace/fallback. ``on_reject`` selects the policy; ``fallback_capability`` is the
@@ -247,7 +251,7 @@ class Transition(BaseModel):
     source: str
     target: str  # node id or END
     label: Optional[str] = None
-    policy: Literal["always", "decision", "on_accept", "on_reject"] = "always"
+    policy: Literal["always", "decision", "on_accept", "on_reject", "on_timeout"] = "always"
     # Self-description (the MCP analogy applied to control flow): WHEN this transition should be
     # taken, in words an AI decider can navigate by. Rendered into the machine card.
     description: str = ""
@@ -365,6 +369,7 @@ class WorkflowDefinition(BaseModel):
         errors: List[str] = []
         errors.extend(_validate_graph_identity(ids, self.entry, known))
         errors.extend(_validate_node_memory_configs(self.nodes))
+        errors.extend(_validate_wait_policies(self.nodes, self.transitions))
         errors.extend(_validate_node_shapes(self.nodes, known, nodes_by_id))
         errors.extend(_validate_transitions(self.transitions, nodes_by_id, known))
         errors.extend(_validate_cycle_gates(ids, self.transitions, known))
@@ -414,6 +419,48 @@ def _validate_injected_machine_descriptions(
                 f"{', '.join(undescribed)} — every legal label must carry a description "
                 f"for the machine card"
             )
+    return errors
+
+
+def _validate_wait_policies(nodes: List["WorkflowNode"], transitions: List["Transition"]) -> List[str]:
+    """W1: wait intent is explicit machine data — REQUIRED on human nodes, forbidden
+    elsewhere; a durable wait declares exactly ONE on_timeout transition, a local wait none;
+    on_timeout transitions exist only for durable waits."""
+
+    errors: List[str] = []
+    human_nodes = [n for n in nodes if n.kind == "human"]
+    for node in nodes:
+        if node.wait_policy is not None and node.kind != "human":
+            errors.append(f"node '{node.id}' ({node.kind}) must not declare wait_policy")
+    timeout_sources: Dict[str, int] = {}
+    for transition in transitions:
+        if transition.policy == "on_timeout":
+            timeout_sources[transition.source] = timeout_sources.get(transition.source, 0) + 1
+    for node in human_nodes:
+        if node.wait_policy is None:
+            errors.append(
+                f"wait node '{node.id}' has no wait_policy — declare LocalWaitPolicy() or "
+                "DurableWaitPolicy(timeout_s=..., ...) explicitly (v0.9 W1 contract)"
+            )
+            continue
+        from ai_workflow_engine.waits import wait_policy_from  # call-time (leaf discipline)
+
+        try:
+            policy = wait_policy_from(node.wait_policy)
+        except (ValueError, TypeError) as exc:
+            errors.append(f"wait node '{node.id}' has an invalid wait_policy: {exc}")
+            continue
+        declared = timeout_sources.get(node.id, 0)
+        if policy.mode == "durable" and declared != 1:
+            errors.append(
+                f"durable wait '{node.id}' must declare exactly ONE on_timeout transition, found {declared}"
+            )
+        if policy.mode == "local" and declared:
+            errors.append(f"local wait '{node.id}' must not have on_timeout transitions")
+    wait_ids = {n.id for n in human_nodes}
+    for source in timeout_sources:
+        if source not in wait_ids:
+            errors.append(f"on_timeout transition from non-wait node '{source}'")
     return errors
 
 
@@ -951,12 +998,31 @@ class WorkflowBuilder:
         self,
         node_id: str,
         *,
+        wait_policy: Any,
+        timeout_to: Optional[str] = None,
         capability: Optional[str] = None,
         inject_plan: bool = False,
         inject_machine: bool = False,
         title: str = "",
         description: str = "",
     ) -> "WorkflowBuilder":
+        """Wait-capable node. ``wait_policy`` is REQUIRED (v0.9 breaking change, W1): pass
+        ``LocalWaitPolicy()`` for today's in-process snapshot/resume, or
+        ``DurableWaitPolicy(timeout_s=...)`` plus ``timeout_to=`` naming the node the
+        declared timeout transition routes to. Local waits must NOT declare timeout_to."""
+
+        from ai_workflow_engine.waits import wait_policy_from  # call-time (leaf discipline)
+
+        policy = wait_policy_from(wait_policy)
+        if policy.mode == "durable":
+            if not timeout_to:
+                raise WorkflowValidationError(
+                    [f"durable wait '{node_id}' requires timeout_to= (the declared timeout route)"]
+                )
+        elif timeout_to is not None:
+            raise WorkflowValidationError(
+                [f"local wait '{node_id}' must not declare timeout_to (no durable timeout mechanics)"]
+            )
         self._append(
             WorkflowNode(
                 id=node_id,
@@ -966,9 +1032,24 @@ class WorkflowBuilder:
                 inject_machine=inject_machine,
                 title=title,
                 description=description,
+                wait_policy=policy.model_dump(),
             )
         )
+        if policy.mode == "durable":
+            self._transitions.append(
+                Transition(
+                    source=node_id,
+                    target=timeout_to,
+                    policy="on_timeout",
+                    description=f"timeout after {policy.timeout_s:g}s",
+                )
+            )
         return self
+
+    def wait(self, node_id: str, **kwargs: Any) -> "WorkflowBuilder":
+        """Generic wait node (webhook/background-job shaped) — same machinery as human."""
+
+        return self.human(node_id, **kwargs)
 
     # -- configuration ------------------------------------------------------------
     def with_scheduling(self, policy: SchedulingPolicy) -> "WorkflowBuilder":

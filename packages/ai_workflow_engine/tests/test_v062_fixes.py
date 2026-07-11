@@ -6,6 +6,7 @@ import asyncio
 import pytest
 
 from ai_workflow_engine import (
+    LocalWaitPolicy,
     JsonlTraceSink,
     WorkflowBuilder,
     WorkflowEngineBuilder,
@@ -64,7 +65,7 @@ def test_preflight_rejects_human_node_inside_subworkflow():
     builder.register_capability("prepare", _noop, kind="deterministic")
     builder.register_capability("ask", _noop, kind="deterministic")
     builder.register_capability("after", _noop, kind="deterministic")
-    child = WorkflowBuilder("child_with_human").human("ask").build()
+    child = WorkflowBuilder("child_with_human").human("ask", wait_policy=LocalWaitPolicy()).build()
     parent = (
         WorkflowBuilder("parent_flow")
         .step("prepare")

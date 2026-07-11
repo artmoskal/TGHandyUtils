@@ -9,6 +9,7 @@ from pydantic import BaseModel
 pytestmark = pytest.mark.unit
 
 from ai_workflow_engine import (
+    LocalWaitPolicy,
     AgentCapability,
     AgentRunRequest,
     CapabilityRegistry,
@@ -164,7 +165,7 @@ def _clarify_engine():
     builder.register_capability("a", cap_a, kind="tool")
     builder.register_capability("ask", ask, kind="deterministic")
     builder.register_capability("b", cap_b, kind="deterministic")
-    builder.register_workflow(WorkflowBuilder("clarify_machine").step("a").human("ask").step("b").build())
+    builder.register_workflow(WorkflowBuilder("clarify_machine").step("a").human("ask", wait_policy=LocalWaitPolicy()).step("b").build())
     return builder.build(), calls
 
 
@@ -249,7 +250,7 @@ def _agent_memory_replay_engine(
     builder.register_workflow(
         WorkflowBuilder("agent_memory_replay")
         .step("agent", capability="agent_memory_probe")
-        .human("ask")
+        .human("ask", wait_policy=LocalWaitPolicy())
         .step("finish")
         .build()
     )
@@ -377,7 +378,7 @@ async def test_loop_counters_survive_suspensions_and_still_gate_after_resume():
     builder.register_guard("gate", lambda p: script.pop(0) if script else "done")
     builder.register_workflow(
         WorkflowBuilder("nag_machine")
-        .human("ask")
+        .human("ask", wait_policy=LocalWaitPolicy())
         .branch("gate", {"again": "ask", "done": "fin"}, bounds={"again": 1})
         .step("fin")
         .build()
