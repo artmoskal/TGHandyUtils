@@ -176,7 +176,9 @@ class DurableWaitRuntime:
         else:
             resume_event = event.payload
         # stable wait/event-derived idempotency context (W3.4) rides the resume event
-        # envelope so external writes can key retries deterministically.
+        # envelope so external writes can key retries deterministically. `attempt` (W4.2)
+        # is the claim ordinal from the coordinator — a crash-retry reclaim gets a HIGHER
+        # attempt, so its observation segment never appends into the crashed attempt's dir.
         run_result = await self._resume_port(  # type: ignore[misc]
             snapshot_json,
             {
@@ -184,6 +186,7 @@ class DurableWaitRuntime:
                     "wait_id": wait_id,
                     "event_id": event.event_id,
                     "kind": event.kind,
+                    "attempt": record.resume_attempts,
                 },
                 "payload": resume_event,
             },

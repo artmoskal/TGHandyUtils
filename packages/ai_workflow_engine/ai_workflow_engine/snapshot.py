@@ -44,6 +44,13 @@ class MachineSnapshot(BaseModel):
     # Optional for backward compatibility with older snapshots.
     goal: Optional[Dict[str, Any]] = None
     run_context: Optional[Dict[str, Any]] = None
+    # W4: observation-segment lineage of the run-half that CAPTURED this snapshot. Resume
+    # derives the continuation segment (parent id + index) from these persisted fields, never
+    # from a directory scan; for durable waits the coordinator stores the snapshot byte-exactly,
+    # so the lineage is persisted with the wait itself. Defaults keep older snapshots loadable
+    # (their resumes then carry no parent lineage — the viewer reports incomplete lineage).
+    segment_id: Optional[str] = None
+    segment_index: int = 0
 
     def to_json(self) -> str:
         """Serialize for cross-process resume. Raises loudly on non-serializable payloads."""

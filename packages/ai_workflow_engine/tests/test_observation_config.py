@@ -439,3 +439,178 @@ async def test_resumed_run_opens_its_own_bundle_and_finalizes_completed(tmp_path
     meta = json.loads((resumed_dir / "meta.json").read_text(encoding="utf-8"))
     assert meta.get("status") == "completed"
     assert "machine:resumed" in (resumed_dir / "trace.jsonl").read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# W4 — segment identity, logical run ids, group retention
+# ---------------------------------------------------------------------------
+
+
+def _meta(path):
+    import json as _json
+    from pathlib import Path as _P
+
+    return _json.loads((_P(path) / "meta.json").read_text(encoding="utf-8"))
+
+
+def _suspend_resume_engine(bundle_dir, *, retention_limit=None):
+    """Local-wait engine with config-first observation for segment tests."""
+
+    from ai_workflow_engine import ObservationConfig, WorkflowEngineBuilder
+
+    from pydantic import BaseModel as _BM
+
+    builder = WorkflowEngineBuilder().with_observation(
+        ObservationConfig(
+            enabled=True, bundle_dir=str(bundle_dir), retention_limit=retention_limit
+        )
+    )
+
+    class Gate(_BM):
+        status: str
+        value: str = ""
+
+    def ask(context, _payload):
+        event = context.metadata.get("resume_event")
+        if event is None:
+            return Gate(status="pending")
+        return Gate(status="answered", value=str(event))
+
+    builder.register_capability("ask", ask, kind="deterministic")
+    builder.register_capability("finish", lambda ctx, p: {"done": True}, kind="deterministic")
+    builder.register_workflow(
+        WorkflowBuilder("seg_flow").human("ask", wait_policy=LocalWaitPolicy()).step("finish").build()
+    )
+    builder.register_workflow(WorkflowBuilder("plain_flow").step("finish").build())
+    return builder.build()
+
+
+async def test_resumed_bundle_is_a_segment_of_the_logical_run(tmp_path):
+    """W4.1: the resumed half's meta carries the LOGICAL run id (viewer queries by run id
+    find it — the Q-R5 empty-viewer defect), a persisted segment index/kind, and the exact
+    parent segment id; the initial bundle keeps its pre-W4 directory key."""
+
+    from pathlib import Path
+
+    from ai_workflow_engine.models import WorkflowGoal
+
+    engine = _suspend_resume_engine(tmp_path)
+    goal = WorkflowGoal(workflow_type="seg_flow", objective="seg", metadata={"run_id": "logical-1"})
+    first = await engine.run("seg_flow", {"q": "?"}, goal=goal)
+    assert first.status == "requires_user_input"
+    initial_dir = Path(first.observation_bundle_path)
+    assert initial_dir.name == "logical-1", "initial segment keeps the pre-W4 dir key"
+    initial_meta = _meta(initial_dir)
+    assert initial_meta["run_id"] == "logical-1"
+    assert initial_meta["segment_index"] == 0
+    assert initial_meta["segment_kind"] == "initial"
+    assert initial_meta["parent_segment_id"] is None
+    assert initial_meta["usage_totals_scope"] == "run_cumulative_at_finalize"
+    assert first.snapshot.segment_id == "logical-1" and first.snapshot.segment_index == 0, (
+        "the snapshot must persist the lineage the continuation is derived from"
+    )
+
+    resumed = await engine.resume(first.snapshot, "yes")
+    assert resumed.status == "completed"
+    resumed_dir = Path(resumed.observation_bundle_path)
+    assert resumed_dir.name.startswith("logical-1--s001-"), resumed_dir.name
+    resumed_meta = _meta(resumed_dir)
+    assert resumed_meta["run_id"] == "logical-1", (
+        "resumed segment meta must carry the LOGICAL id, not the physical key"
+    )
+    assert resumed_meta["segment_index"] == 1
+    assert resumed_meta["segment_kind"] == "resume"
+    assert resumed_meta["parent_segment_id"] == "logical-1"
+    assert resumed_meta["definition_digest"] == initial_meta["definition_digest"]
+
+
+async def test_group_retention_prunes_logical_runs_as_units(tmp_path):
+    """W4.5 (Q-R5 reproducer): retention must never delete a suspension half while keeping
+    its continuation — the logical run is the unit. With limit 1, the OLD run's two
+    segments disappear together and the newest run's segments all survive."""
+
+    from ai_workflow_engine.models import WorkflowGoal
+
+    bundles = tmp_path / "bundles"
+    engine = _suspend_resume_engine(bundles, retention_limit=1)
+
+    old_goal = WorkflowGoal(workflow_type="seg_flow", objective="old", metadata={"run_id": "old-run"})
+    old_first = await engine.run("seg_flow", {}, goal=old_goal)
+    await engine.resume(old_first.snapshot, "done")  # old-run group terminal (2 segments)
+
+    new_goal = WorkflowGoal(workflow_type="seg_flow", objective="new", metadata={"run_id": "new-run"})
+    new_first = await engine.run("seg_flow", {}, goal=new_goal)
+    resumed = await engine.resume(new_first.snapshot, "done")
+    assert resumed.status == "completed"
+
+    names = {path.name for path in bundles.iterdir() if (path / "meta.json").exists()}
+    assert not any(name.startswith("old-run") for name in names), (
+        f"the old logical run must be pruned as a UNIT: {names}"
+    )
+    assert "new-run" in names and any(name.startswith("new-run--s001-") for name in names), (
+        f"retention limit 1 must preserve EVERY segment of the newest run: {names}"
+    )
+
+
+async def test_in_flight_suspended_group_is_never_pruned(tmp_path):
+    """W4.5: a run awaiting resume (newest segment requires_user_input) is in-flight —
+    newer completed runs must not push its history out of retention."""
+
+    from ai_workflow_engine.models import WorkflowGoal
+
+    bundles = tmp_path / "bundles"
+    engine = _suspend_resume_engine(bundles, retention_limit=1)
+
+    waiting_goal = WorkflowGoal(
+        workflow_type="seg_flow", objective="waiting", metadata={"run_id": "waiting-run"}
+    )
+    waiting = await engine.run("seg_flow", {}, goal=waiting_goal)
+    assert waiting.status == "requires_user_input"
+
+    for index in range(2):  # two newer terminal runs, limit 1 → old finalized would rotate
+        goal = WorkflowGoal(
+            workflow_type="plain_flow", objective="n", metadata={"run_id": f"done-{index}"}
+        )
+        result = await engine.run("plain_flow", {}, goal=goal)
+        assert result.status == "completed"
+
+    names = {path.name for path in bundles.iterdir() if (path / "meta.json").exists()}
+    assert "waiting-run" in names, f"in-flight suspended group was pruned: {names}"
+    assert "done-1" in names and "done-0" not in names, (
+        f"terminal groups still rotate normally around the protected one: {names}"
+    )
+
+    # ...and the protection ends with the lifecycle: once resumed to terminal, it rotates.
+    resumed = await engine.resume(waiting.snapshot, "go")
+    assert resumed.status == "completed"
+    goal = WorkflowGoal(workflow_type="plain_flow", objective="n", metadata={"run_id": "done-2"})
+    await engine.run("plain_flow", {}, goal=goal)
+    names = {path.name for path in bundles.iterdir() if (path / "meta.json").exists()}
+    assert not any(name.startswith("waiting-run") for name in names), (
+        f"terminalized group must prune as a unit again: {names}"
+    )
+
+
+def test_malformed_segment_identity_is_loud(tmp_path):
+    """W4.1: segment identity rules fail loud — no silent half-lineage on disk."""
+
+    import pytest as _pytest
+
+    from ai_workflow_engine import ObservationSegment, open_observation_run_bundle
+
+    with _pytest.raises(ValueError, match="segment_index=0"):
+        ObservationSegment(segment_id="x", segment_index=1, kind="initial")
+    with _pytest.raises(ValueError, match="no parent"):
+        ObservationSegment(segment_id="x", segment_index=0, kind="initial", parent_segment_id="p")
+    with _pytest.raises(ValueError, match="segment_index >= 1"):
+        ObservationSegment(segment_id="x", segment_index=0, kind="resume")
+    with _pytest.raises(ValueError, match="initial|resume"):
+        ObservationSegment(segment_id="x", segment_index=0, kind="weird")
+    with _pytest.raises(ValueError, match="non-blank"):
+        ObservationSegment(segment_id="  ", segment_index=0, kind="initial")
+    with _pytest.raises(ValueError, match="plain directory name"):
+        open_observation_run_bundle(
+            tmp_path,
+            "logical",
+            segment=ObservationSegment(segment_id="../escape", segment_index=0, kind="initial"),
+        )

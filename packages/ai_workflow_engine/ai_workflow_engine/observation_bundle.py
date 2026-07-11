@@ -43,6 +43,40 @@ def _utc_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+@dataclass(frozen=True)
+class ObservationSegment:
+    """W4: identity of ONE immutable observation segment inside a logical run.
+
+    A suspended-then-resumed run is stored as a GROUP of segments — one per executed
+    run-half — under the same logical ``run_id``. ``segment_id`` is the physical storage
+    key (directory name); ``segment_index`` is the persisted order within the group
+    (0 = initial), allocated from snapshot lineage, never from a directory scan;
+    ``parent_segment_id`` names the segment whose suspension this one continues
+    (``None`` for the initial segment or for resumes of pre-segment snapshots).
+    """
+
+    segment_id: str
+    segment_index: int
+    kind: Literal["initial", "resume"]
+    parent_segment_id: Optional[str] = None
+    definition_digest: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if not str(self.segment_id).strip():
+            raise ValueError("observation segment_id must be non-blank")
+        if self.kind not in ("initial", "resume"):
+            raise ValueError(f"observation segment kind must be initial|resume: {self.kind!r}")
+        if self.kind == "initial" and (self.segment_index != 0 or self.parent_segment_id):
+            raise ValueError(
+                "initial observation segment must have segment_index=0 and no parent — "
+                f"got index={self.segment_index}, parent={self.parent_segment_id!r}"
+            )
+        if self.kind == "resume" and self.segment_index < 1:
+            raise ValueError(
+                f"resume observation segment needs segment_index >= 1, got {self.segment_index}"
+            )
+
+
 @dataclass
 class ObservationSequence:
     """Run-local monotonic sequence shared by trace/detail/usage bundle writers."""
@@ -124,26 +158,35 @@ class ObservationRunBundle:
     # "off" still writes an honest manifest (what existed, where) without copying bytes.
     artifact_policy: Literal["copy", "off"] = "copy"
     artifact_max_bytes: int = DEFAULT_ARTIFACT_MAX_BYTES
+    # W4: physical/logical split. ``run_id`` stays the LOGICAL run identity (stamped into
+    # events + meta); ``segment`` supplies the physical storage key and lineage for one
+    # run-half. Without a segment the bundle keeps the pre-W4 shape exactly (dir = run_id,
+    # no segment meta) — a group of one.
+    segment: Optional[ObservationSegment] = None
     sequence: ObservationSequence = field(default_factory=ObservationSequence)
 
     def __post_init__(self) -> None:
-        # A bundle run id is a FILESYSTEM NAME, never a path: run ids can arrive from
+        # A bundle storage key is a FILESYSTEM NAME, never a path: run ids can arrive from
         # caller-supplied goal metadata, so an unchecked "../escape" or absolute path would
-        # write observation files outside the configured bundle root. Reject loudly.
-        run_id = str(self.run_id)
-        if (
-            not run_id.strip()
-            or run_id in (".", "..")
-            or "/" in run_id
-            or "\\" in run_id
-            or Path(run_id).is_absolute()
+        # write observation files outside the configured bundle root. Reject loudly — the
+        # logical run id AND the segment id (when present) both must be plain names.
+        for label, value in (
+            ("run_id", str(self.run_id)),
+            *((("segment_id", str(self.segment.segment_id)),) if self.segment else ()),
         ):
-            raise ValueError(
-                f"observation run_id must be a plain directory name (no separators, "
-                f"no '..', not absolute, not empty): {run_id!r}"
-            )
+            if (
+                not value.strip()
+                or value in (".", "..")
+                or "/" in value
+                or "\\" in value
+                or Path(value).is_absolute()
+            ):
+                raise ValueError(
+                    f"observation {label} must be a plain directory name (no separators, "
+                    f"no '..', not absolute, not empty): {value!r}"
+                )
         self.base_dir = Path(self.base_dir)
-        self.path = self.base_dir / self.run_id
+        self.path = self.base_dir / (self.segment.segment_id if self.segment else str(self.run_id))
         self.path.mkdir(parents=True, exist_ok=True)
         self.trace_path = self.path / "trace.jsonl"
         self.detail_path = self.path / "details.jsonl"
@@ -204,6 +247,11 @@ class ObservationRunBundle:
             "trace_count": _line_count(self.trace_path),
             "detail_count": _line_count(self.detail_path),
             "usage_count": len(usage_events),
+            # W4.4 honesty label: these totals are computed from the SUMMARY the session
+            # closed with — cumulative since run start (a resumed segment's summary includes
+            # pre-suspension events restored from the snapshot). Per-segment spend lives in
+            # this segment's usage.jsonl; group readers aggregate EVENTS, never these totals.
+            **({"usage_totals_scope": "run_cumulative_at_finalize"} if self.segment else {}),
             "total_tokens": sum(event.total_tokens for event in usage_events),
             "metered_usd": _sum_cost(
                 event.estimated_usd
@@ -212,6 +260,18 @@ class ObservationRunBundle:
             ),
             "notional_usd": _sum_cost(event.notional_usd for event in usage_events),
         }
+        if self.segment is not None:
+            # W4.1 additive segment identity (schema stays v1: pure addition; absence of
+            # these fields marks a pre-segment bundle, which readers treat as a group of one).
+            meta.update(
+                {
+                    "segment_id": self.segment.segment_id,
+                    "segment_index": self.segment.segment_index,
+                    "segment_kind": self.segment.kind,
+                    "parent_segment_id": self.segment.parent_segment_id,
+                    "definition_digest": self.segment.definition_digest,
+                }
+            )
         (self.path / "meta.json").write_text(
             json.dumps(meta, sort_keys=True, indent=2),
             encoding="utf-8",
@@ -299,8 +359,10 @@ def open_observation_run_bundle(
     retention_limit: Optional[int] = None,
     artifact_policy: Literal["copy", "off"] = "copy",
     artifact_max_bytes: int = DEFAULT_ARTIFACT_MAX_BYTES,
+    segment: Optional[ObservationSegment] = None,
 ) -> ObservationRunBundle:
-    """Create a per-run observation source bundle."""
+    """Create a per-run observation source bundle (one SEGMENT of a logical run when
+    ``segment`` is given; the pre-W4 single-directory shape otherwise)."""
 
     return ObservationRunBundle(
         Path(base_dir),
@@ -308,25 +370,48 @@ def open_observation_run_bundle(
         retention_limit=retention_limit,
         artifact_policy=artifact_policy,
         artifact_max_bytes=artifact_max_bytes,
+        segment=segment,
     )
 
 
 def prune_observation_bundles(base_dir: str | Path, retention_limit: int) -> None:
-    """Keep only the newest observation run bundles.
+    """Keep only the newest logical-run observation groups.
 
     ``0`` means "latest/current only", matching the Anki debug-retention convention.
+    W4.5: the unit of retention is the LOGICAL RUN — all segments of one run live and die
+    together (a continuation is never retained while its suspension is deleted), and a
+    group whose newest segment is still awaiting resume (``requires_user_input``) is
+    in-flight and never pruned: deleting it would destroy the history a registered wait
+    still needs. Pre-segment bundles are each their own group, so single-run behavior is
+    unchanged.
     """
 
     base = Path(base_dir)
     if not base.exists():
         return
     keep = max(1, int(retention_limit))
-    candidates = [path for path in base.iterdir() if path.is_dir() and _is_finalized_bundle(path)]
-    if len(candidates) <= keep:
+    groups: dict[str, list[Path]] = {}
+    for path in base.iterdir():
+        if path.is_dir() and _is_finalized_bundle(path):
+            groups.setdefault(_bundle_logical_run_id(path), []).append(path)
+    prunable: list[tuple[tuple[str, float], list[Path]]] = []
+    for paths in groups.values():
+        newest_meta = max(
+            (_bundle_meta(path) for path in paths),
+            key=lambda meta: (
+                int(meta.get("segment_index") or 0),
+                str(meta.get("timestamp") or ""),
+            ),
+        )
+        if str(newest_meta.get("status")) == "requires_user_input":
+            continue  # in-flight group: a wait may still resume into it
+        prunable.append((max(_bundle_sort_key(path) for path in paths), paths))
+    if len(prunable) <= keep:
         return
-    candidates.sort(key=_bundle_sort_key, reverse=True)
-    for path in candidates[keep:]:
-        shutil.rmtree(path)
+    prunable.sort(key=lambda entry: entry[0], reverse=True)
+    for _, paths in prunable[keep:]:
+        for path in paths:
+            shutil.rmtree(path)
 
 
 def _usage_events(
@@ -365,6 +450,19 @@ def _bundle_sort_key(path: Path) -> tuple[str, float]:
 
 def _is_finalized_bundle(path: Path) -> bool:
     return (path / "meta.json").exists()
+
+
+def _bundle_meta(path: Path) -> dict:
+    try:
+        return json.loads((path / "meta.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _bundle_logical_run_id(path: Path) -> str:
+    """Logical run id of a finalized bundle: meta.run_id, else the directory name."""
+
+    return str(_bundle_meta(path).get("run_id") or path.name)
 
 
 def _artifact_filename(artifact_id: str, source: Path, used: set[str]) -> str:

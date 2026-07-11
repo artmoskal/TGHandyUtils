@@ -339,45 +339,9 @@ class WorkflowExecutor:
                 # W2.3: durable suspensions register BEFORE anything is exposed. A
                 # registration failure converts the run to FAILED with NO public wait door
                 # (the bundle finalizes failed; no orphan snapshot/handle is representable).
-                try:
-                    durable_handle = await self._maybe_register_durable_wait(
-                        definition, final_state, context
-                    )
-                except Exception as registration_error:
-                    durable_handle = None
-                    failed_node = next(
-                        (
-                            r.node_id
-                            for r in reversed(final_state.get("node_results", []))
-                            if r.status == "requires_user_input"
-                        ),
-                        definition.workflow_id,
-                    )
-                    self.runtime.trace_sink.record(
-                        WorkflowTraceEvent(
-                            node=definition.workflow_id,
-                            decision="wait:registration_failed",
-                            error=str(registration_error)[:500],
-                            run_id=str(context.run_context.workflow_id),
-                        )
-                    )
-                    # W2R.4: the SUSPENDED node's typed lifecycle flips to failed — the
-                    # projected bundle/viewer must never show a suspended node in a failed run.
-                    self.runtime.trace_sink.record(
-                        WorkflowTraceEvent(
-                            node=failed_node,
-                            node_status="failed",
-                            phase="node:result",
-                            error=str(registration_error)[:500],
-                            run_id=str(context.run_context.workflow_id),
-                            metadata={"failure_kind": "wait_registration_failed"},
-                        )
-                    )
-                    final_state = {
-                        **final_state,
-                        "status": "failed",
-                        "error": f"durable wait registration failed: {registration_error}",
-                    }
+                durable_handle, final_state = await self._register_durable_or_fold(
+                    definition, final_state, context, session
+                )
         except Exception:
             # The run raised: the bundle must still close, truthfully, as failed.
             session.close("failed")
@@ -545,7 +509,17 @@ class WorkflowExecutor:
                 graph_config={"recursion_limit": self._recursion_limit(definition, context)},
                 session=session,
             )
+            # W4.2 (closing a W3 gap): a resumed run that suspends at the NEXT durable
+            # wait registers it under the SAME W2.3 contract as run() — chained/repeated
+            # waits get handles; an unregistered raw snapshot is never exposed.
+            durable_handle, final_state = await self._register_durable_or_fold(
+                definition, final_state, context, session
+            )
         envelope = self._envelope(definition, final_state, session=session)
+        if durable_handle is not None:
+            envelope = envelope.model_copy(
+                update={"snapshot": None, "wait_handle": durable_handle}
+            )
         session.close(envelope.status, artifacts=envelope.artifacts)
         if session.bundle is not None and getattr(session.bundle, "path", None):
             envelope = envelope.model_copy(
@@ -1012,8 +986,16 @@ class WorkflowExecutor:
 
     # ---------------------------------------------------------------- envelopes
     def _build_snapshot(
-        self, definition: WorkflowDefinition, suspended: str, final_state: Dict[str, Any]
+        self,
+        definition: WorkflowDefinition,
+        suspended: str,
+        final_state: Dict[str, Any],
+        session: Optional[WorkflowRunSession] = None,
     ) -> MachineSnapshot:
+        # W4: record WHICH observation segment captured this suspension, so any resume
+        # (local or claimed) derives the continuation segment from persisted lineage —
+        # never from a directory scan. No bundle/segment on the session -> defaults.
+        segment = getattr(getattr(session, "bundle", None), "segment", None)
         node_results: List[NodeResult] = list(final_state.get("node_results", []))
         plan = final_state.get("plan_artifact")
         if plan is not None and hasattr(plan, "model_dump"):
@@ -1049,19 +1031,78 @@ class WorkflowExecutor:
                 if hasattr(snapshot_run_context, "model_dump")
                 else None
             ),
+            segment_id=getattr(segment, "segment_id", None),
+            segment_index=getattr(segment, "segment_index", 0) or 0,
         )
+
+    async def _register_durable_or_fold(
+        self,
+        definition: WorkflowDefinition,
+        final_state: Dict[str, Any],
+        context: CapabilityContext,
+        session: Optional[WorkflowRunSession] = None,
+    ) -> tuple[Optional[WaitHandle], Dict[str, Any]]:
+        """W2.3 for EVERY execution path: register a durable suspension or fold the run
+        to failed with the typed failure traces. Shared by run() and resume() — a resumed
+        run that suspends at the NEXT durable wait must register it exactly like a fresh
+        run would (chained/repeated waits), never expose a raw unregistered snapshot."""
+
+        try:
+            return (
+                await self._maybe_register_durable_wait(definition, final_state, context, session),
+                final_state,
+            )
+        except Exception as registration_error:
+            failed_node = next(
+                (
+                    r.node_id
+                    for r in reversed(final_state.get("node_results", []))
+                    if r.status == "requires_user_input"
+                ),
+                definition.workflow_id,
+            )
+            self.runtime.trace_sink.record(
+                WorkflowTraceEvent(
+                    node=definition.workflow_id,
+                    decision="wait:registration_failed",
+                    error=str(registration_error)[:500],
+                    run_id=str(context.run_context.workflow_id),
+                )
+            )
+            # W2R.4: the SUSPENDED node's typed lifecycle flips to failed — the projected
+            # bundle/viewer must never show a suspended node in a failed run.
+            self.runtime.trace_sink.record(
+                WorkflowTraceEvent(
+                    node=failed_node,
+                    node_status="failed",
+                    phase="node:result",
+                    error=str(registration_error)[:500],
+                    run_id=str(context.run_context.workflow_id),
+                    metadata={"failure_kind": "wait_registration_failed"},
+                )
+            )
+            return None, {
+                **final_state,
+                "status": "failed",
+                "error": f"durable wait registration failed: {registration_error}",
+            }
 
     async def _maybe_register_durable_wait(
         self,
         definition: WorkflowDefinition,
         final_state: Dict[str, Any],
         context: CapabilityContext,
+        session: Optional[WorkflowRunSession] = None,
     ) -> Optional[WaitHandle]:
         """W2.3: a DURABLE suspension is registered with its coordinator BEFORE the engine
         exposes anything. Returns the typed handle on success; raises on any registration
         failure (the run then fails with NO public door); returns None for non-durable."""
 
-        if final_state.get("status") == "failed":
+        # Only a run that ACTUALLY halted suspended registers (W4.2): restored
+        # node_results keep earlier halves' requires_user_input entries forever as
+        # evidence, so entry presence alone would spuriously re-register a finished
+        # resume — the explicit machine status is the truth.
+        if final_state.get("status") != "requires_user_input":
             return None
         node_results = list(final_state.get("node_results", []))
         suspended = next(
@@ -1084,7 +1125,7 @@ class WorkflowExecutor:
         from ai_workflow_engine.waits import DurableWaitPolicy
 
         policy = DurableWaitPolicy.model_validate(policy_dict)
-        snapshot = self._build_snapshot(definition, suspended, final_state)
+        snapshot = self._build_snapshot(definition, suspended, final_state, session)
         assert_byte_safe(snapshot.model_dump(), mode="persist", path="durable_wait.snapshot")
         run_id = str(context.run_context.workflow_id)
         occurrence = max(
@@ -1166,7 +1207,7 @@ class WorkflowExecutor:
                 None,
             )
             if suspended is not None:
-                snapshot = self._build_snapshot(definition, suspended, final_state)
+                snapshot = self._build_snapshot(definition, suspended, final_state, session)
         return WorkflowRunResult(
             workflow_id=definition.workflow_id,
             status=status,

@@ -1,12 +1,20 @@
 """Standalone consumers for ai_workflow_engine observability records."""
 
-from ai_workflow_viewer.event_source import EventSource, FileEventSource, ObservationRecord, ObservationRunData
+from ai_workflow_viewer.event_source import (
+    EventSource,
+    FileEventSource,
+    ObservationGroupData,
+    ObservationRecord,
+    ObservationRunData,
+    ObservationSegmentData,
+)
 from ai_workflow_viewer.observability import (
     ObservationGraph,
     ObservationNode,
     ObservationTimelineEntry,
     build_observation_graph,
     observation_graph_to_html,
+    observation_group_to_html,
     render_runtime_timeline,
     save_observation_html,
 )
@@ -18,12 +26,15 @@ __all__ = [
     "FileEventSource",
     "JsonlObservationViewer",
     "ObservationGraph",
+    "ObservationGroupData",
     "ObservationNode",
     "ObservationRecord",
     "ObservationRunData",
+    "ObservationSegmentData",
     "ObservationTimelineEntry",
     "build_observation_graph",
     "observation_graph_to_html",
+    "observation_group_to_html",
     "render_runtime_timeline",
     "save_observation_html",
     "save_workflow_html",

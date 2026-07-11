@@ -478,14 +478,26 @@ class WorkflowEngine:
         ):
             # Config-enabled observation: the engine opens the per-run bundle itself;
             # explicit observation_bundle= remains the escape hatch and takes precedence.
-            from ai_workflow_engine.observation_bundle import open_observation_run_bundle  # call-time (F1.1)
+            from ai_workflow_engine.observation_bundle import (  # call-time (F1.1)
+                ObservationSegment,
+                open_observation_run_bundle,
+            )
 
+            run_id = str(context.run_context.workflow_id)
             observation_bundle = open_observation_run_bundle(
                 self.observation.bundle_dir,
-                context.run_context.workflow_id,
+                run_id,
                 retention_limit=self.observation.retention_limit,
                 artifact_policy=self.observation.artifacts,
                 artifact_max_bytes=self.observation.artifact_max_bytes,
+                # W4.1: the initial segment keeps the pre-W4 directory key (= run id), so
+                # ordinary single-run bundle paths are byte-stable; segment meta is additive.
+                segment=ObservationSegment(
+                    segment_id=run_id,
+                    segment_index=0,
+                    kind="initial",
+                    definition_digest=definition.definition_digest(),
+                ),
             )
         return await self.executor.run(
             definition,
@@ -544,19 +556,46 @@ class WorkflowEngine:
             )
         observation_bundle = None
         if self.observation is not None and self.observation.enabled:
-            # Q-R5: config-enabled observation covers the RESUMED half exactly like run() —
-            # the resumed run opens its own per-run bundle (same policy, same retention).
-            from ai_workflow_engine.observation_bundle import open_observation_run_bundle  # call-time (F1.1)
+            # Q-R5/W4.2: the resumed half is the NEXT SEGMENT of the same logical run — the
+            # meta keeps the logical run id; only the physical directory key differs. The
+            # continuation's index/parent come from the snapshot's persisted lineage (for
+            # durable waits the coordinator stored those bytes), never from a directory scan.
+            from ai_workflow_engine.observation_bundle import (  # call-time (F1.1)
+                ObservationSegment,
+                open_observation_run_bundle,
+            )
 
-            # The resumed half keeps the ORIGINAL run identity (B-post3) but must not
-            # overwrite the suspension half's bundle — distinct storage key per resume.
-            resume_bundle_id = f"{context.run_context.workflow_id}--resume-{uuid.uuid4().hex[:8]}"
+            logical_run_id = str(context.run_context.workflow_id)
+            child_index = int(snapshot.segment_index) + 1
+            delivery = (
+                event_payload.get("__wait_delivery__") if isinstance(event_payload, dict) else None
+            )
+            if isinstance(delivery, dict):
+                # Claimed delivery: deterministic key — only the single claim winner for
+                # this (index, attempt) exists (CAS), and a crash-retry reclaim carries a
+                # higher attempt, so it can never append into a dead attempt's directory.
+                attempt = int(delivery.get("attempt") or 1)
+                segment_id = f"{logical_run_id}--s{child_index:03d}" + (
+                    "" if attempt <= 1 else f"-r{attempt}"
+                )
+            else:
+                # Local in-process resume: same honest lineage, uuid-unique physical key
+                # (two local resumes of one snapshot then surface as a LOUD duplicate
+                # segment index in the group reader — double execution is evidence).
+                segment_id = f"{logical_run_id}--s{child_index:03d}-{uuid.uuid4().hex[:8]}"
             observation_bundle = open_observation_run_bundle(
                 self.observation.bundle_dir,
-                resume_bundle_id,
+                logical_run_id,
                 retention_limit=self.observation.retention_limit,
                 artifact_policy=self.observation.artifacts,
                 artifact_max_bytes=self.observation.artifact_max_bytes,
+                segment=ObservationSegment(
+                    segment_id=segment_id,
+                    segment_index=child_index,
+                    kind="resume",
+                    parent_segment_id=snapshot.segment_id,
+                    definition_digest=definition.definition_digest(),
+                ),
             )
         return await self.executor.resume(
             definition, snapshot, event_payload, context, observation_bundle=observation_bundle

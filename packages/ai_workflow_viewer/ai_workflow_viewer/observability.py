@@ -254,6 +254,84 @@ mermaid.initialize({{ startOnLoad: true }});
 """
 
 
+def observation_group_to_html(group: Any, *, title: Optional[str] = None) -> str:
+    """Render ONE logical run assembled from its segments (W4.5) — one truthful lifecycle.
+
+    The merged group events (all stamped with the logical run id) drive the standard
+    projection, so a node suspended in segment 0 and completed in segment 1 renders
+    completed — never a false still-running state. A segment strip on top shows each
+    run-half (index, kind, status) plus honest usage totals: group spend aggregated once
+    from segment-local events, with the engine's cumulative label reported separately.
+    ``group`` is an :class:`ai_workflow_viewer.event_source.ObservationGroupData`.
+    """
+
+    graph = build_observation_graph(
+        group.definition,
+        group.trace_events,
+        group.usage_events,
+        group.details,
+        run_id=group.run_id,
+    )
+    base = observation_graph_to_html(
+        group.definition,
+        graph,
+        title=title or f"Workflow observation: {group.definition.workflow_id} (grouped run)",
+    )
+    cards = "\n".join(
+        (
+            f'<article class="segment-card status-{html.escape(str(segment.status))}" '
+            f'data-segment-index="{segment.segment_index}" data-kind="{html.escape(segment.kind)}">'
+            f"<h3>segment {segment.segment_index} · {html.escape(segment.kind)}</h3>"
+            f"<p><code>{html.escape(segment.segment_id)}</code></p>"
+            f"<p>status: <strong>{html.escape(str(segment.status))}</strong>{_segment_markers(segment)}</p>"
+            "</article>"
+        )
+        for segment in group.segments
+    )
+    totals = group.usage_totals
+    cumulative = group.cumulative_meta_totals
+    notes = "\n".join(
+        f'<p class="lineage-note muted">⚠ {html.escape(note)}</p>' for note in group.lineage_notes
+    )
+    strip = f"""<section class="segment-strip" id="segments">
+<h2>Run segments ({len(group.segments)}) — logical run <code>{html.escape(group.run_id)}</code></h2>
+<div class="segment-cards">{cards}</div>
+<p class="usage-totals">group usage (segment-local events, counted once): {totals.get("usage_count")} events,
+{totals.get("total_tokens")} tokens, metered ${totals.get("metered_usd") if totals.get("metered_usd") is not None else "0"}
+· cumulative-at-finalize (engine label: {html.escape(str(cumulative.get("scope")))}): {cumulative.get("total_tokens")} tokens</p>
+{notes}
+<style>
+.segment-strip {{ margin: 1rem 0; }}
+.segment-cards {{ display: flex; gap: 0.75rem; flex-wrap: wrap; }}
+.segment-card {{ border: 1px solid #ccc; border-radius: 6px; padding: 0.5rem 0.75rem; }}
+.segment-card.status-completed {{ border-color: #2e7d32; }}
+.segment-card.status-failed {{ border-color: #c62828; }}
+.segment-card.status-requires_user_input {{ border-color: #ef6c00; }}
+</style>
+</section>"""
+    if "<body>" not in base:
+        raise RuntimeError("observation html template lost its <body> anchor — cannot inject segment strip")
+    return base.replace("<body>", "<body>\n" + strip, 1)
+
+
+def _segment_markers(segment: Any) -> str:
+    """Resolution evidence for a segment card: timeout route / durable registration."""
+
+    decisions = {
+        event.decision
+        for event in segment.data.trace_events
+        if getattr(event, "decision", None)
+    }
+    markers = []
+    if "wait:timeout_route" in decisions:
+        markers.append("⏰ timeout route")
+    if "wait:registered" in decisions or "wait:registration_reused" in decisions:
+        markers.append("⏸ durable wait registered")
+    if "machine:resumed" in decisions:
+        markers.append("▶ resumed")
+    return (" · " + " · ".join(markers)) if markers else ""
+
+
 def _observation_base_css() -> str:
     return """
 body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 24px; color: #1f2933; background: #ffffff; }

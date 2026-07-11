@@ -170,6 +170,7 @@ if TYPE_CHECKING:
     from ai_workflow_engine.node_services import NodeExecutionServices, NodeSchedulingServices
     from ai_workflow_engine.observation_bundle import (
         ObservationRunBundle,
+        ObservationSegment,
         ObservationSequence,
         SequencedDetailSink,
         SequencedTraceSink,
@@ -304,6 +305,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "ObservationConfig": ("ai_workflow_engine.config_loader", "ObservationConfig"),
     "ObservationDetail": ("ai_workflow_engine.models", "ObservationDetail"),
     "ObservationRunBundle": ("ai_workflow_engine.observation_bundle", "ObservationRunBundle"),
+    "ObservationSegment": ("ai_workflow_engine.observation_bundle", "ObservationSegment"),
     "ObservationSequence": ("ai_workflow_engine.observation_bundle", "ObservationSequence"),
     "PlanArtifact": ("ai_workflow_engine.planning", "PlanArtifact"),
     "PlanTask": ("ai_workflow_engine.planning", "PlanTask"),
@@ -495,6 +497,7 @@ __all__ = [
     "ObservationConfig",
     "ObservationDetail",
     "ObservationRunBundle",
+    "ObservationSegment",
     "ObservationSequence",
     "RuntimePlan",
     "RuntimePlanCompiler",

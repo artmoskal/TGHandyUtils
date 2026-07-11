@@ -1073,8 +1073,10 @@ async def test_duplicate_receipt_is_a_defensive_result():
 # ================================================== W3: delivery, leases, crash recovery
 
 
-def _delivery_engine(shared=None, *, clock=None):
-    """Durable flow with a REAL post-wait step so deliveries continue the machine."""
+def _delivery_engine(shared=None, *, clock=None, bundle_dir=None, gates=("gate",)):
+    """Durable flow with a REAL post-wait step so deliveries continue the machine.
+    ``bundle_dir`` turns on config-first observation (W4 segment tests); ``gates`` chains
+    several durable human nodes so repeated waits inside ONE logical run are exercised."""
 
     from pydantic import BaseModel as _BM
 
@@ -1095,7 +1097,7 @@ def _delivery_engine(shared=None, *, clock=None):
 
     def finish(context, payload):
         return {
-            "answer": payload.value,
+            "answer": getattr(payload, "value", None),
             "wait_idempotency": context.metadata.get("wait_idempotency"),
         }
 
@@ -1103,16 +1105,20 @@ def _delivery_engine(shared=None, *, clock=None):
         return {"escalated": True, "wait_idempotency": context.metadata.get("wait_idempotency")}
 
     builder = WorkflowEngineBuilder().with_wait_coordinator(coordinator, clock=clock)
-    builder.register_capability("gate", gate)
+    if bundle_dir is not None:
+        from ai_workflow_engine import ObservationConfig
+
+        builder.with_observation(ObservationConfig(enabled=True, bundle_dir=str(bundle_dir)))
+    for gate_node in gates:
+        builder.register_capability(gate_node, gate)
     builder.register_capability("finish", finish)
     builder.register_capability("escalate", escalate)
-    builder.register_workflow(
-        WorkflowBuilder("durable_flow")
-        .human("gate", wait_policy=DurableWaitPolicy(timeout_s=60), timeout_to="escalate")
-        .step("finish")
-        .step("escalate")
-        .build()
-    )
+    flow = WorkflowBuilder("durable_flow")
+    for gate_node in gates:
+        flow = flow.human(
+            gate_node, wait_policy=DurableWaitPolicy(timeout_s=60), timeout_to="escalate"
+        )
+    builder.register_workflow(flow.step("finish").step("escalate").build())
     return builder.build(), coordinator
 
 
@@ -1369,3 +1375,184 @@ async def test_different_event_cannot_steal_a_live_lease():
         lease_until=clock() + timedelta(seconds=300),
     )
     assert thief.kind == "already_processing" and thief.claim is None
+
+
+# ---------------------------------------------------------------------------
+# Phase W4 — immutable observation segments from claimed lineage
+# ---------------------------------------------------------------------------
+
+
+def _bundle_meta(path):
+    import json
+
+    return json.loads((path / "meta.json").read_text(encoding="utf-8"))
+
+
+async def test_chained_durable_waits_register_on_the_resume_path_too(tmp_path):
+    """W4.2 (closes a W3 gap): a resumed run that suspends at the NEXT durable wait must
+    register it and return a handle-only result — never a raw unregistered snapshot. Before
+    the fix, `_maybe_register_durable_wait` only ran in run(), so every chained wait leaked
+    an unregistered snapshot and broke the W2.3 'register before exposing' contract."""
+
+    engine, coordinator = _delivery_engine(gates=("first", "second"))
+    first = await engine.run("durable_flow", {})
+    assert first.wait_handle is not None and first.snapshot is None
+
+    outcome = await engine.deliver_wait_event(
+        first.wait_handle.wait_id, {"kind": "signal", "event_id": "evt-1", "payload": "ok"}
+    )
+    assert outcome.kind == "executed"
+    chained = outcome.run_result
+    assert chained.status == "requires_user_input"
+    assert chained.snapshot is None, "chained durable suspension must NOT expose a snapshot"
+    assert chained.wait_handle is not None, "chained durable suspension must be registered"
+    assert chained.wait_handle.suspended_node == "second"
+    stored = await coordinator.get(chained.wait_handle.wait_id)
+    assert stored is not None and stored.status == "pending"
+
+
+async def test_repeated_waits_produce_ordered_segments_scan_free(tmp_path):
+    """W4.2: three chained durable waits in ONE logical run produce segments 0..3 with a
+    parent chain, all under the LOGICAL run id — and the index allocation ignores decoy
+    directories entirely (persisted snapshot lineage, never max(dir)+1)."""
+
+    from ai_workflow_engine.models import WorkflowGoal
+
+    engine, _coordinator = _delivery_engine(bundle_dir=tmp_path, gates=("a", "b", "c"))
+    # Adversarial decoys: allocation must not read ANY directory names.
+    (tmp_path / "seg-run--s050-decoy").mkdir()
+    (tmp_path / "zzz-unrelated").mkdir()
+
+    goal = WorkflowGoal(
+        workflow_type="durable_flow", objective="segments", metadata={"run_id": "seg-run"}
+    )
+    result = await engine.run("durable_flow", {}, goal=goal)
+    for event_id in ("e1", "e2", "e3"):
+        assert result.status == "requires_user_input", result.error
+        outcome = await engine.deliver_wait_event(
+            result.wait_handle.wait_id,
+            {"kind": "signal", "event_id": event_id, "payload": f"answer-{event_id}"},
+        )
+        assert outcome.kind == "executed"
+        result = outcome.run_result
+    assert result.status == "completed"
+
+    finalized = sorted(
+        path.name for path in tmp_path.iterdir() if (path / "meta.json").exists()
+    )
+    assert finalized == ["seg-run", "seg-run--s001", "seg-run--s002", "seg-run--s003"], (
+        f"decoy directories must never influence segment allocation: {finalized}"
+    )
+    metas = {name: _bundle_meta(tmp_path / name) for name in finalized}
+    assert [metas[name]["segment_index"] for name in finalized] == [0, 1, 2, 3]
+    assert all(metas[name]["run_id"] == "seg-run" for name in finalized), (
+        "every segment's meta must carry the LOGICAL run id"
+    )
+    assert metas["seg-run"]["segment_kind"] == "initial"
+    assert metas["seg-run"]["parent_segment_id"] is None
+    assert [metas[f"seg-run--s{i:03d}"]["parent_segment_id"] for i in (1, 2, 3)] == [
+        "seg-run",
+        "seg-run--s001",
+        "seg-run--s002",
+    ], "each continuation names the segment whose suspension it continues"
+    assert metas["seg-run--s003"]["status"] == "completed"
+    assert all(metas[f"seg-run--s{i:03d}"]["status"] == "requires_user_input" for i in (1, 2))
+    digests = {metas[name]["definition_digest"] for name in finalized}
+    assert len(digests) == 1 and None not in digests
+
+
+async def test_concurrent_claim_loser_opens_no_segment(tmp_path):
+    """W4.2: while a claim is held, a competing delivery gets a typed loser report and
+    opens NOTHING on disk; after lease expiry the reclaim (a fresh attempt) opens exactly
+    one uniquely-named continuation segment."""
+
+    from datetime import datetime, timedelta, timezone
+
+    from ai_workflow_engine.models import WorkflowGoal
+    from ai_workflow_engine.waits import WaitEvent
+
+    current = {"now": datetime(2036, 1, 1, tzinfo=timezone.utc)}
+    clock = lambda: current["now"]  # noqa: E731
+    engine, coordinator = _delivery_engine(clock=clock, bundle_dir=tmp_path)
+    goal = WorkflowGoal(
+        workflow_type="durable_flow", objective="race", metadata={"run_id": "race-run"}
+    )
+    first = await engine.run("durable_flow", {}, goal=goal)
+    wait_id = first.wait_handle.wait_id
+
+    dirs_before = {path.name for path in tmp_path.iterdir() if path.is_dir()}
+    claimed = await coordinator.claim_event(
+        wait_id,
+        WaitEvent(kind="signal", event_id="evt-held", payload="mine"),
+        lease_until=clock() + timedelta(seconds=300),
+    )
+    assert claimed.kind == "claimed"
+    loser = await engine.deliver_wait_event(
+        wait_id, {"kind": "signal", "event_id": "evt-loser", "payload": "steal"}
+    )
+    assert loser.kind == "already_processing"
+    assert {path.name for path in tmp_path.iterdir() if path.is_dir()} == dirs_before, (
+        "a losing delivery must not open any observation segment"
+    )
+
+    current["now"] += timedelta(seconds=301)  # holder crashed: lease expires
+    outcome = await engine.deliver_wait_event(
+        wait_id, {"kind": "signal", "event_id": "evt-held", "payload": "mine"}
+    )
+    assert outcome.kind == "executed"
+    new_dirs = {p.name for p in tmp_path.iterdir() if p.is_dir()} - dirs_before
+    assert new_dirs == {"race-run--s001-r2"}, (
+        f"exactly one continuation segment from the reclaim attempt, got {new_dirs}"
+    )
+    assert _bundle_meta(tmp_path / "race-run--s001-r2")["segment_index"] == 1
+
+
+async def test_crash_retry_gets_a_fresh_attempt_segment_dead_attempt_stays_unfinalized(tmp_path):
+    """W4.2: attempt 1 crashes AFTER its segment directory opened but before finalize —
+    the reclaim (attempt 2) writes a DIFFERENT physical segment (-r2); the dead attempt's
+    directory stays unfinalized (no meta.json) and therefore invisible to group readers,
+    while the finalized history remains immutable."""
+
+    from datetime import datetime, timedelta, timezone
+
+    from ai_workflow_engine.models import WorkflowGoal
+
+    current = {"now": datetime(2036, 1, 1, tzinfo=timezone.utc)}
+    clock = lambda: current["now"]  # noqa: E731
+    engine, _coordinator = _delivery_engine(clock=clock, bundle_dir=tmp_path)
+    goal = WorkflowGoal(
+        workflow_type="durable_flow", objective="crash", metadata={"run_id": "crash-run"}
+    )
+    first = await engine.run("durable_flow", {}, goal=goal)
+    wait_id = first.wait_handle.wait_id
+
+    real_resume = engine.executor.resume
+    calls = {"n": 0}
+
+    async def crash_once(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("simulated process death mid-resume")
+        return await real_resume(*args, **kwargs)
+
+    engine.executor.resume = crash_once
+    with pytest.raises(RuntimeError, match="process death"):
+        await engine.deliver_wait_event(
+            wait_id, {"kind": "signal", "event_id": "evt-c", "payload": "yes"}
+        )
+    assert (tmp_path / "crash-run--s001").is_dir(), "attempt 1 opened its segment dir"
+    assert not (tmp_path / "crash-run--s001" / "meta.json").exists(), (
+        "a crashed attempt must never look finalized"
+    )
+
+    current["now"] += timedelta(seconds=301)
+    outcome = await engine.deliver_wait_event(
+        wait_id, {"kind": "signal", "event_id": "evt-c", "payload": "yes"}
+    )
+    assert outcome.kind == "executed" and outcome.run_result.status == "completed"
+    retry_meta = _bundle_meta(tmp_path / "crash-run--s001-r2")
+    assert retry_meta["segment_index"] == 1 and retry_meta["status"] == "completed"
+    assert retry_meta["parent_segment_id"] == "crash-run"
+    assert not (tmp_path / "crash-run--s001" / "meta.json").exists(), (
+        "the dead attempt stays unfinalized forever — immutable honest history"
+    )

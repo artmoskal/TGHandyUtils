@@ -25,8 +25,10 @@ def _write_bundle(
     trace_events=None,
     details=None,
     usage_events=None,
+    dir_name=None,
+    meta_extra=None,
 ):
-    run_path = base / run_id
+    run_path = base / (dir_name or run_id)
     run_path.mkdir(parents=True)
     (run_path / "definition.json").write_text(definition.model_dump_json(), encoding="utf-8")
     (run_path / "trace.jsonl").write_text(
@@ -51,6 +53,7 @@ def _write_bundle(
                 "trace_path": "trace.jsonl",
                 "detail_path": "details.jsonl",
                 "usage_path": "usage.jsonl",
+                **(meta_extra or {}),
             }
         ),
         encoding="utf-8",
@@ -166,3 +169,263 @@ def test_jsonl_observation_viewer_lists_runs_for_multi_run_bundle_sources(tmp_pa
     assert "run-2-digest" in html
     assert "run-1-digest" not in html
     assert [record["record"]["run_id"] for record in selected.event_records()] == ["run-2", "run-2"]
+
+
+# ---------------------------------------------------------------------------
+# W4.3/W4.4/W4.5 — grouped logical-run reading, honest merge, truthful render
+# ---------------------------------------------------------------------------
+
+
+def _segment_meta(run_id, segment_id, index, *, kind=None, parent=None, digest="dig-1", status="completed", timestamp=None):
+    return {
+        "run_id": run_id,
+        "segment_id": segment_id,
+        "segment_index": index,
+        "segment_kind": kind or ("initial" if index == 0 else "resume"),
+        "parent_segment_id": parent,
+        "definition_digest": digest,
+        "usage_totals_scope": "run_cumulative_at_finalize",
+        "status": status,
+        "timestamp": timestamp or f"2026-07-11T10:0{index}:00Z",
+        "total_tokens": 0,
+        "metered_usd": None,
+        "notional_usd": None,
+        "usage_count": 0,
+    }
+
+
+def _write_group(tmp_path, *, duplicate_usage_id=False, second_digest="dig-1"):
+    """Suspension segment + resume segment of one logical run, per-segment sequences
+    RESTARTING at 1 (the exact shape that broke the old global sequence check)."""
+
+    from ai_workflow_engine import WorkflowBuilder
+
+    definition = WorkflowBuilder("grouped").step("gate").step("finish").build()
+    usage_0 = WorkflowUsageEvent(
+        node="gate", total_tokens=7, estimated_usd=0.01, cost_class="metered",
+        run_id="logical-run", sequence=3, event_id="usage-a",
+    )
+    _write_bundle(
+        tmp_path,
+        "logical-run",
+        definition,
+        trace_events=[
+            WorkflowTraceEvent(node="gate", decision="llm:prompt", run_id="logical-run", sequence=1, event_id="t-1"),
+            WorkflowTraceEvent(node="gate", node_status="requires_user_input", phase="node:result", run_id="logical-run", sequence=2, event_id="t-2"),
+        ],
+        usage_events=[usage_0],
+        meta_extra=_segment_meta(
+            "logical-run", "logical-run", 0, status="requires_user_input"
+        ) | {"total_tokens": 7, "metered_usd": 0.01, "usage_count": 1},
+    )
+    resume_usage = [
+        WorkflowUsageEvent(
+            node="finish", total_tokens=5, estimated_usd=0.02, cost_class="metered",
+            run_id="logical-run", sequence=2, event_id="usage-b",
+        )
+    ]
+    if duplicate_usage_id:
+        resume_usage.append(
+            WorkflowUsageEvent(
+                node="finish", total_tokens=7, estimated_usd=0.01, cost_class="metered",
+                run_id="logical-run", sequence=3, event_id="usage-a",  # copied from segment 0
+            )
+        )
+    _write_bundle(
+        tmp_path,
+        "logical-run",
+        definition,
+        dir_name="logical-run--s001",
+        trace_events=[
+            WorkflowTraceEvent(node="gate", node_status="completed", phase="node:result", run_id="logical-run", sequence=1, event_id="t-3"),
+            WorkflowTraceEvent(node="finish", node_status="completed", phase="node:result", run_id="logical-run", sequence=4, event_id="t-4"),
+        ],
+        usage_events=resume_usage,
+        meta_extra=_segment_meta(
+            "logical-run", "logical-run--s001", 1, parent="logical-run",
+            digest=second_digest, status="completed",
+        ) | {"total_tokens": 12, "metered_usd": 0.03, "usage_count": 2},
+    )
+    return definition
+
+
+def test_read_group_merges_segments_ordered_with_per_segment_sequences(tmp_path):
+    """W4.3: merged order is (segment_index, per-segment sequence); sequences restarting
+    per segment are VALID (the old global duplicate-sequence check would have exploded);
+    event ids stay globally unique; single-bundle read() semantics are untouched."""
+
+    from ai_workflow_viewer import FileEventSource
+
+    _write_group(tmp_path)
+    source = FileEventSource(tmp_path)
+    group = source.read_group("logical-run")
+
+    assert group.run_id == "logical-run"
+    assert [segment.segment_index for segment in group.segments] == [0, 1]
+    assert group.status == "completed"
+    assert [record.event_id for record in group.records] == ["t-1", "t-2", "usage-a", "t-3", "usage-b", "t-4"], (
+        "merge must order by (segment_index, per-segment sequence)"
+    )
+    # duplicate sequence NUMBERS across segments are legal — each segment restarts at 1
+    assert {record.sequence for record in group.records if record.type == "trace"} == {1, 2, 4}
+    # single-bundle semantics unchanged: reading one segment alone still works
+    single = FileEventSource(tmp_path / "logical-run--s001").read()
+    assert single.run_id == "logical-run" and len(single.records) == 3
+
+
+def test_read_group_aggregates_usage_once_and_labels_cumulative(tmp_path):
+    """W4.4: group spend = segment-local events counted ONCE (7 + 5 tokens), while the
+    engine's cumulative-at-finalize meta (12 on the resumed segment) is reported under its
+    own label — summing metas would double-charge the pre-suspension half."""
+
+    from ai_workflow_viewer import FileEventSource
+
+    _write_group(tmp_path)
+    group = FileEventSource(tmp_path).read_group("logical-run")
+
+    assert group.usage_totals["total_tokens"] == 12  # 7 + 5, each event exactly once
+    assert group.usage_totals["usage_count"] == 2
+    assert group.usage_totals["metered_usd"] == 0.03
+    assert group.usage_totals["scope"] == "group_events"
+    assert group.cumulative_meta_totals["scope"] == "run_cumulative_at_finalize"
+    assert group.cumulative_meta_totals["total_tokens"] == 12, (
+        "cumulative label comes from the NEWEST segment's meta, never a sum of metas"
+    )
+    meta_sum = sum(segment.data.meta["total_tokens"] for segment in group.segments)
+    assert meta_sum == 19 and group.usage_totals["total_tokens"] != meta_sum, (
+        "the naive per-segment meta sum (19) double-charges — the reader must not use it"
+    )
+
+
+def test_read_group_duplicate_event_id_across_segments_is_loud(tmp_path):
+    """W4.4: the same usage event id appearing in two segments is double-counted money —
+    the group reader refuses instead of silently merging."""
+
+    import pytest as _pytest
+
+    from ai_workflow_viewer import FileEventSource
+
+    _write_group(tmp_path, duplicate_usage_id=True)
+    with _pytest.raises(ValueError, match="Duplicate observation event id across segments"):
+        FileEventSource(tmp_path).read_group("logical-run")
+
+
+def test_read_group_lineage_corruption_is_loud(tmp_path):
+    """W4.3: duplicate segment index, a NAMED parent that is absent, and mixed definition
+    digests each refuse loudly — no half-true merge."""
+
+    import pytest as _pytest
+
+    from ai_workflow_engine import WorkflowBuilder
+    from ai_workflow_viewer import FileEventSource
+
+    definition = WorkflowBuilder("grouped").step("gate").build()
+
+    # duplicate index: two finalized segments both claiming index 1
+    _write_group(tmp_path)
+    _write_bundle(
+        tmp_path, "logical-run", definition, dir_name="logical-run--s001-r2",
+        meta_extra=_segment_meta("logical-run", "logical-run--s001-r2", 1, parent="logical-run"),
+    )
+    with _pytest.raises(ValueError, match="Duplicate segment index"):
+        FileEventSource(tmp_path).read_group("logical-run")
+
+    # named parent missing: suspension half deleted by hand
+    import shutil
+
+    shutil.rmtree(tmp_path / "logical-run--s001-r2")
+    shutil.rmtree(tmp_path / "logical-run")
+    with _pytest.raises(ValueError, match="parent .* not present|names parent"):
+        FileEventSource(tmp_path).read_group("logical-run")
+
+    # digest split: same logical run, different workflow definitions
+    for path in tmp_path.iterdir():
+        shutil.rmtree(path)
+    _write_group(tmp_path, second_digest="dig-OTHER")
+    with _pytest.raises(ValueError, match="definition digests"):
+        FileEventSource(tmp_path).read_group("logical-run")
+
+
+def test_read_group_handles_legacy_and_mixed_roots(tmp_path):
+    """W4.1/W4.3 degradation: pre-segment (v0.8.1) bundles read as groups of one; a legacy
+    resume without parent lineage merges with an honest note instead of a refusal; and
+    list_groups shows one entry per logical run in a mixed root."""
+
+    from ai_workflow_engine import WorkflowBuilder
+    from ai_workflow_viewer import FileEventSource
+
+    definition = WorkflowBuilder("legacy").step("gate").build()
+    # pure v0.8.1 bundle: no segment fields at all
+    _write_bundle(
+        tmp_path, "old-run", definition,
+        trace_events=[WorkflowTraceEvent(node="gate", node_status="completed", phase="node:result", run_id="old-run", sequence=1, event_id="o-1")],
+        meta_extra={"status": "completed"},
+    )
+    # new-style segmented pair under another logical id
+    _write_group(tmp_path)
+    # legacy-lineage continuation: index 1 but parent unknown (pre-W4 snapshot)
+    _write_bundle(
+        tmp_path, "half-run", definition, dir_name="half-run--s001-abc",
+        trace_events=[WorkflowTraceEvent(node="gate", node_status="completed", phase="node:result", run_id="half-run", sequence=1, event_id="h-1")],
+        meta_extra=_segment_meta("half-run", "half-run--s001-abc", 1, parent=None, digest=None),
+    )
+
+    source = FileEventSource(tmp_path)
+    old_group = source.read_group("old-run")
+    assert len(old_group.segments) == 1 and old_group.segments[0].segment_index == 0
+    assert old_group.segments[0].kind == "initial" and not old_group.lineage_notes
+    assert old_group.cumulative_meta_totals["scope"] == "single_bundle"
+
+    half_group = source.read_group("half-run")
+    assert len(half_group.segments) == 1
+    assert half_group.lineage_notes and "no recorded parent lineage" in half_group.lineage_notes[0]
+
+    groups = {entry["run_id"]: entry for entry in source.list_groups()}
+    assert set(groups) == {"old-run", "logical-run", "half-run"}
+    assert groups["logical-run"]["segment_count"] == 2
+    assert groups["logical-run"]["status"] == "completed"
+
+
+def test_group_html_renders_one_truthful_lifecycle(tmp_path):
+    """W4.5 (Q-R5 reproducer): the node that suspended in segment 0 and completed in
+    segment 1 renders COMPLETED — never a false still-running/suspended state — and the
+    segment strip + honest usage line are present with semantic markup."""
+
+    from ai_workflow_viewer import FileEventSource, observation_group_to_html
+
+    _write_group(tmp_path)
+    group = FileEventSource(tmp_path).read_group("logical-run")
+    html = observation_group_to_html(group)
+
+    assert 'data-segment-index="0"' in html and 'data-segment-index="1"' in html
+    assert 'data-kind="resume"' in html
+    assert "Run segments (2)" in html
+    assert "logical-run" in html
+    assert "group usage (segment-local events, counted once)" in html
+    assert "12 tokens" in html
+    # the gate node must show its FINAL truth in the node table: completed, not suspended
+    import re as _re
+
+    gate_row = _re.search(r"<tr[^>]*>\s*<td><code>gate</code></td>.*?</tr>", html, _re.S)
+    assert gate_row and "completed" in gate_row.group(0), (
+        "suspended-then-completed node must render completed in the grouped view"
+    )
+    assert "suspended" not in (gate_row.group(0)), gate_row.group(0)
+
+
+def test_single_resumed_segment_read_is_no_longer_empty(tmp_path):
+    """Q-R5 regression (the original defect): reading the RESUMED segment's bundle alone
+    now yields records attributable to the logical run id — before W4 the meta carried a
+    '--resume-<uuid>' id while events carried the logical id, so the projection filtered
+    everything out and rendered an empty run."""
+
+    from ai_workflow_viewer import FileEventSource, build_observation_graph
+
+    _write_group(tmp_path)
+    data = FileEventSource(tmp_path / "logical-run--s001").read()
+    assert data.run_id == "logical-run"
+    graph = build_observation_graph(
+        data.definition, data.trace_events, data.usage_events, data.details, run_id=data.run_id
+    )
+    assert graph.timeline, "resumed-segment projection must not be empty"
+    assert graph.nodes["finish"].status == "completed"
