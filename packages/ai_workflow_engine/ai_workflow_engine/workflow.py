@@ -419,6 +419,9 @@ def _validate_node_memory_configs(nodes: List["WorkflowNode"]) -> List[str]:
     """Loud-at-build agent-memory validation (GoPro R4): an unknown mode or bad option
     must never fail mid-run."""
 
+    if all(node.memory is None for node in nodes):
+        # F1.1: memory-free graphs never import the memory stack at validation time.
+        return []
     from ai_workflow_engine.memory import resolve_agent_memory
 
     errors: List[str] = []

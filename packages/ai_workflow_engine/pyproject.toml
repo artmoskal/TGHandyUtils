@@ -26,6 +26,9 @@ test = [
 where = ["."]
 include = ["ai_workflow_engine*"]
 
+[tool.setuptools.package-data]
+ai_workflow_engine = ["py.typed"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"

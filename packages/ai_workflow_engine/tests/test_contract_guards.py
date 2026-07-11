@@ -219,3 +219,244 @@ def test_branch_without_inject_machine_keeps_describe_optional():
         .build()
     )
     assert definition.validate_graph() == []
+
+
+# ---------------------------------------------- Phase F: import surface + cycles + gradient
+
+FORBIDDEN_SIMPLE_TIER_MODULES = [
+    "ai_workflow_engine.memory",
+    "ai_workflow_engine.flow_authoring",
+    "ai_workflow_engine.vision",
+    "ai_workflow_engine.engine.llm_node",
+    "ai_workflow_engine.observation_bundle",
+    "ai_workflow_viewer",
+    "ai_workflow_tools",
+    "transformers",
+    "numpy",
+]
+
+_SIMPLE_TIER_SCRIPT = """
+import asyncio, json, sys
+from ai_workflow_engine import run_single_step
+out = asyncio.run(run_single_step(lambda ctx, p: {"ok": p["x"] * 2}, {"x": 21}))
+assert out == {"ok": 42}, out
+loaded = [m for m in %r if m in sys.modules]
+print(json.dumps(loaded))
+"""
+
+
+def _run_simple_tier_subprocess() -> list[str]:
+    import json
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    import ai_workflow_engine
+
+    package_parent = str(Path(ai_workflow_engine.__file__).resolve().parents[1])
+    proc = subprocess.run(
+        [sys.executable, "-c", _SIMPLE_TIER_SCRIPT % (FORBIDDEN_SIMPLE_TIER_MODULES,)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env={"PYTHONPATH": package_parent, "PATH": "/usr/bin:/bin"},
+    )
+    assert proc.returncode == 0, f"simple-tier subprocess failed:\n{proc.stderr[-2000:]}"
+    return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
+def test_simple_tier_run_loads_no_advanced_facility_modules():
+    """F1.1/F1.4: importing AND RUNNING run_single_step must not load memory, flow
+    authoring, vision/LLM-node, observation bundles, the viewer, tools, or the
+    transformers/numpy surface — trivial consumers pay only for what they use."""
+
+    loaded = _run_simple_tier_subprocess()
+    assert loaded == [], f"simple tier loaded advanced modules: {loaded}"
+
+
+def test_every_public_export_still_resolves_lazily():
+    """F1.1 degradation guard: the lazy surface keeps EVERY public name resolvable."""
+
+    import ai_workflow_engine
+    import ai_workflow_engine.engine as engine_pkg
+
+    for name in ai_workflow_engine.__all__:
+        assert getattr(ai_workflow_engine, name) is not None, name
+    for name in engine_pkg.__all__:
+        assert getattr(engine_pkg, name) is not None, name
+
+
+def test_engine_package_has_no_module_level_import_cycles():
+    """F1.2: zero SCCs among engine modules at MODULE level (runtime-local imports inside
+    function bodies are the sanctioned escape hatch and are excluded). The guard names the
+    cycle members on failure."""
+
+    import ast
+    from pathlib import Path
+
+    import ai_workflow_engine
+
+    package_root = Path(ai_workflow_engine.__file__).resolve().parent
+    prefix = "ai_workflow_engine"
+    graph: dict[str, set[str]] = {}
+
+    def module_name(path: Path) -> str:
+        rel = path.relative_to(package_root.parent).with_suffix("")
+        parts = list(rel.parts)
+        if parts[-1] == "__init__":
+            parts = parts[:-1]
+        return ".".join(parts)
+
+    def top_level_engine_imports(tree: ast.Module) -> set[str]:
+        found: set[str] = set()
+        for node in tree.body:  # module level only — function bodies are runtime-local
+            if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith(prefix):
+                found.add(node.module)
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.startswith(prefix):
+                        found.add(alias.name)
+            elif isinstance(node, ast.If):
+                continue  # TYPE_CHECKING blocks etc. are not runtime edges
+        return found
+
+    for path in sorted(package_root.rglob("*.py")):
+        name = module_name(path)
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        graph[name] = top_level_engine_imports(tree)
+
+    # Tarjan SCC
+    index_counter = [0]
+    stack: list[str] = []
+    lowlink: dict[str, int] = {}
+    index: dict[str, int] = {}
+    on_stack: dict[str, bool] = {}
+    cycles: list[list[str]] = []
+
+    def strongconnect(v: str) -> None:
+        index[v] = lowlink[v] = index_counter[0]
+        index_counter[0] += 1
+        stack.append(v)
+        on_stack[v] = True
+        for w in graph.get(v, ()):  # edges to known modules only
+            if w not in graph:
+                continue
+            if w not in index:
+                strongconnect(w)
+                lowlink[v] = min(lowlink[v], lowlink[w])
+            elif on_stack.get(w):
+                lowlink[v] = min(lowlink[v], index[w])
+        if lowlink[v] == index[v]:
+            component = []
+            while True:
+                w = stack.pop()
+                on_stack[w] = False
+                component.append(w)
+                if w == v:
+                    break
+            if len(component) > 1:
+                cycles.append(sorted(component))
+
+    for node_name in list(graph):
+        if node_name not in index:
+            strongconnect(node_name)
+
+    assert cycles == [], f"engine module-level import cycles: {cycles}"
+
+    # Layering half of F1.2 (the historical cycle was closed by a runtime-local edge a pure
+    # SCC check cannot see): the transport/protocol layers must never import UPWARD.
+    LAYER_FORBIDDEN = {
+        "ai_workflow_engine.transport_models": ("ai_workflow_engine.vision", "ai_workflow_engine.llm_protocol", "ai_workflow_engine.engine"),
+        "ai_workflow_engine.llm_protocol": ("ai_workflow_engine.vision", "ai_workflow_engine.engine"),
+    }
+    layering = [
+        f"{module} -> {edge}"
+        for module, banned in LAYER_FORBIDDEN.items()
+        for edge in graph.get(module, ())
+        if any(edge == b or edge.startswith(b + ".") for b in banned)
+    ]
+    assert layering == [], f"upward imports break the transport/protocol layering: {layering}"
+
+
+async def test_complexity_gradient_matrix_contract():
+    """F1.4: one guard for the gradient — the medium tier registers a pack with no engine
+    edit; the advanced tier opts into fanout+memory+observation independently; every tier
+    runs the same executor contract. (The simple tier is the subprocess test above.)"""
+
+    from ai_workflow_engine import (
+        ObservationConfig,
+        WorkflowBuilder,
+        WorkflowEngineBuilder,
+    )
+
+    # medium: a pack registers capabilities/workflows without touching engine source
+    class MediumPack:
+        def register(self, builder):
+            builder.register_capability("double", lambda ctx, p: {"v": p["v"] * 2}, kind="deterministic")
+            builder.register_workflow(WorkflowBuilder("medium_flow").step("double").build())
+
+    medium = WorkflowEngineBuilder().register_pack(MediumPack()).build()
+    result = await medium.run("medium_flow", {"v": 5})
+    assert result.status == "completed" and result.output == {"v": 10}
+
+    # advanced: fanout + per-node memory + observation, opted into independently
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        builder = WorkflowEngineBuilder().with_observation(
+            ObservationConfig(enabled=True, bundle_dir=tmp)
+        )
+        builder.register_capability("spread", lambda ctx, p: {"items": [1, 2, 3]}, kind="deterministic")
+        builder.register_capability("double", lambda ctx, item: item * 2, kind="deterministic")
+        builder.register_workflow(
+            WorkflowBuilder("advanced_flow")
+            .step("spread")
+            .fanout("fan", capability="double", items_key="spread.items", max_parallel=2)
+            .build()
+        )
+        advanced = builder.build()
+        adv = await advanced.run("advanced_flow", {})
+        assert adv.status == "completed"
+        assert sorted(adv.output) == [2, 4, 6]
+        assert adv.observation_bundle_path, "advanced tier opted into observation"
+
+
+def test_packaging_ships_types_pins_and_a_standalone_viewer():
+    """F1.3/F-4: py.typed ships in ALL three packages; the tools->engine dependency is
+    BOUNDED (never open-ended); the viewer is an installable package whose dependency
+    direction is viewer->engine only."""
+
+    from pathlib import Path
+
+    import ai_workflow_engine
+
+    packages_root = Path(ai_workflow_engine.__file__).resolve().parents[2]
+
+    for pkg in ("ai_workflow_engine/ai_workflow_engine", "ai_workflow_tools/ai_workflow_tools",
+                "ai_workflow_viewer/ai_workflow_viewer"):
+        assert (packages_root / pkg / "py.typed").exists(), f"{pkg}/py.typed missing"
+
+    tools_toml = (packages_root / "ai_workflow_tools" / "pyproject.toml").read_text()
+    assert '"ai-workflow-engine>=' in tools_toml and ",<" in tools_toml, (
+        "tools must pin a BOUNDED engine range"
+    )
+
+    viewer_toml_path = packages_root / "ai_workflow_viewer" / "pyproject.toml"
+    assert viewer_toml_path.exists(), "viewer must be an installable package (F1.3)"
+    viewer_toml = viewer_toml_path.read_text()
+    assert 'name = "ai-workflow-viewer"' in viewer_toml
+    assert '"ai-workflow-engine>=' in viewer_toml
+
+    # dependency direction: engine source never IMPORTS the viewer (docstring pointers ok)
+    import ast as _ast
+
+    engine_src = packages_root / "ai_workflow_engine" / "ai_workflow_engine"
+    offenders = []
+    for path in engine_src.rglob("*.py"):
+        tree = _ast.parse(path.read_text(encoding="utf-8"))
+        for node in _ast.walk(tree):
+            if isinstance(node, _ast.ImportFrom) and node.module and node.module.startswith("ai_workflow_viewer"):
+                offenders.append(f"{path}:{node.lineno}")
+            elif isinstance(node, _ast.Import) and any(a.name.startswith("ai_workflow_viewer") for a in node.names):
+                offenders.append(f"{path}:{node.lineno}")
+    assert offenders == [], f"engine imports the viewer: {offenders}"

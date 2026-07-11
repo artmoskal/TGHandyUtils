@@ -24,7 +24,6 @@ from typing import Any, Callable, Dict, Mapping, Optional
 from weakref import WeakKeyDictionary
 
 from ai_workflow_engine.builder import WorkflowEngine
-from ai_workflow_engine.engine.llm_node import StructuredLLMNode
 from ai_workflow_engine.executor import WorkflowRunResult
 from ai_workflow_engine.workflow import WorkflowBuilder
 
@@ -85,6 +84,10 @@ async def run_single_llm(
 
     if llm is None:
         raise ValueError("run_single_llm requires an llm client — there is no default model")
+    # Call-time import (F1.1): a deterministic run_single_step consumer never pays for the
+    # LangChain-backed structured worker.
+    from ai_workflow_engine.engine.llm_node import StructuredLLMNode
+
     resolved_values: Dict[str, Any] = dict(values or {})
     node = StructuredLLMNode(
         name=name,

@@ -40,9 +40,6 @@ from ai_workflow_engine.models import (
     WorkflowRunContext,
 )
 from ai_workflow_engine.byte_safety import assert_byte_safe
-from ai_workflow_engine.flow_authoring import FlowArtifact, build_definition_from_artifact
-from ai_workflow_engine.prompt_rendering import PromptRenderService
-from ai_workflow_engine.observation_bundle import open_observation_run_bundle
 from ai_workflow_engine.run_session import (
     SessionScopedDetailSink,
     SessionScopedTraceSink,
@@ -162,13 +159,13 @@ class WorkflowEngine:
         self.config = config
         self.default_profile = default_profile
         self.prompt_root = prompt_root
-        self._prompt_renderer: Optional[PromptRenderService] = None
+        self._prompt_renderer: Optional[Any] = None
         self.workflows: Dict[str, WorkflowDefinition] = {}
         self._profiles: Dict[str, WorkflowProfile] = {}
         self._plans: Dict[str, RuntimePlan] = {}
 
     @property
-    def prompt_renderer(self) -> PromptRenderService:
+    def prompt_renderer(self) -> Any:
         """Strict prompt-file renderer rooted at ``prompt_root`` (loud when unconfigured)."""
 
         if self.prompt_root is None:
@@ -177,6 +174,8 @@ class WorkflowEngine:
                 "WorkflowEngineBuilder().with_prompt_root(...) or pass prompt_root="
             )
         if self._prompt_renderer is None:
+            from ai_workflow_engine.prompt_rendering import PromptRenderService  # call-time (F1.1)
+
             self._prompt_renderer = PromptRenderService(self.prompt_root)
         return self._prompt_renderer
 
@@ -367,6 +366,9 @@ class WorkflowEngine:
         budgets, preflight, trace, and policy. Loud ValueError on any violation; no partial build.
         """
 
+        # Call-time import (F1.1): only authored-flow users pay for the authoring stack.
+        from ai_workflow_engine.flow_authoring import FlowArtifact, build_definition_from_artifact
+
         flow = artifact if isinstance(artifact, FlowArtifact) else FlowArtifact.model_validate(artifact)
         # R7: the PUBLIC execution entry validates the COMPLETE artifact — goal, node fields,
         # metadata — before any compile, trace, or bundle write. The author factory's output
@@ -430,6 +432,8 @@ class WorkflowEngine:
         ):
             # Config-enabled observation: the engine opens the per-run bundle itself;
             # explicit observation_bundle= remains the escape hatch and takes precedence.
+            from ai_workflow_engine.observation_bundle import open_observation_run_bundle  # call-time (F1.1)
+
             observation_bundle = open_observation_run_bundle(
                 self.observation.bundle_dir,
                 context.run_context.workflow_id,

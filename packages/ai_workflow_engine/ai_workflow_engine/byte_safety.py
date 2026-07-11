@@ -299,6 +299,6 @@ def _redact_data_uri(text: str) -> str:
 def _is_image_input(value: Any) -> bool:
     # Call-time import: a module-level one would cycle (vision → engine → checkpoints → here).
     # isinstance (not a name check) so ImageInput SUBCLASSES cannot smuggle transport payloads.
-    from ai_workflow_engine.vision import ImageInput
+    from ai_workflow_engine.transport_models import ImageInput
 
     return isinstance(value, ImageInput)

@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from ai_workflow_engine.models import WorkflowUsageEvent
 from ai_workflow_engine.usage import estimate_cost_usd, record_usage_event
-from ai_workflow_engine.vision import ImageInput
+from ai_workflow_engine.transport_models import ImageInput
 
 
 class ToolSpec(BaseModel):

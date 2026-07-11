@@ -17,7 +17,7 @@ from ai_workflow_engine.byte_safety import (
 )
 from ai_workflow_engine.llm_protocol import ChatMessage, ToolCallRequest, ToolResult
 from ai_workflow_engine.models import AgentRunRequest, AgentToolStep, EvidenceRef
-from ai_workflow_engine.vision import ImageInput
+from ai_workflow_engine.transport_models import ImageInput
 
 
 class MemoryNamespace(NamedTuple):
