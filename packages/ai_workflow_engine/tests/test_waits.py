@@ -462,7 +462,7 @@ async def test_registered_durable_wait_returns_handle_only_and_traces_registrati
     stored = await coordinator.get(handle.wait_id)
     assert stored is not None and stored.status == "pending"
     assert stored.deadline_at == handle.deadline_at, "handle must echo the registered deadline"
-    assert coordinator.snapshot_json(handle.wait_id), "the coordinator owns the snapshot"
+    assert await coordinator.load_snapshot(handle.wait_id), "the coordinator owns the snapshot"
     assert any(e.decision == "wait:registered" for e in result.trace), (
         "registration must be traced inside the run"
     )
@@ -597,3 +597,226 @@ async def test_broken_adapters_fail_conformance_by_named_invariant():
             await run_wait_registration_conformance(
                 lambda broken=broken: broken(clock=clock), clock=clock
             )
+
+
+# ================================================== W2R: independent-recheck reproducers
+
+
+def test_builder_rejects_sync_impostor_coordinators():
+    """W2R.1 (codex reproducer): runtime protocols check method PRESENCE only — a
+    coordinator with synchronous register/get/load_snapshot must be rejected at build."""
+
+    from ai_workflow_engine import WorkflowEngineBuilder
+
+    class SyncImpostor:
+        def register(self, record, snapshot_json): ...
+        def get(self, wait_id): ...
+        def load_snapshot(self, wait_id): ...
+        def due(self, now): return []
+        def health(self): ...
+
+    with pytest.raises(TypeError, match="must be async"):
+        WorkflowEngineBuilder().with_wait_coordinator(SyncImpostor())
+
+
+async def test_duck_receipt_objects_are_not_accepted_as_attestation():
+    """W2R.1 (codex reproducer): a non-WaitReceipt object with matching attributes fails
+    the closed attestation boundary — the run fails with no public door."""
+
+    from ai_workflow_engine import InMemoryWaitCoordinator
+
+    class DuckReceipt:
+        def __init__(self, record):
+            self.registration_id = "duck"
+            self.wait_id = record.wait_id
+            self.wait_version = record.version
+            self.accepted_deadline = record.deadline_at
+            self.adapter_id = "duck"
+
+    class DuckCoordinator(InMemoryWaitCoordinator):
+        async def register(self, record, snapshot_json):
+            await super().register(record, snapshot_json)
+            return DuckReceipt(record)
+
+    engine = _durable_engine(DuckCoordinator(clock=_clock()))
+    result = await engine.run("durable_flow", {})
+    assert result.status == "failed"
+    assert result.snapshot is None and result.wait_handle is None
+
+
+async def test_engine_and_coordinator_share_one_injected_wait_clock():
+    """W2R.2 (codex reproducer): with a clock fixed in 2036, the stored record and the
+    handle deadline are stamped IN 2036 — one time domain, exactly timeout_s apart."""
+
+    from datetime import datetime, timedelta, timezone
+
+    from ai_workflow_engine import InMemoryWaitCoordinator, WorkflowEngineBuilder
+
+    frozen = datetime(2036, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+    clock = lambda: frozen  # noqa: E731
+    coordinator = InMemoryWaitCoordinator(clock=clock)
+
+    builder = WorkflowEngineBuilder().with_wait_coordinator(coordinator, clock=clock)
+    from pydantic import BaseModel as _BM
+
+    class _Gate(_BM):
+        status: str = "pending"
+
+    builder.register_capability("gate", lambda ctx, p: _Gate())
+    builder.register_capability("escalate", lambda ctx, p: {"escalated": True})
+    builder.register_workflow(
+        WorkflowBuilder("durable_flow")
+        .human("gate", wait_policy=DurableWaitPolicy(timeout_s=60), timeout_to="escalate")
+        .step("escalate")
+        .build()
+    )
+    engine = builder.build()
+
+    result = await engine.run("durable_flow", {})
+    assert result.status == "requires_user_input"
+    stored = await coordinator.get(result.wait_handle.wait_id)
+    assert stored.created_at == frozen, "record stamps must come from the INJECTED clock"
+    assert stored.deadline_at == frozen + timedelta(seconds=60)
+    assert result.wait_handle.deadline_at == stored.deadline_at
+    assert coordinator.due(frozen + timedelta(seconds=61))[0].wait_id == stored.wait_id
+
+
+async def test_conformance_rejects_snapshot_loss_and_supports_reconnect():
+    """W2R.3: an adapter that drops or alters the snapshot fails BY NAME; a reconnected
+    adapter over shared backing sees identical state; stored records are defensively
+    copied."""
+
+    from ai_workflow_engine import InMemoryWaitCoordinator
+    from ai_workflow_engine.testing.wait_contract import run_wait_registration_conformance
+
+    clock = _clock()
+
+    shared: dict = {}
+    await run_wait_registration_conformance(
+        lambda: InMemoryWaitCoordinator(clock=clock, shared_state=shared),
+        clock=clock,
+        reconnect=lambda: InMemoryWaitCoordinator(clock=clock, shared_state=shared),
+    )
+
+    class SnapshotDropper(InMemoryWaitCoordinator):
+        async def load_snapshot(self, wait_id):
+            return None
+
+    class SnapshotMangler(InMemoryWaitCoordinator):
+        async def load_snapshot(self, wait_id):
+            original = await super().load_snapshot(wait_id)
+            return original and original.replace("gate", "hacked")
+
+    for broken, fragment in ((SnapshotDropper, "EXACT registered snapshot"),
+                             (SnapshotMangler, "EXACT registered snapshot")):
+        with pytest.raises(AssertionError, match="EXACT"):
+            await run_wait_registration_conformance(
+                lambda broken=broken: broken(clock=clock), clock=clock
+            )
+
+    # defensive copies: mutating a returned record does not corrupt the store
+    coordinator = InMemoryWaitCoordinator(clock=clock)
+    from datetime import timedelta
+
+    from ai_workflow_engine.waits import DurableWaitPolicy as DWP, WaitRecord
+
+    now = clock()
+    record = WaitRecord(
+        wait_id="w-copy", run_id="r", workflow_id="wf", suspended_node="g",
+        policy=DWP(timeout_s=30), created_at=now, deadline_at=now + timedelta(seconds=30),
+    )
+    await coordinator.register(record, "{}")
+    fetched = await coordinator.get("w-copy")
+    fetched.status = "cancelled"
+    assert (await coordinator.get("w-copy")).status == "pending", "store must be isolated"
+
+
+async def test_registration_reuse_and_distinct_occurrence_identity():
+    """W2R.3: a crash-after-register retry of the SAME suspension reuses the committed
+    registration (deterministic wait id); the id is derived from run/node/occurrence."""
+
+    from ai_workflow_engine import InMemoryWaitCoordinator
+
+    calls = {"register": 0}
+
+    class CountingCoordinator(InMemoryWaitCoordinator):
+        async def register(self, record, snapshot_json):
+            calls["register"] += 1
+            return await super().register(record, snapshot_json)
+
+    shared: dict = {}
+    clock = _clock()
+    coordinator = CountingCoordinator(clock=clock, shared_state=shared)
+    engine = _durable_engine(coordinator)
+
+    first = await engine.run("durable_flow", {})
+    assert first.status == "requires_user_input"
+    assert calls["register"] == 1
+    wait_id = first.wait_handle.wait_id
+    assert wait_id.endswith("--gate--0"), "identity = run/node/occurrence, not a random uuid"
+
+    # crash-after-register retry: seed a fresh engine sharing the store, replay the run id
+    coordinator2 = CountingCoordinator(clock=clock, shared_state=shared)
+    engine2 = _durable_engine(coordinator2)
+    from ai_workflow_engine import WorkflowGoal
+
+    goal = WorkflowGoal(
+        workflow_type="durable_flow", objective="retry", metadata={"run_id": first.wait_handle.run_id}
+    )
+    second = await engine2.run("durable_flow", {}, goal=goal)
+    assert second.status == "requires_user_input"
+    assert second.wait_handle.wait_id == wait_id, "same logical suspension reuses ONE registration"
+    assert calls["register"] == 1, "no duplicate registration on retry"
+    assert any(e.decision == "wait:registration_reused" for e in second.trace)
+
+
+async def test_registration_failure_projects_a_failed_node_in_the_bundle(tmp_path):
+    """W2R.4 (codex): the PROJECTED bundle shows the suspended node FAILED with
+    failure_kind=wait_registration_failed — never a suspended node inside a failed run."""
+
+    from ai_workflow_engine import (
+        InMemoryWaitCoordinator,
+        ObservationConfig,
+        WorkflowEngineBuilder,
+    )
+    from ai_workflow_viewer import FileEventSource, build_observation_graph
+
+    class ExplodingCoordinator(InMemoryWaitCoordinator):
+        async def register(self, record, snapshot_json):
+            raise RuntimeError("outbox transaction failed")
+
+    from pydantic import BaseModel as _BM
+
+    class _Gate(_BM):
+        status: str = "pending"
+
+    builder = WorkflowEngineBuilder().with_observation(
+        ObservationConfig(enabled=True, bundle_dir=str(tmp_path))
+    )
+    builder.with_wait_coordinator(ExplodingCoordinator(clock=_clock()))
+    builder.register_capability("gate", lambda ctx, p: _Gate())
+    builder.register_capability("escalate", lambda ctx, p: {"escalated": True})
+    builder.register_workflow(
+        WorkflowBuilder("durable_flow")
+        .human("gate", wait_policy=DurableWaitPolicy(timeout_s=60), timeout_to="escalate")
+        .step("escalate")
+        .build()
+    )
+    engine = builder.build()
+
+    result = await engine.run("durable_flow", {})
+    assert result.status == "failed" and result.observation_bundle_path
+
+    run_data = FileEventSource(result.observation_bundle_path).read()
+    graph = build_observation_graph(
+        run_data.definition, run_data.trace_events, run_data.usage_events,
+        run_data.details, run_id=run_data.run_id,
+    )
+    assert graph.nodes["gate"].status == "failed", (
+        f"projected node must be FAILED, not suspended: {graph.nodes['gate'].status}"
+    )
+    failure_events = [
+        e for e in run_data.trace_events
+        if e.metadata.get("failure_kind") == "wait_registration_failed"
+    ]
+    assert failure_events, "the typed failure kind must be in the bundle"

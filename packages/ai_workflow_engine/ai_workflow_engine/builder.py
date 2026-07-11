@@ -179,6 +179,12 @@ class WorkflowEngine:
         self._plans: Dict[str, RuntimePlan] = {}
 
     @property
+    def wait_coordinator(self) -> Any:
+        """Read-only view of the composed durable-wait coordinator (owner: executor)."""
+
+        return getattr(self.executor, "wait_coordinator", None)
+
+    @property
     def prompt_renderer(self) -> "PromptRenderService":
         """Strict prompt-file renderer rooted at ``prompt_root`` (loud when unconfigured)."""
 
@@ -674,19 +680,33 @@ class WorkflowEngineBuilder:
         self._usage_sink = sink
         return self
 
-    def with_wait_coordinator(self, coordinator: Any) -> "WorkflowEngineBuilder":
-        """W2.1: the ONE composition-root seam for durable waits. Loudly rejects objects
-        that do not satisfy the WaitCoordinator protocol; local/no-wait products never call
-        this and never load the waits module."""
+    def with_wait_coordinator(self, coordinator: Any, *, clock: Any = None) -> "WorkflowEngineBuilder":
+        """W2.1/W2R: the ONE composition-root seam for durable waits. Rejects objects that
+        do not satisfy the WaitCoordinator protocol AND (W2R.1) sync impostors — runtime
+        protocols only check method PRESENCE, so asyncness is verified explicitly.
+        ``clock`` (W2R.2) is the single durable-wait time source shared by engine record
+        stamps and coordinator due/health in tests; default is UTC now."""
+
+        import inspect
 
         from ai_workflow_engine.waits import WaitCoordinator  # call-time (leaf discipline)
 
         if not isinstance(coordinator, WaitCoordinator):
             raise TypeError(
                 f"{type(coordinator).__name__} does not satisfy the WaitCoordinator protocol "
-                "(async register/get + due/health)"
+                "(async register/get/load_snapshot + due/health)"
             )
+        for name in ("register", "get", "load_snapshot"):
+            method = inspect.unwrap(getattr(coordinator, name))
+            if not inspect.iscoroutinefunction(method):
+                raise TypeError(
+                    f"WaitCoordinator.{name} must be async — {type(coordinator).__name__}.{name} "
+                    "is a synchronous function (I/O-backed adapter operations are awaited)"
+                )
+        if clock is not None and not callable(clock):
+            raise TypeError("wait clock must be a callable returning an aware datetime")
         self._wait_coordinator = coordinator
+        self._wait_clock = clock
         return self
 
     def with_checkpoint_store(self, store: CheckpointStore) -> "WorkflowEngineBuilder":
@@ -783,7 +803,7 @@ class WorkflowEngineBuilder:
             engine.register_workflow(definition, profile=profile)
         coordinator = getattr(self, "_wait_coordinator", None)
         if coordinator is not None:
-            # W2.1: the executor owns preflight + registration; one seam, set at build
-            engine.wait_coordinator = coordinator
+            # W2R.1: ONE owner — the executor; the engine exposes a read-only delegate.
             engine.executor.wait_coordinator = coordinator
+            engine.executor.wait_clock = getattr(self, "_wait_clock", None)
         return engine

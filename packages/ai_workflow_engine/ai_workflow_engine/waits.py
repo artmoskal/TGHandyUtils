@@ -195,6 +195,8 @@ class WaitCoordinator(Protocol):
 
     async def get(self, wait_id: str) -> Optional[WaitRecord]: ...
 
+    async def load_snapshot(self, wait_id: str) -> Optional[str]: ...
+
     def due(self, now: Any) -> list: ...
 
     def health(self) -> WaitHealth: ...
@@ -207,16 +209,20 @@ class InMemoryWaitCoordinator:
 
     adapter_id = "in_memory"
 
-    def __init__(self, *, clock: Any) -> None:
+    def __init__(self, *, clock: Any, shared_state: Optional[Dict[str, Dict]] = None) -> None:
         import asyncio
 
         if clock is None or not callable(clock):
             raise ValueError("InMemoryWaitCoordinator requires an injected clock callable")
         self._clock = clock
         self._lock = asyncio.Lock()
-        self._records: Dict[str, WaitRecord] = {}
-        self._snapshots: Dict[str, str] = {}
-        self._receipts: Dict[str, WaitReceipt] = {}
+        # W2R.3: `shared_state` lets tests reconnect a SECOND coordinator over the same
+        # backing store — the restart/reconnect story a durable adapter must support.
+        state = shared_state if shared_state is not None else {}
+        self._records: Dict[str, WaitRecord] = state.setdefault("records", {})
+        self._snapshots: Dict[str, str] = state.setdefault("snapshots", {})
+        self._receipts: Dict[str, WaitReceipt] = state.setdefault("receipts", {})
+        self._state = state
 
     async def register(self, record: WaitRecord, snapshot_json: str) -> WaitReceipt:
         async with self._lock:
@@ -242,10 +248,13 @@ class InMemoryWaitCoordinator:
 
     async def get(self, wait_id: str) -> Optional[WaitRecord]:
         async with self._lock:
-            return self._records.get(wait_id)
+            record = self._records.get(wait_id)
+            # defensive copy: callers cannot mutate stored state outside future claim ops
+            return record.model_copy(deep=True) if record is not None else None
 
-    def snapshot_json(self, wait_id: str) -> Optional[str]:
-        return self._snapshots.get(wait_id)
+    async def load_snapshot(self, wait_id: str) -> Optional[str]:
+        async with self._lock:
+            return self._snapshots.get(wait_id)
 
     def due(self, now: Any) -> list:
         return [
