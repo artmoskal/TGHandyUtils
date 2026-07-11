@@ -37,11 +37,10 @@ __all__ = [
     "wait_policy_from",
 ]
 
-# C5: closed processing lifecycle — no "expired"/"overdue" terminal states.
-WAIT_STATUSES = ("pending", "claimed", "completed", "failed", "cancelled")
-RESOLUTION_KINDS = ("signal", "timeout")
+from ai_workflow_engine.wait_contract import WAIT_STATUSES, WaitHandle, WaitStatus  # noqa: F401
+# (re-exported: the contract leaf is the one shared source for the run-result surface)
 
-WaitStatus = Literal["pending", "claimed", "completed", "failed", "cancelled"]
+RESOLUTION_KINDS = ("signal", "timeout")
 ResolutionKind = Literal["signal", "timeout"]
 
 
@@ -167,19 +166,6 @@ class WaitClaim(BaseModel):
     event_id: str
     claimed_at: AwareDatetime = Field(default_factory=_utc_now)
     lease_expires_at: Optional[AwareDatetime] = None
-
-
-class WaitHandle(BaseModel):
-    """What a product receives for a REGISTERED wait — never the raw snapshot (C1)."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    wait_id: str
-    run_id: str
-    workflow_id: str
-    suspended_node: str
-    deadline_at: AwareDatetime
-    status: WaitStatus = "pending"
 
 
 class WaitHealth(BaseModel):

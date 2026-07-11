@@ -371,3 +371,43 @@ def test_run_result_wait_door_matrix_is_status_dependent_and_typed():
         local.model_copy(update={"status": "completed"})
     completed = local.model_copy(update={"status": "completed", "snapshot": None})
     assert completed.status == "completed"
+
+
+def test_wait_handle_is_genuinely_typed_in_runtime_schema_and_static_surface():
+    """W1R.2b (codex reproducer #1): the annotation, the generated JSON schema, and static
+    consumers all see the SAME WaitHandle contract — no Optional[Any]."""
+
+    import typing
+
+    from ai_workflow_engine.executor import WorkflowRunResult
+    from ai_workflow_engine.wait_contract import WaitHandle as ContractHandle
+
+    hints = typing.get_type_hints(WorkflowRunResult)
+    assert hints["wait_handle"] == typing.Optional[ContractHandle]
+    schema = _json.dumps(WorkflowRunResult.model_json_schema())
+    assert "WaitHandle" in schema, "the generated schema must carry the handle contract"
+    # the waits module re-exports the SAME class — one contract, no duplicate model
+    assert WaitHandle is ContractHandle
+
+
+def test_model_copy_updates_are_fully_validated_not_just_door_checked():
+    """W1R.2b (codex reproducer #2): a copied update cannot smuggle a forged handle dict or
+    an invalid status — copies reconstruct through full validation."""
+
+    from datetime import datetime, timezone
+
+    from ai_workflow_engine.executor import WorkflowRunResult
+
+    handle = WaitHandle(
+        wait_id="x", run_id="r", workflow_id="w", suspended_node="ask",
+        deadline_at=datetime(2026, 7, 11, 13, 0, tzinfo=timezone.utc),
+    )
+    durable = WorkflowRunResult(workflow_id="w", status="requires_user_input", wait_handle=handle)
+
+    with pytest.raises(ValidationError):
+        durable.model_copy(update={"wait_handle": {"forged": "dict"}})
+    with pytest.raises(ValidationError):
+        durable.model_copy(update={"status": "definitely_not_a_status"})
+    # status-neutral copies stay equivalent
+    stamped = durable.model_copy(update={"observation_bundle_path": "/tmp/b"})
+    assert stamped.wait_handle == handle and stamped.observation_bundle_path == "/tmp/b"

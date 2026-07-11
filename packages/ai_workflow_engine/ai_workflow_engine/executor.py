@@ -64,6 +64,7 @@ from ai_workflow_engine.models import (
 )
 from ai_workflow_engine.planning import PlanArtifact, PlanTask, render_plan
 from ai_workflow_engine.snapshot import MachineSnapshot
+from ai_workflow_engine.wait_contract import WaitHandle
 from ai_workflow_engine.workflow import (
     END,
     KNOWN_NODE_KINDS,
@@ -157,20 +158,10 @@ class WorkflowRunResult(BaseModel):
     # LocalWaitPolicy — feed it back through engine.resume(snapshot, event). Registered
     # DURABLE waits expose wait_handle INSTEAD (C1/W1.4): exactly one of the two, never both.
     snapshot: Optional[MachineSnapshot] = None
-    wait_handle: Optional[Any] = None
-
-    @field_validator("wait_handle")
-    @classmethod
-    def _typed_handle(cls, value: Any) -> Any:
-        # W1R.2: the handle is TYPED — arbitrary dicts cannot masquerade. Call-time import
-        # keeps the executor out of the simple-tier waits dependency (no-wait results are None).
-        if value is None:
-            return value
-        from ai_workflow_engine.waits import WaitHandle  # call-time (leaf discipline)
-
-        if isinstance(value, WaitHandle):
-            return value
-        return WaitHandle.model_validate(value)
+    # W1R.2b: GENUINELY typed — runtime validation, static consumers, and the generated
+    # JSON schema all see the same WaitHandle contract (tiny contract leaf; the full waits
+    # module stays out of the simple tier).
+    wait_handle: Optional[WaitHandle] = None
 
     @model_validator(mode="after")
     def _status_dependent_wait_door(self) -> "WorkflowRunResult":
@@ -196,11 +187,11 @@ class WorkflowRunResult(BaseModel):
         return self
 
     def model_copy(self, *, update: Optional[Dict[str, Any]] = None, deep: bool = False) -> "WorkflowRunResult":
-        # engine update paths (status overrides, bundle-path stamps) cannot bypass the
-        # door invariant through unchecked model_copy
+        # W1R.2b: copies are FULLY validated — reconstruction through the constructor runs
+        # every field validator and the status XOR on the ACTUAL objects (no serialization),
+        # so no engine or public update path can smuggle a forged handle or invalid status.
         copied = super().model_copy(update=update, deep=deep)
-        copied._assert_wait_doors()
-        return copied
+        return WorkflowRunResult(**{name: getattr(copied, name) for name in WorkflowRunResult.model_fields})
 
     def node(self, node_id: str) -> Optional[NodeResult]:
         for record in reversed(self.node_results):
