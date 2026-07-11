@@ -288,7 +288,11 @@ def test_read_group_aggregates_usage_once_and_labels_cumulative(tmp_path):
     assert group.usage_totals["total_tokens"] == 12  # 7 + 5, each event exactly once
     assert group.usage_totals["usage_count"] == 2
     assert group.usage_totals["metered_usd"] == 0.03
-    assert group.usage_totals["scope"] == "group_events"
+    assert group.usage_totals["scope"] == "actual_all_attempts"
+    assert group.canonical_usage_totals["total_tokens"] == 12, (
+        "with no abandoned attempts, actual == canonical"
+    )
+    assert group.abandoned_usage_totals["usage_count"] == 0
     assert group.cumulative_meta_totals["scope"] == "run_cumulative_at_finalize"
     assert group.cumulative_meta_totals["total_tokens"] == 12, (
         "cumulative label comes from the NEWEST segment's meta, never a sum of metas"
@@ -488,7 +492,7 @@ def test_group_html_renders_one_truthful_lifecycle(tmp_path):
     assert 'data-kind="resume"' in html
     assert "Run segments (2)" in html
     assert "logical-run" in html
-    assert "group usage (segment-local events, counted once)" in html
+    assert "actual spend (all attempts, counted once)" in html
     assert "12 tokens" in html
     # the gate node must show its FINAL truth in the node table: completed, not suspended
     import re as _re
@@ -547,8 +551,60 @@ def test_read_group_reports_abandoned_attempts_without_merging_them(tmp_path):
     assert [segment.segment_index for segment in group.segments] == [0, 1]
     assert group.status == "completed"
     assert [segment.segment_id for segment in group.abandoned] == ["logical-run--s001-dead"]
-    assert group.usage_totals["total_tokens"] == 12, "abandoned spend is NOT run history"
-    assert all(record.event_id != "dead-t1" for record in group.records)
-    assert group.abandoned[0].data.usage_events[0].estimated_usd == 0.005, (
-        "the crashed attempt's partial spend stays inspectable as evidence"
+    # W4R.3 cost honesty: the crashed attempt's paid call is REAL spend — the primary
+    # actual total includes it; the canonical/abandoned split never hides money.
+    assert group.usage_totals["total_tokens"] == 15, "actual spend includes abandoned money"
+    assert group.usage_totals["metered_usd"] == 0.035
+    assert group.canonical_usage_totals["total_tokens"] == 12
+    assert group.abandoned_usage_totals["total_tokens"] == 3
+    assert group.usage_totals["total_tokens"] == (
+        group.canonical_usage_totals["total_tokens"]
+        + group.abandoned_usage_totals["total_tokens"]
+    ), "actual = canonical + abandoned, nothing double-counted"
+    assert all(record.event_id != "dead-t1" for record in group.records), (
+        "abandoned machine EVENTS still never merge into canonical history"
     )
+    assert group.abandoned[0].data.usage_events[0].estimated_usd == 0.005
+
+
+def test_wait_terminal_segment_closes_the_group_and_fake_definitions_are_loud(tmp_path):
+    """W3R.3b reader side: a `wait_terminal` evidence segment (suspension failed with no
+    continuation) is a legal FINAL chain member — the group reads `failed`, so viewers and
+    retention agree with coordinator truth. Its definition.json is the REGISTERED bytes
+    and is recomputed like any segment: a wait_terminal carrying a DIFFERENT machine is
+    refused (the old exemption is gone)."""
+
+    import pytest as _pytest
+
+    from ai_workflow_engine import WorkflowBuilder
+    from ai_workflow_viewer import FileEventSource
+
+    definition = WorkflowBuilder("grouped").step("gate").step("finish").build()
+    digest = definition.definition_digest()
+    _write_bundle(
+        tmp_path, "wfail-run", definition,
+        trace_events=[WorkflowTraceEvent(node="gate", node_status="requires_user_input", phase="node:result", run_id="wfail-run", sequence=1, event_id="w-0")],
+        meta_extra=_segment_meta("wfail-run", "wfail-run", 0, digest=digest, status="requires_user_input"),
+    )
+    _write_bundle(
+        tmp_path, "wfail-run", definition, dir_name="wfail-run--s001-wfail",
+        trace_events=[WorkflowTraceEvent(node="gate", decision="wait:failed", node_status="failed", phase="node:result", error="digest mismatch", run_id="wfail-run", sequence=1, event_id="w-1")],
+        meta_extra=_segment_meta(
+            "wfail-run", "wfail-run--s001-wfail", 1, parent="wfail-run",
+            digest=digest, kind="wait_terminal", status="failed",
+        ),
+    )
+
+    group = FileEventSource(tmp_path).read_group("wfail-run")
+    assert [segment.kind for segment in group.segments] == ["initial", "wait_terminal"]
+    assert group.status == "failed", (
+        "a terminally failed wait must close the group — no suspended lie for retention"
+    )
+
+    # forge: same meta, but the evidence file carries a DIFFERENT machine
+    other = WorkflowBuilder("grouped").step("gate").step("finish").step("extra").build()
+    (tmp_path / "wfail-run--s001-wfail" / "definition.json").write_text(
+        other.model_dump_json(), encoding="utf-8"
+    )
+    with _pytest.raises(ValueError, match="DIFFERENT actual workflow definitions|forged or stale"):
+        FileEventSource(tmp_path).read_group("wfail-run")

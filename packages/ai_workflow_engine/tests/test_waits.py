@@ -424,6 +424,22 @@ def _clock():
     return lambda: datetime(2026, 7, 11, 12, 0, 0, tzinfo=timezone.utc)
 
 
+def _definition_json():
+    return (
+        WorkflowBuilder("wf")
+        .human("gate", wait_policy=LocalWaitPolicy())
+        .step("finish")
+        .build()
+        .model_dump_json()
+    )
+
+
+def _definition_digest():
+    from ai_workflow_engine.workflow import WorkflowDefinition
+
+    return WorkflowDefinition.model_validate_json(_definition_json()).definition_digest()
+
+
 def _durable_engine(coordinator=None):
     from ai_workflow_engine import InMemoryWaitCoordinator, WorkflowEngineBuilder
 
@@ -478,7 +494,7 @@ async def test_registration_failure_fails_the_run_with_no_public_door():
     from ai_workflow_engine import InMemoryWaitCoordinator
 
     class ExplodingCoordinator(InMemoryWaitCoordinator):
-        async def register(self, record, snapshot_json):
+        async def register(self, record, snapshot_json, definition_json):
             raise RuntimeError("outbox transaction failed")
 
     engine = _durable_engine(ExplodingCoordinator(clock=_clock()))
@@ -489,8 +505,8 @@ async def test_registration_failure_fails_the_run_with_no_public_door():
     assert any(e.decision == "wait:registration_failed" for e in result.trace)
 
     class ForgingCoordinator(InMemoryWaitCoordinator):
-        async def register(self, record, snapshot_json):
-            receipt = await super().register(record, snapshot_json)
+        async def register(self, record, snapshot_json, definition_json):
+            receipt = await super().register(record, snapshot_json, definition_json)
             return receipt.model_copy(update={"wait_version": receipt.wait_version + 1})
 
     engine2 = _durable_engine(ForgingCoordinator(clock=_clock()))
@@ -541,7 +557,7 @@ async def test_in_memory_coordinator_is_deterministic_and_never_self_fires():
         wait_id="w-due", run_id="r", workflow_id="wf", suspended_node="g",
         definition_digest="digest-conf", policy=DWP(timeout_s=30), created_at=now, deadline_at=now + timedelta(seconds=30),
     )
-    await coordinator.register(record, "{}")
+    await coordinator.register(record, "{}", _definition_json())
     assert await coordinator.due(now) == []
     assert [r.wait_id for r in await coordinator.due(now + timedelta(seconds=31))] == ["w-due"]
 
@@ -559,8 +575,8 @@ async def test_broken_adapters_fail_conformance_by_named_invariant():
     clock = _clock()
 
     class WrongDeadline(InMemoryWaitCoordinator):
-        async def register(self, record, snapshot_json):
-            receipt = await super().register(record, snapshot_json)
+        async def register(self, record, snapshot_json, definition_json):
+            receipt = await super().register(record, snapshot_json, definition_json)
             from datetime import timedelta
 
             return receipt.model_copy(
@@ -568,20 +584,20 @@ async def test_broken_adapters_fail_conformance_by_named_invariant():
             )
 
     class SilentReplace(InMemoryWaitCoordinator):
-        async def register(self, record, snapshot_json):
+        async def register(self, record, snapshot_json, definition_json):
             self._records.pop(record.wait_id, None)
             self._snapshots.pop(record.wait_id, None)
             self._receipts.pop(record.wait_id, None)
-            return await super().register(record, snapshot_json)
+            return await super().register(record, snapshot_json, definition_json)
 
     class NotIdempotent(InMemoryWaitCoordinator):
         _n = 0
 
-        async def register(self, record, snapshot_json):
+        async def register(self, record, snapshot_json, definition_json):
             self._records.pop(record.wait_id, None)
             self._snapshots.pop(record.wait_id, None)
             self._receipts.pop(record.wait_id, None)
-            receipt = await super().register(record, snapshot_json)
+            receipt = await super().register(record, snapshot_json, definition_json)
             type(self)._n += 1
             return receipt.model_copy(update={"registration_id": f"reg-{type(self)._n}"})
 
@@ -589,11 +605,18 @@ async def test_broken_adapters_fail_conformance_by_named_invariant():
         async def get(self, wait_id):
             return None
 
+    class DefinitionDropper(InMemoryWaitCoordinator):
+        # W3R.3a negative: an adapter that loses the registered definition bytes breaks
+        # terminal observability and must fail conformance by name.
+        async def load_definition(self, wait_id):
+            return None
+
     for broken, fragment in (
         (WrongDeadline, "ACCEPTED deadline"),
         (SilentReplace, "rejected"),
         (NotIdempotent, "idempotent"),
         (Amnesiac, "retrievable"),
+        (DefinitionDropper, "load_definition"),
     ):
         with pytest.raises(AssertionError, match=fragment.split()[0]):
             await run_wait_registration_conformance(
@@ -611,9 +634,10 @@ def test_builder_rejects_sync_impostor_coordinators():
     from ai_workflow_engine import WorkflowEngineBuilder
 
     class SyncImpostor:
-        def register(self, record, snapshot_json): ...
+        def register(self, record, snapshot_json, definition_json): ...
         def get(self, wait_id): ...
         def load_snapshot(self, wait_id): ...
+        def load_definition(self, wait_id): ...
         def claim_event(self, wait_id, event, *, lease_until): ...
         def complete(self, wait_id, claim, *, resolution_kind): ...
         def fail(self, wait_id, claim, *, error): ...
@@ -639,8 +663,8 @@ async def test_duck_receipt_objects_are_not_accepted_as_attestation():
             self.adapter_id = "duck"
 
     class DuckCoordinator(InMemoryWaitCoordinator):
-        async def register(self, record, snapshot_json):
-            await super().register(record, snapshot_json)
+        async def register(self, record, snapshot_json, definition_json):
+            await super().register(record, snapshot_json, definition_json)
             return DuckReceipt(record)
 
     engine = _durable_engine(DuckCoordinator(clock=_clock()))
@@ -730,7 +754,7 @@ async def test_conformance_rejects_snapshot_loss_and_supports_reconnect():
         wait_id="w-copy", run_id="r", workflow_id="wf", suspended_node="g",
         definition_digest="digest-conf", policy=DWP(timeout_s=30), created_at=now, deadline_at=now + timedelta(seconds=30),
     )
-    await coordinator.register(record, "{}")
+    await coordinator.register(record, "{}", _definition_json())
     fetched = await coordinator.get("w-copy")
     fetched.status = "cancelled"
     assert (await coordinator.get("w-copy")).status == "pending", "store must be isolated"
@@ -745,9 +769,9 @@ async def test_registration_reuse_and_distinct_occurrence_identity():
     calls = {"register": 0}
 
     class CountingCoordinator(InMemoryWaitCoordinator):
-        async def register(self, record, snapshot_json):
+        async def register(self, record, snapshot_json, definition_json):
             calls["register"] += 1
-            return await super().register(record, snapshot_json)
+            return await super().register(record, snapshot_json, definition_json)
 
     shared: dict = {}
     clock = _clock()
@@ -793,7 +817,7 @@ async def test_registration_failure_projects_a_failed_node_in_the_bundle(tmp_pat
     from ai_workflow_viewer import FileEventSource, build_observation_graph
 
     class ExplodingCoordinator(InMemoryWaitCoordinator):
-        async def register(self, record, snapshot_json):
+        async def register(self, record, snapshot_json, definition_json):
             raise RuntimeError("outbox transaction failed")
 
     from pydantic import BaseModel as _BM
@@ -878,8 +902,9 @@ async def test_registration_mechanics_live_in_the_lifecycle_service():
         node_results=[], artifacts=[],
     ).model_dump_json()
     request = WaitRegistrationRequest(
-        run_id="run-1", workflow_id="wf", definition_digest="abc123", suspended_node="gate",
-        occurrence=0, policy=DurableWaitPolicy(timeout_s=60), snapshot_json=snapshot_json,
+        run_id="run-1", workflow_id="wf", definition_digest=_definition_digest(),
+        suspended_node="gate", occurrence=0, policy=DurableWaitPolicy(timeout_s=60),
+        snapshot_json=snapshot_json, definition_json=_definition_json(),
     )
 
     first = await runtime.register_suspension(request)
@@ -899,12 +924,13 @@ def _registration_request(**overrides):
     from ai_workflow_engine.wait_runtime import WaitRegistrationRequest
 
     values = dict(
-        run_id="run-1", workflow_id="wf", definition_digest="digest-A", suspended_node="gate",
-        occurrence=0, policy=DurableWaitPolicy(timeout_s=60),
+        run_id="run-1", workflow_id="wf", definition_digest=_definition_digest(),
+        suspended_node="gate", occurrence=0, policy=DurableWaitPolicy(timeout_s=60),
         snapshot_json=MachineSnapshot(
             workflow_id="wf", suspended_node="gate", node_status={}, routes={},
             node_results=[], artifacts=[],
         ).model_dump_json(),
+        definition_json=_definition_json(),
     )
     values.update(overrides)
     return WaitRegistrationRequest(**values)
@@ -927,8 +953,24 @@ async def test_changed_snapshot_or_digest_is_never_silently_reused():
     with pytest.raises(RuntimeError, match="DIFFERENT.*snapshot"):
         await runtime.register_suspension(changed_snapshot)
 
+    other = (
+        WorkflowBuilder("wf")
+        .human("gate", wait_policy=LocalWaitPolicy())
+        .step("finish")
+        .step("extra")
+        .build()
+    )
     with pytest.raises(RuntimeError, match="DIFFERENT.*definition_digest"):
-        await runtime.register_suspension(_registration_request(definition_digest="digest-B"))
+        await runtime.register_suspension(
+            _registration_request(
+                definition_digest=other.definition_digest(),
+                definition_json=other.model_dump_json(),
+            )
+        )
+
+    # W3R.3a integrity seal: bytes that do not digest to the claimed identity never store
+    with pytest.raises(ValueError, match="must BE the registered machine"):
+        await runtime.register_suspension(_registration_request(definition_digest="a" * 16))
 
 
 async def test_digest_is_persisted_and_survives_reconnect():
@@ -947,7 +989,12 @@ async def test_digest_is_persisted_and_survives_reconnect():
 
     reconnected = InMemoryWaitCoordinator(clock=clock, shared_state=shared)
     stored = await reconnected.get(outcome.handle.wait_id)
-    assert stored.definition_digest == "digest-A", "digest must be persisted, not discarded"
+    assert stored.definition_digest == _definition_digest(), (
+        "digest must be persisted, not discarded"
+    )
+    assert await reconnected.load_definition(outcome.handle.wait_id) == _definition_json(), (
+        "W3R.3a: the registered definition BYTES survive reconnect byte-exactly"
+    )
 
 
 async def test_terminal_or_claimed_waits_are_never_revived():
@@ -1005,7 +1052,7 @@ async def test_reference_adapter_is_async_and_alias_free():
         policy=DWP(timeout_s=1), definition_digest="d", created_at=now,
         deadline_at=now + timedelta(seconds=1),
     )
-    await coordinator.register(record, "{}")
+    await coordinator.register(record, "{}", _definition_json())
     record.status = "cancelled"  # caller mutates ITS object after registration
     assert (await coordinator.get("w-alias")).status == "pending", "input must be copied"
 
@@ -1041,6 +1088,7 @@ def test_blank_definition_digest_is_rejected_everywhere():
             WaitRegistrationRequest(
                 run_id="r", workflow_id="wf", definition_digest=blank,
                 suspended_node="g", occurrence=0, policy=DWP(timeout_s=1), snapshot_json="{}",
+                definition_json=_definition_json(),
             )
 
 
@@ -1061,12 +1109,12 @@ async def test_duplicate_receipt_is_a_defensive_result():
         definition_digest="d", policy=DWP(timeout_s=1),
         created_at=now, deadline_at=now + timedelta(seconds=1),
     )
-    first = await coordinator.register(record, "{}")
+    first = await coordinator.register(record, "{}", _definition_json())
     first.registration_id = "corrupted"
-    duplicate = await coordinator.register(record, "{}")
+    duplicate = await coordinator.register(record, "{}", _definition_json())
     assert duplicate.registration_id == "reg-w-rcpt", "stored receipt must be isolated"
     duplicate.adapter_id = "also-corrupted"
-    third = await coordinator.register(record, "{}")
+    third = await coordinator.register(record, "{}", _definition_json())
     assert third.adapter_id == "in_memory"
 
 
@@ -1986,3 +2034,108 @@ async def test_external_write_is_idempotent_across_crash_and_reclaim():
     )
     stored = await coordinator.get(wait_id)
     assert stored.status == "completed" and stored.resume_attempts == 2
+
+
+async def test_snapshot_missing_failure_yields_a_readable_failed_group(tmp_path):
+    """W3R.3a/b (codex recheck probe #1, permanent): when the stored snapshot is GONE, the
+    terminal evidence segment is built from facts persisted at registration — origin
+    lineage + registered definition bytes — so its parent/index form a VALID chain
+    (initial <- wfail) instead of the parent-less segment the strict reader refused."""
+
+    from ai_workflow_engine.models import WorkflowGoal
+    from ai_workflow_engine.workflow import WorkflowDefinition
+
+    shared: dict = {}
+    engine, coordinator = _delivery_engine(shared, bundle_dir=tmp_path)
+    goal = WorkflowGoal(
+        workflow_type="durable_flow", objective="snaploss", metadata={"run_id": "snaploss-run"}
+    )
+    first = await engine.run("durable_flow", {}, goal=goal)
+    wait_id = first.wait_handle.wait_id
+
+    shared["snapshots"].pop(wait_id)  # adapter integrity failure: snapshot lost
+
+    outcome = await engine.deliver_wait_event(
+        wait_id, {"kind": "signal", "event_id": "evt-s", "payload": "yes"}
+    )
+    assert outcome.kind == "rejected"
+    assert outcome.terminal_observation == "recorded", (
+        "the evidence write must be TYPED on the outcome, not a log line"
+    )
+    stored = await coordinator.get(wait_id)
+    assert stored.status == "failed" and stored.failure_kind == "snapshot_missing"
+
+    wfail = tmp_path / "snaploss-run--s001-wfail"
+    meta = _bundle_meta(wfail)
+    assert meta["segment_index"] == 1
+    assert meta["parent_segment_id"] == "snaploss-run", (
+        "parent comes from the REGISTERED origin lineage — never a fallback guess"
+    )
+    written = WorkflowDefinition.model_validate_json(
+        (wfail / "definition.json").read_text(encoding="utf-8")
+    )
+    assert written.definition_digest() == meta["definition_digest"] == stored.definition_digest, (
+        "the evidence definition file IS the registered bytes — it recomputes to the "
+        "registered digest, so strict group readers accept the chain"
+    )
+
+
+async def test_absent_workflow_registration_still_closes_the_group(tmp_path):
+    """W3R.3a/b (codex recheck probe #2, permanent): a restarted engine that no longer has
+    the workflow registered fails the wait AND still writes the terminal evidence segment
+    from the REGISTERED definition bytes — the group closes instead of showing a suspended
+    lie forever; without observation configured the outcome is typed `skipped`."""
+
+    from ai_workflow_engine import InMemoryWaitCoordinator, WorkflowEngineBuilder, ObservationConfig
+    from ai_workflow_engine.models import WorkflowGoal
+    from ai_workflow_engine.workflow import WorkflowDefinition
+
+    shared: dict = {}
+    clock = _clock()
+    engine, _coordinator = _delivery_engine(shared, clock=clock, bundle_dir=tmp_path)
+    goal = WorkflowGoal(
+        workflow_type="durable_flow", objective="restart", metadata={"run_id": "restart-run"}
+    )
+    first = await engine.run("durable_flow", {}, goal=goal)
+    wait_id = first.wait_handle.wait_id
+
+    # restarted process: same coordinator store + observation dir, NO workflows registered
+    restarted = (
+        WorkflowEngineBuilder()
+        .with_wait_coordinator(InMemoryWaitCoordinator(clock=clock, shared_state=shared), clock=clock)
+        .with_observation(ObservationConfig(enabled=True, bundle_dir=str(tmp_path)))
+        .build()
+    )
+    outcome = await restarted.deliver_wait_event(
+        wait_id, {"kind": "signal", "event_id": "evt-r", "payload": "yes"}
+    )
+    assert outcome.kind == "rejected" and outcome.wait_status == "failed"
+    assert outcome.terminal_observation == "recorded", (
+        "an absent current registration must not skip the truthful terminal observation"
+    )
+    stored = await restarted.wait_coordinator.get(wait_id)
+    assert stored.failure_kind == "digest_mismatch"
+
+    wfail = tmp_path / "restart-run--s001-wfail"
+    meta = _bundle_meta(wfail)
+    assert meta["status"] == "failed" and meta["parent_segment_id"] == "restart-run"
+    written = WorkflowDefinition.model_validate_json(
+        (wfail / "definition.json").read_text(encoding="utf-8")
+    )
+    assert written.definition_digest() == stored.definition_digest, (
+        "with no current registration, the evidence definition is the REGISTERED bytes"
+    )
+
+    # variant: no observation configured -> typed `skipped`, never a silent nothing
+    shared2: dict = {}
+    engine2, _c2 = _delivery_engine(shared2, clock=clock)  # observation OFF
+    second = await engine2.run("durable_flow", {})
+    bare = (
+        WorkflowEngineBuilder()
+        .with_wait_coordinator(InMemoryWaitCoordinator(clock=clock, shared_state=shared2), clock=clock)
+        .build()
+    )
+    skipped = await bare.deliver_wait_event(
+        second.wait_handle.wait_id, {"kind": "signal", "event_id": "evt-r2", "payload": "y"}
+    )
+    assert skipped.kind == "rejected" and skipped.terminal_observation == "skipped"

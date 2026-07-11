@@ -288,7 +288,9 @@ def observation_group_to_html(group: Any, *, title: Optional[str] = None) -> str
         )
         for segment in group.segments
     )
-    totals = group.usage_totals
+    totals = group.usage_totals  # ACTUAL spend incl. abandoned attempts (W4R.3)
+    canonical = group.canonical_usage_totals
+    abandoned_totals = group.abandoned_usage_totals
     cumulative = group.cumulative_meta_totals
     notes = "\n".join(
         f'<p class="abandoned-note muted">⚠ abandoned crash-attempt '
@@ -299,8 +301,10 @@ def observation_group_to_html(group: Any, *, title: Optional[str] = None) -> str
     strip = f"""<section class="segment-strip" id="segments">
 <h2>Run segments ({len(group.segments)}) — logical run <code>{html.escape(group.run_id)}</code></h2>
 <div class="segment-cards">{cards}</div>
-<p class="usage-totals">group usage (segment-local events, counted once): {totals.get("usage_count")} events,
-{totals.get("total_tokens")} tokens, metered ${totals.get("metered_usd") if totals.get("metered_usd") is not None else "0"}
+<p class="usage-totals"><strong>actual spend (all attempts, counted once): {totals.get("usage_count")} events,
+{totals.get("total_tokens")} tokens, metered ${totals.get("metered_usd") if totals.get("metered_usd") is not None else "0"}</strong>
+· canonical chain: {canonical.get("total_tokens")} tokens, metered ${canonical.get("metered_usd") if canonical.get("metered_usd") is not None else "0"}
+· abandoned attempts: {abandoned_totals.get("total_tokens")} tokens, metered ${abandoned_totals.get("metered_usd") if abandoned_totals.get("metered_usd") is not None else "0"}
 · cumulative-at-finalize (engine label: {html.escape(str(cumulative.get("scope")))}): {cumulative.get("total_tokens")} tokens</p>
 {notes}
 <style>

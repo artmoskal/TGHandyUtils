@@ -211,62 +211,55 @@ class WorkflowEngine:
             # (digest mismatch, missing snapshot, or exhausted attempts) — the observation
             # group must not keep reporting a suspended run while the coordinator says
             # failed. Write the engine-owned terminal evidence segment.
-            await self._record_wait_terminal_segment(wait_id, runtime, current)
+            observation = await self._record_wait_terminal_segment(wait_id, runtime)
+            outcome = outcome.model_copy(update={"terminal_observation": observation})
         return outcome
 
-    async def _record_wait_terminal_segment(self, wait_id: str, runtime: Any, current: Any) -> None:
-        """W3R.3: finalize a small ``wait_terminal`` observation segment so grouped
-        viewers and retention agree with coordinator truth when a wait fails WITHOUT a
-        continuation run. Best-effort by design: evidence writing must never mask the
-        typed delivery outcome — failures are logged loudly instead of raised."""
+    async def _record_wait_terminal_segment(self, wait_id: str, runtime: Any) -> str:
+        """W3R.3b: finalize the ``wait_terminal`` observation segment from facts persisted
+        AT REGISTRATION — origin lineage on the record plus the canonical definition bytes
+        in the coordinator — never from the snapshot or the currently-registered
+        definition, whose loss/change is exactly what fails deliveries. Returns the typed
+        status the delivery outcome carries: ``recorded`` | ``failed`` | ``skipped``
+        (skipped = observation off, or the suspension ran without observation, so no
+        on-disk group exists that could misreport)."""
 
         if self.observation is None or not self.observation.enabled:
-            return
+            return "skipped"
         try:
-            from ai_workflow_engine.models import WorkflowTraceEvent  # call-time (F1.1)
             from ai_workflow_engine.observation_bundle import (  # call-time (F1.1)
                 ObservationSegment,
+                finalize_abandoned_attempt_segments,
                 open_observation_run_bundle,
             )
-            from ai_workflow_engine.snapshot import MachineSnapshot
+            from ai_workflow_engine.workflow import WorkflowDefinition as _RegisteredDefinition
 
             record = await runtime.coordinator.get(wait_id)
             if record is None or record.status != "failed":
-                return
-            if current is None:
-                logger.warning(
-                    "wait %s failed (%s) but its workflow %r is not registered — no "
-                    "definition available, terminal observation segment skipped",
+                return "skipped"
+            if record.origin_segment_id is None:
+                # registered without observation: no suspension segment exists on disk,
+                # so there is no group that could show a stale suspended state.
+                return "skipped"
+            definition_json = await runtime.coordinator.load_definition(wait_id)
+            if not definition_json:
+                logger.error(
+                    "wait %s failed (%s) but the coordinator returned no registered "
+                    "definition bytes — adapter integrity failure; terminal observation "
+                    "cannot be written truthfully",
                     wait_id,
                     record.failure_kind,
-                    record.workflow_id,
                 )
-                return
-            parent_segment_id = None
-            segment_index = max(1, int(record.resume_attempts or 0))
-            snapshot_json = await runtime.coordinator.load_snapshot(wait_id)
-            if snapshot_json:
-                try:
-                    stored = MachineSnapshot.model_validate_json(snapshot_json)
-                    segment_index = int(stored.segment_index) + 1
-                    parent_segment_id = stored.segment_id
-                except Exception:
-                    logger.warning(
-                        "stored snapshot for wait %s is unparseable — terminal evidence "
-                        "segment falls back to the attempt-based index %s",
-                        wait_id,
-                        segment_index,
-                    )
-            from ai_workflow_engine.observation_bundle import (  # call-time (F1.1)
-                finalize_abandoned_attempt_segments,
-            )
-
+                return "failed"
+            registered = _RegisteredDefinition.model_validate_json(definition_json)
+            parent_segment_id = record.origin_segment_id
+            segment_index = int(record.origin_segment_index) + 1
             finalize_abandoned_attempt_segments(
                 self.observation.bundle_dir,
                 run_id=str(record.run_id),
                 segment_index=segment_index,
                 parent_segment_id=parent_segment_id,
-                definition=current,
+                definition=registered,
                 definition_digest=record.definition_digest,
                 upto_attempt=int(record.resume_attempts or 0) + 1,
             )
@@ -281,8 +274,9 @@ class WorkflowEngine:
                     segment_index=segment_index,
                     kind="wait_terminal",
                     parent_segment_id=parent_segment_id,
-                    # the digest the wait was REGISTERED against — the group's canonical
-                    # definition identity, even when the currently registered file changed
+                    # the digest the wait was REGISTERED against — and the finalized
+                    # definition.json below IS those registered bytes, so the viewer
+                    # recomputes this digest from the file like any other segment.
                     definition_digest=record.definition_digest,
                 ),
             )
@@ -301,14 +295,16 @@ class WorkflowEngine:
                     },
                 )
             )
-            bundle.finalize(current, status="failed")
+            bundle.finalize(registered, status="failed")
+            return "recorded"
         except Exception:
             logger.exception(
                 "failed to write terminal observation segment for wait %s — the typed "
-                "delivery outcome is unaffected, but the observation group may still "
-                "show the run as suspended",
+                "delivery outcome carries terminal_observation=failed; the observation "
+                "group may still show the run as suspended",
                 wait_id,
             )
+            return "failed"
 
     @property
     def wait_coordinator(self) -> Any:
@@ -907,9 +903,9 @@ class WorkflowEngineBuilder:
         if not isinstance(coordinator, WaitCoordinator):
             raise TypeError(
                 f"{type(coordinator).__name__} does not satisfy the WaitCoordinator protocol "
-                "(async register/get/load_snapshot/due/health)"
+                "(async register/get/load_snapshot/load_definition/due/health)"
             )
-        for name in ("register", "get", "load_snapshot", "due", "health"):
+        for name in ("register", "get", "load_snapshot", "load_definition", "due", "health"):
             method = inspect.unwrap(getattr(coordinator, name))
             if not inspect.iscoroutinefunction(method):
                 raise TypeError(

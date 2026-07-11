@@ -60,6 +60,19 @@ class WaitRegistrationRequest(BaseModel):
     occurrence: int = Field(ge=0)
     policy: DurableWaitPolicy
     snapshot_json: str
+    # W3R.3a: the canonical REGISTERED definition bytes and the suspension's observation
+    # lineage — persisted with the wait so terminal evidence never depends on the snapshot
+    # or the currently-registered definition surviving.
+    definition_json: str
+    origin_segment_id: Optional[str] = None
+    origin_segment_index: int = Field(default=0, ge=0)
+
+    @field_validator("definition_json")
+    @classmethod
+    def _non_blank_definition(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("definition_json must carry the registered definition bytes")
+        return value
 
 
 class WaitRegistrationOutcome(BaseModel):
@@ -88,6 +101,11 @@ class WaitDeliveryOutcome(BaseModel):
     wait_status: str
     detail: str = ""
     run_result: Optional[Any] = None  # WorkflowRunResult when kind == "executed"
+    # W3R.3b: when THIS delivery terminalized the wait with no continuation run, the engine
+    # says whether the terminal observation segment was actually written — a failed
+    # evidence write is typed, never an indistinguishable fully-observed result.
+    # None = not applicable (executed / non-transitioning outcome).
+    terminal_observation: Optional[Literal["recorded", "failed", "skipped"]] = None
 
 
 class DurableWaitRuntime:
@@ -239,6 +257,25 @@ class DurableWaitRuntime:
 
     async def register_suspension(self, request: WaitRegistrationRequest) -> WaitRegistrationOutcome:
         wait_id = self.wait_id_for(request.run_id, request.suspended_node, request.occurrence)
+        # W3R.3a integrity seal: the persisted definition bytes must BE the machine the
+        # digest names — recompute and compare before anything is stored.
+        from ai_workflow_engine.workflow import WorkflowDefinition
+
+        try:
+            recomputed = WorkflowDefinition.model_validate_json(
+                request.definition_json
+            ).definition_digest()
+        except Exception as parse_error:
+            raise ValueError(
+                f"definition_json for wait registration is not a valid WorkflowDefinition: "
+                f"{parse_error}"
+            ) from parse_error
+        if recomputed != request.definition_digest:
+            raise ValueError(
+                f"definition_json digests to {recomputed!r} but the registration claims "
+                f"{request.definition_digest!r} — the persisted bytes must BE the registered "
+                "machine"
+            )
         existing = await self.coordinator.get(wait_id)
         if existing is not None:
             # W2B.1/W2B.2: reuse is ONLY the crash-before-handle contract — the stored
@@ -251,6 +288,7 @@ class DurableWaitRuntime:
                     "never be revived as a new active suspension"
                 )
             stored_snapshot = await self.coordinator.load_snapshot(wait_id)
+            stored_definition = await self.coordinator.load_definition(wait_id)
             mismatches = [
                 name
                 for name, stored, current in (
@@ -260,6 +298,13 @@ class DurableWaitRuntime:
                     ("policy", existing.policy, request.policy),
                     ("definition_digest", existing.definition_digest, request.definition_digest),
                     ("snapshot", stored_snapshot, request.snapshot_json),
+                    ("definition", stored_definition, request.definition_json),
+                    ("origin_segment_id", existing.origin_segment_id, request.origin_segment_id),
+                    (
+                        "origin_segment_index",
+                        existing.origin_segment_index,
+                        request.origin_segment_index,
+                    ),
                 )
                 if stored != current
             ]
@@ -290,8 +335,12 @@ class DurableWaitRuntime:
             definition_digest=request.definition_digest,
             created_at=now,
             deadline_at=now + timedelta(seconds=request.policy.timeout_s),
+            origin_segment_id=request.origin_segment_id,
+            origin_segment_index=request.origin_segment_index,
         )
-        raw_receipt = await self.coordinator.register(record, request.snapshot_json)
+        raw_receipt = await self.coordinator.register(
+            record, request.snapshot_json, request.definition_json
+        )
         # W2R.1: the attestation boundary is the CLOSED model — duck objects with matching
         # attributes are not receipts.
         receipt = (

@@ -78,7 +78,13 @@ class ObservationGroupData:
     definition: WorkflowDefinition
     segments: list[ObservationSegmentData]
     records: list[ObservationRecord]
+    # W4R.3 cost honesty: `usage_totals` is ACTUAL spend — every segment-local usage event
+    # counted exactly once, INCLUDING abandoned crash-attempts (a paid call before a crash
+    # is real money). `canonical_usage_totals`/`abandoned_usage_totals` are the drill-down
+    # split; the split never makes money disappear: actual = canonical + abandoned.
     usage_totals: dict
+    canonical_usage_totals: dict
+    abandoned_usage_totals: dict
     cumulative_meta_totals: dict
     # W4R.1: crashed delivery attempts, finalized as typed `abandoned` evidence — never
     # merged into canonical history (their events are the partial prefix of the retry).
@@ -189,8 +195,9 @@ class FileEventSource:
         group_digest = _assert_group_lineage_sane(logical_run_id, segments, abandoned)
         merged: list[ObservationRecord] = []
         seen_ids: set[tuple[str, str]] = set()
-        for segment in segments:
-            for record in segment.data.records:  # already sequence-ordered per segment
+
+        def _claim_ids(source: list[ObservationRecord]) -> None:
+            for record in source:
                 if record.event_id:
                     identity = (record.type, record.event_id)
                     if identity in seen_ids:
@@ -200,20 +207,35 @@ class FileEventSource:
                             "be double-counted"
                         )
                     seen_ids.add(identity)
-                merged.append(record)
+
+        for segment in segments:
+            _claim_ids(segment.data.records)  # already sequence-ordered per segment
+            merged.extend(segment.data.records)
+        for segment in abandoned:
+            _claim_ids(segment.data.records)  # abandoned money must be unique too
         usage_events = [item.record for item in merged if item.type == "usage"]
+        abandoned_usage = [
+            record for segment in abandoned for record in segment.data.usage_events
+        ]
         newest_meta = segments[-1].data.meta
         return ObservationGroupData(
             run_id=logical_run_id,
             definition=segments[0].data.definition,
             segments=segments,
             records=merged,
-            # W4.4: group spend is the sum of CANONICAL segment-local events (each spent
-            # exactly once in exactly one segment) — never a sum of per-segment meta
-            # totals, which are cumulative-since-run-start on resumed segments. An
-            # abandoned attempt's partial spend was real money too, but it is not run
-            # history: inspect it via group.abandoned[i].data.usage_events.
-            usage_totals=_usage_totals_from_events(usage_events),
+            # W4.4/W4R.3: totals come from segment-local EVENTS counted once each —
+            # never from per-segment meta totals, which are cumulative-since-run-start on
+            # resumed segments. Actual spend includes abandoned attempts (real money);
+            # the canonical/abandoned split is a drill-down, not a place money hides.
+            usage_totals=_usage_totals_from_events(
+                usage_events + abandoned_usage, scope="actual_all_attempts"
+            ),
+            canonical_usage_totals=_usage_totals_from_events(
+                usage_events, scope="canonical_chain"
+            ),
+            abandoned_usage_totals=_usage_totals_from_events(
+                abandoned_usage, scope="abandoned_attempts"
+            ),
             cumulative_meta_totals={
                 "scope": newest_meta.get("usage_totals_scope") or "single_bundle",
                 "total_tokens": newest_meta.get("total_tokens"),
@@ -378,14 +400,12 @@ def _assert_group_lineage_sane(
                     f"{segment.parent_segment_id!r} but the preceding segment is "
                     f"{segments[position - 1].segment_id!r} — the chain must be unbroken"
                 )
-    # Definition truth: recompute from the actual definition.json of every canonical
-    # machine segment. wait_terminal segments are terminal EVIDENCE about the wait — their
-    # definition file may legitimately be the changed currently-registered machine, so
-    # only their meta claim is held to the group digest.
+    # Definition truth: recompute from the actual definition.json of EVERY canonical
+    # segment — including wait_terminal evidence, whose file is the REGISTERED definition
+    # bytes persisted at wait registration (W3R.3a), never the changed current machine.
     recomputed = {
         segment.segment_id: segment.data.definition.definition_digest()
         for segment in segments
-        if segment.kind != "wait_terminal"
     }
     distinct = sorted(set(recomputed.values()))
     if len(distinct) > 1:
@@ -405,7 +425,7 @@ def _assert_group_lineage_sane(
     return group_digest
 
 
-def _usage_totals_from_events(events: list[WorkflowUsageEvent]) -> dict:
+def _usage_totals_from_events(events: list[WorkflowUsageEvent], *, scope: str) -> dict:
     """Aggregate segment-local usage events exactly once (same rules as bundle meta)."""
 
     metered = [
@@ -417,7 +437,7 @@ def _usage_totals_from_events(events: list[WorkflowUsageEvent]) -> dict:
         float(event.notional_usd) for event in events if event.notional_usd is not None
     ]
     return {
-        "scope": "group_events",
+        "scope": scope,
         "usage_count": len(events),
         "total_tokens": sum(event.total_tokens for event in events),
         "metered_usd": round(sum(metered), 6) if metered else None,

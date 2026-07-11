@@ -37,6 +37,19 @@ def _snapshot_json() -> str:
     ).model_dump_json()
 
 
+def _definition_json() -> str:
+    from ai_workflow_engine.workflow import WorkflowBuilder
+    from ai_workflow_engine.waits import LocalWaitPolicy
+
+    return (
+        WorkflowBuilder("wf")
+        .human("gate", wait_policy=LocalWaitPolicy())
+        .step("finish")
+        .build()
+        .model_dump_json()
+    )
+
+
 async def run_wait_registration_conformance(
     make_coordinator: Callable[[], Any],
     *,
@@ -45,11 +58,12 @@ async def run_wait_registration_conformance(
 ) -> None:
     now = (clock or (lambda: datetime.now(timezone.utc)))()
     snapshot_json = _snapshot_json()
+    definition_json = _definition_json()
 
     # 1) atomic attestation: the receipt echoes EXACTLY the registered wait
     coordinator = make_coordinator()
     record = _record(now)
-    receipt = await coordinator.register(record, snapshot_json)
+    receipt = await coordinator.register(record, snapshot_json, definition_json)
     assert receipt.wait_id == record.wait_id, "attestation must echo the wait_id"
     assert receipt.wait_version == record.version, "attestation must echo the version"
     assert receipt.accepted_deadline == record.deadline_at, (
@@ -59,14 +73,14 @@ async def run_wait_registration_conformance(
     assert receipt.adapter_id, "attestation must identify the adapter"
 
     # 2) duplicate identical registration is idempotent (crash/retry re-register)
-    again = await coordinator.register(record, snapshot_json)
+    again = await coordinator.register(record, snapshot_json, definition_json)
     assert again == receipt, "identical duplicate registration must be idempotent"
 
     # 3) changed duplicate is REJECTED (never silently replaced)
     changed = record.model_copy(update={"deadline_at": record.deadline_at + timedelta(seconds=5)})
     rejected_changed = False
     try:
-        await coordinator.register(changed, snapshot_json)
+        await coordinator.register(changed, snapshot_json, definition_json)
     except Exception:
         rejected_changed = True
     assert rejected_changed, "a CHANGED duplicate registration must be rejected loudly"
@@ -74,7 +88,7 @@ async def run_wait_registration_conformance(
     # 4) changed snapshot under the same wait id is also a rejected duplicate
     rejected_snapshot = False
     try:
-        await coordinator.register(record, snapshot_json + " ")
+        await coordinator.register(record, snapshot_json + " ", definition_json)
     except Exception:
         rejected_snapshot = True
     assert rejected_snapshot, "same wait id with a DIFFERENT snapshot must be rejected"
@@ -93,9 +107,29 @@ async def run_wait_registration_conformance(
     from ai_workflow_engine.snapshot import MachineSnapshot
 
     MachineSnapshot.model_validate_json(loaded)  # the snapshot must stay machine-loadable
+    stored_definition = await coordinator.load_definition(record.wait_id)
+    assert stored_definition == definition_json, (
+        "load_definition must return the EXACT registered definition bytes — W3R.3 writes "
+        "terminal observation evidence from them after the live registry has moved on"
+    )
+    from ai_workflow_engine.workflow import WorkflowDefinition
+
+    WorkflowDefinition.model_validate_json(stored_definition)  # must stay machine-loadable
+    rejected_definition = False
+    try:
+        await coordinator.register(record, snapshot_json, definition_json + " ")
+    except Exception:
+        rejected_definition = True
+    assert rejected_definition, (
+        "same wait id with DIFFERENT definition bytes must be rejected — the registered "
+        "machine identity is immutable"
+    )
     assert await coordinator.get("missing-id") is None, "unknown wait ids return None"
     assert await coordinator.load_snapshot("missing-id") is None, (
         "missing snapshots are an explicit None, never an exception or fabrication"
+    )
+    assert await coordinator.load_definition("missing-id") is None, (
+        "missing definitions are an explicit None, never an exception or fabrication"
     )
 
     # 6) reconnect/restart (where supported): a NEW adapter over the same backing store
@@ -106,4 +140,7 @@ async def run_wait_registration_conformance(
         assert again_stored == record, "reconnected adapter must see the identical record"
         assert await fresh.load_snapshot(record.wait_id) == snapshot_json, (
             "reconnected adapter must see the identical snapshot"
+        )
+        assert await fresh.load_definition(record.wait_id) == definition_json, (
+            "reconnected adapter must see the identical registered definition bytes"
         )

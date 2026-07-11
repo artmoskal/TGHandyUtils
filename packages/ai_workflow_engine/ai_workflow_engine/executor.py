@@ -1175,6 +1175,11 @@ class WorkflowExecutor:
                 occurrence=occurrence,
                 policy=policy,
                 snapshot_json=snapshot.model_dump_json(),
+                # W3R.3a: the immutable facts terminal evidence is built from later —
+                # persisted NOW, while the definition and lineage still exist.
+                definition_json=definition.model_dump_json(),
+                origin_segment_id=snapshot.segment_id,
+                origin_segment_index=snapshot.segment_index,
             )
         )
         if snapshot.durable_wait_id != outcome.handle.wait_id:

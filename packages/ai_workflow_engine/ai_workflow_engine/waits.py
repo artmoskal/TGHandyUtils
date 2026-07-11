@@ -162,6 +162,12 @@ class WaitRecord(BaseModel):
         Literal["digest_mismatch", "snapshot_missing", "attempts_exhausted", "resume_failed"]
     ] = None
     failure_detail: Optional[str] = Field(default=None, max_length=500)
+    # W3R.3a: immutable terminal-observation lineage, captured AT REGISTRATION — terminal
+    # evidence must never be reconstructed from the snapshot/current registry whose loss or
+    # change caused the failure. None origin = the suspension ran without observation (no
+    # group exists on disk that could misreport).
+    origin_segment_id: Optional[str] = None
+    origin_segment_index: int = Field(default=0, ge=0)
 
 
 class WaitReceipt(BaseModel):
@@ -237,11 +243,15 @@ class WaitCoordinator(Protocol):
     capability handler; delivery/claim mechanics land in W3. Implementations must persist
     wait state and timeout intent atomically IN THEIR OWN transactional domain (C2/C3)."""
 
-    async def register(self, record: WaitRecord, snapshot_json: str) -> WaitReceipt: ...
+    async def register(
+        self, record: WaitRecord, snapshot_json: str, definition_json: str
+    ) -> WaitReceipt: ...
 
     async def get(self, wait_id: str) -> Optional[WaitRecord]: ...
 
     async def load_snapshot(self, wait_id: str) -> Optional[str]: ...
+
+    async def load_definition(self, wait_id: str) -> Optional[str]: ...
 
     async def claim_event(self, wait_id: str, event: WaitEvent, *, lease_until: Any) -> WaitClaimOutcome: ...
 
@@ -276,17 +286,24 @@ class InMemoryWaitCoordinator:
         state = shared_state if shared_state is not None else {}
         self._records: Dict[str, WaitRecord] = state.setdefault("records", {})
         self._snapshots: Dict[str, str] = state.setdefault("snapshots", {})
+        self._definitions: Dict[str, str] = state.setdefault("definitions", {})
         self._receipts: Dict[str, WaitReceipt] = state.setdefault("receipts", {})
         self._accepted_events: Dict[str, str] = state.setdefault("accepted_events", {})
         self._leases: Dict[str, Any] = state.setdefault("leases", {})
         self._claims: Dict[str, WaitClaim] = state.setdefault("claims", {})
         self._state = state
 
-    async def register(self, record: WaitRecord, snapshot_json: str) -> WaitReceipt:
+    async def register(
+        self, record: WaitRecord, snapshot_json: str, definition_json: str
+    ) -> WaitReceipt:
         async with self._lock:
             existing = self._records.get(record.wait_id)
             if existing is not None:
-                if existing == record and self._snapshots.get(record.wait_id) == snapshot_json:
+                if (
+                    existing == record
+                    and self._snapshots.get(record.wait_id) == snapshot_json
+                    and self._definitions.get(record.wait_id) == definition_json
+                ):
                     # idempotent crash/retry re-register — DEFENSIVE result (W2C.2): the
                     # caller can never alias the stored receipt.
                     return self._receipts[record.wait_id].model_copy(deep=True)
@@ -305,6 +322,7 @@ class InMemoryWaitCoordinator:
             # after registration cannot alias into the store.
             self._records[record.wait_id] = record.model_copy(deep=True)
             self._snapshots[record.wait_id] = snapshot_json
+            self._definitions[record.wait_id] = definition_json
             self._receipts[record.wait_id] = receipt.model_copy(deep=True)
             return receipt.model_copy(deep=True)
 
@@ -317,6 +335,10 @@ class InMemoryWaitCoordinator:
     async def load_snapshot(self, wait_id: str) -> Optional[str]:
         async with self._lock:
             return self._snapshots.get(wait_id)
+
+    async def load_definition(self, wait_id: str) -> Optional[str]:
+        async with self._lock:
+            return self._definitions.get(wait_id)
 
     async def claim_event(self, wait_id: str, event: WaitEvent, *, lease_until: Any) -> WaitClaimOutcome:
         async with self._lock:
