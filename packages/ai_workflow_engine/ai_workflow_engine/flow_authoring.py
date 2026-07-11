@@ -70,6 +70,25 @@ class FlowNodeSpec(BaseModel):
             return _FLOW_NODE_ADAPTER.validate_python(obj, **kwargs)
         return super().model_validate(obj, **kwargs)
 
+    @classmethod
+    def model_validate_json(cls, json_data: Any, **kwargs: Any) -> Any:  # type: ignore[override]
+        # R-C2-3: JSON validation dispatches exactly like Python validation — a valid
+        # branch/evaluate/fanout JSON document must not die on the base extra="forbid".
+        if cls is FlowNodeSpec:
+            payload = json.loads(json_data)
+            if isinstance(payload, Mapping):
+                payload = {"kind": "step", **payload}
+            return _FLOW_NODE_ADAPTER.validate_python(payload)
+        return super().model_validate_json(json_data, **kwargs)
+
+    @classmethod
+    def model_json_schema(cls, *args: Any, **kwargs: Any) -> Any:  # type: ignore[override]
+        # R-C2-3: the base schema advertises what base validation ACCEPTS — the full
+        # discriminated union, not the bare kind/id skeleton. Subclasses keep per-kind schemas.
+        if cls is FlowNodeSpec:
+            return _FLOW_NODE_ADAPTER.json_schema()
+        return super().model_json_schema(*args, **kwargs)
+
 
 class StepFlowNode(FlowNodeSpec):
     """Authored step: run one registered capability (defaults to the node id)."""
@@ -473,7 +492,15 @@ class _RegistrySnapshot:
     advertised nor validated in-flight."""
 
     def __init__(self, registry: Any) -> None:
-        self._entries = {name: registry.get(name) for name in registry.names()}
+        # R-C2-1: the VALIDATION CONTRACT is deep-copied per invocation — mutating a live
+        # CapabilitySpec (side_effects, firewall markers) mid-call cannot change what this
+        # invocation advertises or validates. Handler identity stays shared (execution, not
+        # policy).
+        frozen: Dict[str, Any] = {}
+        for name in registry.names():
+            spec, handler = registry.get(name)
+            frozen[name] = (spec.model_copy(deep=True), handler)
+        self._entries = frozen
 
     def names(self) -> list:
         return list(self._entries)

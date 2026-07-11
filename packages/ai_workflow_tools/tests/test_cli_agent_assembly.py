@@ -294,3 +294,18 @@ def test_codex_exec_argv_unchanged_when_budget_unset(tmp_path):
     assert "--max-budget-usd" not in invocation.argv
     model_at = invocation.argv.index("--model")
     assert invocation.argv[model_at + 1] == "o4-mini"
+
+
+def test_cli_budget_rejects_non_finite_values_at_every_entry(tmp_path):
+    """Q0-C1 (codex probe): inf/NaN must never reach argv — `--max-budget-usd inf` is a
+    fake cap, worse than none. All three entries reject: typed model, shared helper."""
+
+    import pydantic
+
+    from ai_workflow_tools.cli_agents.assembly import claude_control_argv
+
+    for bad in (float("inf"), float("-inf"), float("nan")):
+        with pytest.raises(pydantic.ValidationError):
+            CliAgentRequest(prompt="x", workspace_dir=str(tmp_path), cli_max_budget_usd=bad)
+        with pytest.raises(ValueError, match="finite"):
+            claude_control_argv(None, bad, [])

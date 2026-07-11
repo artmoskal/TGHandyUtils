@@ -6,6 +6,7 @@ from ai_workflow_engine import (
     FlowArtifact,
     FlowNodeSpec,
     PlanArtifact,
+    StepFlowNode,
     PlanTask,
     WorkflowBuilder,
     WorkflowEngineBuilder,
@@ -1051,8 +1052,12 @@ def test_flow_node_spec_base_class_dispatches_and_supports_isinstance_and_schema
     assert type(branch).__name__ == "BranchFlowNode"
     assert isinstance(branch, FlowNodeSpec)
 
-    schema = FlowNodeSpec.model_json_schema()
-    assert "id" in schema.get("properties", {}), "base schema generation must keep working"
+    # R-C2-3: the base schema is the DISCRIMINATED UNION (what base validation accepts),
+    # while each subclass keeps its per-kind schema.
+    schema_blob = _json.dumps(FlowNodeSpec.model_json_schema())
+    for kind in ("step", "branch", "evaluate", "fanout"):
+        assert f'"{kind}"' in schema_blob, f"base schema must advertise kind={kind}"
+    assert "id" in StepFlowNode.model_json_schema()["properties"]
 
 
 def test_flow_node_spec_base_rejects_foreign_fields_not_smuggles_them():
@@ -1153,15 +1158,145 @@ async def test_unsafe_provenance_payload_is_rejected_before_any_trace_persists()
     """R12: the engine-owned provenance channel byte-checks its payload at the run boundary —
     a data-URI goal can never be persisted into trace/bundles through run birth."""
 
+    from ai_workflow_engine.executor import _AUTHORED_PROVENANCE
+
     engine, _analyzed = _fanout_engine(fail_on=None)
     engine.register_workflow(WorkflowBuilder("plain_prov").step("collect").build())
 
-    with pytest.raises(ValueError, match="authored_provenance"):
-        await engine.run(
-            "plain_prov",
-            {},
-            _authored_provenance={"goal": "data:image/png;base64,AAAA", "flow_id": "x"},
-        )
+    # White-box: stage the payload on the ENGINE-INTERNAL channel (the only route left —
+    # R-C2-2 removed every public parameter) and prove the executor still byte-checks it.
+    staged = _AUTHORED_PROVENANCE.set({"goal": "data:image/png;base64,AAAA", "flow_id": "x"})
+    try:
+        with pytest.raises(ValueError, match="authored_provenance"):
+            await engine.run("plain_prov", {})
+    finally:
+        _AUTHORED_PROVENANCE.reset(staged)
     assert not any(e.decision == "flow:authored" for e in engine.trace_sink.events), (
         "an unsafe provenance payload must be rejected BEFORE any trace event is recorded"
+    )
+
+
+# --------------------------- Phase R-C2: post-implementation recheck remediation
+
+
+async def test_mid_call_spec_mutation_cannot_bypass_the_side_effect_firewall():
+    """R-C2-1 (codex probe): a capability advertised as DENIED must stay denied for the
+    WHOLE invocation even if an attacker mutates the LIVE CapabilitySpec during the LLM
+    call — the snapshot deep-copies the validation contract, not just the entry map."""
+
+    processing, _analyzed = _fanout_engine(fail_on=None)
+    processing.register_capability(
+        "restricted_writer",
+        lambda ctx, item: f"wrote:{item}",
+        kind="deterministic",
+        side_effects=["external_write"],  # NOT in allowed_side_effects=["read_only"]
+    )
+    live_spec, _handler = processing.registry.get("restricted_writer")
+    artifact_json = _good_artifact_json().replace(
+        '"capability": "analyze"', '"capability": "restricted_writer"'
+    )
+
+    class SpecMutatingLLM(ScriptedAuthorLLM):
+        """Whitens the DENIED spec between catalog render and validation."""
+
+        async def __call__(self, request):
+            live_spec.side_effects = ["read_only"]  # the attack
+            return await super().__call__(request)
+
+    llm = SpecMutatingLLM([artifact_json])
+    author_engine, _spec = _author_engine_for(processing, llm, max_repair_rounds=0)
+
+    result = await author_engine.run("authoring", {"goal": "scan", "context": {}})
+
+    assert result.status == "failed", (
+        "the snapshot's frozen spec must keep the capability DENIED for this invocation"
+    )
+    assert "DENIED" in llm.requests[0].user, (
+        "the catalog rendered from the same frozen contract must advertise the denial"
+    )
+
+
+async def test_hand_written_run_cannot_forge_authored_provenance():
+    """R-C2-2 (codex probe): no public signature carries provenance — a plain run cannot
+    emit flow:authored, and the old keyword is a TypeError, not a silent channel."""
+
+    engine, _analyzed = _fanout_engine(fail_on=None)
+    engine.register_workflow(WorkflowBuilder("plain_forge").step("collect").build())
+
+    with pytest.raises(TypeError):
+        await engine.run(
+            "plain_forge", {}, _authored_provenance={"flow_id": "fake", "goal": "fake"}
+        )
+
+    result = await engine.run("plain_forge", {})
+    assert result.status == "completed"
+    assert not any(e.decision == "flow:authored" for e in engine.trace_sink.events), (
+        "a hand-written run must never carry authored-flow provenance"
+    )
+
+
+async def test_provenance_channel_is_consumed_once_never_inherited():
+    """R-C2-2: the staged payload is consumed by the authored run itself — a subsequent
+    plain run in the SAME context must not inherit a stale flow:authored event."""
+
+    processing, _analyzed = _fanout_engine(fail_on=None)
+    processing.register_workflow(WorkflowBuilder("after_authored").step("collect").build())
+    artifact = FlowArtifact.model_validate(_json.loads(_good_artifact_json()))
+
+    authored = await processing.run_authored_flow(artifact, {})
+    plain = await processing.run("after_authored", {})
+
+    assert authored.status == "completed" and plain.status == "completed"
+    stamped = [e for e in processing.trace_sink.events if e.decision == "flow:authored"]
+    assert len(stamped) == 1, "exactly the authored run carries provenance — no inheritance"
+
+
+def test_flow_node_spec_json_validation_dispatches_for_every_kind():
+    """R-C2-3 (codex probe): model_validate_json must accept what model_validate accepts —
+    all four kinds plus the kind-defaulting step shorthand."""
+
+    cases = {
+        '{"id":"s1"}': "StepFlowNode",
+        '{"id":"s2","kind":"step"}': "StepFlowNode",
+        '{"id":"b1","kind":"branch","branches":{"ok":"s1"}}': "BranchFlowNode",
+        '{"id":"e1","kind":"evaluate"}': "EvaluateFlowNode",
+        '{"id":"f1","kind":"fanout","capability":"c","items_key":"k","max_items":2}': "FanoutFlowNode",
+    }
+    for payload, expected in cases.items():
+        node = FlowNodeSpec.model_validate_json(payload)
+        assert type(node).__name__ == expected, (payload, type(node).__name__)
+        assert isinstance(node, FlowNodeSpec)
+
+    with pytest.raises(_PydanticValidationError):
+        FlowNodeSpec.model_validate_json('{"id":"x","items_key":"smuggled"}')
+
+
+async def test_nested_run_inside_authored_flow_does_not_inherit_provenance():
+    """R-C2-2 consume-once, the case that matters: a capability INSIDE the authored flow
+    starting a nested engine.run in the same context must not stamp a second
+    flow:authored — the executor consumes the staged payload before any node executes."""
+
+    processing, _analyzed = _fanout_engine(fail_on=None)
+    processing.register_workflow(WorkflowBuilder("inner_plain").step("analyze").build())
+
+    async def collect_with_nested_run(_context, _payload):
+        inner = await processing.run("inner_plain", "x")
+        assert inner.status == "completed"
+        return {"frames": ["a", "b", "c"]}
+
+    # replace the artifact's collect step target with the nesting capability
+    processing.register_capability(
+        "collect_nested", collect_with_nested_run, kind="deterministic"
+    )
+    artifact_json = _good_artifact_json().replace('"id": "collect"', '"id": "collect_nested"').replace(
+        '"items_key": "collect.frames"', '"items_key": "collect_nested.frames"'
+    )
+    artifact = FlowArtifact.model_validate(_json.loads(artifact_json))
+
+    result = await processing.run_authored_flow(artifact, {})
+
+    assert result.status == "completed"
+    stamped = [e for e in processing.trace_sink.events if e.decision == "flow:authored"]
+    assert len(stamped) == 1, (
+        "the nested plain run must NOT inherit authored provenance — consume-once"
     )

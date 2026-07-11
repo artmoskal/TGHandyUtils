@@ -614,7 +614,7 @@ async def test_console_claude_without_profile_or_budget_keeps_prior_argv(
 
 
 async def test_console_budget_is_positive_only_and_non_claude_rejects_it(fake_cli_path):
-    with pytest.raises(ValueError, match="cli_max_budget_usd must be positive"):
+    with pytest.raises(ValueError, match="cli_max_budget_usd must be a finite positive"):
         ConsoleLLMClient(_fake_flavor(claude_p, fake_cli_path), cli_max_budget_usd=0)
 
     from ai_workflow_engine.llm_protocol import LLMRequest
@@ -637,3 +637,11 @@ async def test_console_claude_conflicting_raw_model_flag_is_loud(fake_cli_path, 
         await client(
             LLMRequest(user="x", metadata={"model_profile": {"model": "sonnet"}})
         )
+
+
+async def test_console_budget_rejects_non_finite_values(fake_cli_path):
+    """Q0-C1: the console constructor is the third entry — inf/NaN rejected there too."""
+
+    for bad in (float("inf"), float("-inf"), float("nan")):
+        with pytest.raises(ValueError, match="finite"):
+            ConsoleLLMClient(_fake_flavor(claude_p, fake_cli_path), cli_max_budget_usd=bad)

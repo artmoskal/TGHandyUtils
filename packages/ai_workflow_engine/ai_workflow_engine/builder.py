@@ -401,16 +401,23 @@ class WorkflowEngine:
             # these are the limits the flow will actually run under.
             limits=self.default_profile.limits if self.default_profile is not None else None,
         )
-        # R7+R12: provenance belongs to the RUN, and the MECHANISM is engine-owned — this
-        # private channel carries only a typed data payload; the EXECUTOR constructs the trace
-        # event (fresh event id, byte-checked, run-id stamped, exactly once inside the session).
-        # No public API accepts caller-crafted trace events.
+        # R7+R12+R-C2-2: provenance belongs to the RUN and the mechanism is engine-owned —
+        # the typed payload is STAGED in the executor's module-private context variable (no
+        # public signature carries it, so a hand-written run cannot forge flow:authored); the
+        # EXECUTOR consumes it exactly once and constructs the trace event (fresh event id,
+        # byte-checked, run-id stamped, inside the session).
+        from ai_workflow_engine.executor import _AUTHORED_PROVENANCE
+
         provenance = {
             "flow_id": flow.flow_id,
             "goal": flow.goal,
             "nodes": [f"{n.kind}:{n.id}" for n in flow.nodes],
         }
-        return await self.run(definition, payload, _authored_provenance=provenance, **run_kwargs)
+        staged = _AUTHORED_PROVENANCE.set(provenance)
+        try:
+            return await self.run(definition, payload, **run_kwargs)
+        finally:
+            _AUTHORED_PROVENANCE.reset(staged)
 
     # ---------------------------------------------------------------- execution
     async def run(
@@ -426,7 +433,6 @@ class WorkflowEngine:
         recursion_limit: Optional[int] = None,
         observation_bundle: Any = None,
         terminal_status: Optional[Any] = None,
-        _authored_provenance: Optional[Dict[str, Any]] = None,
     ) -> WorkflowRunResult:
         definition = self._resolve(workflow)
         context = self._run_context_for(
@@ -460,7 +466,6 @@ class WorkflowEngine:
             recursion_limit=recursion_limit,
             observation_bundle=observation_bundle,
             terminal_status=terminal_status,
-            _authored_provenance=_authored_provenance,
         )
 
     async def resume(

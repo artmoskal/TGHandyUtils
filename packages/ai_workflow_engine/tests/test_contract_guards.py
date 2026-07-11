@@ -434,35 +434,98 @@ async def test_complexity_gradient_matrix_contract():
     # advanced: fanout + per-node memory + observation, opted into independently
     import tempfile
 
-    with tempfile.TemporaryDirectory() as tmp:
+    # F-C3 (as agreed): the advanced tier runs a REAL fake-provider agent worker whose
+    # node-level memory policy actually RENDERS the projection the provider consumes, and
+    # the memory:projection observation is asserted — not merely a config dict in metadata.
+    from ai_workflow_engine import (
+        LLMResponse,
+        StructuredStateMemory,
+        ToolCallRequest,
+        build_llm_agent_capability,
+    )
+    from pydantic import BaseModel
+
+    class TotalSummary(BaseModel):
+        summary: str
+
+    class ScriptedAgentLLM:
+        def __init__(self):
+            self.requests = []
+
+        async def __call__(self, request):
+            self.requests.append(request)
+            if len(self.requests) == 1:
+                return LLMResponse(
+                    tool_calls=[
+                        ToolCallRequest(
+                            call_id="c1", name="record_total", arguments={"total": 12}
+                        )
+                    ]
+                )
+            return LLMResponse(text='{"summary": "totals recorded"}')
+
+    import tempfile as _tempfile
+
+    with _tempfile.TemporaryDirectory() as tmp:
         builder = WorkflowEngineBuilder().with_observation(
             ObservationConfig(enabled=True, bundle_dir=tmp)
         )
-        seen_memory: dict = {}
-
-        async def summarize(context, items):
-            seen_memory["policy"] = context.metadata.get("agent_memory")
-            return {"total": sum(items)}
-
         builder.register_capability("spread", lambda ctx, p: {"items": [1, 2, 3]}, kind="deterministic")
         builder.register_capability("double", lambda ctx, item: item * 2, kind="deterministic")
-        builder.register_capability("summarize", summarize, kind="deterministic")
+        builder.register_capability(
+            "record_total", lambda ctx, payload: {"noted": payload["total"]}, kind="tool"
+        )
+        builder.register_capability(
+            "prepare_request",
+            lambda ctx, items: {
+                "prompt": f"Summarize doubled items {sorted(items)}.",
+                "allowed_tools": ["record_total"],
+                "max_steps": 3,
+            },
+            kind="deterministic",
+        )
         builder.register_workflow(
             WorkflowBuilder("advanced_flow")
             .step("spread")
             .fanout("fan", capability="double", items_key="spread.items", max_parallel=2)
-            .step("summarize", memory={"mode": "structured_state"})
+            .step("prepare_request")
+            .step("summarize_agent", memory={"mode": "structured_state"})
             .build()
         )
         advanced = builder.build()
-        adv = await advanced.run("advanced_flow", {})
-        assert adv.status == "completed"
-        assert adv.output == {"total": 12}
-        assert adv.observation_bundle_path, "advanced tier opted into observation"
-        assert seen_memory["policy"] == {"mode": "structured_state"}, (
-            "the advanced tier must DECLARE a real per-node memory policy and the engine "
-            "must DELIVER it to the capability context — memory opted in, not implied"
+        client = ScriptedAgentLLM()
+        agent = build_llm_agent_capability(
+            client,
+            advanced.registry,
+            allowed_tools=["record_total"],
+            name="summarize_agent",
+            system_prompt="Summarize via typed tools.",
+            output_model=TotalSummary,
+            node_name="summarize_agent",
         )
+        advanced.registry.register(agent.spec, agent)
+
+        adv = await advanced.run("advanced_flow", {})
+
+        assert adv.status == "completed"
+        assert adv.observation_bundle_path, "advanced tier opted into observation"
+        # 1) the node-level policy really RENDERED: the second provider call consumes the
+        #    StructuredStateMemory state block (projection -> provider, not just metadata)
+        assert len(client.requests) == 2
+        second_call_text = "\n".join(
+            (m.content or "") for m in client.requests[1].messages
+        )
+        assert StructuredStateMemory.DEFAULT_HEADING in second_call_text, (
+            "the provider must consume the structured-state projection on the next step"
+        )
+        # 2) the memory:projection observation is recorded with the REAL policy identity
+        projections = [
+            e for e in advanced.trace_sink.events if e.decision == "memory:projection"
+        ]
+        assert projections, "the advanced tier must record memory:projection observations"
+        assert any(
+            e.metadata.get("memory_mode") == "StructuredStateMemory" for e in projections
+        ), "the projection must come from the DECLARED node-level structured_state policy"
 
 
 def test_packaging_ships_types_pins_and_a_standalone_viewer():

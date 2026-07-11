@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Sequence
 
 import logging
+import math
 from typing import Any
 
 from ai_workflow_engine.engine.external import ExternalProcessCapability, ExternalProcessRequest
@@ -51,8 +52,12 @@ class ConsoleLLMClient:
         external_runner: ExternalProcessCapability | None = None,
         cli_max_budget_usd: float | None = None,
     ) -> None:
-        if cli_max_budget_usd is not None and cli_max_budget_usd <= 0:
-            raise ValueError(f"cli_max_budget_usd must be positive, got {cli_max_budget_usd}")
+        if cli_max_budget_usd is not None and (
+            not math.isfinite(cli_max_budget_usd) or cli_max_budget_usd <= 0
+        ):
+            raise ValueError(
+                f"cli_max_budget_usd must be a finite positive number, got {cli_max_budget_usd}"
+            )
         self.flavor = flavor
         self.timeout_s = timeout_s
         self.subscription_mode = subscription_mode

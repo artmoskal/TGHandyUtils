@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextvars import ContextVar
 import uuid
 from typing import Any, Awaitable, Callable, Dict, List, Optional, TypedDict
 
@@ -31,6 +32,14 @@ from ai_workflow_engine.engine.capabilities import (
 )
 
 logger = logging.getLogger(__name__)
+
+# R-C2-2: private staging channel for authored-flow run-birth provenance. ONLY
+# WorkflowEngine.run_authored_flow may set it; the executor consumes it exactly once per run.
+# It is deliberately NOT a run() parameter — a caller-forged flow:authored event must not be
+# expressible through any public signature.
+_AUTHORED_PROVENANCE: ContextVar[Optional[Dict[str, Any]]] = ContextVar(
+    "ai_workflow_engine_authored_provenance", default=None
+)
 from ai_workflow_engine.engine.runner import WorkflowRunner
 from ai_workflow_engine.engine.scheduler import WorkflowScheduler
 from ai_workflow_engine.model_binding import model_profile_scope
@@ -218,7 +227,6 @@ class WorkflowExecutor:
         recursion_limit: Optional[int] = None,
         observation_bundle: Any = None,
         terminal_status: Optional[Callable[[WorkflowRunResult], Optional[str]]] = None,
-        _authored_provenance: Optional[Dict[str, Any]] = None,
     ) -> WorkflowRunResult:
         """Execute ``definition`` from ``payload`` under ``context`` and return the envelope.
 
@@ -258,10 +266,15 @@ class WorkflowExecutor:
         # Top-level run: WorkflowRunner installs the usage/budget scope + lifecycle logging.
         try:
             with observation_capture_scope(self.runtime.observation), run_session_scope(session):
-                # Run-birth provenance (R7+R12): engine-owned — the executor byte-checks the
-                # typed payload and constructs the ONE event itself (fresh event id, run-id
-                # stamped, inside the session). Callers cannot inject arbitrary trace events.
+                # Run-birth provenance (R7+R12+R-C2-2): engine-owned and UNFORGEABLE from the
+                # public surface — no run() parameter carries it. run_authored_flow stages the
+                # typed payload in a module-private context variable; the executor CONSUMES it
+                # exactly once here (so nested/subsequent runs in the same context never
+                # inherit it), byte-checks it, and constructs the ONE event itself (fresh
+                # event id, run-id stamped, inside the session).
+                _authored_provenance = _AUTHORED_PROVENANCE.get()
                 if _authored_provenance is not None:
+                    _AUTHORED_PROVENANCE.set(None)  # consume-once
                     from ai_workflow_engine.byte_safety import assert_byte_safe
 
                     assert_byte_safe(

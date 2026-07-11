@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 from ai_workflow_tools.toolsets import DEFAULT_AGENT_TOOLS
@@ -57,8 +58,11 @@ def claude_control_argv(
         _reject_raw_flag_conflict(existing_argv, "--model", typed_source="model")
         controls.extend(["--model", model])
     if cli_max_budget_usd is not None:
-        if cli_max_budget_usd <= 0:
-            raise ValueError(f"cli_max_budget_usd must be positive, got {cli_max_budget_usd}")
+        if not math.isfinite(cli_max_budget_usd) or cli_max_budget_usd <= 0:
+            # Q0-C1: inf/NaN would emit `--max-budget-usd inf` — a fake cap, worse than none.
+            raise ValueError(
+                f"cli_max_budget_usd must be a finite positive number, got {cli_max_budget_usd}"
+            )
         _reject_raw_flag_conflict(
             existing_argv, "--max-budget-usd", typed_source="cli_max_budget_usd"
         )
