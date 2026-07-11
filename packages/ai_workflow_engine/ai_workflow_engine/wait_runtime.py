@@ -82,15 +82,45 @@ class DurableWaitRuntime:
 
     @staticmethod
     def wait_id_for(run_id: str, suspended_node: str, occurrence: int) -> str:
-        # W2R.3: DETERMINISTIC identity — same logical suspension reuses one registration;
-        # a later occurrence of the same node gets a distinct index.
-        return f"{run_id}--{suspended_node}--{occurrence}"
+        # W2R.3+W2B.2: DETERMINISTIC and COLLISION-SAFE — the preimage length-prefixes each
+        # component, so no delimiter game ("r--a","b") vs ("r","a--b") can collide; the id
+        # stays stable for the same logical suspension and distinct for later occurrences.
+        import hashlib
+
+        preimage = f"{len(run_id)}:{run_id}|{len(suspended_node)}:{suspended_node}|{occurrence}"
+        return "wait-" + hashlib.sha256(preimage.encode("utf-8")).hexdigest()[:32]
 
     async def register_suspension(self, request: WaitRegistrationRequest) -> WaitRegistrationOutcome:
         wait_id = self.wait_id_for(request.run_id, request.suspended_node, request.occurrence)
         existing = await self.coordinator.get(wait_id)
         if existing is not None:
-            # crash-after-register retry: reuse the committed registration untouched
+            # W2B.1/W2B.2: reuse is ONLY the crash-before-handle contract — the stored
+            # registration must be PENDING and match the CURRENT request exactly (identity,
+            # policy, digest, AND snapshot bytes); anything else is a loud integrity error,
+            # never a silent revival or a silent swap of machine state.
+            if existing.status != "pending":
+                raise RuntimeError(
+                    f"wait {wait_id!r} is {existing.status!r} — a claimed/terminal wait can "
+                    "never be revived as a new active suspension"
+                )
+            stored_snapshot = await self.coordinator.load_snapshot(wait_id)
+            mismatches = [
+                name
+                for name, stored, current in (
+                    ("run_id", existing.run_id, request.run_id),
+                    ("workflow_id", existing.workflow_id, request.workflow_id),
+                    ("suspended_node", existing.suspended_node, request.suspended_node),
+                    ("policy", existing.policy, request.policy),
+                    ("definition_digest", existing.definition_digest, request.definition_digest),
+                    ("snapshot", stored_snapshot, request.snapshot_json),
+                )
+                if stored != current
+            ]
+            if mismatches:
+                raise RuntimeError(
+                    f"wait {wait_id!r} exists with DIFFERENT {', '.join(mismatches)} — "
+                    "changed machine state is rejected, never silently reused"
+                )
             return WaitRegistrationOutcome(
                 handle=WaitHandle(
                     wait_id=existing.wait_id,
@@ -110,6 +140,7 @@ class DurableWaitRuntime:
             workflow_id=request.workflow_id,
             suspended_node=request.suspended_node,
             policy=request.policy,
+            definition_digest=request.definition_digest,
             created_at=now,
             deadline_at=now + timedelta(seconds=request.policy.timeout_s),
         )

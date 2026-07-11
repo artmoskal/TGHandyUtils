@@ -696,9 +696,9 @@ class WorkflowEngineBuilder:
         if not isinstance(coordinator, WaitCoordinator):
             raise TypeError(
                 f"{type(coordinator).__name__} does not satisfy the WaitCoordinator protocol "
-                "(async register/get/load_snapshot + due/health)"
+                "(async register/get/load_snapshot/due/health)"
             )
-        for name in ("register", "get", "load_snapshot"):
+        for name in ("register", "get", "load_snapshot", "due", "health"):
             method = inspect.unwrap(getattr(coordinator, name))
             if not inspect.iscoroutinefunction(method):
                 raise TypeError(

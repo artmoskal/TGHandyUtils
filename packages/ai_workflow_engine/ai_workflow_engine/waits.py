@@ -135,6 +135,9 @@ class WaitRecord(BaseModel):
     workflow_id: str
     suspended_node: str
     policy: DurableWaitPolicy
+    # W2B.1: the machine identity is PERSISTED — W3 compares this against the currently
+    # registered definition before resuming; a changed graph is rejected, never replayed.
+    definition_digest: str = ""
     status: WaitStatus = "pending"
     resolution_kind: Optional[ResolutionKind] = None  # set only when an event WINS (C5)
     created_at: AwareDatetime = Field(default_factory=_utc_now)
@@ -197,9 +200,9 @@ class WaitCoordinator(Protocol):
 
     async def load_snapshot(self, wait_id: str) -> Optional[str]: ...
 
-    def due(self, now: Any) -> list: ...
+    async def due(self, now: Any) -> list: ...
 
-    def health(self) -> WaitHealth: ...
+    async def health(self) -> WaitHealth: ...
 
 
 class InMemoryWaitCoordinator:
@@ -241,9 +244,11 @@ class InMemoryWaitCoordinator:
                 accepted_deadline=record.deadline_at,
                 adapter_id=self.adapter_id,
             )
-            self._records[record.wait_id] = record
+            # W2B.3: defensive INPUT copies — a caller mutating its record/receipt objects
+            # after registration cannot alias into the store.
+            self._records[record.wait_id] = record.model_copy(deep=True)
             self._snapshots[record.wait_id] = snapshot_json
-            self._receipts[record.wait_id] = receipt
+            self._receipts[record.wait_id] = receipt.model_copy(deep=True)
             return receipt
 
     async def get(self, wait_id: str) -> Optional[WaitRecord]:
@@ -256,14 +261,15 @@ class InMemoryWaitCoordinator:
         async with self._lock:
             return self._snapshots.get(wait_id)
 
-    def due(self, now: Any) -> list:
-        return [
-            record
-            for record in self._records.values()
-            if record.status == "pending" and record.deadline_at <= now
-        ]
+    async def due(self, now: Any) -> list:
+        async with self._lock:
+            return [
+                record.model_copy(deep=True)
+                for record in self._records.values()
+                if record.status == "pending" and record.deadline_at <= now
+            ]
 
-    def health(self) -> WaitHealth:
+    async def health(self) -> WaitHealth:
         pending = [r for r in self._records.values() if r.status == "pending"]
         claimed = [r for r in self._records.values() if r.status == "claimed"]
         now = self._clock()

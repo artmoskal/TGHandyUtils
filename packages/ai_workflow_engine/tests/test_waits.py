@@ -466,7 +466,7 @@ async def test_registered_durable_wait_returns_handle_only_and_traces_registrati
     assert any(e.decision == "wait:registered" for e in result.trace), (
         "registration must be traced inside the run"
     )
-    assert coordinator.health().pending == 1
+    assert (await coordinator.health()).pending == 1
 
 
 async def test_registration_failure_fails_the_run_with_no_public_door():
@@ -540,8 +540,8 @@ async def test_in_memory_coordinator_is_deterministic_and_never_self_fires():
         policy=DWP(timeout_s=30), created_at=now, deadline_at=now + timedelta(seconds=30),
     )
     await coordinator.register(record, "{}")
-    assert coordinator.due(now) == []
-    assert [r.wait_id for r in coordinator.due(now + timedelta(seconds=31))] == ["w-due"]
+    assert await coordinator.due(now) == []
+    assert [r.wait_id for r in await coordinator.due(now + timedelta(seconds=31))] == ["w-due"]
 
     source = Path(waits_module.__file__).read_text(encoding="utf-8")
     for forbidden in ("create_task", "Thread(", "sleep(", "Timer(", "while True"):
@@ -678,7 +678,7 @@ async def test_engine_and_coordinator_share_one_injected_wait_clock():
     assert stored.created_at == frozen, "record stamps must come from the INJECTED clock"
     assert stored.deadline_at == frozen + timedelta(seconds=60)
     assert result.wait_handle.deadline_at == stored.deadline_at
-    assert coordinator.due(frozen + timedelta(seconds=61))[0].wait_id == stored.wait_id
+    assert (await coordinator.due(frozen + timedelta(seconds=61)))[0].wait_id == stored.wait_id
 
 
 async def test_conformance_rejects_snapshot_loss_and_supports_reconnect():
@@ -749,20 +749,26 @@ async def test_registration_reuse_and_distinct_occurrence_identity():
     coordinator = CountingCoordinator(clock=clock, shared_state=shared)
     engine = _durable_engine(coordinator)
 
-    first = await engine.run("durable_flow", {})
-    assert first.status == "requires_user_input"
-    assert calls["register"] == 1
-    wait_id = first.wait_handle.wait_id
-    assert wait_id.endswith("--gate--0"), "identity = run/node/occurrence, not a random uuid"
-
-    # crash-after-register retry: seed a fresh engine sharing the store, replay the run id
-    coordinator2 = CountingCoordinator(clock=clock, shared_state=shared)
-    engine2 = _durable_engine(coordinator2)
+    # a TRUE crash-retry replays the SAME inputs — identical goal + seeded run id; the
+    # W2B seal rejects anything else as changed machine state (separately test-locked).
     from ai_workflow_engine import WorkflowGoal
 
     goal = WorkflowGoal(
-        workflow_type="durable_flow", objective="retry", metadata={"run_id": first.wait_handle.run_id}
+        workflow_type="durable_flow", objective="approve", metadata={"run_id": "run-fixed"}
     )
+    first = await engine.run("durable_flow", {}, goal=goal)
+    assert first.status == "requires_user_input"
+    assert calls["register"] == 1
+    wait_id = first.wait_handle.wait_id
+    from ai_workflow_engine.wait_runtime import DurableWaitRuntime as _DWR
+
+    assert wait_id == _DWR.wait_id_for(first.wait_handle.run_id, "gate", 0), (
+        "identity = collision-safe hash of run/node/occurrence, not a random uuid"
+    )
+
+    # crash-after-register retry: fresh engine over the same store, SAME inputs
+    coordinator2 = CountingCoordinator(clock=clock, shared_state=shared)
+    engine2 = _durable_engine(coordinator2)
     second = await engine2.run("durable_flow", {}, goal=goal)
     assert second.status == "requires_user_input"
     assert second.wait_handle.wait_id == wait_id, "same logical suspension reuses ONE registration"
@@ -873,8 +879,131 @@ async def test_registration_mechanics_live_in_the_lifecycle_service():
 
     first = await runtime.register_suspension(request)
     assert first.reused is False
-    assert first.handle.wait_id == "run-1--gate--0"
+    assert first.handle.wait_id == DurableWaitRuntime.wait_id_for("run-1", "gate", 0)
     assert first.deadline_at == clock() + timedelta(seconds=60)
 
     again = await runtime.register_suspension(request)
     assert again.reused is True and again.handle.wait_id == first.handle.wait_id
+
+
+# ================================================== W2B: identity/reuse seal reproducers
+
+
+def _registration_request(**overrides):
+    from ai_workflow_engine.snapshot import MachineSnapshot
+    from ai_workflow_engine.wait_runtime import WaitRegistrationRequest
+
+    values = dict(
+        run_id="run-1", workflow_id="wf", definition_digest="digest-A", suspended_node="gate",
+        occurrence=0, policy=DurableWaitPolicy(timeout_s=60),
+        snapshot_json=MachineSnapshot(
+            workflow_id="wf", suspended_node="gate", node_status={}, routes={},
+            node_results=[], artifacts=[],
+        ).model_dump_json(),
+    )
+    values.update(overrides)
+    return WaitRegistrationRequest(**values)
+
+
+async def test_changed_snapshot_or_digest_is_never_silently_reused():
+    """W2B.1 (codex reproducer): the crash-retry reuse contract requires EXACT identity —
+    a different snapshot or definition digest is a loud integrity error."""
+
+    from ai_workflow_engine import InMemoryWaitCoordinator
+    from ai_workflow_engine.wait_runtime import DurableWaitRuntime
+
+    clock = _clock()
+    runtime = DurableWaitRuntime(InMemoryWaitCoordinator(clock=clock), clock=clock)
+    await runtime.register_suspension(_registration_request())
+
+    changed_snapshot = _registration_request(
+        snapshot_json=_registration_request().snapshot_json.replace("gate", "hacked")
+    )
+    with pytest.raises(RuntimeError, match="DIFFERENT.*snapshot"):
+        await runtime.register_suspension(changed_snapshot)
+
+    with pytest.raises(RuntimeError, match="DIFFERENT.*definition_digest"):
+        await runtime.register_suspension(_registration_request(definition_digest="digest-B"))
+
+
+async def test_digest_is_persisted_and_survives_reconnect():
+    """W2B.1 (codex reproducer): the definition digest is STORED on the record — W3 can
+    reject resume against a changed graph, including after adapter reconnect."""
+
+    from ai_workflow_engine import InMemoryWaitCoordinator
+    from ai_workflow_engine.wait_runtime import DurableWaitRuntime
+
+    clock = _clock()
+    shared: dict = {}
+    runtime = DurableWaitRuntime(
+        InMemoryWaitCoordinator(clock=clock, shared_state=shared), clock=clock
+    )
+    outcome = await runtime.register_suspension(_registration_request())
+
+    reconnected = InMemoryWaitCoordinator(clock=clock, shared_state=shared)
+    stored = await reconnected.get(outcome.handle.wait_id)
+    assert stored.definition_digest == "digest-A", "digest must be persisted, not discarded"
+
+
+async def test_terminal_or_claimed_waits_are_never_revived():
+    """W2B.2 (codex reproducer): a completed/claimed wait can never come back as a fresh
+    requires_user_input handle."""
+
+    from ai_workflow_engine import InMemoryWaitCoordinator
+    from ai_workflow_engine.wait_runtime import DurableWaitRuntime
+
+    clock = _clock()
+    coordinator = InMemoryWaitCoordinator(clock=clock)
+    runtime = DurableWaitRuntime(coordinator, clock=clock)
+    outcome = await runtime.register_suspension(_registration_request())
+
+    for status in ("completed", "claimed", "failed", "cancelled"):
+        coordinator._records[outcome.handle.wait_id] = coordinator._records[
+            outcome.handle.wait_id
+        ].model_copy(update={"status": status})
+        with pytest.raises(RuntimeError, match="never be revived"):
+            await runtime.register_suspension(_registration_request())
+
+
+def test_wait_ids_are_collision_safe_against_delimiter_games():
+    """W2B.2 (codex reproducer): length-prefixed hashing — ("r--a","b") and ("r","a--b")
+    produce DIFFERENT ids; same inputs stay deterministic."""
+
+    from ai_workflow_engine.wait_runtime import DurableWaitRuntime as D
+
+    assert D.wait_id_for("r--a", "b", 0) != D.wait_id_for("r", "a--b", 0)
+    assert D.wait_id_for("r", "a", 10) != D.wait_id_for("r", "a1", 0)
+    assert D.wait_id_for("run", "gate", 1) == D.wait_id_for("run", "gate", 1)
+
+
+async def test_reference_adapter_is_async_and_alias_free():
+    """W2B.3: sync due/health impostors are rejected at composition; input records and
+    due() results are defensive copies — no alias can mutate stored state."""
+
+    from datetime import timedelta
+
+    from ai_workflow_engine import InMemoryWaitCoordinator, WorkflowEngineBuilder
+    from ai_workflow_engine.waits import DurableWaitPolicy as DWP, WaitRecord
+
+    class SyncDueImpostor(InMemoryWaitCoordinator):
+        def due(self, now):  # type: ignore[override]
+            return []
+
+    with pytest.raises(TypeError, match="due must be async"):
+        WorkflowEngineBuilder().with_wait_coordinator(SyncDueImpostor(clock=_clock()))
+
+    clock = _clock()
+    coordinator = InMemoryWaitCoordinator(clock=clock)
+    now = clock()
+    record = WaitRecord(
+        wait_id="w-alias", run_id="r", workflow_id="wf", suspended_node="g",
+        policy=DWP(timeout_s=1), definition_digest="d", created_at=now,
+        deadline_at=now + timedelta(seconds=1),
+    )
+    await coordinator.register(record, "{}")
+    record.status = "cancelled"  # caller mutates ITS object after registration
+    assert (await coordinator.get("w-alias")).status == "pending", "input must be copied"
+
+    due = await coordinator.due(now + timedelta(seconds=2))
+    due[0].status = "cancelled"  # caller mutates a query RESULT
+    assert (await coordinator.get("w-alias")).status == "pending", "due() must copy"
