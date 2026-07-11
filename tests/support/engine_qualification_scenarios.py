@@ -39,8 +39,10 @@ _TINY_PNG = base64.b64decode(
 def _observed_builder(bundle_dir: Path):
     from ai_workflow_engine import ObservationConfig, WorkflowEngineBuilder
 
-    return WorkflowEngineBuilder().with_observation(
-        ObservationConfig(enabled=True, bundle_dir=str(bundle_dir))
+    return (
+        WorkflowEngineBuilder()
+        .with_observation(ObservationConfig(enabled=True, bundle_dir=str(bundle_dir)))
+        .with_profile(_scenario_limits())
     )
 
 
@@ -61,25 +63,84 @@ def _profile_scope(config: QualificationConfig):
 
 
 def _worker_calls(result: Any) -> int:
-    return sum(1 for e in result.usage.events if e.success)
+    # Q-R1: ATTEMPTED paid calls — failures burnt provider work too; the spend bound
+    # counts every spawn, not only successes.
+    return sum(1 for e in result.usage.events if e.operation == "chat")
+
+
+def _failed_calls(result: Any) -> int:
+    return sum(1 for e in result.usage.events if e.operation == "chat" and not e.success)
+
+
+def _usage_totals(*results: Any) -> tuple:
+    notional = [r.usage.notional_usd for r in results if r.usage.notional_usd is not None]
+    total = round(sum(notional), 6) if notional else None
+    return total, sum(_worker_calls(r) for r in results), sum(_failed_calls(r) for r in results)
 
 
 def _outcome(name: str, result: Any, started: float, *, extra_results: tuple = ()) -> ScenarioOutcome:
     results = (result, *extra_results)
-    notional = [r.usage.notional_usd for r in results if r.usage.notional_usd is not None]
+    notional, attempted, failed = _usage_totals(*results)
     return ScenarioOutcome(
         name=name,
         status="passed",
-        notional_usd=round(sum(notional), 6) if notional else None,
-        worker_calls=sum(_worker_calls(r) for r in results),
+        notional_usd=notional,
+        worker_calls=attempted,
+        failed_worker_calls=failed,
         duration_s=round(time.monotonic() - started, 3),
         bundle_path=result.observation_bundle_path,
     )
 
 
-def _require(condition: bool, message: str) -> None:
+def _require(condition: bool, message: str, *usage_from: Any) -> None:
+    """Semantic invariant check. Any results passed along carry their burn into the raised
+    error (Q-R2/Q-R4): a semantic failure never erases money data."""
+
     if not condition:
-        raise ScenarioSemanticError(message)
+        notional, attempted, _failed = (
+            _usage_totals(*usage_from) if usage_from else (None, 0, 0)
+        )
+        raise ScenarioSemanticError(message, notional_usd=notional, worker_calls=attempted)
+
+
+def _run_failed_outcome(name: str, result: Any, started: float, *extra_results: Any) -> ScenarioOutcome:
+    """Classified FAILED outcome for an engine run that did not complete — carries the
+    real burn (Q-R2) and the contract's failure class (Q-R4), never a bare raise."""
+
+    error = str(result.error or "")
+    lowered = error.lower()
+    if "error_max_budget_usd" in lowered:
+        failure_class = "cap"
+    elif "timeout" in lowered or "timed out" in lowered:
+        failure_class = "timeout"
+    elif "console cli" in lowered or "external process" in lowered:
+        failure_class = "provider"
+    else:
+        failure_class = "provider"  # model-output/parse exhaustion = provider variance
+    notional, attempted, failed = _usage_totals(result, *extra_results)
+    return ScenarioOutcome(
+        name=name,
+        status="failed",
+        failure_class=failure_class,
+        notional_usd=notional,
+        worker_calls=attempted,
+        failed_worker_calls=failed,
+        duration_s=round(time.monotonic() - started, 3),
+        bundle_path=result.observation_bundle_path,
+        detail=error[:500],
+    )
+
+
+def _scenario_limits():
+    from ai_workflow_engine.models import RuntimeLimits, SafetyPolicy, WorkflowProfile
+
+    # Q-R1: the ENGINE also bounds each scenario — a runaway multi-call scenario is
+    # stopped by RuntimeLimits before it can overshoot the suite invisibly.
+    return WorkflowProfile(
+        workflow_type="qualification",
+        limits=RuntimeLimits(max_text_calls=3, max_image_calls=1),
+        safety=SafetyPolicy(allowed_side_effects=["read_only"]),
+    )
 
 
 # ------------------------------------------------------------------ scenario 1: Anki card
@@ -149,14 +210,16 @@ async def run_anki_basic_card(
     with _profile_scope(config):
         result = await engine.run("anki_basic_card", {"topic": "the Krebs cycle"})
 
-    _require(result.status == "completed", f"anki run did not complete: {result.error}")
-    _require(" | " in (result.output or {}).get("note", ""), "rendered note is malformed")
-    _require(_worker_calls(result) >= 1, "no real worker call was recorded")
+    if result.status != "completed":
+        return _run_failed_outcome("anki_basic_card", result, started)
+    _require(" | " in (result.output or {}).get("note", ""), "rendered note is malformed", result)
+    _require(_worker_calls(result) >= 1, "no real worker call was recorded", result)
     _require(
-        sum(1 for e in result.usage.events if e.operation == "chat") <= 2,
+        _worker_calls(result) <= 2,
         "anki scenario must stay within one call plus one repair",
+        result,
     )
-    _require(bool(result.observation_bundle_path), "observation bundle missing")
+    _require(bool(result.observation_bundle_path), "observation bundle missing", result)
     return _outcome("anki_basic_card", result, started)
 
 
@@ -206,11 +269,14 @@ async def run_mageqa_local_audit(
         return {"pages": sorted(str(p) for p in inputs.glob("*.html"))}
 
     def probe_page(_context, page_path: str):
+        # Q-R7: the malformed page is a REAL child failure under the engine's fanout
+        # partial-isolation contract — not a successful child with a domain label.
         text = Path(page_path).read_text(encoding="utf-8")
         title_ok = "<title>" in text and not text.split("<title>", 1)[1].startswith("</title>")
         closed_ok = "</body>" in text
-        status = "ok" if (title_ok and closed_ok) else "inconclusive"
-        return {"page": Path(page_path).name, "status": status, "evidence_chars": len(text)}
+        if not (title_ok and closed_ok):
+            raise ValueError(f"unparseable page: {Path(page_path).name}")
+        return {"page": Path(page_path).name, "status": "ok", "evidence_chars": len(text)}
 
     summarize_node = StructuredLLMNode(
         name="summarize_findings",
@@ -247,7 +313,9 @@ async def run_mageqa_local_audit(
         allowed_side_effects=["read_only"],
         max_repair_rounds=1,
     )
-    author_builder = WorkflowEngineBuilder()
+    # Q-R5: the AUTHOR half is observable too — what Sonnet authored (prompt, response,
+    # cost) lands in its own linked bundle, not only as flow:authored provenance downstream.
+    author_builder = _observed_builder(workdir / "bundles" / "mageqa_author")
     author_builder.register_capability_spec(author_spec, author_handler)
     author_builder.register_workflow(WorkflowBuilder("authoring").step("author_flow").build())
     author_engine = author_builder.build()
@@ -264,7 +332,8 @@ async def run_mageqa_local_audit(
                 "context": {"pages": len(_PAGES)},
             },
         )
-    _require(authored.status == "completed", f"flow authoring failed: {authored.error}")
+    if authored.status != "completed":
+        return _run_failed_outcome("mageqa_local_audit", authored, started)
 
     # the artifact must survive ORDINARY JSON (R6 contract) before the peer engine runs it
     import json as _json
@@ -273,18 +342,31 @@ async def run_mageqa_local_audit(
     with _profile_scope(config):
         executed = await processing.run_authored_flow(artifact, {})
 
-    _require(executed.status == "completed", f"authored audit failed: {executed.error}")
+    if executed.status not in ("completed", "partial"):
+        return _run_failed_outcome("mageqa_local_audit", executed, started, authored)
     output = executed.output
     summary = output.model_dump() if hasattr(output, "model_dump") else (output or {})
-    _require(summary.get("total_pages") == 3, f"summary lost pages: {summary}")
-    _require(summary.get("inconclusive_pages") == 1, f"partial failure lost: {summary}")
+    # Q-R7: TRACE evidence, not the LLM's own count — the fanout event records the real
+    # engine-isolated child failure alongside the surviving siblings.
+    fanout_events = [e for e in executed.trace if e.decision == "fanout"]
+    _require(bool(fanout_events), "fanout left no trace event", executed, authored)
+    fan_meta = fanout_events[-1].metadata
+    _require(
+        fan_meta.get("total") == 3 and fan_meta.get("succeeded") == 2 and fan_meta.get("failed") == 1,
+        f"fanout partial-isolation not proven by trace: {fan_meta}",
+        executed,
+        authored,
+    )
+    _require(summary.get("total_pages") == 2, f"summary must cover the 2 survivors: {summary}", executed, authored)
     _require(
         any(e.decision == "flow:authored" for e in executed.trace),
         "authored provenance missing from the processing run",
+        executed,
+        authored,
     )
-    fanout_events = [e for e in executed.trace if "fanout" in (e.node or "") or e.decision.startswith("fanout")]
-    _require(bool(fanout_events) or summary.get("total_pages") == 3, "fanout left no trail")
-    return _outcome("mageqa_local_audit", executed, started, extra_results=(authored,))
+    outcome = _outcome("mageqa_local_audit", executed, started, extra_results=(authored,))
+    outcome.linked_bundles = {"author": authored.observation_bundle_path}
+    return outcome
 
 
 # --------------------------------------------------- scenario 3: GoPro frame inspection
@@ -363,8 +445,24 @@ async def run_gopro_frame_inspection(
     builder = _observed_builder(workdir / "bundles" / "gopro")
 
     async def inspect_frame(_context, payload):
+        from ai_workflow_engine.models import CapabilityResult, WorkflowArtifact
+
         observation = await node.run({"state_block": payload["state_block"]}, images=[image])
-        return {"observation": observation.model_dump(), "evidence": image.fingerprint()}
+        # Q-R7: the staged frame is a DURABLE run artifact — recorded in artifacts.json so
+        # the viewer can resolve the evidence, not only a fingerprint inside the output.
+        return CapabilityResult(
+            status="accepted",
+            output={"observation": observation.model_dump(), "evidence": image.fingerprint()},
+            artifacts=[
+                WorkflowArtifact(
+                    path=str(frame_path),
+                    kind="media",
+                    owner_node="inspect_frame",
+                    cleanup_on_failure=False,
+                    metadata=image.fingerprint(),
+                )
+            ],
+        )
 
     builder.register_capability("inspect_frame", inspect_frame, kind="llm")
     builder.register_workflow(WorkflowBuilder("gopro_frame_inspection").step("inspect_frame").build())
@@ -373,17 +471,28 @@ async def run_gopro_frame_inspection(
     with _profile_scope(config):
         result = await engine.run("gopro_frame_inspection", {"state_block": state_block})
 
-    _require(result.status == "completed", f"frame inspection failed: {result.error}")
+    if result.status != "completed":
+        return _run_failed_outcome("gopro_frame_inspection", result, started)
     output = result.output or {}
-    _require(0.0 <= output["observation"]["confidence"] <= 1.0, "confidence out of range")
+    _require(0.0 <= output["observation"]["confidence"] <= 1.0, "confidence out of range", result)
     fingerprint = output.get("evidence") or {}
     _require(
         bool(fingerprint.get("sha256") or fingerprint.get("hash") or fingerprint),
         "evidence fingerprint missing",
+        result,
     )
-    _require(_worker_calls(result) >= 1, "no real vision call recorded")
+    _require(
+        any(a.path.endswith("frame-0001.png") for a in result.artifacts),
+        "staged frame must be a durable run artifact",
+        result,
+    )
+    _require(_worker_calls(result) >= 1, "no real vision call recorded", result)
     blob = str(result.model_dump())
-    _require(base64.b64encode(_TINY_PNG).decode()[:24] not in blob, "raw image bytes leaked into state")
+    _require(
+        base64.b64encode(_TINY_PNG).decode()[:24] not in blob,
+        "raw image bytes leaked into state",
+        result,
+    )
     return _outcome("gopro_frame_inspection", result, started)
 
 
@@ -477,26 +586,43 @@ async def run_slackazz_triage(
 
     with _profile_scope(config):
         first = await engine.run("slackazz_triage", {"message": "prod deploy failed, need rollback"})
-    _require(first.status == "requires_user_input", f"triage did not suspend: {first.status}")
-    _require(first.snapshot is not None, "suspension produced no snapshot")
+    if first.status == "failed":
+        return _run_failed_outcome("slackazz_triage", first, started)
+    _require(first.status == "requires_user_input", f"triage did not suspend: {first.status}", first)
+    _require(first.snapshot is not None, "suspension produced no snapshot", first)
 
     resumed = await engine.resume(first.snapshot, {"decision": resume_decision})
-    _require(resumed.status == "completed", f"resume failed: {resumed.error}")
-    _require(resumed.output.get("status") == "approved_draft", f"draft lost: {resumed.output}")
-    _require(resumed.output.get("sent") is False, "nothing may be sent externally")
+    _require(resumed.status == "completed", f"resume failed: {resumed.error}", resumed)
+    _require(resumed.output.get("status") == "approved_draft", f"draft lost: {resumed.output}", resumed)
+    _require(resumed.output.get("sent") is False, "nothing may be sent externally", resumed)
     _require(
         any(e.decision == "machine:resumed" for e in resumed.trace),
         "trace does not distinguish the resume",
+        resumed,
+    )
+    # Q-R5: the RESUMED half is its own observable run — its bundle must exist and end
+    # completed, so the suspend->resume lifecycle is inspectable, not an in-memory claim.
+    _require(
+        bool(resumed.observation_bundle_path),
+        "resumed run must open its own observation bundle",
+        resumed,
+    )
+    _require(
+        resumed.observation_bundle_path != first.observation_bundle_path,
+        "resume must not overwrite the suspension bundle",
+        resumed,
     )
 
     denied = await engine.run("slackazz_send_attempt", {"text": "hi"})
-    _require(denied.status == "failed", "external send was not denied")
-    _require("external_call" in (denied.error or ""), f"denial is not explicit: {denied.error}")
+    _require(denied.status == "failed", "external send was not denied", resumed)
+    _require(
+        "external_call" in (denied.error or ""), f"denial is not explicit: {denied.error}", resumed
+    )
 
     # The resumed result carries the CUMULATIVE usage summary (resume seeds it) — adding the
     # suspended half again would double-count the classify call and its notional cost.
     outcome = _outcome("slackazz_triage", resumed, started)
-    outcome.bundle_path = resumed.observation_bundle_path or first.observation_bundle_path
+    outcome.linked_bundles = {"suspension": first.observation_bundle_path}
     return outcome
 
 

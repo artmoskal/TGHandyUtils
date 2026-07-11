@@ -52,6 +52,12 @@ def test_live_cross_consumer_subscription_qualification():
         raise AssertionError("live opt-in but no claude auth in the environment")
 
     identity = capture_run_identity("sonnet")
+    # Q-R3: release evidence must map to EXACTLY one reviewed source revision — a dirty
+    # tree invalidates the mapping, so the release run refuses to start on one.
+    assert not identity.git_dirty, (
+        "release qualification must run from a CLEAN commit — commit or stash first "
+        f"(commit {identity.git_commit} is dirty)"
+    )
     run_id = f"{identity.started_at.replace(':', '').replace('+0000', 'Z')}-{identity.git_commit}"
     output_dir = Path("infra/test-results/engine-subscription-qualification") / run_id
     workdir = output_dir / "work"

@@ -721,3 +721,50 @@ async def test_failed_client_with_explicit_cost_class_keeps_it():
 
     failed = [e for e in usage_context.summary.events if e.success is False]
     assert failed and failed[0].cost_class == "metered"
+
+
+async def test_failed_call_records_the_burn_a_typed_transport_error_carries():
+    """Q-R2 (engine half): when the transport error carries what the aborted call actually
+    consumed (claude budget aborts burn turns first), the FAILED usage event records that
+    notional and the CLI subtype — money honesty covers failures."""
+
+    class BudgetAbortError(RuntimeError):
+        cli_subtype = "error_max_budget_usd"
+        notional_usd = 0.112174
+
+    class AbortingSubscriptionClient:
+        provider_label = "claude_p"
+        subscription_mode = True
+
+        async def __call__(self, request: LLMRequest) -> LLMResponse:
+            raise BudgetAbortError("console CLI exited 1 (error_max_budget_usd)")
+
+    node = StructuredLLMNode(
+        name="budget_abort",
+        config=object(),
+        output_model=Label,
+        prompt_template="Classify {item}.",
+        input_variables=["item"],
+        llm=AbortingSubscriptionClient(),
+    )
+    usage_context = WorkflowUsageContext(
+        WorkflowRunContext(workflow_id="wf", workflow_type="budget"),
+        WorkflowUsageSummary(),
+        WorkflowBudget(),
+    )
+
+    with workflow_usage_scope(usage_context):
+        with pytest.raises(Exception, match="error_max_budget_usd"):
+            await node.run({"item": "q"})
+
+    failed = [e for e in usage_context.summary.events if e.success is False]
+    assert len(failed) == 2, "initial + retry attempts each leave an honest failed event"
+    for event in failed:
+        assert event.notional_usd == pytest.approx(0.112174), (
+            "each aborted attempt's REAL burn must be recorded, not dropped"
+        )
+        assert event.metadata.get("cli_subtype") == "error_max_budget_usd"
+        assert event.cost_class == "subscription_notional"
+    assert usage_context.summary.notional_usd == pytest.approx(2 * 0.112174), (
+        "every aborted attempt's burn aggregates into the run's notional total"
+    )

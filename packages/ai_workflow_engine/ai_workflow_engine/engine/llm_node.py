@@ -230,6 +230,18 @@ class StructuredLLMNode:
         metadata = {"output_model": self.output_model.__name__, "transport": "plain_callable"}
         if profile is not None:
             metadata["model_profile"] = profile.name
+        # Q-R2: a typed transport error may carry what the ABORTED call actually consumed
+        # (e.g. claude aborts on --max-budget-usd AFTER burning turns) — record it, never
+        # drop it; money honesty covers failures too.
+        failed_notional = getattr(exc, "notional_usd", None)
+        if not isinstance(failed_notional, (int, float)):
+            failed_notional = None
+        failure_subtype = getattr(exc, "cli_subtype", None)
+        if failure_subtype:
+            metadata["cli_subtype"] = str(failure_subtype)
+        failed_turns = getattr(exc, "num_turns", None)
+        if isinstance(failed_turns, int):
+            metadata["cli_num_turns"] = failed_turns
 
         record_usage_event(
             WorkflowUsageEvent(
@@ -240,6 +252,7 @@ class StructuredLLMNode:
                 attempt=attempt,
                 success=False,
                 error=str(exc)[:500],
+                notional_usd=failed_notional,
                 # R14: honor BOTH client honesty markers — subscription-backed clients (e.g.
                 # the claude -p console client) expose subscription_mode, not cost_class; a
                 # failed subscription call must never be booked as metered spend.

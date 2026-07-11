@@ -39,6 +39,26 @@ def _has_explicit_tool_flag(argv: Sequence[str]) -> bool:
     )
 
 
+class ConsoleCliError(RuntimeError):
+    """Typed console-CLI failure (Q-R2): carries what the aborted call actually consumed so
+    the engine's failed-usage event and any ledger see STRUCTURED burn data, not prose."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        cli_subtype: str = "",
+        notional_usd: "float | None" = None,
+        returncode: "int | None" = None,
+        num_turns: "int | None" = None,
+    ) -> None:
+        super().__init__(message)
+        self.cli_subtype = cli_subtype
+        self.notional_usd = notional_usd
+        self.returncode = returncode
+        self.num_turns = num_turns
+
+
 class ConsoleLLMClient:
     """LLMCallable over a CLI runtime for plain text-in, JSON/text-out calls."""
 
@@ -114,32 +134,13 @@ class ConsoleLLMClient:
                     metadata={"flavor": self.flavor.name, "console_llm": True},
                 ),
             )
-            if external.status != "accepted":
-                raise RuntimeError(external.error or f"console CLI exited with status {external.status}")
             output = external.output if isinstance(external.output, dict) else {}
-            if output.get("returncode") != 0:
-                stderr = str(output.get("stderr") or "")
-                # Cost honesty on ABORTED calls: claude still emits a result envelope with
-                # the consumed notional (e.g. error_max_budget_usd) — surface it instead of
-                # discarding it, so the operator sees what the failed attempt actually burnt.
-                aborted = parse_cli_process_output(self.flavor, output)
-                subtype = ""
-                try:
-                    import json as _json
-
-                    envelope = _json.loads(str(output.get("stdout") or ""))
-                    subtype = str(envelope.get("subtype") or "") if isinstance(envelope, dict) else ""
-                except (ValueError, TypeError):
-                    pass
-                consumed = (
-                    f"; consumed notional ~${aborted.notional_cost_usd:.4f}"
-                    if aborted.notional_cost_usd is not None
-                    else ""
-                )
-                raise RuntimeError(
-                    f"console CLI exited {output.get('returncode')}"
-                    f"{f' ({subtype})' if subtype else ''}{consumed}: {stderr[-800:]}"
-                )
+            if external.status != "accepted" or output.get("returncode") != 0:
+                # ONE typed failure path (Q-R2): the runner marks nonzero exits failed but
+                # still hands us stdout — claude's ERROR envelope there carries the consumed
+                # notional (e.g. error_max_budget_usd), which must survive as structured
+                # data, never just prose.
+                raise _console_failure(self.flavor, external, output)
             parsed = parse_cli_process_output(self.flavor, output)
             logger.info(
                 "console_llm_call flavor=%s tokens_in=%s tokens_out=%s cost_usd=%s duration_ms=%s",
@@ -376,6 +377,35 @@ def _flatten_message(message: ChatMessage) -> list[str]:
     return parts
 
 
+def _console_failure(flavor: CliFlavor, external: Any, output: dict) -> "ConsoleCliError":
+    """Build the typed console failure from whatever the runner captured."""
+
+    aborted = parse_cli_process_output(flavor, output)
+    subtype = ""
+    try:
+        import json as _json
+
+        envelope = _json.loads(str(output.get("stdout") or ""))
+        subtype = str(envelope.get("subtype") or "") if isinstance(envelope, dict) else ""
+    except (ValueError, TypeError):
+        pass
+    returncode = output.get("returncode")
+    stderr = str(output.get("stderr") or "")
+    consumed = (
+        f"; consumed notional ~${aborted.notional_cost_usd:.4f}"
+        if aborted.notional_cost_usd is not None
+        else ""
+    )
+    base = external.error or f"console CLI exited with status {external.status}"
+    return ConsoleCliError(
+        f"{base}{f' ({subtype})' if subtype else ''}{consumed}: {stderr[-800:]}",
+        cli_subtype=subtype,
+        notional_usd=aborted.notional_cost_usd,
+        returncode=returncode if isinstance(returncode, int) else None,
+        num_turns=aborted.num_turns,
+    )
+
+
 def _model_from_request(request: LLMRequest) -> str:
     profile = request.metadata.get("model_profile")
     if isinstance(profile, dict):
@@ -385,4 +415,4 @@ def _model_from_request(request: LLMRequest) -> str:
     return ""
 
 
-__all__ = ["ConsoleLLMClient"]
+__all__ = ["ConsoleCliError", "ConsoleLLMClient"]

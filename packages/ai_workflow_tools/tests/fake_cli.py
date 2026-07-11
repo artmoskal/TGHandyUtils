@@ -31,8 +31,14 @@ def main() -> int:
     _record_invocation(argv, stdin_text)
 
     if mode == "envelope":
-        _emit_envelope(result_text)
-        return 0
+        # Q-R2 knobs: an exact stdout override + nonzero exit lets tests reproduce claude's
+        # ERROR envelopes (e.g. error_max_budget_usd) byte-for-byte.
+        override = os.environ.get("FAKE_CLI_STDOUT_OVERRIDE")
+        if override is not None:
+            print(override)
+        else:
+            _emit_envelope(result_text)
+        return int(os.environ.get("FAKE_CLI_EXIT_CODE", "0"))
     if mode == "artifacts":
         _write_artifacts(workspace)
         _emit_envelope(result_text)

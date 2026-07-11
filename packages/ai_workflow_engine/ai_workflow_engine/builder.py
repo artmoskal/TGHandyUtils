@@ -513,7 +513,25 @@ class WorkflowEngine:
             context = context.model_copy(
                 update={"run_context": WorkflowRunContext.model_validate(snapshot.run_context)}
             )
-        return await self.executor.resume(definition, snapshot, event_payload, context)
+        observation_bundle = None
+        if self.observation is not None and self.observation.enabled:
+            # Q-R5: config-enabled observation covers the RESUMED half exactly like run() —
+            # the resumed run opens its own per-run bundle (same policy, same retention).
+            from ai_workflow_engine.observation_bundle import open_observation_run_bundle  # call-time (F1.1)
+
+            # The resumed half keeps the ORIGINAL run identity (B-post3) but must not
+            # overwrite the suspension half's bundle — distinct storage key per resume.
+            resume_bundle_id = f"{context.run_context.workflow_id}--resume-{uuid.uuid4().hex[:8]}"
+            observation_bundle = open_observation_run_bundle(
+                self.observation.bundle_dir,
+                resume_bundle_id,
+                retention_limit=self.observation.retention_limit,
+                artifact_policy=self.observation.artifacts,
+                artifact_max_bytes=self.observation.artifact_max_bytes,
+            )
+        return await self.executor.resume(
+            definition, snapshot, event_payload, context, observation_bundle=observation_bundle
+        )
 
     def _run_context_for(
         self,

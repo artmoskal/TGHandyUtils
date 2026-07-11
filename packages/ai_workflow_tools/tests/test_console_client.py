@@ -645,3 +645,40 @@ async def test_console_budget_rejects_non_finite_values(fake_cli_path):
     for bad in (float("inf"), float("-inf"), float("nan")):
         with pytest.raises(ValueError, match="finite"):
             ConsoleLLMClient(_fake_flavor(claude_p, fake_cli_path), cli_max_budget_usd=bad)
+
+
+async def test_console_error_envelope_raises_typed_failure_with_burn_data(
+    fake_cli_path, monkeypatch, tmp_path
+):
+    """Q-R2: a non-zero claude exit with a result envelope (e.g. error_max_budget_usd)
+    raises ConsoleCliError carrying subtype + consumed notional — structured burn data."""
+
+    import json as _json
+
+    from ai_workflow_engine.llm_protocol import LLMRequest
+
+    from ai_workflow_tools.cli_agents import ConsoleCliError
+
+    envelope = _json.dumps(
+        {
+            "type": "result",
+            "subtype": "error_max_budget_usd",
+            "is_error": True,
+            "result": "",
+            "total_cost_usd": 0.112174,
+            "usage": {"input_tokens": 3160, "output_tokens": 216},
+        }
+    )
+    record_path = _configure_fake_cli(monkeypatch, tmp_path, mode="envelope", result="ignored")
+    monkeypatch.setenv("FAKE_CLI_STDOUT_OVERRIDE", envelope)
+    monkeypatch.setenv("FAKE_CLI_EXIT_CODE", "1")
+    client = ConsoleLLMClient(_fake_flavor(claude_p, fake_cli_path))
+
+    with pytest.raises(ConsoleCliError) as excinfo:
+        await client(LLMRequest(user="x"))
+
+    error = excinfo.value
+    assert error.cli_subtype == "error_max_budget_usd"
+    assert error.notional_usd == pytest.approx(0.112174)
+    assert error.returncode == 1
+    assert "error_max_budget_usd" in str(error) and "0.1122" in str(error)

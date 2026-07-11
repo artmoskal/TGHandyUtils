@@ -389,3 +389,52 @@ def test_retention_prunes_evidence_with_the_bundle(tmp_path):
     survivor = Path(second.observation_bundle_path)
     manifest = json.loads((survivor / "artifacts.json").read_text())
     assert (survivor / manifest[0]["bundle_path"]).exists()
+
+
+async def test_resumed_run_opens_its_own_bundle_and_finalizes_completed(tmp_path):
+    """Q-R5: config-first observation covers the RESUMED half like any run — its own
+    bundle, machine:resumed in its trace, finalized completed. Suspend->resume is
+    inspectable end to end, not an in-memory claim."""
+
+    import json
+
+    from pathlib import Path
+
+    from pydantic import BaseModel
+
+    from ai_workflow_engine import ObservationConfig, WorkflowBuilder, WorkflowEngineBuilder
+
+    class Gate(BaseModel):
+        status: str
+        value: str = ""
+
+    builder = WorkflowEngineBuilder().with_observation(
+        ObservationConfig(enabled=True, bundle_dir=str(tmp_path))
+    )
+
+    def ask(context, _payload):
+        event = context.metadata.get("resume_event")
+        if event is None:
+            return Gate(status="pending")
+        return Gate(status="answered", value=str(event))
+
+    builder.register_capability("ask", ask, kind="deterministic")
+    builder.register_capability("finish", lambda ctx, p: {"done": True}, kind="deterministic")
+    builder.register_workflow(
+        WorkflowBuilder("resume_bundle_flow").human("ask").step("finish").build()
+    )
+    engine = builder.build()
+
+    first = await engine.run("resume_bundle_flow", {"q": "?"})
+    assert first.status == "requires_user_input"
+    assert first.observation_bundle_path, "suspension half must have a bundle"
+
+    resumed = await engine.resume(first.snapshot, "yes")
+    assert resumed.status == "completed"
+    assert resumed.observation_bundle_path, "resumed half must open its OWN bundle"
+    assert resumed.observation_bundle_path != first.observation_bundle_path
+
+    resumed_dir = Path(resumed.observation_bundle_path)
+    meta = json.loads((resumed_dir / "meta.json").read_text(encoding="utf-8"))
+    assert meta.get("status") == "completed"
+    assert "machine:resumed" in (resumed_dir / "trace.jsonl").read_text(encoding="utf-8")

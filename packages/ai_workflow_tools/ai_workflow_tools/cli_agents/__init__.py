@@ -2,7 +2,7 @@
 
 from .assembly import build_cli_agent_invocation, resolve_effective_tools
 from .capability import CliAgentCapability
-from .console import ConsoleChatModel, ConsoleLLMClient
+from .console import ConsoleChatModel, ConsoleCliError, ConsoleLLMClient
 from .flavors import claude_p, codex_exec
 from .models import (
     CliAgentInvocation,
@@ -15,6 +15,7 @@ from .models import (
 __all__ = [
     "CliAgentCapability",
     "ConsoleChatModel",
+    "ConsoleCliError",
     "ConsoleLLMClient",
     "CliAgentInvocation",
     "CliAgentRequest",

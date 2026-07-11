@@ -25,6 +25,9 @@ class QualificationRunIdentity(BaseModel):
     requested_model: str
     cli_version: str
     git_commit: str
+    # Q-R3: evidence must map to EXACTLY one source revision — a dirty tree is recorded,
+    # and a RELEASE qualification run refuses to proceed on one.
+    git_dirty: bool = False
     platform: str
     started_at: str
     finished_at: Optional[str] = None
@@ -47,6 +50,7 @@ def capture_run_identity(
     *,
     cli_version_reader: Optional[Callable[[], str]] = None,
     git_commit_reader: Optional[Callable[[], str]] = None,
+    git_dirty_reader: Optional[Callable[[], bool]] = None,
     platform_reader: Optional[Callable[[], str]] = None,
     clock: Optional[Callable[[], str]] = None,
 ) -> QualificationRunIdentity:
@@ -59,10 +63,12 @@ def capture_run_identity(
     read_commit = git_commit_reader or _read_git_commit
     read_platform = platform_reader or (lambda: f"{_platform_module.system()}-{_platform_module.machine()}")
     read_clock = clock or (lambda: datetime.now(timezone.utc).isoformat(timespec="seconds"))
+    read_dirty = git_dirty_reader or _read_git_dirty
     return QualificationRunIdentity(
         requested_model=requested_model,
         cli_version=read_version(),
         git_commit=read_commit(),
+        git_dirty=read_dirty(),
         platform=read_platform(),
         started_at=read_clock(),
     )
@@ -75,6 +81,15 @@ def _read_claude_cli_version() -> str:
     if proc.returncode != 0:
         raise RuntimeError(f"claude --version failed: {proc.stderr.strip()[-300:]}")
     return proc.stdout.strip()
+
+
+def _read_git_dirty() -> bool:
+    proc = subprocess.run(
+        ["git", "status", "--porcelain"], capture_output=True, text=True, timeout=30
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"git status failed: {proc.stderr.strip()[-300:]}")
+    return bool(proc.stdout.strip())
 
 
 def _read_git_commit() -> str:
@@ -94,7 +109,37 @@ class QualificationError(RuntimeError):
 
 
 class ScenarioSemanticError(QualificationError):
-    """A scenario's semantic invariant failed (engine-meaningful, not infrastructure)."""
+    """A scenario's semantic invariant failed (engine-meaningful, not infrastructure).
+
+    Q-R2/Q-R4: it may CARRY the burn the scenario had already caused (notional + attempted
+    calls) so a semantic failure never erases money data from the ledger."""
+
+    def __init__(self, message: str, *, notional_usd: Optional[float] = None, worker_calls: int = 0):
+        super().__init__(message)
+        self.notional_usd = notional_usd
+        self.worker_calls = worker_calls
+
+
+FAILURE_CLASSES = ("semantic", "provider", "cap", "timeout", "unknown_cost", "harness")
+
+
+def classify_scenario_exception(exc: BaseException) -> str:
+    """Q-R4: map an escaped scenario exception to the CONTRACT's failure class — never
+    blame the provider for semantic or harness defects."""
+
+    if isinstance(exc, ScenarioSemanticError):
+        return "semantic"
+    subtype = str(getattr(exc, "cli_subtype", "") or "")
+    if subtype == "error_max_budget_usd":
+        return "cap"
+    if getattr(exc, "returncode", None) is not None or subtype:
+        return "provider"
+    message = str(exc).lower()
+    if "timeout" in message or "timed out" in message:
+        return "timeout"
+    if "console cli" in message or "external process" in message or "transport" in message:
+        return "provider"
+    return "harness"
 
 
 KNOWN_SCENARIOS = (
@@ -103,6 +148,25 @@ KNOWN_SCENARIOS = (
     "gopro_frame_inspection",
     "slackazz_triage",
 )
+
+# Q-R1 (amended contract, user budget clarification 2026-07-11): the suite ceilings are the
+# EXPECTED TARGET; the DECLARED per-scenario worst case below is the finite emergency bound
+# proof — (max attempted paid calls, max notional) assuming every structured worker burns
+# its one repair and vision calls hit the vision cap. Suite worst case for all four:
+# 10 calls / $1.20 notional. The runner refuses to START a suite whose declared worst case
+# exceeds the configured emergency maximum — bounded by construction, never by luck.
+SCENARIO_WORST_CASE = {
+    "anki_basic_card": (2, 2 * 0.10),
+    "mageqa_local_audit": (4, 4 * 0.10),
+    "gopro_frame_inspection": (2, 2 * 0.20),
+    "slackazz_triage": (2, 2 * 0.10),
+}
+
+
+def declared_worst_case(scenarios) -> tuple:
+    calls = sum(SCENARIO_WORST_CASE[name][0] for name in scenarios)
+    notional = round(sum(SCENARIO_WORST_CASE[name][1] for name in scenarios), 6)
+    return calls, notional
 
 
 class QualificationConfig(BaseModel):
@@ -118,6 +182,11 @@ class QualificationConfig(BaseModel):
     # pre-call cap; the suite ceiling still bounds the total.
     vision_invocation_budget_usd: float = 0.20
     suite_budget_usd: float = 0.50
+    # Q-R1 (amended): finite EMERGENCY maximums — the documented worst case the suite can
+    # reach even when everything retries; the expected target above is what a healthy run
+    # stays under. Pre-start gate: declared worst case must fit these.
+    emergency_max_worker_calls: int = 10
+    emergency_max_notional_usd: float = 1.20
     max_worker_calls: int = 6
     per_invocation_timeout_s: float = 180.0
     suite_timeout_s: float = 900.0
@@ -128,6 +197,7 @@ class QualificationConfig(BaseModel):
         "per_invocation_budget_usd",
         "vision_invocation_budget_usd",
         "suite_budget_usd",
+        "emergency_max_notional_usd",
         "per_invocation_timeout_s",
         "suite_timeout_s",
     )
@@ -180,10 +250,15 @@ class ScenarioOutcome(BaseModel):
     status: str  # "passed" | "failed"
     failure_class: Optional[str] = None  # semantic|provider|cap|timeout|unknown_cost
     notional_usd: Optional[float] = None  # None = provider did not report -> UNKNOWN
-    worker_calls: int = 0
+    worker_calls: int = 0  # ATTEMPTED paid calls (success + failure) — the spend bound
+    failed_worker_calls: int = 0
     duration_s: Optional[float] = None
     bundle_path: Optional[str] = None
     viewer_html_path: Optional[str] = None
+    # Q-R5: multi-run scenarios link EVERY half of their lifecycle (author engine run,
+    # suspension half, ...) — label -> bundle path; the reporter renders a page per bundle.
+    linked_bundles: dict = {}
+    linked_viewer_paths: dict = {}
     detail: str = ""
 
 
@@ -195,8 +270,26 @@ class SuiteReport(BaseModel):
     outcomes: list = []
     notional_usd_total: Optional[float] = None
     worker_calls_total: int = 0
+    failed_worker_calls_total: int = 0
     stopped_reason: Optional[str] = None
     completed: bool = False
+
+
+def persist_suite_report(report: "SuiteReport") -> None:
+    """Recompute totals and write the manifest — the ONE serialization used by the runner
+    after every scenario and by the reporter after viewer generation (Q-R6)."""
+
+    from pathlib import Path
+
+    known = [o.notional_usd for o in report.outcomes if o.notional_usd is not None]
+    report.notional_usd_total = round(sum(known), 6) if known else None
+    report.worker_calls_total = sum(o.worker_calls for o in report.outcomes)
+    report.failed_worker_calls_total = sum(o.failed_worker_calls for o in report.outcomes)
+    out_dir = Path(report.config.output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "qualification-summary.json").write_text(
+        report.model_dump_json(indent=2), encoding="utf-8"
+    )
 
 
 def run_qualification_suite(
@@ -205,6 +298,7 @@ def run_qualification_suite(
     *,
     identity: QualificationRunIdentity,
     clock: Optional[Any] = None,
+    finish_clock: Optional[Any] = None,
 ) -> SuiteReport:
     """Sequential fail-fast orchestration + notional-cost ledger (Q1.2).
 
@@ -215,79 +309,114 @@ def run_qualification_suite(
 
     import asyncio
     import time as _time
+    from datetime import datetime, timezone
     from pathlib import Path
 
     now = clock or _time.monotonic
+    read_finish = finish_clock or (lambda: datetime.now(timezone.utc).isoformat(timespec="seconds"))
     started = now()
+    # Q-R1 (amended): refuse to START work whose DECLARED worst case exceeds the finite
+    # emergency bound — spend that has not happened yet is the only spend a gate can stop.
+    worst_calls, worst_notional = declared_worst_case(config.scenarios)
+    if worst_calls > config.emergency_max_worker_calls or (
+        worst_notional > config.emergency_max_notional_usd
+    ):
+        raise QualificationError(
+            f"declared worst case ({worst_calls} calls / ${worst_notional:.2f}) exceeds the "
+            f"emergency maximum ({config.emergency_max_worker_calls} calls / "
+            f"${config.emergency_max_notional_usd:.2f}) — shrink the scenario set or raise "
+            "the documented bound deliberately"
+        )
     report = SuiteReport(identity=identity, config=config)
     out_dir = Path(config.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     def _persist() -> None:
-        known = [o.notional_usd for o in report.outcomes if o.notional_usd is not None]
-        report.notional_usd_total = round(sum(known), 6) if known else None
-        report.worker_calls_total = sum(o.worker_calls for o in report.outcomes)
-        (out_dir / "qualification-summary.json").write_text(
-            report.model_dump_json(indent=2), encoding="utf-8"
-        )
+        persist_suite_report(report)
+
+    def _finish(reason: Optional[str]) -> SuiteReport:
+        # Q-R6: EVERY terminal path stamps finished_at and persists the final report.
+        report.stopped_reason = reason
+        report.completed = reason is None
+        report.identity.finished_at = read_finish()
+        _persist()
+        return report
 
     def _spent() -> float:
         return sum(o.notional_usd or 0.0 for o in report.outcomes)
 
+    def _ceiling_violation(when: str) -> Optional[str]:
+        # Q-R1: ceilings are validated AFTER every scenario too (including the last) —
+        # "completed" is a claim about the WHOLE run, not about the pre-checks.
+        if _spent() > config.suite_budget_usd:
+            return (
+                f"suite budget ceiling EXCEEDED {when} (${_spent():.4f} > "
+                f"${config.suite_budget_usd:.2f})"
+            )
+        if report.worker_calls_total > config.max_worker_calls:
+            return (
+                f"worker-call ceiling EXCEEDED {when} ({report.worker_calls_total} > "
+                f"{config.max_worker_calls})"
+            )
+        elapsed = now() - started
+        if elapsed > config.suite_timeout_s:
+            return f"suite timeout EXCEEDED {when} ({elapsed:.0f}s > {config.suite_timeout_s:.0f}s)"
+        return None
+
     for name in config.scenarios:
         if name not in scenario_runners:
-            report.stopped_reason = f"no runner wired for scenario {name!r}"
-            _persist()
-            raise QualificationError(report.stopped_reason)
+            reason = f"no runner wired for scenario {name!r}"
+            _finish(reason)
+            raise QualificationError(reason)
         elapsed = now() - started
         if elapsed >= config.suite_timeout_s:
-            report.stopped_reason = f"suite timeout ({elapsed:.0f}s >= {config.suite_timeout_s:.0f}s)"
-            _persist()
-            return report
+            return _finish(f"suite timeout ({elapsed:.0f}s >= {config.suite_timeout_s:.0f}s)")
         if _spent() >= config.suite_budget_usd:
-            report.stopped_reason = (
+            return _finish(
                 f"suite budget ceiling reached (${_spent():.4f} >= ${config.suite_budget_usd:.2f})"
             )
-            _persist()
-            return report
         if report.worker_calls_total >= config.max_worker_calls:
-            report.stopped_reason = (
+            return _finish(
                 f"worker-call ceiling reached ({report.worker_calls_total} >= {config.max_worker_calls})"
             )
-            _persist()
-            return report
 
         try:
             outcome = asyncio.run(scenario_runners[name](config))
         except Exception as exc:
+            # Q-R2/Q-R4: typed classification + burn data carried by the exception — a
+            # failed paid call is money data, not prose.
             report.outcomes.append(
                 ScenarioOutcome(
-                    name=name, status="failed", failure_class="provider", detail=str(exc)[:500]
+                    name=name,
+                    status="failed",
+                    failure_class=classify_scenario_exception(exc),
+                    notional_usd=getattr(exc, "notional_usd", None),
+                    worker_calls=int(getattr(exc, "worker_calls", 0) or 0),
+                    failed_worker_calls=int(getattr(exc, "worker_calls", 0) or 0),
+                    detail=str(exc)[:500],
                 )
             )
-            report.stopped_reason = f"scenario {name!r} raised: {exc}"
-            _persist()
+            _finish(f"scenario {name!r} raised: {exc}")
             raise
         report.outcomes.append(outcome)
         _persist()  # result on disk BEFORE the next paid call may start
 
+        violation = _ceiling_violation(f"after scenario {name!r}")
+        if violation is not None:
+            return _finish(violation)
         if outcome.status != "passed":
-            report.stopped_reason = f"scenario {name!r} failed ({outcome.failure_class}): {outcome.detail}"
-            _persist()
-            return report
+            return _finish(
+                f"scenario {name!r} failed ({outcome.failure_class}): {outcome.detail}"
+            )
         if config.live and outcome.worker_calls > 0 and outcome.notional_usd is None:
             outcome.failure_class = "unknown_cost"
             outcome.status = "failed"
-            report.stopped_reason = (
+            return _finish(
                 f"scenario {name!r} reported UNKNOWN notional cost in live mode — "
                 "the ledger cannot bound spend, stopping"
             )
-            _persist()
-            return report
 
-    report.completed = report.stopped_reason is None
-    _persist()
-    return report
+    return _finish(None)
 
 
 # ====================================================================== Q3.1: visual report
@@ -305,23 +434,33 @@ def render_suite_report_html(report: SuiteReport) -> str:
     )
 
     out_dir = Path(report.config.output_dir)
+
+    def _render_bundle(bundle_path: str, page_name: str, title: str) -> str:
+        run_data = FileEventSource(bundle_path).read()
+        graph = build_observation_graph(
+            run_data.definition,
+            run_data.trace_events,
+            run_data.usage_events,
+            run_data.details,
+            run_id=run_data.run_id,
+        )
+        save_observation_html(run_data.definition, graph, out_dir / page_name, title=title)
+        return str(out_dir / page_name)
+
     rows = []
     for outcome in report.outcomes:
         viewer_rel = None
         if outcome.bundle_path:
-            run_data = FileEventSource(outcome.bundle_path).read()
-            graph = build_observation_graph(
-                run_data.definition,
-                run_data.trace_events,
-                run_data.usage_events,
-                run_data.details,
-                run_id=run_data.run_id,
-            )
             viewer_rel = f"{outcome.name}.html"
-            save_observation_html(
-                run_data.definition, graph, out_dir / viewer_rel, title=outcome.name
+            outcome.viewer_html_path = _render_bundle(
+                outcome.bundle_path, viewer_rel, outcome.name
             )
-            outcome.viewer_html_path = str(out_dir / viewer_rel)
+        for label, bundle in (outcome.linked_bundles or {}).items():
+            page = f"{outcome.name}--{label}.html"
+            outcome.linked_viewer_paths = {
+                **(outcome.linked_viewer_paths or {}),
+                label: _render_bundle(bundle, page, f"{outcome.name} — {label}"),
+            }
         cost = (
             f"~${outcome.notional_usd:.4f} (subscription plan value)"
             if outcome.notional_usd is not None
@@ -330,7 +469,12 @@ def render_suite_report_html(report: SuiteReport) -> str:
         status_label = outcome.status.upper()
         if outcome.failure_class:
             status_label += f" ({outcome.failure_class})"
-        link = f'<a href="{viewer_rel}">bundle view</a>' if viewer_rel else "—"
+        links = [f'<a href="{viewer_rel}">bundle view</a>'] if viewer_rel else []
+        links += [
+            f'<a href="{outcome.name}--{label}.html">{label}</a>'
+            for label in (outcome.linked_bundles or {})
+        ]
+        link = " · ".join(links) if links else "—"
         rows.append(
             f"<tr><td>{outcome.name}</td><td>{status_label}</td><td>{outcome.worker_calls}</td>"
             f"<td>{cost}</td><td>{outcome.duration_s or 0:.1f}s</td><td>{link}</td></tr>"
@@ -350,7 +494,10 @@ def render_suite_report_html(report: SuiteReport) -> str:
 <p>model requested: <code>{report.identity.requested_model}</code> · CLI: <code>{report.identity.cli_version}</code>
  · commit: <code>{report.identity.git_commit}</code> · platform: {report.identity.platform}
  · started: {report.identity.started_at}</p>
-<p>worker calls: {report.worker_calls_total}/{report.config.max_worker_calls}
+<p>worker calls: {report.worker_calls_total} attempted ({report.failed_worker_calls_total} failed)
+ · expected target: ≤{report.config.max_worker_calls} calls / ≤${report.config.suite_budget_usd:.2f}
+ · documented emergency maximum: {report.config.emergency_max_worker_calls} calls /
+ ${report.config.emergency_max_notional_usd:.2f}
  · subscription notional total: {total} (plan value — NEVER summed with metered API spend)</p>
 <table border="1" cellpadding="6">
 <tr><th>scenario</th><th>status</th><th>calls</th><th>notional cost</th><th>duration</th><th>observation</th></tr>
@@ -361,4 +508,7 @@ def render_suite_report_html(report: SuiteReport) -> str:
 """
     index = out_dir / "index.html"
     index.write_text(html, encoding="utf-8")
+    # Q-R6: the persisted manifest must carry the viewer paths the report just created —
+    # re-persist AFTER generation so disk and memory agree.
+    persist_suite_report(report)
     return str(index)

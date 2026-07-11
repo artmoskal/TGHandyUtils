@@ -109,7 +109,7 @@ TOOL_CATALOG: tuple[ToolEntry, ...] = (
         ),
         side_effects=(),
         builder=_build_console_llm,
-        covers=("ConsoleLLMClient",),
+        covers=("ConsoleLLMClient", "ConsoleCliError"),
     ),
     ToolEntry(
         name="console_chat",

@@ -362,6 +362,7 @@ class WorkflowExecutor:
         snapshot: MachineSnapshot,
         event_payload: Any,
         context: CapabilityContext,
+        observation_bundle: Optional[Any] = None,
     ) -> WorkflowRunResult:
         """Continue a suspended machine: fast-forward replay (zero re-execution — recorded routes
         steer the compiled graph) to the suspended node, execute it live with the resume event,
@@ -418,6 +419,9 @@ class WorkflowExecutor:
             context=context,
             usage_summary=restored_usage,
             definition=definition,
+            # Q-R5: the RESUMED half is a run too — it gets its own observation bundle, so
+            # the suspend→resume lifecycle is inspectable end to end, not only in memory.
+            bundle=observation_bundle,
         )
         with observation_capture_scope(self.runtime.observation), run_session_scope(session):
             # Recorded inside the session scope so the resumed-run envelope carries it too.

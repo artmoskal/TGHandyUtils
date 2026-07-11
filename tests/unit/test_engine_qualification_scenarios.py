@@ -76,7 +76,7 @@ _AUTHORED_AUDIT_FLOW = json.dumps(
     }
 )
 
-_AUDIT_SUMMARY = '{"total_pages": 3, "ok_pages": 2, "inconclusive_pages": 1, "verdict": "one page needs attention"}'
+_AUDIT_SUMMARY = '{"total_pages": 2, "ok_pages": 2, "inconclusive_pages": 0, "verdict": "two pages verified; one page failed probing"}'
 
 
 def _fakes():
@@ -130,20 +130,31 @@ async def test_anki_scenario_passes_hermetically_with_priced_subscription_call(t
     assert outcome.bundle_path and Path(outcome.bundle_path).exists()
 
 
-async def test_anki_scenario_fails_loudly_on_malformed_model_output(tmp_path):
+async def test_anki_scenario_reports_malformed_output_as_classified_provider_failure(tmp_path):
+    """Q-R2/Q-R4: parse/repair exhaustion returns a CLASSIFIED failed outcome that keeps
+    the burn (both attempted calls) — never a bare raise that erases money data."""
+
     fakes = _fakes()
     fakes[("anki_basic_card", "card_author")] = FakeSubscriptionLLM("utter garbage")
-    with pytest.raises(Exception):
-        await run_anki_basic_card(_config(tmp_path), _factory(fakes), tmp_path)
+    outcome = await run_anki_basic_card(_config(tmp_path), _factory(fakes), tmp_path)
+
+    assert outcome.status == "failed"
+    assert outcome.failure_class == "provider"
+    assert outcome.worker_calls == 2, "initial + repair attempts both count as spend"
+    assert outcome.notional_usd == pytest.approx(0.0246), "the failed attempts kept their burn"
 
 
-async def test_mageqa_scenario_authors_runs_and_preserves_partial_failure(tmp_path):
+async def test_mageqa_scenario_authors_runs_and_isolates_a_real_child_failure(tmp_path):
+    """Q-R7: page2 RAISES inside the fanout — the engine's partial-isolation contract is
+    proven by the fanout TRACE (total=3, succeeded=2, failed=1), not by the LLM's count."""
+
     fakes = _fakes()
     outcome = await run_mageqa_local_audit(_config(tmp_path), _factory(fakes), tmp_path)
 
     assert outcome.status == "passed"
     assert outcome.worker_calls == 2, "author + summarizer are the only real calls"
     assert outcome.notional_usd == pytest.approx(0.0246)
+    assert outcome.linked_bundles.get("author"), "the author half must have its own bundle (Q-R5)"
     author_fake = fakes[("mageqa_local_audit", "flow_author")]
     assert "probe_page" in author_fake.requests[0].user, "catalog must advertise the toolbox"
 
@@ -152,8 +163,12 @@ async def test_mageqa_rejects_an_artifact_referencing_unknown_capability(tmp_pat
     fakes = _fakes()
     bad_flow = _AUTHORED_AUDIT_FLOW.replace("probe_page", "ghost_probe")
     fakes[("mageqa_local_audit", "flow_author")] = FakeSubscriptionLLM(bad_flow)
-    with pytest.raises(Exception):
-        await run_mageqa_local_audit(_config(tmp_path), _factory(fakes), tmp_path)
+    outcome = await run_mageqa_local_audit(_config(tmp_path), _factory(fakes), tmp_path)
+
+    assert outcome.status == "failed"
+    assert outcome.failure_class == "provider"
+    assert "ghost_probe" in outcome.detail or "unknown" in outcome.detail.lower()
+    assert outcome.worker_calls >= 1, "the author attempts still count as spend"
 
 
 async def test_gopro_scenario_consumes_image_and_prior_state(tmp_path):
@@ -171,15 +186,21 @@ async def test_gopro_scenario_consumes_image_and_prior_state(tmp_path):
     )
 
 
-async def test_gopro_scenario_fails_loudly_on_malformed_vision_output(tmp_path):
-    """Failure pair: exhausted parse/repair on the vision call is LOUD, never a fake pass."""
+async def test_gopro_scenario_reports_malformed_vision_output_as_provider_failure(tmp_path):
+    """Failure pair: exhausted parse/repair on the vision call returns a classified failed
+    outcome with its burn — loud in the ledger, never a fake pass."""
 
     fakes = _fakes()
     fakes[("gopro_frame_inspection", "frame_inspector")] = FakeSubscriptionLLM(
         "not json at all", assert_images=True
     )
-    with pytest.raises(Exception):
-        await run_gopro_frame_inspection(_config(tmp_path), _factory(fakes), tmp_path)
+    outcome = await run_gopro_frame_inspection(_config(tmp_path), _factory(fakes), tmp_path)
+
+    assert outcome.status == "failed"
+    assert outcome.failure_class == "provider"
+    assert outcome.worker_calls == 2 and outcome.failed_worker_calls == 0, (
+        "both parse-failed attempts are ATTEMPTED spend (transport succeeded)"
+    )
 
 
 async def test_slackazz_scenario_suspends_resumes_and_denies_external_send(tmp_path):
@@ -189,6 +210,16 @@ async def test_slackazz_scenario_suspends_resumes_and_denies_external_send(tmp_p
     assert outcome.status == "passed"
     assert outcome.worker_calls == 1, "classification is the only real call"
     assert outcome.notional_usd == pytest.approx(0.0123)
+    # Q-R5: BOTH lifecycle halves are observable — resumed bundle is the primary and ends
+    # completed; the suspension half stays linked.
+    assert outcome.bundle_path and outcome.linked_bundles.get("suspension")
+    assert outcome.bundle_path != outcome.linked_bundles["suspension"]
+    import json as _json
+
+    resumed_trace = (Path(outcome.bundle_path) / "trace.jsonl").read_text(encoding="utf-8")
+    assert "machine:resumed" in resumed_trace
+    meta = _json.loads((Path(outcome.bundle_path) / "meta.json").read_text(encoding="utf-8"))
+    assert meta.get("status") == "completed", f"resumed bundle must finalize completed: {meta}"
 
 
 async def test_slackazz_reject_decision_fails_loudly_through_the_real_resume_path(tmp_path):
@@ -239,6 +270,19 @@ def test_full_hermetic_suite_produces_ledger_report_and_viewer_pages(tmp_path):
         viewer = Path(config.output_dir) / f"{name}.html"
         assert viewer.exists(), f"viewer page missing for {name}"
         assert "<html" in viewer.read_text(encoding="utf-8").lower()
+    # Q-R5: linked lifecycle halves get their own pages
+    assert (Path(config.output_dir) / "mageqa_local_audit--author.html").exists()
+    assert (Path(config.output_dir) / "slackazz_triage--suspension.html").exists()
+    # Q-R6: the PERSISTED manifest carries finished_at and the viewer paths
+    final = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert final["identity"]["finished_at"], "finished_at must be stamped on completion"
+    assert all(o["viewer_html_path"] for o in final["outcomes"]), (
+        "persisted outcomes must carry their viewer paths after report generation"
+    )
+    # Q-R7: the GoPro staged frame is a durable bundle artifact the viewer can resolve
+    gopro = next(o for o in report.outcomes if o.name == "gopro_frame_inspection")
+    artifacts = json.loads((Path(gopro.bundle_path) / "artifacts.json").read_text(encoding="utf-8"))
+    assert artifacts, "gopro bundle must archive the staged-frame artifact"
 
 
 def test_suite_persists_partial_report_and_stops_on_scenario_failure(tmp_path):
@@ -251,13 +295,17 @@ def test_suite_persists_partial_report_and_stops_on_scenario_failure(tmp_path):
         for name, fn in SCENARIO_FUNCTIONS.items()
     }
 
-    with pytest.raises(Exception):
-        run_qualification_suite(config, runners, identity=_identity())
+    report = run_qualification_suite(config, runners, identity=_identity())
 
     persisted = json.loads(
         (Path(config.output_dir) / "qualification-summary.json").read_text(encoding="utf-8")
     )
-    assert persisted["completed"] is False
-    assert persisted["stopped_reason"], "the stop reason must be persisted BEFORE raising"
+    assert report.completed is False and persisted["completed"] is False
+    assert persisted["stopped_reason"], "the stop reason must be persisted"
     assert len(persisted["outcomes"]) == 1, "later scenarios must NOT have started"
     assert persisted["outcomes"][0]["status"] == "failed"
+    assert persisted["outcomes"][0]["failure_class"] == "provider"
+    assert persisted["outcomes"][0]["notional_usd"] == pytest.approx(0.0246), (
+        "the failed scenario's burn must be persisted for the ledger"
+    )
+    assert persisted["identity"]["finished_at"], "stopped suites stamp finished_at too"
