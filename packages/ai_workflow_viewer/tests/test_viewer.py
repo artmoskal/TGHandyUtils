@@ -201,6 +201,7 @@ def _write_group(tmp_path, *, duplicate_usage_id=False, second_digest="dig-1"):
     from ai_workflow_engine import WorkflowBuilder
 
     definition = WorkflowBuilder("grouped").step("gate").step("finish").build()
+    real_digest = definition.definition_digest()
     usage_0 = WorkflowUsageEvent(
         node="gate", total_tokens=7, estimated_usd=0.01, cost_class="metered",
         run_id="logical-run", sequence=3, event_id="usage-a",
@@ -215,7 +216,7 @@ def _write_group(tmp_path, *, duplicate_usage_id=False, second_digest="dig-1"):
         ],
         usage_events=[usage_0],
         meta_extra=_segment_meta(
-            "logical-run", "logical-run", 0, status="requires_user_input"
+            "logical-run", "logical-run", 0, status="requires_user_input", digest=real_digest
         ) | {"total_tokens": 7, "metered_usd": 0.01, "usage_count": 1},
     )
     resume_usage = [
@@ -243,7 +244,8 @@ def _write_group(tmp_path, *, duplicate_usage_id=False, second_digest="dig-1"):
         usage_events=resume_usage,
         meta_extra=_segment_meta(
             "logical-run", "logical-run--s001", 1, parent="logical-run",
-            digest=second_digest, status="completed",
+            digest=(real_digest if second_digest == "dig-1" else second_digest),
+            status="completed",
         ) | {"total_tokens": 12, "metered_usd": 0.03, "usage_count": 2},
     )
     return definition
@@ -321,35 +323,99 @@ def test_read_group_lineage_corruption_is_loud(tmp_path):
 
     definition = WorkflowBuilder("grouped").step("gate").build()
 
+    grouped_definition = WorkflowBuilder("grouped").step("gate").step("finish").build()
+
     # duplicate index: two finalized segments both claiming index 1
     _write_group(tmp_path)
     _write_bundle(
-        tmp_path, "logical-run", definition, dir_name="logical-run--s001-r2",
-        meta_extra=_segment_meta("logical-run", "logical-run--s001-r2", 1, parent="logical-run"),
+        tmp_path, "logical-run", grouped_definition, dir_name="logical-run--s001-r2",
+        meta_extra=_segment_meta(
+            "logical-run", "logical-run--s001-r2", 1, parent="logical-run",
+            digest=grouped_definition.definition_digest(),
+        ),
     )
-    with _pytest.raises(ValueError, match="Duplicate segment index"):
+    with _pytest.raises(ValueError, match="[Dd]uplicate segment index"):
         FileEventSource(tmp_path).read_group("logical-run")
 
-    # named parent missing: suspension half deleted by hand
+    # broken chain: the suspension half was deleted by hand -> not contiguous
     import shutil
 
     shutil.rmtree(tmp_path / "logical-run--s001-r2")
     shutil.rmtree(tmp_path / "logical-run")
-    with _pytest.raises(ValueError, match="parent .* not present|names parent"):
+    with _pytest.raises(ValueError, match="contiguous|chain"):
         FileEventSource(tmp_path).read_group("logical-run")
 
-    # digest split: same logical run, different workflow definitions
+    # forged/stale meta digest: the file recompute is authoritative (W4R.2)
     for path in tmp_path.iterdir():
         shutil.rmtree(path)
-    _write_group(tmp_path, second_digest="dig-OTHER")
-    with _pytest.raises(ValueError, match="definition digests"):
+    _write_group(tmp_path, second_digest="dig-FORGED")
+    with _pytest.raises(ValueError, match="forged or stale"):
         FileEventSource(tmp_path).read_group("logical-run")
+
+    # ACTUAL definition split: correct metas, but segment 1 executes a different machine
+    for path in tmp_path.iterdir():
+        shutil.rmtree(path)
+    other_definition = WorkflowBuilder("grouped").step("gate").step("finish").step("extra").build()
+    _write_bundle(
+        tmp_path, "split-run", definition,
+        meta_extra=_segment_meta(
+            "split-run", "split-run", 0, digest=definition.definition_digest()
+        ),
+    )
+    _write_bundle(
+        tmp_path, "split-run", other_definition, dir_name="split-run--s001",
+        meta_extra=_segment_meta(
+            "split-run", "split-run--s001", 1, parent="split-run",
+            digest=other_definition.definition_digest(),
+        ),
+    )
+    with _pytest.raises(ValueError, match="DIFFERENT actual workflow definitions"):
+        FileEventSource(tmp_path).read_group("split-run")
+
+    # skipped parent: index 2 names index 0 as parent while index 1 exists
+    for path in tmp_path.iterdir():
+        shutil.rmtree(path)
+    digest = definition.definition_digest()
+    _write_bundle(
+        tmp_path, "skip-run", definition,
+        meta_extra=_segment_meta("skip-run", "skip-run", 0, digest=digest),
+    )
+    _write_bundle(
+        tmp_path, "skip-run", definition, dir_name="skip-run--s001",
+        meta_extra=_segment_meta("skip-run", "skip-run--s001", 1, parent="skip-run", digest=digest),
+    )
+    _write_bundle(
+        tmp_path, "skip-run", definition, dir_name="skip-run--s002",
+        meta_extra=_segment_meta("skip-run", "skip-run--s002", 2, parent="skip-run", digest=digest),
+    )
+    with _pytest.raises(ValueError, match="preceding segment"):
+        FileEventSource(tmp_path).read_group("skip-run")
+
+    # wrong kind: a continuation claiming to be 'initial'
+    for path in tmp_path.iterdir():
+        shutil.rmtree(path)
+    _write_bundle(
+        tmp_path, "kind-run", definition,
+        meta_extra=_segment_meta("kind-run", "kind-run", 0, digest=digest),
+    )
+    _write_bundle(
+        tmp_path, "kind-run", definition, dir_name="kind-run--s001",
+        meta_extra=_segment_meta(
+            "kind-run", "kind-run--s001", 1, parent="kind-run", digest=digest, kind="initial"
+        ),
+    )
+    with _pytest.raises(ValueError, match="illegal kind|starts with exactly one"):
+        FileEventSource(tmp_path).read_group("kind-run")
 
 
 def test_read_group_handles_legacy_and_mixed_roots(tmp_path):
-    """W4.1/W4.3 degradation: pre-segment (v0.8.1) bundles read as groups of one; a legacy
-    resume without parent lineage merges with an honest note instead of a refusal; and
-    list_groups shows one entry per logical run in a mixed root."""
+    """W4.1/W4R.2 degradation: pure v0.8.1 bundles read as groups of one; the REAL
+    migration shape — a pre-W4 suspension bundle continued by a segmented resume — merges
+    validly (parent = the legacy directory, digests recomputed equal); a continuation with
+    NO recorded lineage is now LOUD (incomplete history is refused, not annotated), while
+    its single bundle stays readable via plain read(). list_groups stays group-per-run."""
+
+    import pytest as _pytest
 
     from ai_workflow_engine import WorkflowBuilder
     from ai_workflow_viewer import FileEventSource
@@ -363,7 +429,21 @@ def test_read_group_handles_legacy_and_mixed_roots(tmp_path):
     )
     # new-style segmented pair under another logical id
     _write_group(tmp_path)
-    # legacy-lineage continuation: index 1 but parent unknown (pre-W4 snapshot)
+    # the valid MIXED migration shape: legacy suspension + post-upgrade segmented resume
+    _write_bundle(
+        tmp_path, "mixed-run", definition,
+        trace_events=[WorkflowTraceEvent(node="gate", node_status="requires_user_input", phase="node:result", run_id="mixed-run", sequence=1, event_id="m-0")],
+        meta_extra={"status": "requires_user_input"},  # v0.8.1 suspension: no segment meta
+    )
+    _write_bundle(
+        tmp_path, "mixed-run", definition, dir_name="mixed-run--s001-abc",
+        trace_events=[WorkflowTraceEvent(node="gate", node_status="completed", phase="node:result", run_id="mixed-run", sequence=1, event_id="m-1")],
+        meta_extra=_segment_meta(
+            "mixed-run", "mixed-run--s001-abc", 1, parent="mixed-run",
+            digest=definition.definition_digest(),
+        ),
+    )
+    # lineage-less continuation (pre-W4 snapshot): REFUSED as incomplete history
     _write_bundle(
         tmp_path, "half-run", definition, dir_name="half-run--s001-abc",
         trace_events=[WorkflowTraceEvent(node="gate", node_status="completed", phase="node:result", run_id="half-run", sequence=1, event_id="h-1")],
@@ -373,15 +453,22 @@ def test_read_group_handles_legacy_and_mixed_roots(tmp_path):
     source = FileEventSource(tmp_path)
     old_group = source.read_group("old-run")
     assert len(old_group.segments) == 1 and old_group.segments[0].segment_index == 0
-    assert old_group.segments[0].kind == "initial" and not old_group.lineage_notes
+    assert old_group.segments[0].kind == "initial" and not old_group.abandoned
     assert old_group.cumulative_meta_totals["scope"] == "single_bundle"
 
-    half_group = source.read_group("half-run")
-    assert len(half_group.segments) == 1
-    assert half_group.lineage_notes and "no recorded parent lineage" in half_group.lineage_notes[0]
+    mixed = source.read_group("mixed-run")
+    assert [segment.segment_index for segment in mixed.segments] == [0, 1]
+    assert mixed.status == "completed", "legacy suspension + segmented resume merge validly"
+
+    with _pytest.raises(ValueError, match="contiguous|chain"):
+        source.read_group("half-run")
+    single = FileEventSource(tmp_path / "half-run--s001-abc").read()
+    assert single.run_id == "half-run" and single.records, (
+        "the refused group's single bundle must remain readable on its own"
+    )
 
     groups = {entry["run_id"]: entry for entry in source.list_groups()}
-    assert set(groups) == {"old-run", "logical-run", "half-run"}
+    assert set(groups) == {"old-run", "logical-run", "mixed-run", "half-run"}
     assert groups["logical-run"]["segment_count"] == 2
     assert groups["logical-run"]["status"] == "completed"
 
@@ -429,3 +516,39 @@ def test_single_resumed_segment_read_is_no_longer_empty(tmp_path):
     )
     assert graph.timeline, "resumed-segment projection must not be empty"
     assert graph.nodes["finish"].status == "completed"
+
+
+def test_read_group_reports_abandoned_attempts_without_merging_them(tmp_path):
+    """W4R.1 reader side: abandoned crash-attempts appear as typed evidence on the group
+    (with their partial spend inspectable), but never enter canonical records, usage
+    totals, group status, or the index chain — and their duplicate index vs the
+    successful retry is NOT a lineage error."""
+
+    from ai_workflow_engine import WorkflowBuilder
+    from ai_workflow_viewer import FileEventSource
+
+    definition = WorkflowBuilder("grouped").step("gate").step("finish").build()
+    digest = definition.definition_digest()
+    _write_group(tmp_path)
+    _write_bundle(
+        tmp_path, "logical-run", definition, dir_name="logical-run--s001-dead",
+        trace_events=[
+            WorkflowTraceEvent(node="finish", decision="start", run_id="logical-run", sequence=1, event_id="dead-t1"),
+        ],
+        usage_events=[
+            WorkflowUsageEvent(node="finish", total_tokens=3, estimated_usd=0.005, cost_class="metered", run_id="logical-run", sequence=2, event_id="dead-u1"),
+        ],
+        meta_extra=_segment_meta(
+            "logical-run", "logical-run--s001-dead", 1, parent="logical-run", digest=digest,
+        ) | {"status": "abandoned", "abandoned_attempt": 1},
+    )
+
+    group = FileEventSource(tmp_path).read_group("logical-run")
+    assert [segment.segment_index for segment in group.segments] == [0, 1]
+    assert group.status == "completed"
+    assert [segment.segment_id for segment in group.abandoned] == ["logical-run--s001-dead"]
+    assert group.usage_totals["total_tokens"] == 12, "abandoned spend is NOT run history"
+    assert all(record.event_id != "dead-t1" for record in group.records)
+    assert group.abandoned[0].data.usage_events[0].estimated_usd == 0.005, (
+        "the crashed attempt's partial spend stays inspectable as evidence"
+    )

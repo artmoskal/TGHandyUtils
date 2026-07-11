@@ -51,6 +51,10 @@ class MachineSnapshot(BaseModel):
     # (their resumes then carry no parent lineage — the viewer reports incomplete lineage).
     segment_id: Optional[str] = None
     segment_index: int = 0
+    # W3R.1: a DURABLE suspension's snapshot is sealed to its registered wait — the public
+    # resume door rejects it; only the engine's claimed delivery path (which validates an
+    # unforgeable in-flight claim) may execute it. None = local wait, public resume as ever.
+    durable_wait_id: Optional[str] = None
 
     def to_json(self) -> str:
         """Serialize for cross-process resume. Raises loudly on non-serializable payloads."""

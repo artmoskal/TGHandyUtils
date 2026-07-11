@@ -39,6 +39,8 @@ from ai_workflow_engine.engine.capabilities import (
     RuntimePlanCompiler,
     TraceSink,
 )
+import logging
+
 from ai_workflow_engine.engine.checkpoints import CheckpointStore
 from ai_workflow_engine.executor import WorkflowExecutor, WorkflowRunResult
 from ai_workflow_engine.models import (
@@ -63,6 +65,8 @@ from ai_workflow_engine.snapshot import MachineSnapshot
 from ai_workflow_engine.models import CapabilityResult, WorkflowTraceEvent
 from ai_workflow_engine.usage import UsageSink
 from ai_workflow_engine.workflow import BranchDecision, WorkflowDefinition
+
+logger = logging.getLogger(__name__)
 
 # A capability handler is ``callable(context, payload) -> result`` (sync or async). Capability
 # objects that expose a ``.spec`` attribute (e.g. HumanClarificationCapability) are also accepted.
@@ -197,7 +201,114 @@ class WorkflowEngine:
             raise KeyError(f"unknown wait id {wait_id!r}")
         current = self.workflows.get(record.workflow_id)
         current_digest = current.definition_digest() if current is not None else None
-        return await runtime.deliver(wait_id, event, current_digest=current_digest)
+        outcome = await runtime.deliver(wait_id, event, current_digest=current_digest)
+        if (
+            outcome.kind in ("rejected", "attempts_exhausted")
+            and outcome.wait_status == "failed"
+            and outcome.run_result is None
+        ):
+            # W3R.3: THIS call terminalized the wait without any machine continuation
+            # (digest mismatch, missing snapshot, or exhausted attempts) — the observation
+            # group must not keep reporting a suspended run while the coordinator says
+            # failed. Write the engine-owned terminal evidence segment.
+            await self._record_wait_terminal_segment(wait_id, runtime, current)
+        return outcome
+
+    async def _record_wait_terminal_segment(self, wait_id: str, runtime: Any, current: Any) -> None:
+        """W3R.3: finalize a small ``wait_terminal`` observation segment so grouped
+        viewers and retention agree with coordinator truth when a wait fails WITHOUT a
+        continuation run. Best-effort by design: evidence writing must never mask the
+        typed delivery outcome — failures are logged loudly instead of raised."""
+
+        if self.observation is None or not self.observation.enabled:
+            return
+        try:
+            from ai_workflow_engine.models import WorkflowTraceEvent  # call-time (F1.1)
+            from ai_workflow_engine.observation_bundle import (  # call-time (F1.1)
+                ObservationSegment,
+                open_observation_run_bundle,
+            )
+            from ai_workflow_engine.snapshot import MachineSnapshot
+
+            record = await runtime.coordinator.get(wait_id)
+            if record is None or record.status != "failed":
+                return
+            if current is None:
+                logger.warning(
+                    "wait %s failed (%s) but its workflow %r is not registered — no "
+                    "definition available, terminal observation segment skipped",
+                    wait_id,
+                    record.failure_kind,
+                    record.workflow_id,
+                )
+                return
+            parent_segment_id = None
+            segment_index = max(1, int(record.resume_attempts or 0))
+            snapshot_json = await runtime.coordinator.load_snapshot(wait_id)
+            if snapshot_json:
+                try:
+                    stored = MachineSnapshot.model_validate_json(snapshot_json)
+                    segment_index = int(stored.segment_index) + 1
+                    parent_segment_id = stored.segment_id
+                except Exception:
+                    logger.warning(
+                        "stored snapshot for wait %s is unparseable — terminal evidence "
+                        "segment falls back to the attempt-based index %s",
+                        wait_id,
+                        segment_index,
+                    )
+            from ai_workflow_engine.observation_bundle import (  # call-time (F1.1)
+                finalize_abandoned_attempt_segments,
+            )
+
+            finalize_abandoned_attempt_segments(
+                self.observation.bundle_dir,
+                run_id=str(record.run_id),
+                segment_index=segment_index,
+                parent_segment_id=parent_segment_id,
+                definition=current,
+                definition_digest=record.definition_digest,
+                upto_attempt=int(record.resume_attempts or 0) + 1,
+            )
+            bundle = open_observation_run_bundle(
+                self.observation.bundle_dir,
+                str(record.run_id),
+                retention_limit=self.observation.retention_limit,
+                artifact_policy=self.observation.artifacts,
+                artifact_max_bytes=self.observation.artifact_max_bytes,
+                segment=ObservationSegment(
+                    segment_id=f"{record.run_id}--s{segment_index:03d}-wfail",
+                    segment_index=segment_index,
+                    kind="wait_terminal",
+                    parent_segment_id=parent_segment_id,
+                    # the digest the wait was REGISTERED against — the group's canonical
+                    # definition identity, even when the currently registered file changed
+                    definition_digest=record.definition_digest,
+                ),
+            )
+            bundle.trace_sink.record(
+                WorkflowTraceEvent(
+                    node=record.suspended_node,
+                    decision="wait:failed",
+                    node_status="failed",
+                    phase="node:result",
+                    error=(record.failure_detail or record.failure_kind or "wait failed")[:500],
+                    run_id=str(record.run_id),
+                    metadata={
+                        "wait_id": wait_id,
+                        "failure_kind": record.failure_kind or "unknown",
+                        "resume_attempts": record.resume_attempts,
+                    },
+                )
+            )
+            bundle.finalize(current, status="failed")
+        except Exception:
+            logger.exception(
+                "failed to write terminal observation segment for wait %s — the typed "
+                "delivery outcome is unaffected, but the observation group may still "
+                "show the run as suspended",
+                wait_id,
+            )
 
     @property
     def wait_coordinator(self) -> Any:
@@ -533,6 +644,29 @@ class WorkflowEngine:
             raise KeyError(
                 f"Unknown workflow: {snapshot.workflow_id} — register it before resuming"
             )
+        if snapshot.durable_wait_id:
+            # W3R.1: a durable suspension has ONE door — deliver_wait_event. Raw snapshot
+            # bytes (from the coordinator or product storage) must not re-enter execution
+            # here: that would skip claim/dedup/lease/attempt-bounds/terminalization. The
+            # claimed delivery path proves itself with the in-flight claim token minted by
+            # DurableWaitRuntime.deliver(); nothing else can present it.
+            delivery = (
+                event_payload.get("__wait_delivery__") if isinstance(event_payload, dict) else None
+            )
+            runtime = getattr(self.executor, "wait_runtime", None)
+            if (
+                runtime is None
+                or not isinstance(delivery, dict)
+                or delivery.get("wait_id") != snapshot.durable_wait_id
+                or not runtime.holds_claim(
+                    snapshot.durable_wait_id, delivery.get("claim_token")
+                )
+            ):
+                raise RuntimeError(
+                    f"snapshot is sealed to durable wait {snapshot.durable_wait_id!r} — "
+                    "resume it via engine.deliver_wait_event(wait_id, event); direct "
+                    "resume would bypass claim, deduplication, leases, and attempt bounds"
+                )
         # B-post3 (strict override rule): resume continues the ORIGINAL run identity — goal,
         # constraints, user, delivery target, metadata, and run-id lineage all come from the
         # snapshot. Forking the context is a DELIBERATE act: pass a full replacement ``goal=``.
@@ -575,6 +709,23 @@ class WorkflowEngine:
                 # this (index, attempt) exists (CAS), and a crash-retry reclaim carries a
                 # higher attempt, so it can never append into a dead attempt's directory.
                 attempt = int(delivery.get("attempt") or 1)
+                if attempt > 1:
+                    # W4R.1: the engine-owned reconciliation moment — every PRIOR crashed
+                    # attempt's leftover directory becomes typed abandoned evidence owned
+                    # by group retention (never touches THIS attempt's directory).
+                    from ai_workflow_engine.observation_bundle import (  # call-time (F1.1)
+                        finalize_abandoned_attempt_segments,
+                    )
+
+                    finalize_abandoned_attempt_segments(
+                        self.observation.bundle_dir,
+                        run_id=logical_run_id,
+                        segment_index=child_index,
+                        parent_segment_id=snapshot.segment_id,
+                        definition=definition,
+                        definition_digest=definition.definition_digest(),
+                        upto_attempt=attempt,
+                    )
                 segment_id = f"{logical_run_id}--s{child_index:03d}" + (
                     "" if attempt <= 1 else f"-r{attempt}"
                 )

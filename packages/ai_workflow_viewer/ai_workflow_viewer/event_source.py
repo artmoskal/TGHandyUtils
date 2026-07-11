@@ -80,7 +80,9 @@ class ObservationGroupData:
     records: list[ObservationRecord]
     usage_totals: dict
     cumulative_meta_totals: dict
-    lineage_notes: list[str]
+    # W4R.1: crashed delivery attempts, finalized as typed `abandoned` evidence — never
+    # merged into canonical history (their events are the partial prefix of the retry).
+    abandoned: list[ObservationSegmentData]
 
     @property
     def trace_events(self) -> list[WorkflowTraceEvent]:
@@ -157,6 +159,7 @@ class FileEventSource:
 
         root = self.base_path.parent if _is_run_bundle(self.base_path) else self.base_path
         segments: list[ObservationSegmentData] = []
+        abandoned: list[ObservationSegmentData] = []
         for path in sorted(root.iterdir()) if root.exists() else []:
             if not (path.is_dir() and _is_run_bundle(path)):
                 continue
@@ -164,33 +167,26 @@ class FileEventSource:
             if str(meta.get("run_id") or path.name) != logical_run_id:
                 continue
             data = FileEventSource(path).read()  # per-segment sequence sanity runs here
-            segments.append(
-                ObservationSegmentData(
-                    segment_id=str(meta.get("segment_id") or path.name),
-                    segment_index=int(meta.get("segment_index") or 0),
-                    kind=str(meta.get("segment_kind") or "initial"),
-                    parent_segment_id=(
-                        str(meta["parent_segment_id"])
-                        if meta.get("parent_segment_id")
-                        else None
-                    ),
-                    status=str(meta.get("status") or "unknown"),
-                    path=str(path),
-                    data=data,
-                )
+            segment = ObservationSegmentData(
+                segment_id=str(meta.get("segment_id") or path.name),
+                segment_index=int(meta.get("segment_index") or 0),
+                kind=str(meta.get("segment_kind") or "initial"),
+                parent_segment_id=(
+                    str(meta["parent_segment_id"]) if meta.get("parent_segment_id") else None
+                ),
+                status=str(meta.get("status") or "unknown"),
+                path=str(path),
+                data=data,
             )
+            # W4R.1: abandoned crash-attempts are typed evidence, never canonical history.
+            (abandoned if segment.status == "abandoned" else segments).append(segment)
         if not segments:
             raise FileNotFoundError(
                 f"No finalized observation segments for logical run {logical_run_id!r} under {root}"
             )
         segments.sort(key=lambda segment: segment.segment_index)
-        _assert_group_lineage_sane(logical_run_id, segments)
-        lineage_notes = [
-            f"segment {segment.segment_index} ({segment.segment_id}) has no recorded parent "
-            "lineage (pre-segment snapshot or pre-W4 suspension)"
-            for segment in segments
-            if segment.segment_index > 0 and segment.parent_segment_id is None
-        ]
+        abandoned.sort(key=lambda segment: (segment.segment_index, segment.segment_id))
+        group_digest = _assert_group_lineage_sane(logical_run_id, segments, abandoned)
         merged: list[ObservationRecord] = []
         seen_ids: set[tuple[str, str]] = set()
         for segment in segments:
@@ -212,9 +208,11 @@ class FileEventSource:
             definition=segments[0].data.definition,
             segments=segments,
             records=merged,
-            # W4.4: group spend is the sum of SEGMENT-LOCAL events (each spent exactly once
-            # in exactly one segment) — never a sum of per-segment meta totals, which are
-            # cumulative-since-run-start on resumed segments.
+            # W4.4: group spend is the sum of CANONICAL segment-local events (each spent
+            # exactly once in exactly one segment) — never a sum of per-segment meta
+            # totals, which are cumulative-since-run-start on resumed segments. An
+            # abandoned attempt's partial spend was real money too, but it is not run
+            # history: inspect it via group.abandoned[i].data.usage_events.
             usage_totals=_usage_totals_from_events(usage_events),
             cumulative_meta_totals={
                 "scope": newest_meta.get("usage_totals_scope") or "single_bundle",
@@ -223,7 +221,7 @@ class FileEventSource:
                 "notional_usd": newest_meta.get("notional_usd"),
                 "usage_count": newest_meta.get("usage_count"),
             },
-            lineage_notes=lineage_notes,
+            abandoned=abandoned,
         )
 
     def list_groups(self) -> list[dict]:
@@ -239,8 +237,11 @@ class FileEventSource:
                 grouped.setdefault(str(entry["run_id"]), []).append(entry)
         groups = []
         for run_id, entries in grouped.items():
+            canonical = [
+                item for item in entries if str(item.get("status")) != "abandoned"
+            ] or entries
             newest = max(
-                entries,
+                canonical,
                 key=lambda item: (
                     int(item.get("segment_index") or 0),
                     str(item.get("timestamp") or ""),
@@ -249,7 +250,8 @@ class FileEventSource:
             groups.append(
                 {
                     "run_id": run_id,
-                    "segment_count": len(entries),
+                    "segment_count": len(canonical),
+                    "abandoned_count": len(entries) - len(canonical),
                     "status": newest.get("status"),
                     "timestamp": max(str(item.get("timestamp") or "") for item in entries),
                     "workflow_id": newest.get("workflow_id"),
@@ -320,37 +322,87 @@ def _assert_sequence_sane(records: list[ObservationRecord]) -> None:
 
 
 def _assert_group_lineage_sane(
-    logical_run_id: str, segments: list[ObservationSegmentData]
-) -> None:
-    """Loud lineage integrity (W4.3): duplicate index, absent named parent, digest split."""
+    logical_run_id: str,
+    segments: list[ObservationSegmentData],
+    abandoned: list[ObservationSegmentData],
+) -> str | None:
+    """W4R.2: REAL lineage integrity, not metadata agreement. Canonical segments must form
+    one contiguous chain — exactly one index-0 ``initial``, indexes 0..N without gaps or
+    duplicates, every continuation's parent equal to the immediately preceding segment,
+    legal kinds (``wait_terminal`` only as the final segment), unique segment ids — and
+    the definition digest is RECOMPUTED from each segment's actual ``definition.json``
+    (a forged/stale meta digest cannot bless a changed machine). Pre-segment (v0.8.1)
+    bundles remain valid groups of one. Returns the group's canonical digest.
+    """
 
-    seen_indexes: dict[int, str] = {}
-    known_segment_ids = {segment.segment_id for segment in segments}
-    digests = {
-        str(segment.data.meta.get("definition_digest"))
-        for segment in segments
-        if segment.data.meta.get("definition_digest")
-    }
-    if len(digests) > 1:
-        raise ValueError(
-            f"Observation group {logical_run_id!r} mixes definition digests {sorted(digests)} — "
-            "segments of one logical run must share one workflow definition"
+    def _fail(reason: str) -> None:
+        raise ValueError(f"Observation group {logical_run_id!r}: {reason}")
+
+    ids = [segment.segment_id for segment in segments]
+    if len(set(ids)) != len(ids):
+        _fail(f"duplicate segment ids {sorted(ids)} — refusing to merge ambiguous history")
+    indexes = [segment.segment_index for segment in segments]
+    for first, second in zip(segments, segments[1:]):
+        if second.segment_index == first.segment_index:
+            _fail(
+                f"duplicate segment index {second.segment_index} ({first.segment_id} vs "
+                f"{second.segment_id}) — evidence of a re-executed continuation"
+            )
+    if indexes != list(range(len(segments))):
+        _fail(
+            f"segment indexes {indexes} are not the contiguous chain "
+            f"{list(range(len(segments)))} — history is incomplete (deleted, never "
+            "finalized, or recorded without lineage)"
         )
-    for segment in segments:
-        if segment.segment_index in seen_indexes:
-            raise ValueError(
-                f"Duplicate segment index {segment.segment_index} in observation group "
-                f"{logical_run_id!r} ({seen_indexes[segment.segment_index]} vs "
-                f"{segment.segment_id}) — evidence of a re-executed continuation; refusing "
-                "to merge ambiguous history"
+    for position, segment in enumerate(segments):
+        if position == 0:
+            if segment.kind != "initial":
+                _fail(
+                    f"segment 0 ({segment.segment_id}) has kind {segment.kind!r} — a group "
+                    "starts with exactly one 'initial' segment"
+                )
+        else:
+            if segment.kind not in ("resume", "wait_terminal"):
+                _fail(
+                    f"segment {segment.segment_index} ({segment.segment_id}) has illegal "
+                    f"kind {segment.kind!r}"
+                )
+            if segment.kind == "wait_terminal" and position != len(segments) - 1:
+                _fail(
+                    f"wait_terminal segment {segment.segment_id} is not last — nothing can "
+                    "continue a terminally failed wait"
+                )
+            if segment.parent_segment_id != segments[position - 1].segment_id:
+                _fail(
+                    f"segment {segment.segment_id} names parent "
+                    f"{segment.parent_segment_id!r} but the preceding segment is "
+                    f"{segments[position - 1].segment_id!r} — the chain must be unbroken"
+                )
+    # Definition truth: recompute from the actual definition.json of every canonical
+    # machine segment. wait_terminal segments are terminal EVIDENCE about the wait — their
+    # definition file may legitimately be the changed currently-registered machine, so
+    # only their meta claim is held to the group digest.
+    recomputed = {
+        segment.segment_id: segment.data.definition.definition_digest()
+        for segment in segments
+        if segment.kind != "wait_terminal"
+    }
+    distinct = sorted(set(recomputed.values()))
+    if len(distinct) > 1:
+        _fail(
+            f"segments carry DIFFERENT actual workflow definitions (recomputed digests "
+            f"{distinct}) — one logical run executes one machine"
+        )
+    group_digest = distinct[0] if distinct else None
+    for segment in segments + abandoned:
+        claimed = segment.data.meta.get("definition_digest")
+        if claimed and group_digest and str(claimed) != group_digest:
+            _fail(
+                f"segment {segment.segment_id} meta claims digest {claimed!r} but the "
+                f"group's actual definition digest is {group_digest!r} — forged or stale "
+                "metadata is rejected"
             )
-        seen_indexes[segment.segment_index] = segment.segment_id
-        if segment.parent_segment_id and segment.parent_segment_id not in known_segment_ids:
-            raise ValueError(
-                f"Segment {segment.segment_id} of observation group {logical_run_id!r} names "
-                f"parent {segment.parent_segment_id!r} which is not present — its suspension "
-                "history was deleted or never finalized"
-            )
+    return group_digest
 
 
 def _usage_totals_from_events(events: list[WorkflowUsageEvent]) -> dict:

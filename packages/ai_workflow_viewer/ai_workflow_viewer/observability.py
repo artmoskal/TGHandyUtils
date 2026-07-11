@@ -291,7 +291,10 @@ def observation_group_to_html(group: Any, *, title: Optional[str] = None) -> str
     totals = group.usage_totals
     cumulative = group.cumulative_meta_totals
     notes = "\n".join(
-        f'<p class="lineage-note muted">⚠ {html.escape(note)}</p>' for note in group.lineage_notes
+        f'<p class="abandoned-note muted">⚠ abandoned crash-attempt '
+        f"{segment.segment_index} (<code>{html.escape(segment.segment_id)}</code>) — "
+        f"partial evidence, not run history</p>"
+        for segment in getattr(group, "abandoned", [])
     )
     strip = f"""<section class="segment-strip" id="segments">
 <h2>Run segments ({len(group.segments)}) — logical run <code>{html.escape(group.run_id)}</code></h2>

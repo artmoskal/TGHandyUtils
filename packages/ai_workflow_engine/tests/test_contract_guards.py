@@ -646,3 +646,42 @@ def test_top_level_image_input_import_stays_on_the_transport_leaf():
         f"top-level ImageInput dragged heavy modules into the process: {loaded} — the export "
         "must point at the transport leaf, not the vision façade"
     )
+
+
+def test_no_class_defines_the_same_method_twice():
+    """W3R.2 structural guard: Python silently keeps only the LAST definition when a class
+    body defines a method name twice — lifecycle policy would then have a dead source copy
+    that future fixes can land in while tests exercise the live one (this exactly happened
+    to InMemoryWaitCoordinator's claim/complete/fail/_terminalize block in W3)."""
+
+    import ast
+    from pathlib import Path
+
+    package_root = Path(__file__).resolve().parents[1] / "ai_workflow_engine"
+    offenders: list[str] = []
+    for module in sorted(package_root.rglob("*.py")):
+        tree = ast.parse(module.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            seen: dict[str, int] = {}
+            for item in node.body:
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    # property setter/deleter and typing overloads legitimately reuse names
+                    decorators = {
+                        f"{d.value.id}.{d.attr}"
+                        if isinstance(d, ast.Attribute) and isinstance(d.value, ast.Name)
+                        else (d.id if isinstance(d, ast.Name) else None)
+                        for d in item.decorator_list
+                    }
+                    if decorators & {f"{item.name}.setter", f"{item.name}.deleter", "overload"}:
+                        continue
+                    if item.name in seen:
+                        offenders.append(
+                            f"{module.relative_to(package_root.parent)}:{item.lineno} "
+                            f"class {node.name} redefines {item.name!r} "
+                            f"(first at line {seen[item.name]})"
+                        )
+                    else:
+                        seen[item.name] = item.lineno
+    assert not offenders, "duplicate method definitions shadow silently:\n" + "\n".join(offenders)

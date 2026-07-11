@@ -423,12 +423,15 @@ class WorkflowExecutor:
         # idempotency context, and the wait node sees only the inner payload.
         if isinstance(event_payload, dict) and "__wait_delivery__" in event_payload:
             delivery = event_payload["__wait_delivery__"]
+            # W3R.1: the claim token is a door credential, not run context — it must not
+            # leak into capability metadata or traces.
+            exposed = {k: v for k, v in dict(delivery).items() if k != "claim_token"}
             context = context.model_copy(
                 update={
                     "metadata": {
                         **context.metadata,
                         "wait_idempotency": f"{delivery['wait_id']}:{delivery['event_id']}",
-                        "wait_delivery": dict(delivery),
+                        "wait_delivery": exposed,
                     }
                 }
             )
@@ -985,6 +988,21 @@ class WorkflowExecutor:
         return 25 + len(definition.nodes) * (2 + loops)
 
     # ---------------------------------------------------------------- envelopes
+    @staticmethod
+    def _suspension_occurrence(final_state: Dict[str, Any], suspended: str) -> int:
+        """0-based ordinal of the CURRENT suspension of ``suspended`` (already recorded
+        in node_results). One shared source for snapshot sealing and wait registration."""
+
+        return max(
+            0,
+            sum(
+                1
+                for r in final_state.get("node_results", [])
+                if r.node_id == suspended and r.status == "requires_user_input"
+            )
+            - 1,
+        )
+
     def _build_snapshot(
         self,
         definition: WorkflowDefinition,
@@ -996,6 +1014,22 @@ class WorkflowExecutor:
         # (local or claimed) derives the continuation segment from persisted lineage —
         # never from a directory scan. No bundle/segment on the session -> defaults.
         segment = getattr(getattr(session, "bundle", None), "segment", None)
+        # W3R.1: a durable suspension's snapshot carries its deterministic wait id, sealing
+        # it to the claimed delivery path (public resume rejects it). Same inputs as
+        # registration -> same id by construction; registration double-checks.
+        durable_wait_id: Optional[str] = None
+        node = definition.node(suspended) if suspended in {n.id for n in definition.nodes} else None
+        if node is not None and (node.wait_policy or {}).get("mode") == "durable":
+            from ai_workflow_engine.wait_runtime import DurableWaitRuntime
+
+            run_context_obj = final_state.get("workflow_context")
+            run_id_for_wait = getattr(run_context_obj, "workflow_id", None)
+            if run_id_for_wait:
+                durable_wait_id = DurableWaitRuntime.wait_id_for(
+                    str(run_id_for_wait),
+                    suspended,
+                    self._suspension_occurrence(final_state, suspended),
+                )
         node_results: List[NodeResult] = list(final_state.get("node_results", []))
         plan = final_state.get("plan_artifact")
         if plan is not None and hasattr(plan, "model_dump"):
@@ -1033,6 +1067,7 @@ class WorkflowExecutor:
             ),
             segment_id=getattr(segment, "segment_id", None),
             segment_index=getattr(segment, "segment_index", 0) or 0,
+            durable_wait_id=durable_wait_id,
         )
 
     async def _register_durable_or_fold(
@@ -1128,15 +1163,7 @@ class WorkflowExecutor:
         snapshot = self._build_snapshot(definition, suspended, final_state, session)
         assert_byte_safe(snapshot.model_dump(), mode="persist", path="durable_wait.snapshot")
         run_id = str(context.run_context.workflow_id)
-        occurrence = max(
-            0,
-            sum(
-                1
-                for r in final_state.get("node_results", [])
-                if r.node_id == suspended and r.status == "requires_user_input"
-            )
-            - 1,  # the CURRENT suspension is already recorded; index prior ones
-        )
+        occurrence = self._suspension_occurrence(final_state, suspended)
         # W2A.2: identity, reuse, receipt validation, and clock live in ONE lifecycle
         # owner; the executor detects, builds the snapshot, delegates, and records.
         outcome = await wait_runtime.register_suspension(
@@ -1150,6 +1177,12 @@ class WorkflowExecutor:
                 snapshot_json=snapshot.model_dump_json(),
             )
         )
+        if snapshot.durable_wait_id != outcome.handle.wait_id:
+            raise RuntimeError(
+                f"wait identity integrity failure: snapshot sealed to "
+                f"{snapshot.durable_wait_id!r} but registration produced "
+                f"{outcome.handle.wait_id!r}"
+            )
         self.runtime.trace_sink.record(
             WorkflowTraceEvent(
                 node=suspended,

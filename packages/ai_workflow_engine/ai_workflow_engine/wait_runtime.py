@@ -105,9 +105,18 @@ class DurableWaitRuntime:
         self.coordinator = coordinator
         self._clock = clock
         self._resume_port = resume_port  # consumed by W3 delivery; never called in W2
+        # W3R.1: per-delivery unforgeable claim tokens — set ONLY inside deliver() while
+        # the claimed resume is in flight. The public resume door validates against this
+        # registry, so a product holding raw snapshot bytes cannot re-enter execution.
+        self._inflight_claims: dict[str, str] = {}
 
     def now(self) -> datetime:
         return self._clock() if self._clock is not None else datetime.now(timezone.utc)
+
+    def holds_claim(self, wait_id: str, token: Optional[str]) -> bool:
+        """W3R.1: True only while deliver() is executing THIS wait under THIS token."""
+
+        return bool(token) and self._inflight_claims.get(wait_id) == token
 
     @staticmethod
     def wait_id_for(run_id: str, suspended_node: str, occurrence: int) -> str:
@@ -153,7 +162,13 @@ class DurableWaitRuntime:
         # W3.2: a changed machine is REJECTED, never replayed through a new graph.
         if current_digest is None or record.definition_digest != current_digest:
             failed = await self.coordinator.fail(
-                wait_id, claim, error="definition digest mismatch at delivery"
+                wait_id,
+                claim,
+                error=(
+                    f"registered digest {record.definition_digest!r} does not match the "
+                    f"currently registered definition {current_digest!r}"
+                ),
+                failure_kind="digest_mismatch",
             )
             return WaitDeliveryOutcome(
                 kind="rejected",
@@ -166,7 +181,9 @@ class DurableWaitRuntime:
             )
         snapshot_json = await self.coordinator.load_snapshot(wait_id)
         if not snapshot_json:
-            failed = await self.coordinator.fail(wait_id, claim, error="stored snapshot missing")
+            failed = await self.coordinator.fail(
+                wait_id, claim, error="stored snapshot missing", failure_kind="snapshot_missing"
+            )
             return WaitDeliveryOutcome(
                 kind="rejected", wait_id=wait_id, wait_status=failed.status,
                 detail="stored snapshot missing — adapter integrity failure",
@@ -179,25 +196,38 @@ class DurableWaitRuntime:
         # envelope so external writes can key retries deterministically. `attempt` (W4.2)
         # is the claim ordinal from the coordinator — a crash-retry reclaim gets a HIGHER
         # attempt, so its observation segment never appends into the crashed attempt's dir.
-        run_result = await self._resume_port(  # type: ignore[misc]
-            snapshot_json,
-            {
-                "__wait_delivery__": {
-                    "wait_id": wait_id,
-                    "event_id": event.event_id,
-                    "kind": event.kind,
-                    "attempt": record.resume_attempts,
+        # `claim_token` (W3R.1) proves to the resume door that THIS delivery holds the
+        # live claim; it exists only for the duration of this call.
+        import uuid as _uuid
+
+        claim_token = _uuid.uuid4().hex
+        self._inflight_claims[wait_id] = claim_token
+        try:
+            run_result = await self._resume_port(  # type: ignore[misc]
+                snapshot_json,
+                {
+                    "__wait_delivery__": {
+                        "wait_id": wait_id,
+                        "event_id": event.event_id,
+                        "kind": event.kind,
+                        "attempt": record.resume_attempts,
+                        "claim_token": claim_token,
+                    },
+                    "payload": resume_event,
                 },
-                "payload": resume_event,
-            },
-        )
+            )
+        finally:
+            self._inflight_claims.pop(wait_id, None)
         if run_result.status in ("completed", "partial", "requires_user_input"):
             terminal = await self.coordinator.complete(
                 wait_id, claim, resolution_kind=event.kind
             )
         else:
             terminal = await self.coordinator.fail(
-                wait_id, claim, error=str(run_result.error or "resumed run failed")[:500]
+                wait_id,
+                claim,
+                error=str(run_result.error or "resumed run failed")[:500],
+                failure_kind="resume_failed",
             )
         return WaitDeliveryOutcome(
             kind="executed",
