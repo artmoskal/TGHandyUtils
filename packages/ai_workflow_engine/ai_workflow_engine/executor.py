@@ -759,16 +759,17 @@ class WorkflowExecutor:
             artifact_ids=[artifact.artifact_id for artifact in result.artifacts],
         )
         node_results = [*state.get("node_results", []), record]
-        # Q4.2 root cause: terminal node status previously lived ONLY in state/NodeResult —
-        # bundles carried no terminal event, so viewers could only guess "running". The
-        # terminal status is now part of the run's trace record; error text rides along only
-        # when the node actually failed (the viewer treats any error as failure).
+        # Q4.2/QRF.5: terminal node status is a TYPED trace field (bundles carry how the
+        # node ended; `decision` stays reserved for actual decisions). The failure reason
+        # rides along for failed AND partial — a partial fanout must keep WHY its children
+        # failed without the viewer flipping the whole node to failed.
         self.runtime.trace_sink.record(
             WorkflowTraceEvent(
                 node=node.id,
                 attempt=attempts,
-                decision=f"node:{status}",
-                error=(error or result.error) if status == "failed" else None,
+                node_status=status,
+                phase="node:result",
+                error=(error or result.error) if status in ("failed", "partial") else None,
                 metadata={"kind": node.kind, **({"branch_label": branch_label} if branch_label else {})},
             )
         )

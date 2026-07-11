@@ -55,13 +55,20 @@ class ConsoleCliError(RuntimeError):
         worker_calls: int = 1,
     ) -> None:
         super().__init__(message)
+        # QRF.4: the classification vocabulary is CLOSED — a typo ("timeuot") is a loud
+        # construction error, never a silent fall-through to heuristics.
+        if failure_kind not in ("", "cap", "timeout", "provider"):
+            raise ValueError(
+                f"failure_kind must be one of '', 'cap', 'timeout', 'provider' — got {failure_kind!r}"
+            )
+        # QRF.2: one raised error represents AT LEAST one spawned paid attempt — zero or
+        # negative counts would undercount spend and are rejected loudly.
+        if not isinstance(worker_calls, int) or worker_calls < 1:
+            raise ValueError(f"worker_calls must be a positive int, got {worker_calls!r}")
         self.cli_subtype = cli_subtype
         self.notional_usd = notional_usd
         self.returncode = returncode
         self.num_turns = num_turns
-        # Q-R4: the transport CLASSIFIES itself at the source (cap|timeout|provider) —
-        # downstream never guesses from return codes. Q-R2: one raised error == one spawned
-        # attempt; the count is part of the typed contract, never a dynamic afterthought.
         self.failure_kind = failure_kind
         self.worker_calls = worker_calls
 

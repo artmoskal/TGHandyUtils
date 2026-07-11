@@ -92,7 +92,9 @@ def build_observation_graph(
         node.attempts = max(node.attempts, event.attempt or 1)
         if event.decision:
             node.decisions.append(event.decision)
-        if event.error:
+        if event.error and event.error not in node.errors:
+            # QRF.6: the original failure event and the terminal record may carry the same
+            # text — evidence is deduplicated, never displayed twice.
             node.errors.append(event.error)
         node.status = _next_status(node.status, event)
         node.elapsed_ms += int(event.elapsed_ms or 0)
@@ -1114,13 +1116,11 @@ def _usage_run_id(event: WorkflowUsageEvent) -> str | None:
 
 
 def _next_status(current: str, event: WorkflowTraceEvent) -> str:
-    if event.error or event.severity == "error":
-        return "failed"
-    decision = event.decision or ""
-    # Terminal node-status events (engine executor, Q4.2): decision == "node:<status>" is
-    # authoritative — the run RECORDED how this node ended; never leave it "running".
-    if decision.startswith("node:"):
-        terminal = decision[len("node:"):]
+    # QRF.5: the TYPED terminal field is authoritative and is read FIRST — a partial node
+    # carrying its children's failure reason stays partial; error text is evidence, not a
+    # status override, whenever the engine stated how the node ended.
+    terminal = getattr(event, "node_status", None)
+    if terminal is not None:
         if terminal in {"accepted", "completed"}:
             return "completed"
         if terminal in {"failed", "rejected"}:
@@ -1130,6 +1130,9 @@ def _next_status(current: str, event: WorkflowTraceEvent) -> str:
         if terminal == "requires_user_input":
             return "suspended"
         return current
+    if event.error or event.severity == "error":
+        return "failed"
+    decision = event.decision or ""
     if decision == "flow:authored":
         # run-birth announcement on a pseudo-node — terminal by definition
         return "completed"

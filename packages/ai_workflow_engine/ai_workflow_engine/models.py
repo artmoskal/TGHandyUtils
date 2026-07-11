@@ -238,6 +238,11 @@ class WorkflowTraceEvent(BaseModel):
     sequence: Optional[int] = None
     attempt: int = 1
     decision: Optional[str] = None
+    # QRF.5: TYPED terminal lifecycle of the node execution this event records — the viewer
+    # reads THIS, never a stringly decision encoding; None on non-terminal events.
+    node_status: Optional[
+        Literal["accepted", "completed", "partial", "failed", "rejected", "requires_user_input"]
+    ] = None
     error: Optional[str] = None
     artifacts: List[str] = Field(default_factory=list)
     elapsed_ms: Optional[int] = None

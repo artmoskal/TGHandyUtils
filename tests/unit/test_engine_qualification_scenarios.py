@@ -337,3 +337,48 @@ async def test_completed_mageqa_viewer_has_no_nodes_left_running(tmp_path):
         f"the fanout with one real child failure must project partial: {statuses}"
     )
     assert statuses.get("collect_pages") == "completed"
+
+
+async def test_partial_fanout_keeps_child_failure_reason_in_projection(tmp_path):
+    """QRF.5 (codex reproducer): the partial fanout node keeps WHY its child failed —
+    projected status stays 'partial' (typed field wins over error-implies-failed) and the
+    child's failure text is present exactly once."""
+
+    from ai_workflow_viewer import FileEventSource, build_observation_graph
+
+    fakes = _fakes()
+    outcome = await run_mageqa_local_audit(_config(tmp_path), _factory(fakes), tmp_path)
+    assert outcome.status == "passed"
+
+    run_data = FileEventSource(outcome.bundle_path).read()
+    graph = build_observation_graph(
+        run_data.definition,
+        run_data.trace_events,
+        run_data.usage_events,
+        run_data.details,
+        run_id=run_data.run_id,
+    )
+    probe = graph.nodes["probe"]
+    assert probe.status == "partial", f"typed terminal field must win: {probe.status}"
+    reasons = [e for e in probe.errors if "unparseable page" in e]
+    assert len(reasons) == 1, (
+        f"the child failure reason must be preserved exactly ONCE: {probe.errors}"
+    )
+
+
+def test_failed_node_error_is_projected_once():
+    """QRF.6 (codex reproducer): the original failure event and the terminal record carry
+    the same text — the projected node shows it once, never duplicated."""
+
+    from ai_workflow_engine import WorkflowBuilder
+    from ai_workflow_engine.models import WorkflowTraceEvent
+    from ai_workflow_viewer import build_observation_graph
+
+    definition = WorkflowBuilder("dup_err").step("boom").build()
+    events = [
+        WorkflowTraceEvent(node="boom", decision="failed", error="kaput", run_id="r1"),
+        WorkflowTraceEvent(node="boom", node_status="failed", error="kaput", run_id="r1"),
+    ]
+    graph = build_observation_graph(definition, events, run_id="r1")
+    assert graph.nodes["boom"].status == "failed"
+    assert graph.nodes["boom"].errors == ["kaput"], "same evidence text appears exactly once"

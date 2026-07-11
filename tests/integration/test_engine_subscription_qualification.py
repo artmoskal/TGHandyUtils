@@ -10,14 +10,19 @@ RELEASE PROCEDURE (Q-R3, codex-agreed): run from a DETACHED CLEAN WORKTREE of th
 commit, with runtime secrets staged explicitly (they are gitignored and thus absent):
 
     git worktree add --detach /tmp/qualification-<commit> <commit>
-    cp .env /tmp/qualification-<commit>/.env        # runtime-only; stays gitignored
+    cp .env /tmp/qualification-<commit>/.env        # runtime-only; gitignored => invisible to porcelain
     cd /tmp/qualification-<commit>
     ALLOW_PAID_TESTS=1 RUN_ENGINE_SUBSCRIPTION_QUALIFICATION=1 ./test.sh integration -- ...
-    git worktree remove --force /tmp/qualification-<commit>
+    # QRF: COPY THE PAID EVIDENCE OUT AND VERIFY IT BEFORE REMOVING THE WORKTREE —
+    # removal deletes everything inside, including the bundles Q4.2 must inspect.
+    cp -R infra/test-results/engine-subscription-qualification \
+          <main-checkout>/infra/test-results/
+    test -f <main-checkout>/infra/test-results/engine-subscription-qualification/<run-id>/qualification-summary.json
+    git worktree remove --force /tmp/qualification-<commit>   # --force: staged .env + outputs remain
 
-The dirty gate checks TRACKED files only (evidence maps to one source revision; staged
-secrets and test outputs are not source), so the worktree passes by construction while a
-modified checkout fails.
+The dirty gate is STRICT full porcelain: gitignored files (.env) never appear in it, so the
+worktree passes clean by construction, while ANY untracked source override or tracked edit
+fails the gate.
 
 Caps (settled in docs/_discussion/2026-07-11-engine-cross-consumer-live-qualification-plan.md):
 model alias `sonnet`, $0.10/invocation via `--max-budget-usd`, $0.50 suite ceiling, 6 worker

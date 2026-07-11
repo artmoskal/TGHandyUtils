@@ -522,9 +522,10 @@ def test_timeout_transport_failure_is_not_mislabeled_provider(tmp_path):
 
 
 @pytest.mark.unit
-def test_tracked_only_dirty_check_ignores_untracked_but_catches_tracked_edits(tmp_path):
-    """Q-R3 (agreed procedure): untracked runtime files (staged .env, workspace docs) do not
-    make a release run unrunnable; a MODIFIED TRACKED file still fails the gate."""
+def test_strict_dirty_gate_catches_untracked_source_override_but_not_ignored_env(tmp_path):
+    """QRF.3 (codex reproducer): STRICT porcelain — an untracked, non-ignored source file is
+    the override attack the gate exists for; the gitignored staged .env stays invisible; a
+    tracked edit fails too."""
 
     import subprocess
 
@@ -541,11 +542,39 @@ def test_tracked_only_dirty_check_ignores_untracked_but_catches_tracked_edits(tm
 
     git("init", "-q")
     (repo / "tracked.txt").write_text("v1", encoding="utf-8")
-    git("add", "tracked.txt")
+    (repo / ".gitignore").write_text(".env\n", encoding="utf-8")
+    git("add", "tracked.txt", ".gitignore")
     git("commit", "-q", "-m", "init")
 
-    (repo / ".env").write_text("SECRET=1", encoding="utf-8")  # staged runtime-only file
-    assert _read_git_dirty(cwd=str(repo)) is False, "untracked files are not source dirt"
+    (repo / ".env").write_text("SECRET=1", encoding="utf-8")  # gitignored runtime file
+    assert _read_git_dirty(cwd=str(repo)) is False, (
+        "ignored runtime files never appear in porcelain — the worktree procedure is runnable"
+    )
+
+    (repo / "evil_override.py").write_text("boom", encoding="utf-8")  # the attack
+    assert _read_git_dirty(cwd=str(repo)) is True, (
+        "an untracked source override MUST fail the release gate"
+    )
+    (repo / "evil_override.py").unlink()
 
     (repo / "tracked.txt").write_text("v2", encoding="utf-8")
     assert _read_git_dirty(cwd=str(repo)) is True, "tracked edits ARE source dirt"
+
+
+@pytest.mark.unit
+def test_console_error_rejects_nonpositive_attempts_and_unknown_kinds():
+    """QRF.2 + QRF.4 (codex reproducers): the typed transport contract is CLOSED — zero or
+    negative attempt counts and typo'd failure kinds are loud construction errors."""
+
+    from ai_workflow_tools.cli_agents import ConsoleCliError
+
+    for bad_calls in (0, -1, 1.5, "1"):
+        with pytest.raises(ValueError, match="worker_calls"):
+            ConsoleCliError("x", worker_calls=bad_calls)
+
+    for bad_kind in ("timeuot", "PROVIDER", "unknown_cost", "harness "):
+        with pytest.raises(ValueError, match="failure_kind"):
+            ConsoleCliError("x", failure_kind=bad_kind)
+
+    ok = ConsoleCliError("x", failure_kind="timeout", worker_calls=2)
+    assert ok.failure_kind == "timeout" and ok.worker_calls == 2

@@ -84,12 +84,12 @@ def _read_claude_cli_version() -> str:
 
 
 def _read_git_dirty(cwd: "str | None" = None) -> bool:
-    # Q-R3 (codex-agreed procedure): TRACKED-files-only cleanliness — "evidence maps to one
-    # source revision" is a statement about tracked source. Untracked runtime files (.env
-    # staged into the release worktree, docs/_discussion/ workspace, test outputs) are not
-    # source and must not make a release run unrunnable.
+    # QRF.3: STRICT full porcelain. An untracked, non-ignored source file is exactly the
+    # override attack "evidence maps to one source revision" must catch. GITIGNORED runtime
+    # files (the staged .env) never appear in porcelain, so the detached-worktree release
+    # procedure passes clean by construction while any smuggled source fails it.
     proc = subprocess.run(
-        ["git", "status", "--porcelain", "--untracked-files=no"],
+        ["git", "status", "--porcelain"],
         capture_output=True,
         text=True,
         timeout=30,
