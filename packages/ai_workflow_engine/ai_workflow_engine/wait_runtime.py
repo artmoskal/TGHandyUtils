@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional, Protocol, runtime_checkable
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 
 from ai_workflow_engine.wait_contract import WaitHandle
 from ai_workflow_engine.waits import DurableWaitPolicy, WaitReceipt, WaitRecord
@@ -44,6 +44,13 @@ class WaitRegistrationRequest(BaseModel):
     workflow_id: str
     definition_digest: str
     suspended_node: str
+
+    @field_validator("definition_digest", "run_id", "workflow_id", "suspended_node")
+    @classmethod
+    def _non_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("wait identity fields must be non-blank")
+        return value
     occurrence: int = Field(ge=0)
     policy: DurableWaitPolicy
     snapshot_json: str

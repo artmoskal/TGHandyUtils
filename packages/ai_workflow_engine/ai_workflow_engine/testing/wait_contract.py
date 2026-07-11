@@ -22,7 +22,7 @@ def _record(now: datetime, wait_id: str = "w-1", *, timeout_s: float = 60.0) -> 
         run_id="run-1",
         workflow_id="wf",
         suspended_node="gate",
-        policy=DurableWaitPolicy(timeout_s=timeout_s),
+        definition_digest="digest-conf", policy=DurableWaitPolicy(timeout_s=timeout_s),
         created_at=now,
         deadline_at=now + timedelta(seconds=timeout_s),
     )

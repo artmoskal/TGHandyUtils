@@ -33,7 +33,7 @@ def test_wait_models_are_strict_and_round_trip():
         run_id="r1",
         workflow_id="wf",
         suspended_node="approval",
-        policy=policy,
+        definition_digest="digest-conf", policy=policy,
         deadline_at="2026-07-11T13:00:00+00:00",
     )
     for model in (
@@ -63,6 +63,7 @@ def test_wait_vocabulary_is_closed_and_overdue_is_not_a_status():
     assert "expired" not in WAIT_STATUSES, "resolution reason is separate from status (C5)"
     base = dict(
         wait_id="w", run_id="r", workflow_id="wf", suspended_node="n",
+        definition_digest="digest-base",
         policy=DurableWaitPolicy(timeout_s=1), deadline_at="2026-07-11T13:00:00+00:00",
     )
     with pytest.raises(ValidationError):
@@ -306,6 +307,7 @@ def test_wait_timestamps_must_be_timezone_aware_datetimes():
 
     base = dict(
         wait_id="w", run_id="r", workflow_id="wf", suspended_node="n",
+        definition_digest="digest-ts",
         policy=DurableWaitPolicy(timeout_s=1),
     )
     with pytest.raises(ValidationError):
@@ -537,7 +539,7 @@ async def test_in_memory_coordinator_is_deterministic_and_never_self_fires():
     now = clock()
     record = WaitRecord(
         wait_id="w-due", run_id="r", workflow_id="wf", suspended_node="g",
-        policy=DWP(timeout_s=30), created_at=now, deadline_at=now + timedelta(seconds=30),
+        definition_digest="digest-conf", policy=DWP(timeout_s=30), created_at=now, deadline_at=now + timedelta(seconds=30),
     )
     await coordinator.register(record, "{}")
     assert await coordinator.due(now) == []
@@ -723,7 +725,7 @@ async def test_conformance_rejects_snapshot_loss_and_supports_reconnect():
     now = clock()
     record = WaitRecord(
         wait_id="w-copy", run_id="r", workflow_id="wf", suspended_node="g",
-        policy=DWP(timeout_s=30), created_at=now, deadline_at=now + timedelta(seconds=30),
+        definition_digest="digest-conf", policy=DWP(timeout_s=30), created_at=now, deadline_at=now + timedelta(seconds=30),
     )
     await coordinator.register(record, "{}")
     fetched = await coordinator.get("w-copy")
@@ -1007,3 +1009,59 @@ async def test_reference_adapter_is_async_and_alias_free():
     due = await coordinator.due(now + timedelta(seconds=2))
     due[0].status = "cancelled"  # caller mutates a query RESULT
     assert (await coordinator.get("w-alias")).status == "pending", "due() must copy"
+
+
+# ================================================== W2C: identity + receipt isolation
+
+
+def test_blank_definition_digest_is_rejected_everywhere():
+    """W2C.1 (codex reproducer): omitted, empty, and whitespace digests fail on BOTH the
+    record and the registration request — blank identity would silently disable
+    changed-machine protection."""
+
+    from datetime import timedelta
+
+    from ai_workflow_engine.waits import DurableWaitPolicy as DWP, WaitRecord
+    from ai_workflow_engine.wait_runtime import WaitRegistrationRequest
+
+    now = _clock()()
+    base = dict(
+        wait_id="w", run_id="r", workflow_id="wf", suspended_node="g",
+        policy=DWP(timeout_s=1), created_at=now, deadline_at=now + timedelta(seconds=1),
+    )
+    with pytest.raises(ValidationError):
+        WaitRecord(**base)  # omitted
+    for blank in ("", "   "):
+        with pytest.raises(ValidationError):
+            WaitRecord(**base, definition_digest=blank)
+        with pytest.raises(ValidationError):
+            WaitRegistrationRequest(
+                run_id="r", workflow_id="wf", definition_digest=blank,
+                suspended_node="g", occurrence=0, policy=DWP(timeout_s=1), snapshot_json="{}",
+            )
+
+
+async def test_duplicate_receipt_is_a_defensive_result():
+    """W2C.2 (codex reproducer): mutating the receipt returned by the idempotent duplicate
+    path (or the initial path) can never corrupt subsequent results."""
+
+    from datetime import timedelta
+
+    from ai_workflow_engine import InMemoryWaitCoordinator
+    from ai_workflow_engine.waits import DurableWaitPolicy as DWP, WaitRecord
+
+    clock = _clock()
+    coordinator = InMemoryWaitCoordinator(clock=clock)
+    now = clock()
+    record = WaitRecord(
+        wait_id="w-rcpt", run_id="r", workflow_id="wf", suspended_node="g",
+        definition_digest="d", policy=DWP(timeout_s=1),
+        created_at=now, deadline_at=now + timedelta(seconds=1),
+    )
+    first = await coordinator.register(record, "{}")
+    first.registration_id = "corrupted"
+    duplicate = await coordinator.register(record, "{}")
+    assert duplicate.registration_id == "reg-w-rcpt", "stored receipt must be isolated"
+    duplicate.adapter_id = "also-corrupted"
+    third = await coordinator.register(record, "{}")
+    assert third.adapter_id == "in_memory"

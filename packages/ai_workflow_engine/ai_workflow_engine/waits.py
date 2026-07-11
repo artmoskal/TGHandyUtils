@@ -135,14 +135,25 @@ class WaitRecord(BaseModel):
     workflow_id: str
     suspended_node: str
     policy: DurableWaitPolicy
-    # W2B.1: the machine identity is PERSISTED — W3 compares this against the currently
-    # registered definition before resuming; a changed graph is rejected, never replayed.
-    definition_digest: str = ""
+    # W2B.1/W2C.1: the machine identity is PERSISTED and MANDATORY — W3 compares this
+    # against the currently registered definition before resuming; a blank digest would
+    # silently disable changed-machine protection and is rejected at construction.
+    definition_digest: str
     status: WaitStatus = "pending"
     resolution_kind: Optional[ResolutionKind] = None  # set only when an event WINS (C5)
     created_at: AwareDatetime = Field(default_factory=_utc_now)
     deadline_at: AwareDatetime
     version: int = Field(default=1, ge=1)
+
+    @field_validator("definition_digest")
+    @classmethod
+    def _non_blank_digest(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError(
+                "definition_digest must be a non-blank machine identity — blank would "
+                "disable changed-machine protection"
+            )
+        return value
     resume_attempts: int = Field(default=0, ge=0)
 
 
@@ -232,7 +243,9 @@ class InMemoryWaitCoordinator:
             existing = self._records.get(record.wait_id)
             if existing is not None:
                 if existing == record and self._snapshots.get(record.wait_id) == snapshot_json:
-                    return self._receipts[record.wait_id]  # idempotent crash/retry re-register
+                    # idempotent crash/retry re-register — DEFENSIVE result (W2C.2): the
+                    # caller can never alias the stored receipt.
+                    return self._receipts[record.wait_id].model_copy(deep=True)
                 raise ValueError(
                     f"wait {record.wait_id!r} is already registered with DIFFERENT content — "
                     "duplicate registrations must be identical"
@@ -249,7 +262,7 @@ class InMemoryWaitCoordinator:
             self._records[record.wait_id] = record.model_copy(deep=True)
             self._snapshots[record.wait_id] = snapshot_json
             self._receipts[record.wait_id] = receipt.model_copy(deep=True)
-            return receipt
+            return receipt.model_copy(deep=True)
 
     async def get(self, wait_id: str) -> Optional[WaitRecord]:
         async with self._lock:
@@ -270,6 +283,10 @@ class InMemoryWaitCoordinator:
             ]
 
     async def health(self) -> WaitHealth:
+        async with self._lock:  # W2C.2: consistent read under the coordinator lock
+            return self._health_locked()
+
+    def _health_locked(self) -> WaitHealth:
         pending = [r for r in self._records.values() if r.status == "pending"]
         claimed = [r for r in self._records.values() if r.status == "claimed"]
         now = self._clock()
