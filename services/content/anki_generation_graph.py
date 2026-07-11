@@ -797,49 +797,18 @@ class AnkiGenerationGraph:
         return RuntimePlanCompiler().compile(profile, self.capability_registry)
 
     def _engine_limits(self, config: Any) -> RuntimeLimits:
-        """Typed budget boundary (v0.9 migration): the engine no longer duck-reads
-        WORKFLOW_MAX_* off the app config — every ceiling crosses the product boundary HERE,
-        once, with the app's ``0 = no cap`` convention normalized to typed ``None``."""
+        """Anki's structural limits layered on the ONE application budget boundary
+        (`config.engine_runtime_limits` — R1: no per-graph WORKFLOW_MAX_* reads)."""
 
-        return RuntimeLimits(
-            max_steps=32,
-            max_retries=self.max_quality_repairs_per_run,
-            max_parallel_children=1,
-            max_text_calls=self._optional_int_config(config, "WORKFLOW_MAX_TEXT_CALLS_PER_RUN"),
-            max_image_calls=self._optional_int_config(config, "WORKFLOW_MAX_IMAGE_CALLS_PER_RUN"),
-            max_worker_calls=self._optional_int_config(config, "WORKFLOW_MAX_WORKER_CALLS_PER_RUN"),
-            max_input_tokens_per_call=self._optional_int_config(config, "WORKFLOW_MAX_INPUT_TOKENS_PER_CALL"),
-            max_output_tokens_per_call=self._optional_int_config(config, "WORKFLOW_MAX_OUTPUT_TOKENS_PER_CALL"),
-            max_images_per_call=self._optional_int_config(config, "WORKFLOW_MAX_IMAGES_PER_CALL"),
-            max_estimated_usd=self._optional_float_config(config, "WORKFLOW_MAX_ESTIMATED_USD_PER_RUN"),
-            max_estimated_usd_per_call=self._optional_float_config(config, "WORKFLOW_MAX_ESTIMATED_USD_PER_CALL"),
+        from config import engine_runtime_limits
+
+        return engine_runtime_limits(config).model_copy(
+            update={
+                "max_steps": 32,
+                "max_retries": self.max_quality_repairs_per_run,
+                "max_parallel_children": 1,
+            }
         )
-
-    @staticmethod
-    def _optional_float_config(config: Any, name: str) -> Optional[float]:
-        value = getattr(config, name, None)
-        if value in (None, ""):
-            return None
-        try:
-            parsed = float(value)
-        except (TypeError, ValueError):
-            return None
-        # App-config convention: 0 (the config.py default) means "no cap". The engine treats
-        # 0.0 as a HARD zero-spend cap (WP3 budget semantics), so translate at this boundary —
-        # passing 0.0 through killed every metered call with "exceeded: $x > $0.000000".
-        return parsed if parsed > 0 else None
-
-    @staticmethod
-    def _optional_int_config(config: Any, name: str) -> Optional[int]:
-        value = getattr(config, name, None)
-        if value in (None, ""):
-            return None
-        try:
-            parsed = int(value)
-        except (TypeError, ValueError):
-            return None
-        # Same boundary rule as the float helper: app-level 0 means "no cap" → typed None.
-        return parsed if parsed > 0 else None
 
     @staticmethod
     def _merge_trace(

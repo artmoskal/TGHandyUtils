@@ -127,6 +127,50 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def engine_runtime_limits(config: Any) -> "RuntimeLimits":
+    """THE application→engine budget boundary (v0.9, one place, both graphs).
+
+    Normalizes the app's legacy ``0 = no cap`` convention into typed ``None`` exactly once;
+    a direct engine ``RuntimeLimits(...=0)`` stays an honest hard-zero cap. Coercion is
+    defensive (unit tests hand Mock configs): unparseable values mean "no ceiling", never a
+    crash and never an accidental cap. Graphs derive workflow-specific structural limits via
+    ``.model_copy(update=...)`` — they must not re-read WORKFLOW_MAX_* fields themselves.
+    """
+
+    from ai_workflow_engine.models import RuntimeLimits
+
+    def _ceiling_int(name: str) -> Optional[int]:
+        value = getattr(config, name, None)
+        if value in (None, ""):
+            return None
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
+
+    def _ceiling_float(name: str) -> Optional[float]:
+        value = getattr(config, name, None)
+        if value in (None, ""):
+            return None
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
+
+    return RuntimeLimits(
+        max_text_calls=_ceiling_int("WORKFLOW_MAX_TEXT_CALLS_PER_RUN"),
+        max_image_calls=_ceiling_int("WORKFLOW_MAX_IMAGE_CALLS_PER_RUN"),
+        max_worker_calls=_ceiling_int("WORKFLOW_MAX_WORKER_CALLS_PER_RUN"),
+        max_input_tokens_per_call=_ceiling_int("WORKFLOW_MAX_INPUT_TOKENS_PER_CALL"),
+        max_output_tokens_per_call=_ceiling_int("WORKFLOW_MAX_OUTPUT_TOKENS_PER_CALL"),
+        max_images_per_call=_ceiling_int("WORKFLOW_MAX_IMAGES_PER_CALL"),
+        max_estimated_usd=_ceiling_float("WORKFLOW_MAX_ESTIMATED_USD_PER_RUN"),
+        max_estimated_usd_per_call=_ceiling_float("WORKFLOW_MAX_ESTIMATED_USD_PER_CALL"),
+    )
+
+
 class Config(IConfig):
     """Centralized configuration management."""
     

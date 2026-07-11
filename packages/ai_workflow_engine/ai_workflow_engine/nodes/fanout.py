@@ -6,7 +6,9 @@ Mechanical split of the executor god-file (spec §2c#5). Handlers receive a narr
 from __future__ import annotations
 from typing import Any, Dict
 from ai_workflow_engine.engine.capabilities import CapabilityCall, gather_capabilities
-from ai_workflow_engine.models import CapabilityContext, CapabilityResult, WorkflowTraceEvent
+from ai_workflow_engine.models import CapabilityContext, CapabilityResult, RuntimeLimits, WorkflowTraceEvent
+
+_DEFAULT_LIMITS = RuntimeLimits()
 from ai_workflow_engine.workflow import WorkflowDefinition, WorkflowNode
 from ai_workflow_engine._runtime_state import CONTEXT, RUNNING_PAYLOAD
 
@@ -36,7 +38,14 @@ def build_fanout_node(services, definition: WorkflowDefinition, node: WorkflowNo
             )
             return services.record(state, node, failed, attempts=1, input_payload=len(items))
 
-        limit = node.max_parallel or (context.limits.max_parallel_children if context.limits else 4) or 4
+        # R2: distinguish None (not set → profile bound) from a configured value — no falsy
+        # `or` fallback may rewrite an explicit setting; the default comes from the MODEL.
+        if node.max_parallel is not None:
+            limit = node.max_parallel
+        elif context.limits is not None:
+            limit = context.limits.max_parallel_children
+        else:
+            limit = _DEFAULT_LIMITS.max_parallel_children
         calls = [CapabilityCall(item_capability, item) for item in items]
         results = await gather_capabilities(services.runtime, calls, context, max_parallel=limit)
         outputs = [r.output for r in results if r.status in ("accepted", "partial") and r.output is not None]

@@ -235,3 +235,66 @@ def test_test_wrapper_preserves_pytest_args_as_array():
     assert 'args+=("$@")' in text
     assert "python -m pytest $test_files" not in text
     subprocess.run(["bash", "-n", str(script)], check=True)
+
+
+@pytest.mark.unit
+def test_engine_runtime_limits_is_the_one_app_budget_boundary():
+    """R1: the application normalizes its ceilings ONCE into typed RuntimeLimits.
+    Real Config defaults must produce the historical ceilings (text=16, image=1, USD
+    unlimited via the 0-means-no-cap convention)."""
+    from config import Config, engine_runtime_limits
+
+    limits = engine_runtime_limits(Config)
+
+    assert limits.max_text_calls == 16
+    assert limits.max_image_calls == 1
+    assert limits.max_estimated_usd is None  # config default 0 == "no cap" -> typed None
+    # absent app fields stay unbounded rather than inventing ceilings
+    assert limits.max_worker_calls is None
+    assert limits.max_input_tokens_per_call is None
+
+
+@pytest.mark.unit
+def test_engine_runtime_limits_is_mock_safe_and_never_invents_caps():
+    from unittest.mock import Mock
+
+    from config import engine_runtime_limits
+
+    limits = engine_runtime_limits(Mock())
+
+    assert limits.max_text_calls is None
+    assert limits.max_estimated_usd is None
+    assert engine_runtime_limits(None).max_text_calls is None
+
+
+@pytest.mark.unit
+def test_reminder_profile_restores_run_ceilings_from_the_app_boundary():
+    """R1 regression (the review's #1 finding): the reminder graph lost its per-run
+    text/image ceilings when the host-config duck-read was deleted. The profile must now
+    carry them from the typed app boundary, and its structural limits stay reminder-shaped."""
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from config import Config
+    from services.content.reminder_generation_graph import ReminderGenerationGraph
+
+    graph = ReminderGenerationGraph(
+        parsing_service=SimpleNamespace(config=Config), task_service=Mock()
+    )
+    profile = graph._workflow_profile()
+
+    assert profile.limits.max_text_calls == 16
+    assert profile.limits.max_image_calls == 1
+    assert profile.limits.max_estimated_usd is None
+    assert profile.limits.max_steps == 8
+    assert profile.limits.max_retries == 0
+    assert profile.limits.max_parallel_children == 1
+
+    # behavior probe: the registered engine profile is what the runner executes under
+    engine = graph._engine()
+    registered = engine._profiles["reminder_generation"]
+    assert registered.limits.max_text_calls == 16
+
+    from ai_workflow_engine.budget import budget_from_limits
+
+    assert budget_from_limits(registered.limits).max_text_calls == 16

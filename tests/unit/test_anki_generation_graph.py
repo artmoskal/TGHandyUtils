@@ -1530,23 +1530,22 @@ async def test_graph_falls_back_when_image_generation_fails(tmp_path):
 
 @pytest.mark.unit
 def test_zero_budget_config_means_no_cap_not_zero_spend():
-    """Regression: config.py defaults WORKFLOW_MAX_ESTIMATED_USD_PER_RUN to 0 meaning
-    "disabled" — the engine treats 0.0 as a hard zero-spend cap, so the boundary must
-    translate 0 -> None or every metered call dies ("exceeded: $x > $0.000000")."""
-    from services.content.anki_generation_graph import AnkiGenerationGraph
-
-    helper = AnkiGenerationGraph._optional_float_config
+    """Regression (now at the ONE app boundary, R1): config.py defaults
+    WORKFLOW_MAX_ESTIMATED_USD_PER_RUN to 0 meaning "disabled" — the engine treats 0.0 as a
+    hard zero-spend cap, so the boundary must translate 0 -> None or every metered call dies
+    ("exceeded: $x > $0.000000")."""
+    from config import engine_runtime_limits
 
     class _Cfg:
         WORKFLOW_MAX_ESTIMATED_USD_PER_RUN = 0
 
-    assert helper(_Cfg(), "WORKFLOW_MAX_ESTIMATED_USD_PER_RUN") is None
+    assert engine_runtime_limits(_Cfg()).max_estimated_usd is None
     _Cfg.WORKFLOW_MAX_ESTIMATED_USD_PER_RUN = 0.0
-    assert helper(_Cfg(), "WORKFLOW_MAX_ESTIMATED_USD_PER_RUN") is None
+    assert engine_runtime_limits(_Cfg()).max_estimated_usd is None
     _Cfg.WORKFLOW_MAX_ESTIMATED_USD_PER_RUN = 2.5
-    assert helper(_Cfg(), "WORKFLOW_MAX_ESTIMATED_USD_PER_RUN") == 2.5
+    assert engine_runtime_limits(_Cfg()).max_estimated_usd == 2.5
     _Cfg.WORKFLOW_MAX_ESTIMATED_USD_PER_RUN = ""
-    assert helper(_Cfg(), "WORKFLOW_MAX_ESTIMATED_USD_PER_RUN") is None
+    assert engine_runtime_limits(_Cfg()).max_estimated_usd is None
 
 
 @pytest.mark.unit

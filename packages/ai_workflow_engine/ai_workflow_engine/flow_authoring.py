@@ -18,7 +18,11 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ai_workflow_engine.byte_safety import assert_byte_safe
-from ai_workflow_engine.models import CapabilitySpec
+from ai_workflow_engine.models import CapabilitySpec, RuntimeLimits
+
+# Effective-cap defaults come from the MODEL, one source of truth — never `or 4`/`or 100`
+# literals that would silently rewrite a configured value (R2).
+_DEFAULT_LIMITS = RuntimeLimits()
 from ai_workflow_engine.workflow import (
     Fallback,
     Retrace,
@@ -233,14 +237,15 @@ def _validate_fanout_spec(
     if not spec.items_key:
         errors.append(f"{label}: fanout requires a non-empty items_key")
 
-    parallel_cap = getattr(limits, "max_parallel_children", None) or 4
+    effective = limits if isinstance(limits, RuntimeLimits) else _DEFAULT_LIMITS
+    parallel_cap = effective.max_parallel_children
     if spec.max_parallel is not None and not 1 <= spec.max_parallel <= parallel_cap:
         errors.append(
             f"{label}: max_parallel={spec.max_parallel} must be between 1 and the effective "
             f"max_parallel_children={parallel_cap} (rejected, never silently clamped)"
         )
 
-    items_cap = getattr(limits, "max_authored_fanout_items", None) or 100
+    items_cap = effective.max_authored_fanout_items
     if spec.max_items is None:
         errors.append(
             f"{label}: authored fanout REQUIRES max_items — AI-chosen parallelism must be "
@@ -321,7 +326,9 @@ def _validate_authored_capability(
         return [f"{label}: capability '{name}' is not registered"]
 
     errors: list[str] = []
-    if cap_spec.metadata.get("planner") is True or getattr(handler, "is_planner", False):
+    if cap_spec.is_planner:
+        # R3 clean v0.9 contract: the typed CapabilitySpec.is_planner field is the ONLY
+        # planner marker (metadata/handler-attribute reads removed, same as is_flow_author).
         errors.append(
             f"{label}: capability '{name}' is a planner — authored flows may not contain "
             "AI-writers (use bounded planner depth instead)"
@@ -410,11 +417,7 @@ def render_capability_catalog(registry: Any, allowed_side_effects: Optional[List
                 for effect in spec.side_effects
             ]
             entry += f" [side effects: {', '.join(marks)}]"
-        if (
-            spec.metadata.get("planner") is True
-            or getattr(handler, "is_planner", False)
-            or spec.is_flow_author
-        ):
+        if spec.is_planner or spec.is_flow_author:
             entry += " [NOT-AUTHORABLE: AI-writers may not appear in authored flows]"
         lines.append(entry)
     return "\n".join(lines)
@@ -488,8 +491,9 @@ def build_flow_author_capability(
 
     effective_profiles = dict(model_profiles or {})
     effective_allowed = list(allowed_side_effects or [])
-    parallel_cap = getattr(limits, "max_parallel_children", None) or 4
-    items_cap = getattr(limits, "max_authored_fanout_items", None) or 100
+    effective_limits = limits if isinstance(limits, RuntimeLimits) else _DEFAULT_LIMITS
+    parallel_cap = effective_limits.max_parallel_children
+    items_cap = effective_limits.max_authored_fanout_items
     catalog = render_capability_catalog(registry, effective_allowed)
 
     def _validate_against_target(artifact: FlowArtifact) -> None:
@@ -523,9 +527,11 @@ def build_flow_author_capability(
             if isinstance(payload, FlowAuthorRequest)
             else FlowAuthorRequest.model_validate(payload or {})
         )
-        # Privacy edges (both directions of the boundary): the request context feeds a prompt,
-        # and the artifact dict is checkpoint-safe state — JSON text can still carry a data URI,
-        # so neither is "byte-free by construction".
+        # Privacy edges (ALL prompt-bound request fields + the output): goal and context both
+        # feed the rendered prompt, and the artifact dict is checkpoint-safe state — JSON text
+        # can still carry a data URI, so none of them is "byte-free by construction" (R2 closed
+        # the goal hole the adversarial review found).
+        assert_byte_safe(request.goal, mode="prompt", path="flow_author.goal")
         assert_byte_safe(request.context, mode="prompt", path="flow_author.context")
         artifact = await node.run(
             {

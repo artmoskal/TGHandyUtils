@@ -481,7 +481,9 @@ class RuntimeLimits(BaseModel):
     max_steps: int = 32
     max_retries: int = 1
     max_retrace: int = 1
-    max_parallel_children: int = 4
+    # Structural concurrency policy must be honest: zero/negative is a config error, never
+    # silently rewritten to a default (R2 — same rule as max_authored_fanout_items).
+    max_parallel_children: int = Field(default=4, ge=1)
     timeout_s: Optional[float] = None
     max_text_calls: Optional[int] = None
     max_image_calls: Optional[int] = None
@@ -567,9 +569,13 @@ class ModelProfile(BaseModel):
 
 
 class CapabilitySpec(BaseModel):
-    """Typed, traceable runtime capability available to a supervisor."""
+    """Typed, traceable runtime capability available to a supervisor.
 
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+    Unknown fields are rejected (R3): a typo'd firewall marker (``is_planer=``) must fail
+    loudly at registration, never silently vanish into an unmarked capability.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
 
     name: str
     kind: CapabilityKind
@@ -582,9 +588,11 @@ class CapabilitySpec(BaseModel):
     metered: bool = False
     timeout_s: Optional[float] = None
     max_attempts: int = 1
-    # Canonical recursion-firewall marker (v0.9): a capability that AUTHORS flows may never be
-    # wired INSIDE an authored flow. Typed field — not metadata, not a handler attribute.
+    # Canonical recursion-firewall markers (v0.9): AI-writers may never be wired INSIDE an
+    # authored flow, and planner-bound plan tasks are legal only within bounded depth. Typed
+    # fields — not metadata, not handler attributes (R3 unified both halves of the firewall).
     is_flow_author: bool = False
+    is_planner: bool = False
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
     def model_post_init(self, __context: Any) -> None:

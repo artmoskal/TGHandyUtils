@@ -592,7 +592,7 @@ def test_capability_catalog_self_describes_with_firewall():
         lambda _c, p: p,
     )
     builder.register_capability_spec(
-        CapabilitySpec(name="make_plan", kind="llm", metadata={"planner": True}),
+        CapabilitySpec(name="make_plan", kind="llm", is_planner=True),
         lambda _c, p: p,
     )
     engine = builder.build()

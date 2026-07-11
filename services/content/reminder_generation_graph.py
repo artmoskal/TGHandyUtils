@@ -134,14 +134,18 @@ class ReminderGenerationGraph:
         )
 
     def _workflow_profile(self) -> WorkflowProfile:
-        # Deliberately NOT setting max_estimated_usd here: the engine reads
-        # WORKFLOW_MAX_ESTIMATED_USD_PER_RUN from config, where _positive_float already treats the
-        # config default 0 as "no cap" (None). Re-passing 0.0 as a hard limit is exactly the bug
-        # fixed for Anki (see _optional_float_config); leaving it None avoids it by construction.
+        # R1 (v0.9): typed limits are the ONLY budget source — the engine no longer duck-reads
+        # WORKFLOW_MAX_* off the app config, so the ceilings MUST cross here explicitly via the
+        # one application boundary (config.engine_runtime_limits, app 0-means-no-cap → None).
+        from config import engine_runtime_limits
+
+        app_limits = engine_runtime_limits(getattr(self.parsing_service, "config", None))
         return WorkflowProfile(
             workflow_type="reminder_generation",
             requested_capabilities=self.capability_registry.names(),
-            limits=RuntimeLimits(max_steps=8, max_retries=0, max_parallel_children=1),
+            limits=app_limits.model_copy(
+                update={"max_steps": 8, "max_retries": 0, "max_parallel_children": 1}
+            ),
             safety=SafetyPolicy(
                 allowed_side_effects=["read_only", "local_write", "external_call", "notification"]
             ),

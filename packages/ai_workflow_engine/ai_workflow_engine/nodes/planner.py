@@ -209,7 +209,8 @@ def _validate_plan(
             continue
         if task.capability == (node.capability or node.id):
             errors.append(f"task '{label}' cannot call its planner capability '{task.capability}'")
-        elif spec.metadata.get("planner") is True or getattr(handler, "is_planner", False):
+        elif spec.is_planner:
+            # Typed marker only (R3 clean v0.9 — metadata/handler reads removed).
             # Bounded recursion: planner-bound tasks are legal ONLY while depth budget remains
             # (pre-set max_plan_depth=1 keeps plans flat unless a node opts in explicitly).
             if plan_depth >= node.max_plan_depth:
@@ -310,7 +311,7 @@ async def _maybe_execute_child_plan(
         spec, handler = services.runtime.registry.get(task.capability)
     except KeyError:
         return result
-    if not (spec.metadata.get("planner") is True or getattr(handler, "is_planner", False)):
+    if not spec.is_planner:
         return result
 
     child_depth = plan_depth + 1

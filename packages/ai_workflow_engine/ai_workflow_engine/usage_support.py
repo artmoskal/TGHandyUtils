@@ -41,37 +41,6 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
-def _positive_int(value: Any) -> Optional[int]:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return None
-    return parsed if parsed > 0 else None
-
-
-def _positive_float(value: Any) -> Optional[float]:
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        return None
-    return parsed if parsed > 0 else None
-
-
-def _limit_int(value: Any, fallback: Optional[int]) -> Optional[int]:
-    if value is None:
-        return fallback
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return fallback
-    return parsed if parsed >= 0 else fallback
-
-
-def _limit_float(value: Any, fallback: Optional[float]) -> Optional[float]:
-    if value is None:
-        return fallback
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        return fallback
-    return parsed if parsed >= 0 else fallback
+# R4: the _positive_int/_positive_float/_limit_int/_limit_float coercers died with
+# budget_from_config (v0.9 typed-limits contract) — the application boundary now lives in
+# the product config (config.engine_runtime_limits), not here.

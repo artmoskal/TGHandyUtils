@@ -43,7 +43,7 @@ def _planner_engine(*, depth: int, total: int = 32):
     builder.register_capability("plan_it", top_planner, kind="llm")
     builder.register_capability(
         "sub_planner", sub_planner,
-        spec=CapabilitySpec(name="sub_planner", kind="llm", metadata={"planner": True}),
+        spec=CapabilitySpec(name="sub_planner", kind="llm", is_planner=True),
     )
     builder.register_capability("work", work, kind="deterministic")
     builder.register_workflow(
@@ -106,7 +106,7 @@ def _authoring_engine():
     )
     builder.register_capability(
         "a_planner", lambda ctx, p: p,
-        spec=CapabilitySpec(name="a_planner", kind="llm", metadata={"planner": True}),
+        spec=CapabilitySpec(name="a_planner", kind="llm", is_planner=True),
     )
     builder.register_capability(
         "send_external",
@@ -287,7 +287,7 @@ def _fanout_engine(*, limits: "_RuntimeLimits | None" = None, fail_on: str | Non
     builder.register_capability("analyze", analyze, kind="deterministic")
     builder.register_capability(
         "a_planner", lambda ctx, p: p,
-        spec=CapabilitySpec(name="a_planner", kind="llm", metadata={"planner": True}),
+        spec=CapabilitySpec(name="a_planner", kind="llm", is_planner=True),
     )
     profile = WorkflowProfile(
         workflow_type="fanout_authoring",
@@ -730,3 +730,121 @@ async def test_author_default_prompt_contract_and_wholesale_override():
     )
     await engine2.run("authoring", {"goal": "custom run", "context": {}})
     assert override.requests[0].user.startswith("CUSTOM AUTHOR custom run")
+
+
+# ---------------------------------------------------- Phase R2: input/limit boundary hardening
+
+
+async def test_author_goal_data_uri_rejected_before_any_prompt():
+    """R2 (review finding #2): request.goal feeds the prompt and must be byte-safe like
+    context — pre-fix it reached the model unchecked."""
+
+    processing, _ = _fanout_engine()
+    llm = ScriptedAuthorLLM([_good_artifact_json()])
+    author_engine, _spec = _author_engine_for(processing, llm)
+
+    result = await author_engine.run(
+        "authoring", {"goal": "data:image/png;base64,AAAA", "context": {}}
+    )
+
+    assert result.status == "failed"
+    assert "flow_author.goal" in (result.error or "")
+    assert llm.requests == [], "unsafe goal must be rejected BEFORE any prompt is sent"
+
+
+def test_max_parallel_children_rejects_non_positive_by_schema():
+    """R2 (review finding #4): zero/negative structural concurrency is a config error —
+    never silently rewritten to a default by a falsy fallback."""
+
+    with pytest.raises(_PydanticValidationError):
+        _RuntimeLimits(max_parallel_children=0)
+    with pytest.raises(_PydanticValidationError):
+        _RuntimeLimits(max_parallel_children=-1)
+
+
+async def test_configured_parallel_cap_is_used_exactly_never_rewritten():
+    """A non-default cap (2) must bound authored max_parallel at exactly 2 — proving no
+    `or 4` literal rewrites the configured value anywhere on the validation path."""
+
+    engine, _ = _fanout_engine(limits=_RuntimeLimits(max_parallel_children=2))
+
+    with pytest.raises(
+        WorkflowValidationError, match="max_parallel=3 must be between 1 and .*=2"
+    ):
+        await engine.run_authored_flow(_fanout_artifact(max_parallel=3), {})
+
+    result = await engine.run_authored_flow(
+        _fanout_artifact(max_parallel=2), {"source": "cam"}
+    )
+    assert result.status in ("completed", "partial")
+
+
+# ------------------------------------------------------- Phase R3: typed AI-writer firewall
+
+
+def test_capability_spec_rejects_typo_marker_loudly():
+    """R3: a typo'd firewall marker must fail at registration, never silently vanish."""
+
+    with pytest.raises(_PydanticValidationError, match="is_planer"):
+        CapabilitySpec(name="p", kind="llm", is_planer=True)
+
+
+def test_legacy_metadata_planner_marker_is_no_longer_a_firewall_input():
+    """Clean v0.9 contract: metadata['planner'] and handler attributes are NOT markers —
+    only the typed field counts, in BOTH the firewall and the catalog."""
+
+    from ai_workflow_engine.flow_authoring import render_capability_catalog
+
+    builder = WorkflowEngineBuilder()
+    builder.register_capability(
+        "typed_planner", lambda ctx, p: p,
+        spec=CapabilitySpec(name="typed_planner", kind="llm", is_planner=True),
+    )
+    builder.register_capability(
+        "legacy_marked", lambda ctx, p: p,
+        spec=CapabilitySpec(name="legacy_marked", kind="llm", metadata={"planner": True}),
+    )
+    engine = builder.build()
+
+    catalog = render_capability_catalog(engine.registry, ["read_only"])
+    typed_line = next(l for l in catalog.splitlines() if "typed_planner" in l)
+    legacy_line = next(l for l in catalog.splitlines() if "legacy_marked" in l)
+    assert "NOT-AUTHORABLE" in typed_line
+    assert "NOT-AUTHORABLE" not in legacy_line
+
+
+# ------------------------------------------------ Phase R4: prompt-override contract locked
+
+
+async def test_reduced_goal_only_override_renders_and_runs():
+    """R4 (review #9 disproved-then-locked): a wholesale override may reference FEWER
+    variables than the default — LangChain renders it; the contract test pins that."""
+
+    processing, analyzed = _fanout_engine(fail_on=None)
+    llm = ScriptedAuthorLLM([_good_artifact_json()])
+    author_engine, _spec = _author_engine_for(
+        processing, llm, prompt_template="ONLY {goal}\n{format_instructions}"
+    )
+
+    authored = await author_engine.run("authoring", {"goal": "scan frames", "context": {}})
+
+    assert authored.status == "completed"
+    assert llm.requests[0].user.startswith("ONLY scan frames")
+    executed = await processing.run_authored_flow(authored.output, {})
+    assert executed.status == "completed"
+
+
+async def test_unknown_placeholder_in_override_fails_before_provider():
+    """A template referencing an UNDEFINED variable must fail loudly pre-call."""
+
+    processing, _ = _fanout_engine()
+    llm = ScriptedAuthorLLM([_good_artifact_json()])
+    author_engine, _spec = _author_engine_for(
+        processing, llm, prompt_template="Broken {nonexistent_var} {format_instructions}"
+    )
+
+    result = await author_engine.run("authoring", {"goal": "scan", "context": {}})
+
+    assert result.status == "failed"
+    assert "nonexistent_var" in (result.error or "")
+    assert llm.requests == [], "template errors must never reach the provider"
