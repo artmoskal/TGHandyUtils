@@ -132,32 +132,43 @@ def engine_runtime_limits(config: Any) -> "RuntimeLimits":
 
     Normalizes the app's legacy ``0 = no cap`` convention into typed ``None`` exactly once;
     a direct engine ``RuntimeLimits(...=0)`` stays an honest hard-zero cap. Coercion is
-    defensive (unit tests hand Mock configs): unparseable values mean "no ceiling", never a
-    crash and never an accidental cap. Graphs derive workflow-specific structural limits via
-    ``.model_copy(update=...)`` — they must not re-read WORKFLOW_MAX_* fields themselves.
+    STRICT (R13): a malformed budget setting (negative, NaN/inf, bool, unparseable string)
+    raises ``ValueError`` naming the setting — a typo must never silently mean "no ceiling".
+    Only genuinely absent shapes are lenient: attribute missing, ``None``, empty string, or a
+    non-scalar stand-in (unit tests hand Mock configs) mean "not configured" → no cap.
+    Graphs derive workflow-specific structural limits via ``.model_copy(update=...)`` — they
+    must not re-read WORKFLOW_MAX_* fields themselves.
     """
+
+    import math
 
     from ai_workflow_engine.models import RuntimeLimits
 
-    def _ceiling_int(name: str) -> Optional[int]:
+    def _ceiling(name: str, cast: type) -> Optional[Any]:
         value = getattr(config, name, None)
-        if value in (None, ""):
+        if value is None:
             return None
+        if isinstance(value, str) and value.strip() == "":
+            return None
+        if isinstance(value, bool):
+            raise ValueError(f"{name}={value!r} is a bool, not a budget number")
+        if not isinstance(value, (int, float, str)):
+            return None  # non-scalar stand-in (Mock config in unit tests) = not configured
         try:
-            parsed = int(value)
-        except (TypeError, ValueError):
-            return None
+            parsed = cast(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{name}={value!r} is not a valid {cast.__name__}") from exc
+        if isinstance(parsed, float) and (math.isnan(parsed) or math.isinf(parsed)):
+            raise ValueError(f"{name}={value!r} is not a finite budget number")
+        if parsed < 0:
+            raise ValueError(f"{name}={value!r} is negative; use 0 or unset for 'no cap'")
         return parsed if parsed > 0 else None
 
+    def _ceiling_int(name: str) -> Optional[int]:
+        return _ceiling(name, int)
+
     def _ceiling_float(name: str) -> Optional[float]:
-        value = getattr(config, name, None)
-        if value in (None, ""):
-            return None
-        try:
-            parsed = float(value)
-        except (TypeError, ValueError):
-            return None
-        return parsed if parsed > 0 else None
+        return _ceiling(name, float)
 
     return RuntimeLimits(
         max_text_calls=_ceiling_int("WORKFLOW_MAX_TEXT_CALLS_PER_RUN"),

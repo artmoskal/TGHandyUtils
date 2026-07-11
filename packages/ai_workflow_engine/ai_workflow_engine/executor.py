@@ -218,7 +218,7 @@ class WorkflowExecutor:
         recursion_limit: Optional[int] = None,
         observation_bundle: Any = None,
         terminal_status: Optional[Callable[[WorkflowRunResult], Optional[str]]] = None,
-        intro_trace_events: Optional[List[WorkflowTraceEvent]] = None,
+        _authored_provenance: Optional[Dict[str, Any]] = None,
     ) -> WorkflowRunResult:
         """Execute ``definition`` from ``payload`` under ``context`` and return the envelope.
 
@@ -258,12 +258,22 @@ class WorkflowExecutor:
         # Top-level run: WorkflowRunner installs the usage/budget scope + lifecycle logging.
         try:
             with observation_capture_scope(self.runtime.observation), run_session_scope(session):
-                # Run-birth provenance (R7): caller-supplied intro events are recorded INSIDE
-                # the session, run-id stamped, so they appear in result.trace and the bundle.
-                run_id = str(context.run_context.workflow_id)
-                for intro_event in intro_trace_events or ():
+                # Run-birth provenance (R7+R12): engine-owned — the executor byte-checks the
+                # typed payload and constructs the ONE event itself (fresh event id, run-id
+                # stamped, inside the session). Callers cannot inject arbitrary trace events.
+                if _authored_provenance is not None:
+                    from ai_workflow_engine.byte_safety import assert_byte_safe
+
+                    assert_byte_safe(
+                        dict(_authored_provenance), mode="prompt", path="authored_provenance"
+                    )
                     self.runtime.trace_sink.record(
-                        intro_event.model_copy(update={"run_id": run_id})
+                        WorkflowTraceEvent(
+                            node=definition.workflow_id,
+                            decision="flow:authored",
+                            run_id=str(context.run_context.workflow_id),
+                            metadata=dict(_authored_provenance),
+                        )
                     )
                 final_state = await self.runner.run(
                     compiled,

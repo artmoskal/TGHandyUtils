@@ -107,8 +107,9 @@ the current tag.** MageQA already sits on v0.7.0, so there is no new breaking ch
 Re-pin, run the migration check above, and continue as designed. The useful new surface is optional:
 prompt-projection memory for long/deep browser-agent episodes, bounded windowing/compaction for
 large transcripts, and per-node `memory=` so only the workers that need state get it. Durable/semantic
-memory stores remain deferred; FlowArtifact v1.5a authored fan-out + the turnkey author shipped in
-v0.9.0 (subworkflow/general-IO authoring still deferred).
+memory stores remain deferred; FlowArtifact v1.5a authored fan-out + the turnkey author arrive with
+the engine-v0.9.0 tag (implemented on branch, NOT yet tagged — not in your v0.8.1 pin;
+subworkflow/general-IO authoring still deferred).
 
 Mapped to the MageQA shapes in this doc (browser episodes via `CliAgentCapability`+MCP,
 adjudicate/deepen loops, rubric/report text roles, artifact salvage, cost dashboards):
@@ -268,7 +269,8 @@ These points answer the review questions that matter before paying someone to mi
   must not decide engine state transitions.
 - **FlowArtifact boundary.** MageQA may let AI emit scenario plans and structured inputs for
   registered capabilities. Do not rely on AI-authored arbitrary workflows for the migration. Shipped
-  `FlowArtifact` covers registered steps/branches/evaluators + (v0.9.0, v1.5a) bounded authored
+  `FlowArtifact` (v0.8.1, your pin) covers registered steps/branches/evaluators; the engine-v0.9.0
+  tag (implemented on branch, NOT yet tagged) adds v1.5a bounded authored
   `fanout` with REQUIRED max_items and the turnkey `build_flow_author_capability(...)`; subworkflow
   references, richer dataflow, and reusable generated process pipelines are v1.5-remainder/v2
   future-stage.

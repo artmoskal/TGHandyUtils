@@ -1027,3 +1027,141 @@ async def test_capability_registered_after_factory_is_visible_and_authorable():
     executed = await processing.run_authored_flow(authored.output, {})
     assert executed.status == "completed"
     assert sorted(executed.output) == ["late:a", "late:b", "late:c"]
+
+
+# --------------------------- Phase R10: FlowNodeSpec is a REAL discriminated base class
+
+
+def test_flow_node_spec_base_class_dispatches_and_supports_isinstance_and_schema():
+    """R10 (recheck finding #1): FlowNodeSpec must stay a genuine class — construction and
+    model_validate dispatch to the discriminated subtypes, isinstance filtering works, and
+    JSON-schema generation does not crash (a function stand-in broke all three)."""
+
+    step = FlowNodeSpec(id="s1")
+    fan = FlowNodeSpec(
+        id="f1", kind="fanout", capability="analyze", items_key="collect.frames", max_items=3
+    )
+    assert type(step).__name__ == "StepFlowNode"
+    assert type(fan).__name__ == "FanoutFlowNode"
+    assert isinstance(step, FlowNodeSpec) and isinstance(fan, FlowNodeSpec)
+
+    branch = FlowNodeSpec.model_validate(
+        {"id": "b1", "kind": "branch", "branches": {"ok": "s1"}}
+    )
+    assert type(branch).__name__ == "BranchFlowNode"
+    assert isinstance(branch, FlowNodeSpec)
+
+    schema = FlowNodeSpec.model_json_schema()
+    assert "id" in schema.get("properties", {}), "base schema generation must keep working"
+
+
+def test_flow_node_spec_base_rejects_foreign_fields_not_smuggles_them():
+    """R10: dispatch does not weaken R6 — a step-shaped payload carrying fanout-only fields
+    is REJECTED by the discriminated schema, not silently accepted via the base class."""
+
+    with pytest.raises(_PydanticValidationError):
+        FlowNodeSpec(id="x", items_key="smuggled.key")
+    with pytest.raises(_PydanticValidationError):
+        FlowNodeSpec.model_validate({"id": "x", "max_items": 5})
+
+
+# --------------------------- Phase R11: per-invocation immutable registry snapshot
+
+
+async def test_capability_registered_mid_call_is_not_validated_in_flight():
+    """R11 (recheck finding #2): ONE registry snapshot per author invocation — a capability
+    registered while the call is in flight is neither advertised in the catalog nor accepted
+    by validation (TOCTOU closed); it becomes visible to the NEXT invocation (R9 preserved)."""
+
+    processing, _analyzed = _fanout_engine(fail_on=None)
+    artifact_json = _good_artifact_json().replace(
+        '"capability": "analyze"', '"capability": "mid_call_cap"'
+    )
+
+    class MidCallRegisteringLLM(ScriptedAuthorLLM):
+        """Registers the referenced capability AFTER the catalog render, BEFORE validation."""
+
+        def __init__(self, responses, target_engine):
+            super().__init__(responses)
+            self._target = target_engine
+            self._registered = False
+
+        async def __call__(self, request):
+            if not self._registered:
+                self._registered = True
+                self._target.register_capability(
+                    "mid_call_cap", lambda ctx, item: f"mid:{item}", kind="deterministic"
+                )
+            return await super().__call__(request)
+
+    llm = MidCallRegisteringLLM([artifact_json], processing)
+    author_engine, _spec = _author_engine_for(processing, llm, max_repair_rounds=0)
+
+    first = await author_engine.run("authoring", {"goal": "scan", "context": {}})
+    assert first.status == "failed", (
+        "in-flight registration must NOT be validated against — the snapshot wins"
+    )
+    assert "mid_call_cap" not in llm.requests[0].user, (
+        "the catalog must render from the same snapshot validation uses"
+    )
+
+    second = await author_engine.run("authoring", {"goal": "scan", "context": {}})
+    assert second.status == "completed", (
+        "the NEXT invocation must see the registration (fresh snapshot per call)"
+    )
+    assert "mid_call_cap" in llm.requests[1].user
+
+
+# --------------------------- Phase R12: provenance channel is engine-owned, not public API
+
+
+async def test_intro_trace_events_is_no_longer_public_run_api():
+    """R12 (recheck finding #3): callers cannot inject arbitrary trace events into a run —
+    the parameter is gone from the public engine.run surface."""
+
+    engine, _analyzed = _fanout_engine(fail_on=None)
+    engine.register_workflow(WorkflowBuilder("plain").step("collect").build())
+
+    with pytest.raises(TypeError):
+        await engine.run("plain", {}, intro_trace_events=[])
+
+
+async def test_authored_provenance_is_engine_constructed_with_fresh_event_identity():
+    """R12: the flow:authored event is built BY the executor per run — fresh event_id each
+    run, run-id stamped, metadata limited to the typed provenance payload."""
+
+    processing, _analyzed = _fanout_engine(fail_on=None)
+    artifact = FlowArtifact.model_validate(_json.loads(_good_artifact_json()))
+
+    first = await processing.run_authored_flow(artifact, {})
+    second = await processing.run_authored_flow(artifact, {})
+    assert first.status == "completed" and second.status == "completed"
+
+    events = [e for e in processing.trace_sink.events if e.decision == "flow:authored"]
+    assert len(events) == 2
+    assert events[0].event_id and events[1].event_id
+    assert events[0].event_id != events[1].event_id, (
+        "each run must mint a FRESH provenance event — no shared/duplicated identity"
+    )
+    assert events[0].run_id != events[1].run_id
+    assert set(events[0].metadata) == {"flow_id", "goal", "nodes"}, (
+        "provenance metadata is the typed payload only — no caller-crafted extras"
+    )
+
+
+async def test_unsafe_provenance_payload_is_rejected_before_any_trace_persists():
+    """R12: the engine-owned provenance channel byte-checks its payload at the run boundary —
+    a data-URI goal can never be persisted into trace/bundles through run birth."""
+
+    engine, _analyzed = _fanout_engine(fail_on=None)
+    engine.register_workflow(WorkflowBuilder("plain_prov").step("collect").build())
+
+    with pytest.raises(ValueError, match="authored_provenance"):
+        await engine.run(
+            "plain_prov",
+            {},
+            _authored_provenance={"goal": "data:image/png;base64,AAAA", "flow_id": "x"},
+        )
+    assert not any(e.decision == "flow:authored" for e in engine.trace_sink.events), (
+        "an unsafe provenance payload must be rejected BEFORE any trace event is recorded"
+    )

@@ -649,3 +649,75 @@ async def test_failed_anonymous_callable_keeps_fallback_attribution():
     event = [e for e in usage_context.summary.events if e.success is False][0]
     assert event.provider == "custom"
     assert "model_profile" not in event.metadata
+
+
+async def test_failed_subscription_client_is_never_booked_as_metered():
+    """R14 (recheck finding #6): a raising client that marks itself ``subscription_mode=True``
+    (the claude -p console client shape — it exposes NO cost_class attribute) must record its
+    failed attempt as subscription_notional; booking it as metered would poison the money
+    ledger the run summary displays."""
+
+    class ExplodingSubscriptionClient:
+        provider_label = "claude_console"
+        subscription_mode = True
+
+        async def __call__(self, request: LLMRequest) -> LLMResponse:
+            raise RuntimeError("console transport down")
+
+    node = StructuredLLMNode(
+        name="subscription_exploder",
+        config=object(),
+        output_model=Label,
+        prompt_template="Classify {item}.",
+        input_variables=["item"],
+        llm=ExplodingSubscriptionClient(),
+    )
+    usage_context = WorkflowUsageContext(
+        WorkflowRunContext(workflow_id="wf", workflow_type="budget"),
+        WorkflowUsageSummary(),
+        WorkflowBudget(),
+    )
+
+    with workflow_usage_scope(usage_context):
+        with pytest.raises(Exception, match="console transport down"):
+            await node.run({"item": "q"})
+
+    failed = [e for e in usage_context.summary.events if e.success is False]
+    assert failed, "subscription failure left no usage event"
+    assert failed[0].cost_class == "subscription_notional", (
+        "subscription_mode client failures must never be booked as metered spend"
+    )
+    assert failed[0].estimated_usd is None
+
+
+async def test_failed_client_with_explicit_cost_class_keeps_it():
+    """R14 regression pair: an explicit cost_class attribute still wins unchanged."""
+
+    class ExplodingMeteredClient:
+        provider_label = "openai"
+        cost_class = "metered"
+        subscription_mode = True  # explicit cost_class must take precedence
+
+        async def __call__(self, request: LLMRequest) -> LLMResponse:
+            raise RuntimeError("metered transport down")
+
+    node = StructuredLLMNode(
+        name="metered_exploder",
+        config=object(),
+        output_model=Label,
+        prompt_template="Classify {item}.",
+        input_variables=["item"],
+        llm=ExplodingMeteredClient(),
+    )
+    usage_context = WorkflowUsageContext(
+        WorkflowRunContext(workflow_id="wf", workflow_type="budget"),
+        WorkflowUsageSummary(),
+        WorkflowBudget(),
+    )
+
+    with workflow_usage_scope(usage_context):
+        with pytest.raises(Exception, match="metered transport down"):
+            await node.run({"item": "q"})
+
+    failed = [e for e in usage_context.summary.events if e.success is False]
+    assert failed and failed[0].cost_class == "metered"

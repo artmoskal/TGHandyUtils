@@ -240,7 +240,17 @@ class StructuredLLMNode:
                 attempt=attempt,
                 success=False,
                 error=str(exc)[:500],
-                cost_class=getattr(client, "cost_class", None) or "metered",
+                # R14: honor BOTH client honesty markers — subscription-backed clients (e.g.
+                # the claude -p console client) expose subscription_mode, not cost_class; a
+                # failed subscription call must never be booked as metered spend.
+                cost_class=(
+                    getattr(client, "cost_class", None)
+                    or (
+                        "subscription_notional"
+                        if getattr(client, "subscription_mode", False)
+                        else "metered"
+                    )
+                ),
                 metadata=metadata,
             )
         )

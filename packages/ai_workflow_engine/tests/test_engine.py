@@ -3308,3 +3308,25 @@ async def test_node_memory_config_is_delivered_to_the_capability_context():  # G
 
     assert result.status == "completed"
     assert seen["memory"] == {"mode": "image_evicting", "keep_last_images": 0}
+
+
+def test_workflow_node_rejects_zero_or_negative_structural_bounds():
+    """R13 (recheck finding #5): hand-written graphs get the same bound honesty as authored
+    ones — max_parallel=0 / max_items=0 is a MODEL error, never a silent rewrite to
+    'sequential' (fanout semaphore max(1, 0)) or an accidental fall-through to defaults."""
+
+    import pydantic
+
+    for field, bad in (
+        ("max_parallel", 0),
+        ("max_parallel", -2),
+        ("max_items", 0),
+        ("max_items", -1),
+    ):
+        with pytest.raises(pydantic.ValidationError):
+            WorkflowNode(id="fan", kind="fanout", **{field: bad})
+
+    # None (unset -> engine bound applies) and >=1 remain legal
+    node = WorkflowNode(id="fan", kind="fanout", max_parallel=1, max_items=1)
+    assert node.max_parallel == 1 and node.max_items == 1
+    assert WorkflowNode(id="fan2", kind="fanout").max_parallel is None

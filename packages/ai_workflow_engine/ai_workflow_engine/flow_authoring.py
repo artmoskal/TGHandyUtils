@@ -13,6 +13,7 @@ after compilation it runs through the same executor, preflight, budgets, and tra
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
@@ -37,26 +38,55 @@ from ai_workflow_engine.workflow import (
 # own fields (extra="forbid"), so per-kind field discipline lives in the schema itself and an
 # ordinary `model_dump()` → `model_validate()` round-trip is loss- and surprise-free — no
 # caller-sensitive `model_fields_set` inspection, no hidden `exclude_unset` serialization ritual.
+# R10: `FlowNodeSpec` is a REAL base type again — isinstance, static annotations, schema access,
+# and `FlowNodeSpec.model_validate` all work; constructing the BASE dispatches to the right kind.
 
 
-class StepFlowNode(BaseModel):
+class FlowNodeSpec(BaseModel):
+    """Base type of every authored-flow node.
+
+    Constructing this base (``FlowNodeSpec(kind="fanout", ...)``) dispatches through the
+    discriminated union and returns the kind-specific model; ``kind`` defaults to ``"step"``.
+    ``FlowNodeSpec.model_validate(data)`` dispatches the same way. A bare base instance can
+    never enter ``FlowArtifact.nodes`` (the field is the discriminated union of subclasses).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str = "step"
+    id: str
+
+    def __new__(cls, **data: Any):
+        if cls is FlowNodeSpec:
+            payload = {"kind": "step", **data}
+            return _FLOW_NODE_ADAPTER.validate_python(payload)
+        return super().__new__(cls)
+
+    @classmethod
+    def model_validate(cls, obj: Any, **kwargs: Any) -> Any:  # type: ignore[override]
+        if cls is FlowNodeSpec:
+            if isinstance(obj, Mapping):
+                obj = {"kind": "step", **obj}
+            return _FLOW_NODE_ADAPTER.validate_python(obj, **kwargs)
+        return super().model_validate(obj, **kwargs)
+
+
+class StepFlowNode(FlowNodeSpec):
     """Authored step: run one registered capability (defaults to the node id)."""
 
     model_config = ConfigDict(extra="forbid")
 
     kind: Literal["step"] = "step"
-    id: str
     capability: Optional[str] = None
     model_profile: Optional[str] = None
 
 
-class BranchFlowNode(BaseModel):
+class BranchFlowNode(FlowNodeSpec):
     """Authored decision state: the decider capability picks among declared labels."""
 
     model_config = ConfigDict(extra="forbid")
 
     kind: Literal["branch"]
-    id: str
     capability: Optional[str] = None          # the decider; defaults to the node id
     branches: Dict[str, str] = Field(default_factory=dict)
     # Pre-set gates for authored loops: a label that closes a cycle MUST carry a bound here
@@ -70,13 +100,12 @@ class BranchFlowNode(BaseModel):
     model_profile: Optional[str] = None
 
 
-class EvaluateFlowNode(BaseModel):
+class EvaluateFlowNode(FlowNodeSpec):
     """Authored evaluator gate over an earlier capability, with bounded reject policy."""
 
     model_config = ConfigDict(extra="forbid")
 
     kind: Literal["evaluate"]
-    id: str
     capability: Optional[str] = None          # the evaluator; defaults to the node id
     target: Optional[str] = None              # the evaluated capability
     on_reject: Optional[Literal["retry", "retrace", "fallback"]] = None
@@ -87,14 +116,13 @@ class EvaluateFlowNode(BaseModel):
     model_profile: Optional[str] = None
 
 
-class FanoutFlowNode(BaseModel):
+class FanoutFlowNode(FlowNodeSpec):
     """Authored bounded fan-out (v1.5a): ``max_items`` is REQUIRED by validation — AI-chosen
     parallelism is cost-bounded by construction; oversize runtime lists fail loudly."""
 
     model_config = ConfigDict(extra="forbid")
 
     kind: Literal["fanout"]
-    id: str
     capability: Optional[str] = None          # the per-item capability; defaults to the node id
     items_key: Optional[str] = None
     max_parallel: Optional[int] = None
@@ -108,17 +136,6 @@ FlowNode = Annotated[
 ]
 
 _FLOW_NODE_ADAPTER: TypeAdapter = TypeAdapter(FlowNode)
-
-
-def FlowNodeSpec(**data: Any) -> Any:
-    """Construct one authored-flow node (public compat constructor over the union).
-
-    ``FlowNodeSpec(kind="step", id="x")`` keeps working and returns the kind-specific model;
-    ``kind`` defaults to ``"step"`` as before.
-    """
-
-    data.setdefault("kind", "step")
-    return _FLOW_NODE_ADAPTER.validate_python(data)
 
 
 class FlowArtifact(BaseModel):
@@ -450,6 +467,21 @@ def render_capability_catalog(registry: Any, allowed_side_effects: Optional[List
 # ------------------------------------------------------------------ turnkey author (v1.5a, 2.4)
 
 
+class _RegistrySnapshot:
+    """One immutable registry view per author invocation (R11): the prompt catalog and the
+    target validator read the SAME frozen entries — a mid-call registration can neither be
+    advertised nor validated in-flight."""
+
+    def __init__(self, registry: Any) -> None:
+        self._entries = {name: registry.get(name) for name in registry.names()}
+
+    def names(self) -> list:
+        return list(self._entries)
+
+    def get(self, name: str):
+        return self._entries[name]  # KeyError contract identical to the live registry
+
+
 class FlowAuthorRequest(BaseModel):
     """Typed input of the turnkey flow-author capability."""
 
@@ -511,40 +543,15 @@ def build_flow_author_capability(
     the spec carries the canonical ``is_flow_author=True`` firewall marker.
     """
 
-    from ai_workflow_engine.engine.llm_node import StructuredLLMNode
-
     effective_profiles = dict(model_profiles or {})
     effective_allowed = list(allowed_side_effects or [])
     effective_limits = limits if isinstance(limits, RuntimeLimits) else _DEFAULT_LIMITS
     parallel_cap = effective_limits.max_parallel_children
     items_cap = effective_limits.max_authored_fanout_items
 
-    def _validate_against_target(artifact: FlowArtifact) -> None:
-        # Raises WorkflowValidationError with the FULL error list — the structured node feeds
-        # it verbatim into the repair prompt; the compiled definition is deliberately discarded.
-        build_definition_from_artifact(
-            artifact,
-            registry=registry,
-            model_profiles=effective_profiles,
-            allowed_side_effects=effective_allowed,
-            max_nodes=max_nodes,
-            limits=limits,
-        )
-
-    node = StructuredLLMNode(
-        name=capability_name,
-        config=object(),
-        output_model=FlowArtifact,
-        prompt_template=prompt_template or DEFAULT_FLOW_AUTHOR_PROMPT,
-        input_variables=[
-            "goal", "context", "catalog", "max_nodes", "max_items_cap", "max_parallel_cap",
-        ],
-        llm=llm,
-        validator=_validate_against_target,
-        max_repair_rounds=max_repair_rounds,
-    )
-
     async def author_flow(context: Any, payload: Any) -> Dict[str, Any]:
+        from ai_workflow_engine.engine.llm_node import StructuredLLMNode
+
         request = (
             payload
             if isinstance(payload, FlowAuthorRequest)
@@ -556,10 +563,38 @@ def build_flow_author_capability(
         # the goal hole the adversarial review found).
         assert_byte_safe(request.goal, mode="prompt", path="flow_author.goal")
         assert_byte_safe(request.context, mode="prompt", path="flow_author.context")
-        # R9 — one coherent target contract: the catalog is rendered AT EACH INVOCATION from
-        # the SAME live registry the validator compiles against. A construction-time snapshot
-        # advertised capabilities that validation no longer agreed on (and hid new ones).
-        catalog = render_capability_catalog(registry, effective_allowed)
+        # R9+R11 — one coherent AND race-free target contract: this invocation takes ONE
+        # immutable registry snapshot; the prompt catalog and the validator both read it, so a
+        # capability registered mid-call is neither advertised nor accepted in-flight (it
+        # becomes visible to the NEXT invocation). No construction-time caching either way.
+        snapshot = _RegistrySnapshot(registry)
+        catalog = render_capability_catalog(snapshot, effective_allowed)
+
+        def _validate_against_target(artifact: FlowArtifact) -> None:
+            # Raises WorkflowValidationError with the FULL error list — the structured node
+            # feeds it verbatim into the repair prompt; the compiled definition is discarded.
+            build_definition_from_artifact(
+                artifact,
+                registry=snapshot,
+                model_profiles=effective_profiles,
+                allowed_side_effects=effective_allowed,
+                max_nodes=max_nodes,
+                limits=limits,
+            )
+
+        # Per-invocation node (R11): no shared mutable validator state across concurrent runs.
+        node = StructuredLLMNode(
+            name=capability_name,
+            config=object(),
+            output_model=FlowArtifact,
+            prompt_template=prompt_template or DEFAULT_FLOW_AUTHOR_PROMPT,
+            input_variables=[
+                "goal", "context", "catalog", "max_nodes", "max_items_cap", "max_parallel_cap",
+            ],
+            llm=llm,
+            validator=_validate_against_target,
+            max_repair_rounds=max_repair_rounds,
+        )
         artifact = await node.run(
             {
                 "goal": request.goal,

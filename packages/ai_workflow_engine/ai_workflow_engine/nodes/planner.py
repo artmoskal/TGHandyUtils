@@ -8,6 +8,8 @@ import asyncio
 from typing import Any, Dict, Optional
 from pydantic import ValidationError
 from ai_workflow_engine.models import CapabilityContext, CapabilityResult, WorkflowArtifact, WorkflowTraceEvent
+from ai_workflow_engine.models import RuntimeLimits as _RL
+_DEFAULT_LIMITS = _RL()
 from ai_workflow_engine.planning import PlanArtifact, PlanTask
 from ai_workflow_engine.workflow import WorkflowDefinition, WorkflowNode
 from ai_workflow_engine._runtime_state import CONTEXT, RUNNING_PAYLOAD
@@ -401,7 +403,14 @@ async def _execute_plan_fanout(
         tasks[index] = tasks[index].model_copy(update={"status": "in_progress", "error": None})
         _trace_plan_task(services, node, tasks[index], "plan:task_started")
     started_plan = plan.model_copy(update={"tasks": list(tasks)})
-    limit = node.max_parallel or (context.limits.max_parallel_children if context.limits else 4) or 4
+    # R13: distinguish None (unset -> profile bound) from a configured value; the default
+    # comes from the RuntimeLimits model, never a falsy `or 4` rewrite.
+    if node.max_parallel is not None:
+        limit = node.max_parallel
+    elif context.limits is not None:
+        limit = context.limits.max_parallel_children
+    else:
+        limit = _DEFAULT_LIMITS.max_parallel_children
     semaphore = asyncio.Semaphore(max(1, limit))
 
     async def invoke(index: int) -> tuple[int, CapabilityResult]:

@@ -161,8 +161,10 @@ class WorkflowNode(BaseModel):
     # AI-authored flows are REQUIRED to declare it): an oversize list fails loudly, never truncates.
     fan_items_key: Optional[str] = None
     item_capability: Optional[str] = None
-    max_parallel: Optional[int] = None
-    max_items: Optional[int] = None
+    # R13: structural bounds are honest — zero/negative is a build-time error, never a
+    # silent rewrite to 1 downstream.
+    max_parallel: Optional[int] = Field(default=None, ge=1)
+    max_items: Optional[int] = Field(default=None, ge=1)
 
     # kind="evaluate": run ``target_capability`` under ``evaluator`` with bounded
     # retry/retrace/fallback. ``on_reject`` selects the policy; ``fallback_capability`` is the

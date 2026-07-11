@@ -387,19 +387,16 @@ class WorkflowEngine:
             # these are the limits the flow will actually run under.
             limits=self.default_profile.limits if self.default_profile is not None else None,
         )
-        # R7: provenance belongs to the RUN — the event is recorded inside the run session
-        # (run-id stamped, present in result.trace and the observation bundle), never as an
-        # orphan on the global sink before the run exists.
-        provenance = WorkflowTraceEvent(
-            node=definition.workflow_id,
-            decision="flow:authored",
-            metadata={
-                "flow_id": flow.flow_id,
-                "goal": flow.goal,
-                "nodes": [f"{n.kind}:{n.id}" for n in flow.nodes],
-            },
-        )
-        return await self.run(definition, payload, intro_trace_events=[provenance], **run_kwargs)
+        # R7+R12: provenance belongs to the RUN, and the MECHANISM is engine-owned — this
+        # private channel carries only a typed data payload; the EXECUTOR constructs the trace
+        # event (fresh event id, byte-checked, run-id stamped, exactly once inside the session).
+        # No public API accepts caller-crafted trace events.
+        provenance = {
+            "flow_id": flow.flow_id,
+            "goal": flow.goal,
+            "nodes": [f"{n.kind}:{n.id}" for n in flow.nodes],
+        }
+        return await self.run(definition, payload, _authored_provenance=provenance, **run_kwargs)
 
     # ---------------------------------------------------------------- execution
     async def run(
@@ -415,7 +412,7 @@ class WorkflowEngine:
         recursion_limit: Optional[int] = None,
         observation_bundle: Any = None,
         terminal_status: Optional[Any] = None,
-        intro_trace_events: Optional[List[WorkflowTraceEvent]] = None,
+        _authored_provenance: Optional[Dict[str, Any]] = None,
     ) -> WorkflowRunResult:
         definition = self._resolve(workflow)
         context = self._run_context_for(
@@ -449,7 +446,7 @@ class WorkflowEngine:
             recursion_limit=recursion_limit,
             observation_bundle=observation_bundle,
             terminal_status=terminal_status,
-            intro_trace_events=intro_trace_events,
+            _authored_provenance=_authored_provenance,
         )
 
     async def resume(

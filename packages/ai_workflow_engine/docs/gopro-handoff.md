@@ -204,7 +204,8 @@ These points answer the review questions that matter before wiring the sidecar o
   The engine owns queue/drop/cancel behavior and keeps the backend slot until the worker really
   completes.
 - **Goal compiler boundary.** GoPro may use AI to emit structured plans, scenario inputs, or a
-  constrained `FlowArtifact` for registered capabilities. v0.9.0 widens the authorable subset with
+  constrained `FlowArtifact` for registered capabilities. The engine-v0.9.0 tag (implemented on
+  branch, NOT yet tagged — your v0.8.1 pin has neither) widens the authorable subset with
   bounded `fanout` (v1.5a) and ships the turnkey author capability, so the S1 goal compiler can be
   two engines: an author engine hosting `build_flow_author_capability(...)` wired to the PROCESSING
   engine's registry/limits, and the processing engine executing via `run_authored_flow`. Do not rely

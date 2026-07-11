@@ -298,3 +298,52 @@ def test_reminder_profile_restores_run_ceilings_from_the_app_boundary():
     from ai_workflow_engine.budget import budget_from_limits
 
     assert budget_from_limits(registered.limits).max_text_calls == 16
+
+
+@pytest.mark.unit
+def test_engine_runtime_limits_rejects_malformed_budget_settings_loudly():
+    """R13 (recheck finding #5): a typo'd ceiling must never silently mean 'no cap'.
+    Negative, non-finite, boolean, and unparseable values raise ValueError naming the
+    setting; only genuinely-absent shapes (None, empty string, exact 0) mean no cap."""
+
+    from types import SimpleNamespace
+
+    from config import engine_runtime_limits
+
+    def cfg(**overrides):
+        return SimpleNamespace(**overrides)
+
+    for bad in (-5, "-5", "abc", "1.5", True, False):
+        with pytest.raises(ValueError, match="WORKFLOW_MAX_TEXT_CALLS_PER_RUN"):
+            engine_runtime_limits(cfg(WORKFLOW_MAX_TEXT_CALLS_PER_RUN=bad))
+
+    for bad in (-0.5, "nan", "inf", float("nan"), float("inf"), "abc", True):
+        with pytest.raises(ValueError, match="WORKFLOW_MAX_ESTIMATED_USD_PER_RUN"):
+            engine_runtime_limits(cfg(WORKFLOW_MAX_ESTIMATED_USD_PER_RUN=bad))
+
+
+@pytest.mark.unit
+def test_engine_runtime_limits_keeps_legacy_no_cap_shapes_lenient():
+    """R13 pair: the legacy 'not configured' shapes still mean no cap — exact 0 (the app's
+    historical convention), None, and empty string; valid positives pass through typed."""
+
+    from types import SimpleNamespace
+
+    from config import engine_runtime_limits
+
+    def cfg(**overrides):
+        return SimpleNamespace(**overrides)
+
+    for none_like in (0, "0", None, "", "  "):
+        limits = engine_runtime_limits(cfg(WORKFLOW_MAX_TEXT_CALLS_PER_RUN=none_like))
+        assert limits.max_text_calls is None, f"{none_like!r} must mean 'no cap'"
+
+    assert (
+        engine_runtime_limits(cfg(WORKFLOW_MAX_TEXT_CALLS_PER_RUN="12")).max_text_calls == 12
+    )
+    assert (
+        engine_runtime_limits(
+            cfg(WORKFLOW_MAX_ESTIMATED_USD_PER_RUN="0.25")
+        ).max_estimated_usd
+        == 0.25
+    )
