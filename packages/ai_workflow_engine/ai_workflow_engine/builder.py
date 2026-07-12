@@ -563,6 +563,7 @@ class WorkflowEngine:
                 artifact_policy=self.observation.artifacts,
                 artifact_max_bytes=self.observation.artifact_max_bytes,
                 evict_suspended_after_s=self.observation.evict_suspended_after_s,
+                correlation_id=context.run_context.correlation_id,
                 # W4.1: the initial segment keeps the pre-W4 directory key (= run id), so
                 # ordinary single-run bundle paths are byte-stable; segment meta is additive.
                 segment=ObservationSegment(
@@ -700,6 +701,7 @@ class WorkflowEngine:
                 artifact_policy=self.observation.artifacts,
                 artifact_max_bytes=self.observation.artifact_max_bytes,
                 evict_suspended_after_s=self.observation.evict_suspended_after_s,
+                correlation_id=context.run_context.correlation_id,
                 segment=ObservationSegment(
                     segment_id=segment_id,
                     segment_index=child_index,
@@ -745,6 +747,7 @@ class WorkflowEngine:
                 delivery_target=run_goal.delivery_target,
                 user_id=run_goal.user_id,
                 metadata=dict(run_goal.metadata),
+                correlation_id=run_goal.correlation_id,
             ),
             plan=plan,
             limits=plan.limits,

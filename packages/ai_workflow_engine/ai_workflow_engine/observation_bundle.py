@@ -174,6 +174,8 @@ class ObservationRunBundle:
     segment: Optional[ObservationSegment] = None
     # R4-B opt-in policy threaded from ObservationConfig (None = never evict suspended)
     evict_suspended_after_s: Optional[float] = None
+    # W5-C4: caller's stable cross-run correlation, projected into meta.json when set
+    correlation_id: Optional[str] = None
     sequence: ObservationSequence = field(default_factory=ObservationSequence)
 
     def __post_init__(self) -> None:
@@ -271,6 +273,8 @@ class ObservationRunBundle:
             ),
             "notional_usd": _sum_cost(event.notional_usd for event in usage_events),
         }
+        if self.correlation_id:
+            meta["correlation_id"] = self.correlation_id
         if self.segment is not None:
             # W4.1 additive segment identity (schema stays v1: pure addition; absence of
             # these fields marks a pre-segment bundle, which readers treat as a group of one).
@@ -368,6 +372,7 @@ def open_observation_run_bundle(
     artifact_max_bytes: int = DEFAULT_ARTIFACT_MAX_BYTES,
     segment: Optional[ObservationSegment] = None,
     evict_suspended_after_s: Optional[float] = None,
+    correlation_id: Optional[str] = None,
 ) -> ObservationRunBundle:
     """Create a per-run observation source bundle (one SEGMENT of a logical run when
     ``segment`` is given; the pre-W4 single-directory shape otherwise)."""
@@ -380,6 +385,7 @@ def open_observation_run_bundle(
         artifact_max_bytes=artifact_max_bytes,
         segment=segment,
         evict_suspended_after_s=evict_suspended_after_s,
+        correlation_id=correlation_id,
     )
 
 

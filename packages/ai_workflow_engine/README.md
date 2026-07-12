@@ -416,4 +416,4 @@ default; otherwise you lose observability, cost accounting, and model-swap.
 5. Observation: one logical run = a GROUP of segments; use
    `FileEventSource.read_group(run_id)` / the served viewer (already grouped). Suspended
    groups are never evicted by default; opt-in cap = `ObservationConfig.evict_suspended_after_s`
-   (evicts viewer history only — the wait itself stays resumable).
+   (evicts viewer history only; durable waits stay resumable via the coordinator's snapshot — local waits only if you kept yours).

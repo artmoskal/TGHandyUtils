@@ -622,8 +622,9 @@ def test_malformed_segment_identity_is_loud(tmp_path):
 async def test_suspended_eviction_cap_is_opt_in_and_age_based(tmp_path):
     """R4-B (user-settled policy): by default a suspended group is NEVER evicted; with
     `evict_suspended_after_s` set, groups suspended longer than the cap rotate out at the
-    normal finalize-time sweep — viewer history only, resumability untouched (the snapshot
-    lives in the coordinator, not the bundle)."""
+    normal finalize-time sweep — viewer history only. This LOCAL wait resumes afterwards
+    because the CALLER kept its snapshot (durable waits would resume via the coordinator's
+    stored snapshot); the engine never stored a local snapshot anywhere."""
 
     import json
     from datetime import datetime, timedelta, timezone
@@ -659,4 +660,102 @@ async def test_suspended_eviction_cap_is_opt_in_and_age_based(tmp_path):
     assert "fresh-run" in names, "a suspended group INSIDE the cap stays protected"
     # resumability is untouched: the aged run's snapshot still resumes fine
     resumed = await engine.resume(aged.snapshot, "late answer")
-    assert resumed.status == "completed", "eviction sacrifices viewer history, never the wait"
+    assert resumed.status == "completed", (
+        "eviction sacrifices viewer history only — the caller-retained snapshot resumes"
+    )
+
+
+def test_eviction_cap_rejects_non_positive_and_non_finite_values(tmp_path):
+    """W5-C2: an invalid retention policy refuses loudly at construction — NaN would
+    otherwise make `age <= cap` silently false and evict nothing (or worse, mislead the
+    operator into thinking a bound exists). Same discipline as durable timeout_s."""
+
+    import math
+
+    import pytest as _pytest
+
+    from ai_workflow_engine import ObservationConfig
+
+    for bad in (-1.0, 0.0, float("inf"), float("nan")):
+        with _pytest.raises(Exception) as err:
+            ObservationConfig(enabled=True, bundle_dir=str(tmp_path), evict_suspended_after_s=bad)
+        assert "evict_suspended_after_s" in str(err.value) or "greater than 0" in str(err.value), (
+            f"cap {bad!r} must be rejected loudly, got: {err.value}"
+        )
+    ok = ObservationConfig(enabled=True, bundle_dir=str(tmp_path), evict_suspended_after_s=3600.0)
+    assert math.isfinite(ok.evict_suspended_after_s)
+    assert ObservationConfig(enabled=True, bundle_dir=str(tmp_path)).evict_suspended_after_s is None
+
+
+async def test_correlation_id_spans_runs_events_bundles_and_writes(tmp_path):
+    """W5-C4 (user-approved contract): an optional caller-supplied `correlation_id`
+    is projected AUTOMATICALLY into run context, every engine-written trace/usage event's
+    metadata, and every segment's bundle meta — across suspend/resume and across SEPARATE
+    runs sharing one case — while run_id stays the storage identity. Products stamp their
+    ExternalWriteRequest.metadata from context (shown here); absent means absent."""
+
+    import json
+    from pathlib import Path
+
+    from ai_workflow_engine.models import ExternalWriteRequest, WorkflowGoal
+
+    engine = _suspend_resume_engine(tmp_path)
+    captured_writes = []
+
+    def deliver_result(context, payload):
+        # the documented product-side pattern for external-write correlation
+        captured_writes.append(
+            ExternalWriteRequest(
+                target="crm",
+                idempotency_key=f"case-{context.run_context.correlation_id}",
+                metadata={"correlation_id": context.run_context.correlation_id},
+            )
+        )
+        return {"done": True}
+
+    engine.register_capability("deliver_result", deliver_result, kind="deterministic")
+    engine.register_workflow(
+        WorkflowBuilder("case_flow").step("deliver_result").build()
+    )
+
+    goal = WorkflowGoal(
+        workflow_type="seg_flow", objective="case", metadata={"run_id": "case-run-1"},
+        correlation_id="case-7",
+    )
+    first = await engine.run("seg_flow", {}, goal=goal)
+    assert first.status == "requires_user_input"
+    assert first.snapshot.goal["correlation_id"] == "case-7", "correlation survives snapshots"
+    resumed = await engine.resume(first.snapshot, "yes")
+    assert resumed.status == "completed"
+
+    # a SECOND logical run of the same case: distinct run_id, same correlation
+    goal2 = WorkflowGoal(
+        workflow_type="case_flow", objective="case", metadata={"run_id": "case-run-2"},
+        correlation_id="case-7",
+    )
+    second = await engine.run("case_flow", {}, goal=goal2)
+    assert second.status == "completed"
+    assert captured_writes and captured_writes[0].metadata["correlation_id"] == "case-7"
+
+    # every finalized segment of BOTH runs carries the correlation in meta AND in events
+    dirs = [p for p in tmp_path.iterdir() if (p / "meta.json").exists()]
+    assert len(dirs) >= 3
+    for d in dirs:
+        meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
+        assert meta["correlation_id"] == "case-7", d.name
+        for line in (d / "trace.jsonl").read_text(encoding="utf-8").splitlines():
+            event = json.loads(line)
+            assert event["metadata"].get("correlation_id") == "case-7", (d.name, event["node"])
+
+    # engine-side truth: the run result's trace buffer is stamped too
+    assert all(
+        e.metadata.get("correlation_id") == "case-7" for e in resumed.trace
+    ), "every engine-written trace event carries the correlation automatically"
+
+    # optionality: no correlation -> no phantom key
+    goal3 = WorkflowGoal(
+        workflow_type="case_flow", objective="n", metadata={"run_id": "plain-run"}
+    )
+    await engine.run("case_flow", {}, goal=goal3)
+    plain_meta = json.loads((tmp_path / "plain-run" / "meta.json").read_text(encoding="utf-8"))
+    assert "correlation_id" not in plain_meta

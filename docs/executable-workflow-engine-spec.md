@@ -650,8 +650,10 @@ groups of one.
 **Retention (user-settled policy).** Suspended (in-flight) groups are NEVER evicted by
 default. Opt-in: `ObservationConfig.evict_suspended_after_s` makes groups suspended longer
 than the cap evictable at the normal finalize-time sweep (no engine timer). Eviction
-sacrifices VIEWER history only — the wait stays resumable (snapshot lives in the
-coordinator); its later group view is partial and the reader says so loudly.
+sacrifices VIEWER history only. Resumability: DURABLE waits stay resumable regardless
+(their snapshot lives in the coordinator); LOCAL waits stay resumable only if the CALLER
+retained its snapshot — the engine never stored it. Either way a post-eviction resume's
+group view is partial and the reader says so loudly.
 
 ## 13. STATUS — EXISTS vs INTENDED (read this before building on a promise)
 | Area | Status |

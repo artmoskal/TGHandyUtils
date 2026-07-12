@@ -47,8 +47,16 @@ class SessionScopedTraceSink:
     def record(self, event: WorkflowTraceEvent) -> None:
         session = current_run_session()
         if session is not None:
+            updates = {}
             if event.run_id is None:
-                event = event.model_copy(update={"run_id": session.run_id})
+                updates["run_id"] = session.run_id
+            correlation = session.run_context.correlation_id
+            if correlation and "correlation_id" not in (event.metadata or {}):
+                # W5-C4: the caller's stable cross-run id rides EVERY engine-written
+                # event automatically — no consumer re-plumbing per surface.
+                updates["metadata"] = {**(event.metadata or {}), "correlation_id": correlation}
+            if updates:
+                event = event.model_copy(update=updates)
             session.trace_events.append(event)
             if session.bundle is not None:
                 session.bundle.trace_sink.record(event)
@@ -72,8 +80,15 @@ class SessionScopedDetailSink:
 
     def record(self, detail: Any) -> None:
         session = current_run_session()
-        if session is not None and session.bundle is not None:
-            session.bundle.detail_sink.record(detail)
+        if session is not None:
+            correlation = session.run_context.correlation_id
+            if correlation and getattr(detail, "metadata", None) is not None:
+                if "correlation_id" not in detail.metadata:
+                    detail = detail.model_copy(
+                        update={"metadata": {**detail.metadata, "correlation_id": correlation}}
+                    )
+            if session.bundle is not None:
+                session.bundle.detail_sink.record(detail)
         if self.inner is not None:
             self.inner.record(detail)
 
@@ -86,8 +101,15 @@ class SessionScopedUsageSink:
 
     def record(self, event: Any) -> None:
         session = current_run_session()
-        if session is not None and session.bundle is not None:
-            session.bundle.usage_sink.record(event)
+        if session is not None:
+            correlation = session.run_context.correlation_id
+            metadata = getattr(event, "metadata", None)
+            if correlation and metadata is not None and "correlation_id" not in metadata:
+                event = event.model_copy(
+                    update={"metadata": {**metadata, "correlation_id": correlation}}
+                )
+            if session.bundle is not None:
+                session.bundle.usage_sink.record(event)
         if self.inner is not None:
             self.inner.record(event)
 
@@ -140,6 +162,7 @@ class WorkflowRunSession:
             delivery_target=goal.delivery_target if goal else None,
             user_id=goal.user_id if goal else None,
             metadata=dict(goal.metadata) if goal else {},
+            correlation_id=getattr(goal, "correlation_id", None) if goal else None,
         )
 
     @property

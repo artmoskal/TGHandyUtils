@@ -759,14 +759,12 @@ def test_export_verifies_copied_summary_bytes_before_cleaning(tmp_path, monkeypa
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_hermetic_slack_durable_approval_full_lifecycle(tmp_path):
-    """W5.2: the Slack-shaped consumer on REAL public engine paths with a fake provider —
-    durable approval (deliver_wait_event), duplicate event idempotence, timeout fallback
-    through the DECLARED on_timeout route (product delivers via due()), and a repeated
-    (second) durable wait — with the external Slack send engine-DENIED throughout and the
-    observation group ledger truthful at the end. No test-only engine API, no product
-    supervisor loop, no network."""
+    """W5.2 (repaired per W5-C3): the Slack-shaped consumer on REAL public engine doors
+    with a fake provider — durable approval, duplicate-delivery idempotence, a chained
+    second gate, due()-discovered timeout through the DECLARED route, an action-intent
+    sink keyed by wait_idempotency proving ONE intent under timeout REDELIVERY, and a
+    GENUINE engine denial of the external Slack send (side-effect gate, not a prop)."""
 
-    import json
     from datetime import datetime, timedelta, timezone
 
     from ai_workflow_engine import (
@@ -776,18 +774,27 @@ async def test_hermetic_slack_durable_approval_full_lifecycle(tmp_path):
         WorkflowBuilder,
         WorkflowEngineBuilder,
     )
+    from ai_workflow_engine.models import RuntimeLimits, SafetyPolicy, WorkflowGoal, WorkflowProfile
     from ai_workflow_viewer import FileEventSource
     from pydantic import BaseModel
 
     current = {"now": datetime(2036, 1, 1, tzinfo=timezone.utc)}
     clock = lambda: current["now"]  # noqa: E731
     coordinator = InMemoryWaitCoordinator(clock=clock, shared_state={})
-    sent_to_slack: list = []
+    slack_executions: list = []
+    action_intents: dict = {}  # the PRODUCT outbox: idempotency key -> intent count
 
     builder = (
         WorkflowEngineBuilder()
         .with_observation(ObservationConfig(enabled=True, bundle_dir=str(tmp_path)))
         .with_wait_coordinator(coordinator, clock=clock)
+        .with_profile(
+            WorkflowProfile(
+                workflow_type="slack_hermetic",
+                limits=RuntimeLimits(max_text_calls=3),
+                safety=SafetyPolicy(allowed_side_effects=["read_only"]),
+            )
+        )
     )
 
     class Draft(BaseModel):
@@ -811,32 +818,45 @@ async def test_hermetic_slack_durable_approval_full_lifecycle(tmp_path):
             return Draft(status="pending", draft="second")
         return Draft(status="answered", decision=str(event.get("decision")), draft="second")
 
-
-    def escalate(_context, _payload):
-        return {"escalated": True}
-
     def finish(_context, payload):
         return {"done": True, "decision": getattr(payload, "decision", "")}
+
+    def record_escalation_intent(context, _payload):
+        # PRODUCT pattern: external action INTENTS are keyed by the engine's stable
+        # wait/event idempotency context — at-least-once redelivery collapses to one.
+        key = context.metadata.get("wait_idempotency") or "missing"
+        action_intents[key] = action_intents.get(key, 0) + 1
+        return {"escalated": True, "intent_key": key}
+
+    def send_slack(_context, payload):
+        slack_executions.append(payload)  # must NEVER run — engine denies external_call
+        return {"sent": True}
 
     builder.register_capability("classify", classify, kind="deterministic")
     builder.register_capability("approval", approval, kind="deterministic")
     builder.register_capability("second_gate", second_gate, kind="deterministic")
     builder.register_capability("finish", finish, kind="deterministic")
-    builder.register_capability("escalate", escalate, kind="deterministic")
+    builder.register_capability(
+        "record_escalation_intent", record_escalation_intent, kind="deterministic"
+    )
+    builder.register_capability(
+        "send_slack", send_slack, kind="external", side_effects=["external_call"]
+    )
     builder.register_workflow(
         WorkflowBuilder("slack_durable")
         .step("classify")
-        .human("approval", wait_policy=DurableWaitPolicy(timeout_s=3600), timeout_to="escalate")
-        .human("second_gate", wait_policy=DurableWaitPolicy(timeout_s=3600), timeout_to="escalate")
+        .human("approval", wait_policy=DurableWaitPolicy(timeout_s=3600), timeout_to="record_escalation_intent")
+        .human("second_gate", wait_policy=DurableWaitPolicy(timeout_s=3600), timeout_to="record_escalation_intent")
         .step("finish")
-        .step("escalate")
+        .step("record_escalation_intent")
         .build()
+    )
+    builder.register_workflow(
+        WorkflowBuilder("slack_send_attempt").step("send_slack").build()
     )
     engine = builder.build()
 
-    from ai_workflow_engine.models import WorkflowGoal
-
-    # arc 1: approval flow — suspend, DUPLICATE deliveries stay idempotent, then approve
+    # arc 1: approval — suspend, DUPLICATE deliveries stay idempotent, then approve
     goal = WorkflowGoal(workflow_type="slack_durable", objective="approve", metadata={"run_id": "sd-1"})
     first = await engine.run("slack_durable", {"message": "deploy?"}, goal=goal)
     assert first.status == "requires_user_input" and first.wait_handle is not None
@@ -850,42 +870,252 @@ async def test_hermetic_slack_durable_approval_full_lifecycle(tmp_path):
     dup = await engine.deliver_wait_event(
         wait_1, {"kind": "signal", "event_id": "evt-approve", "payload": {"decision": "approve"}}
     )
-    assert dup.kind == "duplicate" and dup.run_result is None, "at-least-once redelivery is a report"
+    assert dup.kind == "duplicate" and dup.run_result is None
 
     # arc 2 (repeated wait): the SECOND durable gate suspended inside the resumed run
     chained = ok.run_result
     assert chained.status == "requires_user_input" and chained.wait_handle is not None
-    wait_2 = chained.wait_handle.wait_id
     done = await engine.deliver_wait_event(
-        wait_2, {"kind": "signal", "event_id": "evt-2", "payload": {"decision": "ship"}}
+        chained.wait_handle.wait_id,
+        {"kind": "signal", "event_id": "evt-2", "payload": {"decision": "ship"}},
     )
     assert done.kind == "executed" and done.run_result.status == "completed"
     assert done.run_result.output["done"] is True
 
-    # arc 3 (timeout fallback): a fresh run nobody answers; the PRODUCT discovers it via
-    # due() and delivers the timeout — the machine takes its DECLARED on_timeout route
+    # arc 3 (timeout + ACTION-INTENT DEDUP): nobody answers; the product loop discovers
+    # the overdue wait via due() and delivers the timeout; REDELIVERING the same timeout
+    # must not duplicate the escalation intent.
     goal_t = WorkflowGoal(workflow_type="slack_durable", objective="timeout", metadata={"run_id": "sd-2"})
     second = await engine.run("slack_durable", {"message": "ping"}, goal=goal_t)
     wait_t = second.wait_handle.wait_id
     current["now"] += timedelta(seconds=3601)
     due = await coordinator.due(clock())
-    assert [r.wait_id for r in due] == [wait_t], "the product's loop discovers the overdue wait"
-    timed_out = await engine.deliver_wait_event(
-        wait_t, {"kind": "timeout", "event_id": "evt-timeout"}
-    )
+    assert [r.wait_id for r in due] == [wait_t]
+    timed_out = await engine.deliver_wait_event(wait_t, {"kind": "timeout", "event_id": "evt-T"})
     assert timed_out.kind == "executed"
-    assert timed_out.run_result.output == {"escalated": True}, (
-        "timeout takes the DECLARED on_timeout transition — never re-enters the gate"
+    assert timed_out.run_result.output["intent_key"] == f"{wait_t}:evt-T"
+    redelivered = await engine.deliver_wait_event(wait_t, {"kind": "timeout", "event_id": "evt-T"})
+    assert redelivered.kind == "duplicate" and redelivered.run_result is None
+    assert action_intents == {f"{wait_t}:evt-T": 1}, (
+        "duplicate timeout delivery must NEVER duplicate an action intent"
     )
 
-    # ledger truth: both logical runs read as complete groups with honest spend fields
+    # arc 4 (GENUINE denial): the external Slack send is engine-DENIED pre-invocation
+    goal_d = WorkflowGoal(
+        workflow_type="slack_send_attempt", objective="send", metadata={"run_id": "sd-deny"}
+    )
+    denied = await engine.run("slack_send_attempt", {"text": "hi"}, goal=goal_d)
+    assert denied.status == "failed" and "external_call" in (denied.error or ""), (
+        f"the send must be denied EXPLICITLY by the side-effect gate: {denied.error}"
+    )
+    assert slack_executions == [], "the denied capability must never have executed"
+
+    # ledger truth across the logical runs
     source = FileEventSource(tmp_path)
     g1 = source.read_group("sd-1")
     assert g1.status == "completed" and [s.segment_index for s in g1.segments] == [0, 1, 2]
     assert g1.usage_totals["scope"] == "actual_all_attempts"
     g2 = source.read_group("sd-2")
     assert g2.status == "completed" and g2.segments[-1].kind == "resume"
-    assert sent_to_slack == [], (
-        "hermetic: nothing left the process (the engine-DENIED external-send proof lives "
-        "in the local slackazz scenario; this suite must stay network-free)"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_hermetic_slack_cooldown_ack_and_membership_lifecycle(tmp_path):
+    """W5-C3: the remaining refreshed-SlackAzzCovered arcs, hermetically, public doors only:
+    (a) FAST bounded classifier retry (business Retry policy) recovers a flaky provider in
+    ONE run — completely separate from max_resume_attempts (delivery crash recovery);
+    (b) provider OUTAGE routes to a recoverable durable COOLDOWN wait carrying a typed
+    operational-alert proposal — never terminal lost work — and heals via the declared
+    timeout route; (c) a manager acknowledgement CANCELS the pending escalation wait
+    (product-driven cancel_wait) with terminal evidence and no escalation intent;
+    (d) a no-manager state suspends durably and resumes after membership refresh."""
+
+    from datetime import datetime, timedelta, timezone
+
+    from ai_workflow_engine import (
+        DurableWaitPolicy,
+        InMemoryWaitCoordinator,
+        ObservationConfig,
+        Retry,
+        WorkflowBuilder,
+        WorkflowEngineBuilder,
+    )
+    from ai_workflow_engine.models import WorkflowGoal
+    from ai_workflow_viewer import FileEventSource
+    from pydantic import BaseModel
+
+    current = {"now": datetime(2036, 1, 1, tzinfo=timezone.utc)}
+    clock = lambda: current["now"]  # noqa: E731
+    coordinator = InMemoryWaitCoordinator(clock=clock, shared_state={})
+    provider = {"failures_left": 2, "healed": False}
+    escalation_intents: list = []
+
+    builder = (
+        WorkflowEngineBuilder()
+        .with_observation(ObservationConfig(enabled=True, bundle_dir=str(tmp_path)))
+        .with_wait_coordinator(coordinator, clock=clock)
+    )
+
+    class Gate(BaseModel):
+        status: str
+        value: str = ""
+
+    def flaky_classifier(_context, payload):
+        # (a) transient flake: fails twice, then classifies — the NODE Retry policy
+        # (business bounded retry) absorbs it inside one run
+        if provider["failures_left"] > 0:
+            provider["failures_left"] -= 1
+            raise RuntimeError("provider hiccup")
+        return {"classified": True, "message": payload["message"]}
+
+    def outage_classifier(_context, payload):
+        # (b) hard outage until healed — the run must route to cooldown, not die
+        if not provider["healed"]:
+            return {
+                "classified": False,
+                "alert_proposal": {  # typed operational-alert PROPOSAL (data, no send)
+                    "kind": "provider_outage",
+                    "provider": "fake-slack-classifier",
+                    "proposed_action": "notify-oncall",
+                },
+            }
+        return {"classified": True, "message": payload["message"]}
+
+
+    def cooldown_gate(context, payload):
+        event = context.metadata.get("resume_event")
+        if event is None:
+            return Gate(status="pending", value="cooling")
+        return Gate(status="answered", value="woke")
+
+    def retry_classify(_context, _payload):
+        assert provider["healed"], "the cooldown timeout fires only after healing in this arc"
+        return {"classified": True, "recovered": True}
+
+    def gate(context, _payload):
+        event = context.metadata.get("resume_event")
+        if event is None:
+            return Gate(status="pending")
+        return Gate(status="answered", value=str(event))
+
+    def escalate(_context, _payload):
+        escalation_intents.append("escalated")
+        return {"escalated": True}
+
+    def finish(_context, payload):
+        return {"done": True, "value": getattr(payload, "value", None) or payload}
+
+    builder.register_capability("flaky_classifier", flaky_classifier, kind="deterministic")
+    builder.register_capability("outage_classifier", outage_classifier, kind="deterministic")
+    builder.register_guard(
+        "outage_router", lambda payload: "cooldown" if not payload.get("classified") else "proceed"
+    )
+    builder.register_capability("cooldown_gate", cooldown_gate, kind="deterministic")
+    builder.register_capability("retry_classify", retry_classify, kind="deterministic")
+    builder.register_capability("gate", gate, kind="deterministic")
+    builder.register_capability("escalate", escalate, kind="deterministic")
+    builder.register_capability("finish", finish, kind="deterministic")
+
+    builder.register_workflow(
+        WorkflowBuilder("flaky_flow")
+        .step("flaky_classifier", retry=Retry(3))
+        .step("finish")
+        .build()
+    )
+    builder.register_workflow(
+        WorkflowBuilder("outage_flow")
+        .step("outage_classifier")
+        .branch("outage_router", {"cooldown": "cooldown_gate", "proceed": "finish"})
+        .human("cooldown_gate", wait_policy=DurableWaitPolicy(timeout_s=900), timeout_to="retry_classify")
+        .step("retry_classify")
+        .step("finish")
+        .build()
+    )
+    builder.register_workflow(
+        WorkflowBuilder("escalation_flow")
+        .human("gate", wait_policy=DurableWaitPolicy(timeout_s=3600), timeout_to="escalate")
+        .step("finish")
+        .step("escalate")
+        .build()
+    )
+    builder.register_workflow(
+        WorkflowBuilder("membership_flow")
+        .human("gate", wait_policy=DurableWaitPolicy(timeout_s=3600), timeout_to="escalate")
+        .step("finish")
+        .step("escalate")
+        .build()
+    )
+    engine = builder.build()
+
+    # (a) fast bounded retry: one run, no waits involved, business limit ≠ delivery limit
+    flaky = await engine.run(
+        "flaky_flow", {"message": "hello"},
+        goal=WorkflowGoal(workflow_type="flaky_flow", objective="a", metadata={"run_id": "flaky-run"}),
+    )
+    assert flaky.status == "completed", flaky.error
+    assert provider["failures_left"] == 0
+    assert (await coordinator.health()).claimed == 0, (
+        "business retries never touch wait machinery — max_resume_attempts is delivery-"
+        "crash recovery only"
+    )
+
+    # (b) outage -> recoverable durable cooldown with a typed alert proposal, then heal
+    outage = await engine.run(
+        "outage_flow", {"message": "classify me"},
+        goal=WorkflowGoal(workflow_type="outage_flow", objective="b", metadata={"run_id": "outage-run"}),
+    )
+    assert outage.status == "requires_user_input", f"outage must suspend recoverably, never die: {outage.error}"
+    assert outage.wait_handle.suspended_node == "cooldown_gate"
+    alert = next(
+        r.output for r in outage.node_results if r.node_id == "outage_classifier"
+    )["alert_proposal"]
+    assert alert["kind"] == "provider_outage" and alert["proposed_action"] == "notify-oncall"
+    provider["healed"] = True
+    current["now"] += timedelta(seconds=901)
+    assert [r.wait_id for r in await coordinator.due(clock())] == [outage.wait_handle.wait_id]
+    recovered = await engine.deliver_wait_event(
+        outage.wait_handle.wait_id, {"kind": "timeout", "event_id": "evt-cool"}
+    )
+    assert recovered.kind == "executed" and recovered.run_result.status == "completed"
+    assert recovered.run_result.output.get("recovered") is True, (
+        "the declared on_timeout route re-classified successfully after healing"
+    )
+    stored = await coordinator.get(outage.wait_handle.wait_id)
+    assert stored.resume_attempts == 1, "one delivery attempt — cooldown is not a retry loop"
+
+    # (c) acknowledgement cancels the LATER escalation: the product's loop receives the
+    # manager's ack and cancels the pending wait instead of letting it escalate
+    esc = await engine.run(
+        "escalation_flow", {},
+        goal=WorkflowGoal(workflow_type="escalation_flow", objective="c", metadata={"run_id": "ack-run"}),
+    )
+    wait_esc = esc.wait_handle.wait_id
+    current["now"] += timedelta(seconds=3601)  # overdue — but the ack arrived out of band
+    record, observation = await engine.cancel_wait(
+        wait_esc, reason="manager acknowledged in-channel; escalation unnecessary"
+    )
+    assert record.status == "cancelled" and observation == "recorded"
+    assert escalation_intents == [], "an acknowledged case must never escalate"
+    late_timeout = await engine.deliver_wait_event(
+        wait_esc, {"kind": "timeout", "event_id": "evt-late"}
+    )
+    assert late_timeout.kind == "terminal" and late_timeout.run_result is None, (
+        "the raced timeout after cancellation is a terminal report, not an escalation"
+    )
+    assert escalation_intents == []
+    assert FileEventSource(tmp_path).read_group("ack-run").status == "cancelled"
+
+    # (d) no-manager state: suspend durably, resume after membership refresh
+    member = await engine.run(
+        "membership_flow", {},
+        goal=WorkflowGoal(workflow_type="membership_flow", objective="d", metadata={"run_id": "member-run"}),
+    )
+    refreshed = await engine.deliver_wait_event(
+        member.wait_handle.wait_id,
+        {"kind": "signal", "event_id": "evt-roster", "payload": {"manager": "alice"}},
+    )
+    assert refreshed.kind == "executed" and refreshed.run_result.status == "completed"
+    assert "alice" in str(refreshed.run_result.output["value"]), (
+        "the resumed run must consume the REFRESHED membership payload"
     )

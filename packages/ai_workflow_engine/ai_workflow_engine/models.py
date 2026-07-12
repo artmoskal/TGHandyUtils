@@ -81,6 +81,13 @@ class WorkflowGoal(BaseModel):
     user_id: Optional[int] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
     goal_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    # W5-C4 (user-approved): OPTIONAL stable cross-run correlation — one customer case /
+    # work item may span many engine runs. When set, the engine projects it automatically
+    # into run context, every trace/usage/detail event's metadata, and bundle meta; it
+    # survives snapshots with the goal. It is NEVER a storage identity (run_id stays the
+    # storage key); products stamp it into their ExternalWriteRequest.metadata from
+    # context.run_context.correlation_id.
+    correlation_id: Optional[str] = None
 
 
 class WorkflowInstrumentSpec(BaseModel):
@@ -399,6 +406,7 @@ class WorkflowRunContext(BaseModel):
     delivery_target: Optional[str] = None
     user_id: Optional[int] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    correlation_id: Optional[str] = None  # W5-C4: mirrors goal.correlation_id
 
 
 class WorkflowInput(BaseModel):
