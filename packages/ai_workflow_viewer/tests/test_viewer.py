@@ -792,6 +792,17 @@ def test_group_related_run_identity_drift_is_corruption(tmp_path):
     with _pytest.raises(ValueError, match="identity drift"):
         source.read_group("half-corr")
 
+    # (b2) an ABANDONED attempt claiming a different case is the SAME corruption —
+    # its spend counts in actual economics, so its identity must match the group's
+    seg("aband-drift", "aband-drift", 0, "case-d", status="requires_user_input")
+    extra = _segment_meta("aband-drift", "aband-drift--s001-x", 1, digest=digest)
+    extra["correlation_id"] = "case-ELSE"
+    extra["status"] = "abandoned"
+    _write_bundle(tmp_path, "aband-drift", definition, dir_name="aband-drift--s001-x", meta_extra=extra)
+    with _pytest.raises(ValueError, match="DIFFERENT related-run ids"):
+        source.read_group("aband-drift")
+    assert {r["run_id"]: r for r in source.list_groups()}["aband-drift"]["status"] == "corrupt"
+
     # (c) consistent group: ONE validated value on detail AND chooser
     seg("good-run", "good-run", 0, "case-ok", status="requires_user_input")
     seg("good-run", "good-run--s001-z", 1, "case-ok")

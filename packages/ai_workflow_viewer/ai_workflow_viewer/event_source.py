@@ -424,10 +424,10 @@ def _canonical_partition(
     drift between segments written under the segmented contract — are corruption, never a
     silent first/newest pick (legacy pre-segment bundles are exempt)."""
 
+    # EVERY disposition participates in identity validation — an abandoned attempt's
+    # spend counts in actual economics, so its identity must match the group's too.
     values = {
-        (row.get("correlation"), bool(row.get("new_contract")))
-        for row in rows
-        if not row["abandoned"]
+        (row.get("correlation"), bool(row.get("new_contract"))) for row in rows
     }
     present = sorted({c for c, _ in values if c})
     if len(present) > 1:

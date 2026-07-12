@@ -198,6 +198,11 @@ class ObservationRunBundle:
                     f"observation {label} must be a plain directory name (no separators, "
                     f"no '..', not absolute, not empty): {value!r}"
                 )
+        from ai_workflow_engine.correlation import validate_optional_correlation
+
+        # the EXPORTED bundle boundary enforces the same schema rule as every model —
+        # a blank related-run id must not enter meta through the public open_… door
+        validate_optional_correlation(self.correlation_id)
         self.base_dir = Path(self.base_dir)
         self.path = self.base_dir / (self.segment.segment_id if self.segment else str(self.run_id))
         self.path.mkdir(parents=True, exist_ok=True)

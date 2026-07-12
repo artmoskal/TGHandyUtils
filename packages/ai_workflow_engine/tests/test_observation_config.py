@@ -948,6 +948,39 @@ async def test_conflicting_related_run_identity_is_loud_on_every_event_surface(t
             )
     assert typed.summary.events == []
 
+    # an UNCORRELATED run must not accept events that INVENT an identity (truth table)
+    invented = WorkflowUsageContext(
+        run_context=WorkflowRunContext(workflow_id="r-3", workflow_type="t"),  # no correlation
+        summary=WorkflowUsageSummary(),
+        budget=WorkflowBudget(),
+    )
+    with workflow_usage_scope(invented):
+        with _pytest.raises(ValueError, match="UNCORRELATED"):
+            record_usage_event(
+                WorkflowUsageEvent(
+                    node="n", operation="chat", total_tokens=1,
+                    metadata={"correlation_id": "case-invented"},
+                )
+            )
+    assert invented.summary.events == []
+    plain_context = SimpleNamespace(
+        goal=WorkflowGoal(workflow_type="t", objective="o"),
+        run_context=WorkflowRunContext(workflow_id="r-4", workflow_type="t"),
+    )
+    plain_session = WorkflowRunSession(workflow_id="t", context=plain_context)
+    with run_session_scope(plain_session):
+        with _pytest.raises(ValueError, match="UNCORRELATED"):
+            SessionScopedTraceSink(Collect()).record(
+                WorkflowTraceEvent(node="n", metadata={"correlation_id": "case-invented"})
+            )
+    assert plain_session.trace_events == []
+
+    # the EXPORTED bundle boundary enforces the same blank rule
+    from ai_workflow_engine import open_observation_run_bundle
+
+    with _pytest.raises(Exception, match="non-blank"):
+        open_observation_run_bundle(tmp_path, "b-run", correlation_id="   ")
+
     # persisted wait schemas share the non-blank rule
     from datetime import datetime, timedelta, timezone
 

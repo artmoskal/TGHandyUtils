@@ -33,14 +33,29 @@ def enrich_related_run(
 ) -> Optional[Dict[str, Any]]:
     """Return metadata carrying the run's related-run id, or raise on a conflict.
 
-    No authoritative id -> metadata returned unchanged (absent stays absent). An existing
-    value must be EXACTLY the authoritative string — same type, same value — otherwise
-    the event is refused before any buffer/bundle/sink/summary persistence.
+    Complete truth table (no silent cell):
+
+    ==================  ==================  =======================================
+    run's authoritative  event already has   result
+    ==================  ==================  =======================================
+    absent               absent              unchanged (absent stays absent)
+    absent               present             REFUSED — an uncorrelated run must not
+                                             emit events that INVENT an identity
+    present              absent              stamped
+    present              exactly equal str   unchanged
+    present              anything else       REFUSED (no type coercion)
+    ==================  ==================  =======================================
     """
 
-    if not authoritative:
-        return metadata
     existing = (metadata or {}).get("correlation_id", _MISSING)
+    if not authoritative:
+        if existing is not _MISSING:
+            raise ValueError(
+                f"{surface} event {event_id or ''} claims correlation_id {existing!r} but "
+                "the run is UNCORRELATED — inventing a related-run identity is refused "
+                "before persistence"
+            )
+        return metadata
     if existing is not _MISSING:
         if not isinstance(existing, str) or existing != authoritative:
             raise ValueError(
