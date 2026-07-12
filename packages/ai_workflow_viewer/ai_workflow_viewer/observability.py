@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 from pathlib import Path
 import json
+from urllib.parse import quote
 import re
 from typing import Any, Iterable, Mapping, Optional
 
@@ -254,6 +255,11 @@ mermaid.initialize({{ startOnLoad: true }});
 """
 
 
+# Only inert raster formats are ever rendered inline (exported <img> or served inline
+# content) — SVG/HTML are ACTIVE content and must never execute in the viewer context.
+INLINE_SAFE_MEDIA_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
+
+
 def _artifact_section_html(bundle_dir: str, href_base: Optional[str] = None) -> str:
     """Q4.2: resolve the bundle's artifact manifest into USER-FACING evidence — image
     previews and clickable bundle-local links, honest skip reasons for uncopied entries.
@@ -275,12 +281,17 @@ def _artifact_section_html(bundle_dir: str, href_base: Optional[str] = None) -> 
         name = str(entry.get("bundle_path") or entry.get("artifact_id") or "artifact")
         label = html.escape(f"{entry.get('role') or entry.get('kind') or 'artifact'} · {name}")
         if entry.get("copied") and entry.get("bundle_path"):
-            href = f"{base}/{entry['bundle_path']}"
+            # archives preserve source basenames (spaces/#/%/unicode) — percent-encode each
+            # path segment so the href round-trips through browsers and the /artifact route
+            encoded_path = "/".join(
+                quote(segment, safe="") for segment in str(entry["bundle_path"]).split("/")
+            )
+            href = f"{base}/{encoded_path}"
             media = str(entry.get("media_type") or "")
             preview = (
                 f'<br><a href="{html.escape(href)}"><img src="{html.escape(href)}" '
                 f'alt="{label}" style="max-width:320px;max-height:240px;border:1px solid #d9e2ec"></a>'
-                if media.startswith("image/")
+                if media in INLINE_SAFE_MEDIA_TYPES
                 else ""
             )
             rows.append(

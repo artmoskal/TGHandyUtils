@@ -1,11 +1,14 @@
 # GoPro — AI Workflow Engine Usage Guide
 
-> **PIN (2026-07-07):** pin tag `engine-v0.8.1` and build a wheel from it. The consumer model is
+> **PIN (2026-07-12):** pin tag `engine-v0.9.0` and build a wheel from it. The consumer model is
 > breaking-allowed tag-to-tag — do NOT track the live branch. The tag carries the full framework
 > capability set (see **"What engine-v0.8.1 gives you"**):
 > agent prompt-memory policies plus the `MemoryStore` seam, config-first observation
 > (log→bundle→viewer; HTML rendering lives in the separate `ai_workflow_viewer` package),
 > strict prompt files, machine identity, and hardened seam guards.
+> **Release gate: CLOSED 2026-07-12 (engine-v0.9.0)** — engine 0.9.0 / viewer 0.2.0 / tools 0.3.0
+> (lockstep-guarded); durable waits + observation segments + Related-run identity shipped; paid
+> four-consumer qualification 4/4 + user viewer acceptance recorded at the tag.
 > **Release gate: CLOSED 2026-07-07** — package version metadata is lockstep-guarded in both
 > packages (engine 0.8.1, tools 0.3.0; pyproject ↔ `__version__` release-guard tests), the
 > one-call façade exposes the full run envelope (`return_result=True`), and console tool-flag
@@ -99,7 +102,7 @@ per-attempt metering/observation. `run_authored_flow` re-validates under the CUR
 limits (stale artifacts rejected). Two-engine handoff (author engine -> processing engine) is
 test-locked. STILL future: authorable subworkflow + general input/output mapping (v1.5 remainder),
 ProcessArtifact/v2.
-**v0.9 migration notes (apply ONLY when `engine-v0.9.0` exists; `engine-v0.8.1` is the current pin):**
+**v0.9.0 migration notes (current release — apply when moving your pin from `engine-v0.8.1`):**
 strict `RuntimeLimits` (unknown limit keys now fail config load); typed limits are the ONLY budget
 source (`budget_from_limits(RuntimeLimits|None)` — host-config/duck-typed objects are rejected; the
 old usage-tracking flag no longer disables engine budgets); firewall markers are typed
@@ -113,7 +116,7 @@ guaranteed; foreign/unknown node fields fail loudly).
 Source needs: `/Users/artemm/PycharmProjects/gopro-streaming/docs/architecture/workflow-execution-engine-requirements.md`,
 `/Users/artemm/PycharmProjects/gopro-streaming/docs/universal_event_descriptor/HOME_INVENTORY_CASE.md`.
 
-**Current GoPro package scope:** the detection image should vendor only `ai-workflow-engine==0.8.1`.
+**Current GoPro package scope:** the detection image should vendor only `ai-workflow-engine==0.9.0`.
 It does not include `ai_workflow_tools` or `ai_workflow_viewer` yet. That is intentional for the
 current GoPro code path, which imports core engine APIs directly. Add the tools/viewer packages only
 when GoPro starts using CLI-agent tool packs, media helpers, or in-container observation rendering.

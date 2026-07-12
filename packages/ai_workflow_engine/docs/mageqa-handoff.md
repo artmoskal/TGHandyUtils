@@ -1,11 +1,14 @@
 # MageQA — AI Workflow Engine Usage Guide
 
-> **PIN (2026-07-07):** pin tag `engine-v0.8.1` and build a wheel from it. The consumer model is
+> **PIN (2026-07-12):** pin tag `engine-v0.9.0` and build a wheel from it. The consumer model is
 > breaking-allowed tag-to-tag — do NOT track the live branch. The tag carries the full current
 > capability set (see **"What engine-v0.8.1 gives you"**):
 > cross-run memory, config-first observation (log→bundle→viewer; HTML rendering lives in the
 > separate `ai_workflow_viewer` package), strict prompt files, machine identity, and hardened seam
 > guards.
+> **Release gate: CLOSED 2026-07-12 (engine-v0.9.0)** — engine 0.9.0 / viewer 0.2.0 / tools 0.3.0
+> (lockstep-guarded); durable waits + observation segments + Related-run identity shipped; paid
+> four-consumer qualification 4/4 + user viewer acceptance recorded at the tag.
 > **Release gate: CLOSED 2026-07-07** — package version metadata is lockstep-guarded in both
 > packages (engine 0.8.1, tools 0.3.0; pyproject ↔ `__version__` release-guard tests), the
 > one-call façade exposes the full run envelope (`return_result=True`), and console tool-flag
@@ -78,7 +81,7 @@ ProcessArtifact/v2, browser/no-API executors. v0.9.0 UPDATE (shipped in the `eng
 bounded `fanout` (max_items REQUIRED) + `build_flow_author_capability(...)`; true per-phase budget
 scopes (N1) remain explicitly FUTURE-STAGE (activation on a concrete MageQA workflow needing
 independent phase ceilings).
-**v0.9 migration notes (apply ONLY when `engine-v0.9.0` exists; `engine-v0.8.1` is the current pin):**
+**v0.9.0 migration notes (current release — apply when moving your pin from `engine-v0.8.1`):**
 strict `RuntimeLimits` (unknown limit keys now fail config load); typed limits are the ONLY budget
 source (`budget_from_limits(RuntimeLimits|None)` — host-config/duck-typed objects are rejected; the
 old usage-tracking flag no longer disables engine budgets); firewall markers are typed

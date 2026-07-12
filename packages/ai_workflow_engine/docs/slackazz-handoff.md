@@ -69,6 +69,7 @@ from ai_workflow_engine import (
     LocalWaitPolicy,        # mode="local" — exactly the old suspend/resume, snapshot to caller
     WaitCoordinator,        # Protocol you implement over Redis (11 members, all async)
     WaitEvent,              # kind: "signal"|"timeout"; event_id (non-empty, THE dedup key); payload (byte-safe, persisted)
+    WaitDeliveryOutcome,    # typed result of deliver_wait_event — branch on outcome.kind
     InMemoryWaitCoordinator, # reference implementation — read it next to your Redis adapter
     WorkflowBuilder, WorkflowEngineBuilder, WorkflowGoal, ObservationConfig,
 )
@@ -84,11 +85,15 @@ Engine methods:
   (never preempts a live claimant); writes terminal evidence.
 - `builder.with_wait_coordinator(coordinator)` — checks all 11 protocol members are async at wiring.
 
-`WaitCoordinator` protocol (your Redis adapter): `register(record, snapshot_json, definition_json)
--> receipt`, `load`, `load_snapshot`, `load_definition`, `claim_event(wait_id, event, lease_until)
--> WaitClaimOutcome`, `extend_lease`, `terminalize`, `fail`, `due(now)`, `stalled(now)`,
-`cancel(wait_id, reason)`, `health() -> WaitHealth(pending, claimed, overdue, stalled,
-oldest_pending_deadline)`. `overdue` is DERIVED, never stored.
+`WaitCoordinator` protocol — the EXACT 11 members your Redis adapter implements (this list is
+test-locked against the Protocol; `builder.with_wait_coordinator()` checks all 11 are async):
+`register(record, snapshot_json, definition_json) -> WaitReceipt`, `get(wait_id)`,
+`load_snapshot(wait_id)`, `load_definition(wait_id)`,
+`claim_event(wait_id, event, lease_until=...) -> WaitClaimOutcome`,
+`complete(wait_id, claim, resolution_kind=...) -> WaitRecord`,
+`fail(wait_id, claim, error=..., failure_kind=...) -> WaitRecord`, `due(now)`, `stalled(now)`,
+`cancel(wait_id, reason=...) -> WaitRecord`, `health() -> WaitHealth(pending, claimed, overdue,
+stalled, oldest_pending_deadline)`. `overdue` is DERIVED, never stored.
 
 **Provisional (declared, not hidden):** none of the above. The only open viewer follow-up is
 cosmetic (parent-edge metadata for out-of-graph trace activity, filed post-v0.9).
@@ -122,12 +127,18 @@ async def fire_due_waits(coordinator, engine):
    definition bytes commit together; the receipt must echo the ACCEPTED deadline (co-committed
    timeout intent). The conformance kit asserts this.
 2. `claim_event` — CAS on (status, version) + lease write, one transaction.
-3. `terminalize` + your outbox intent write — terminal state and the action intent it justifies
-   commit together, keyed by `wait_idempotency`.
+
+**What is NOT atomic — and how correctness holds anyway:** coordinator completion
+(`complete(...)`) is invoked by the ENGINE after the resumed run and carries no action intent, so
+there is no API to co-commit terminalization with your outbox write. Your capability writes the
+outbox intent DURING the resumed run, keyed by `context.metadata["wait_idempotency"]` — that key
+is stable across redelivery of the same accepted event, so a crash between intent-write and
+completion just redelivers and the idempotent key collapses duplicates to ONE intent. This is
+deliberate at-least-once design, not a gap.
 
 Wording that must survive into your docs: **deduplicated event acceptance + single active
-claimant (CAS/lease) + at-least-once crash recovery with idempotent effects; a terminalized claim
-never re-executes.** Never write "exactly-once".
+claimant (CAS/lease) + at-least-once crash recovery with idempotent effects; a completed claim
+never re-executes.** Never write "exactly-once", and never claim coordinator/outbox atomicity.
 
 ## 6. `client_message_triage` on engine primitives
 
@@ -164,7 +175,10 @@ builder.register_workflow(
     .step("finalize_draft")
     .build()
 )
-goal = WorkflowGoal(workflow_id="client_message_triage", correlation_id=case_id)  # Related-run ID
+goal = WorkflowGoal(workflow_type="client_message_triage",
+                    objective="triage inbound client message",
+                    correlation_id=case_id)                     # Related-run ID (case identity)
+result = await engine.run("client_message_triage", payload, goal=goal)
 ```
 
 Engine proposes (data out) — your outbox executes. Both hermetic proofs of exactly this shape ship

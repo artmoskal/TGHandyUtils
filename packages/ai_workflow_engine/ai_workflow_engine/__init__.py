@@ -26,6 +26,7 @@ if TYPE_CHECKING:
         WaitReceipt,
         WaitRecord,
     )
+    from ai_workflow_engine.wait_runtime import WaitDeliveryOutcome
     from ai_workflow_engine.builder import WorkflowEngine, WorkflowEngineBuilder, WorkflowPack
     from ai_workflow_engine.config_loader import (
         ObservationConfig,
@@ -346,6 +347,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "WEAK_MODEL_CLEANER": ("ai_workflow_engine.parsing", "WEAK_MODEL_CLEANER"),
     "WaitClaim": ("ai_workflow_engine.waits", "WaitClaim"),
     "WaitCoordinator": ("ai_workflow_engine.waits", "WaitCoordinator"),
+    "WaitDeliveryOutcome": ("ai_workflow_engine.wait_runtime", "WaitDeliveryOutcome"),
     "WaitEvent": ("ai_workflow_engine.waits", "WaitEvent"),
     "WaitHandle": ("ai_workflow_engine.waits", "WaitHandle"),
     "WaitHealth": ("ai_workflow_engine.waits", "WaitHealth"),
@@ -420,6 +422,7 @@ __all__ = [
     "LocalWaitPolicy",
     "WaitClaim",
     "WaitCoordinator",
+    "WaitDeliveryOutcome",
     "WaitEvent",
     "WaitHandle",
     "WaitHealth",

@@ -28,6 +28,7 @@ from typing import (
 )
 
 if TYPE_CHECKING:
+    from ai_workflow_engine.wait_runtime import WaitDeliveryOutcome
     from ai_workflow_engine.prompt_rendering import PromptRenderService
 
 from ai_workflow_engine.config_loader import ObservationConfig, WorkflowConfigBundle, load_workflow_config
@@ -182,7 +183,7 @@ class WorkflowEngine:
         self._profiles: Dict[str, WorkflowProfile] = {}
         self._plans: Dict[str, RuntimePlan] = {}
 
-    async def deliver_wait_event(self, wait_id: str, event: Any) -> Any:
+    async def deliver_wait_event(self, wait_id: str, event: Any) -> "WaitDeliveryOutcome":
         """W3.2: the ONE public door for durable continuation (signal or timeout).
 
         Returns a typed ``WaitDeliveryOutcome``: executed runs carry the resumed

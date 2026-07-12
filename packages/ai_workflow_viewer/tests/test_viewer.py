@@ -1040,3 +1040,69 @@ def test_external_mixed_outcomes_never_masked_as_completed(tmp_path):
     import re
     declared_card = re.search(r'<article class="graph-node run-status-(\w+)[^"]*"[^>]*data-node-id="declared_step"', page)
     assert declared_card and declared_card.group(1) == "completed", "declared node keeps engine-owned status"
+
+
+def test_served_artifacts_roundtrip_hostile_names_and_never_serve_active_content(tmp_path):
+    """Codex release-review findings 7+8: (7) archive basenames keep spaces/#/%/unicode, so
+    hrefs must percent-encode per segment and the route must decode before the manifest
+    compare; (8) the route must never serve active content inline — raster allow-list only,
+    everything else forced to opaque attachment; nosniff + CSP sandbox on every response."""
+
+    import json as _json
+    import threading
+    import urllib.request
+    from urllib.parse import quote
+
+    from ai_workflow_engine import WorkflowBuilder
+    from ai_workflow_viewer import FileEventSource, JsonlObservationViewer, serve_viewer
+
+    definition = WorkflowBuilder("hostile-arty").step("gate").build()
+    digest = definition.definition_digest()
+    _write_bundle(
+        tmp_path, "hostile-run", definition,
+        trace_events=[WorkflowTraceEvent(node="gate", node_status="completed", phase="node:result", run_id="hostile-run", sequence=1, event_id="h-1")],
+        meta_extra=_segment_meta("hostile-run", "hostile-run", 0, digest=digest),
+    )
+    bundle = tmp_path / "hostile-run"
+    (bundle / "artifacts").mkdir()
+    hostile_name = "frame 1 #50% ünïcode.png"
+    png = b"\x89PNG hostile"
+    (bundle / "artifacts" / hostile_name).write_bytes(png)
+    svg = b'<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'
+    (bundle / "artifacts" / "evil.svg").write_bytes(svg)
+    (bundle / "artifacts.json").write_text(_json.dumps([
+        {"artifact_id": "h-png", "bundle_path": f"artifacts/{hostile_name}", "copied": True,
+         "media_type": "image/png", "owner_node": "gate", "size_bytes": len(png)},
+        {"artifact_id": "h-svg", "bundle_path": "artifacts/evil.svg", "copied": True,
+         "media_type": "image/svg+xml", "owner_node": "gate", "size_bytes": len(svg)},
+    ]), encoding="utf-8")
+
+    viewer = JsonlObservationViewer(FileEventSource(tmp_path))
+    server = serve_viewer(viewer, port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        root = f"http://127.0.0.1:{server.server_address[1]}"
+        page = urllib.request.urlopen(f"{root}/?run_id=hostile-run", timeout=5).read().decode()
+        encoded = quote(f"artifacts/{hostile_name}".split("/")[0], safe="") + "/" + quote(hostile_name, safe="")
+        href = f"/artifact/hostile-run/hostile-run/{encoded}"
+        assert f'href="{href}"' in page, "href must percent-encode spaces/#/%/unicode"
+        fetched = urllib.request.urlopen(root + href, timeout=5)
+        assert fetched.read() == png, "decoded route must resolve the raw manifest name"
+        assert fetched.headers["Content-Type"] == "image/png"
+        assert fetched.headers["X-Content-Type-Options"] == "nosniff"
+        assert fetched.headers["Content-Security-Policy"] == "sandbox"
+
+        assert '<img src="/artifact/hostile-run/hostile-run/artifacts/evil.svg"' not in page, (
+            "active SVG must never be inlined as a preview"
+        )
+        svg_resp = urllib.request.urlopen(f"{root}/artifact/hostile-run/hostile-run/artifacts/evil.svg", timeout=5)
+        assert svg_resp.headers["Content-Type"] == "application/octet-stream", (
+            "active content must be served as opaque bytes, not its declared type"
+        )
+        assert svg_resp.headers["Content-Disposition"] == "attachment"
+        assert svg_resp.headers["X-Content-Type-Options"] == "nosniff"
+        assert svg_resp.read() == svg
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)

@@ -165,8 +165,11 @@ def _artifact_response(
     if len(parts) < 4 or "/" not in parts[3]:
         return None
     run_id = unquote(parts[2])
-    segment_name, bundle_path = parts[3].split("/", 1)
+    segment_name, raw_bundle_path = parts[3].split("/", 1)
     segment_name = unquote(segment_name)
+    # hrefs percent-encode each segment (spaces/#/%/unicode survive browsers); decode
+    # BEFORE comparing against the raw manifest value
+    bundle_path = "/".join(unquote(part) for part in raw_bundle_path.split("/"))
     try:
         group = viewer._read_group(run_id)
     except Exception:
@@ -220,8 +223,20 @@ def serve_viewer(
                     self.end_headers()
                     return
                 data, media_type = resolved
+                from ai_workflow_viewer.observability import INLINE_SAFE_MEDIA_TYPES
+
                 self.send_response(200)
-                self.send_header("Content-Type", media_type)
+                if media_type in INLINE_SAFE_MEDIA_TYPES:
+                    # inert raster formats may render inline
+                    self.send_header("Content-Type", media_type)
+                    self.send_header("Content-Disposition", "inline")
+                else:
+                    # ACTIVE/unknown types (HTML, SVG, ...) must never execute in the
+                    # viewer origin: force download as opaque bytes
+                    self.send_header("Content-Type", "application/octet-stream")
+                    self.send_header("Content-Disposition", "attachment")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Content-Security-Policy", "sandbox")
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)

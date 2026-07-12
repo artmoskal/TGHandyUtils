@@ -5,7 +5,7 @@ Reusable, executable AI workflow builder/runtime.
 Architecture source of truth: `docs/executable-workflow-engine-spec.md` at the repo root. This
 README is a package summary; if it conflicts with the binding spec, the binding spec wins.
 
-> **Status: `engine-v0.8.1` is the current release — pin it, build a wheel, don't track the live
+> **Status: `engine-v0.9.0` is the current release — pin it, build a wheel, don't track the live
 > branch.** Older tags are unsupported. Declare (`WorkflowBuilder`) + wire (`WorkflowEngine.from_config`)
 > + run (`await engine.run(...)`); branch, fan-out/gather, planner plans, evaluator
 > retry/retrace/replan/fallback, subworkflows, human clarification, scheduling/cancellation, per-node
@@ -18,7 +18,7 @@ README is a package summary; if it conflicts with the binding spec, the binding 
 
 ```python
 # Pin the tag + install (git + subdirectory; no PyPI):
-#   pip install "ai-workflow-engine @ git+https://<repo>@engine-v0.8.1#subdirectory=packages/ai_workflow_engine"
+#   pip install "ai-workflow-engine @ git+https://<repo>@engine-v0.9.0#subdirectory=packages/ai_workflow_engine"
 from ai_workflow_engine import WorkflowBuilder, WorkflowEngine
 
 flow = (WorkflowBuilder("my_flow")
@@ -238,7 +238,7 @@ worker. `run_authored_flow` re-validates against the CURRENT effective limits, s
 authored under looser bounds are rejected before execution.
 
 
-**v0.9 migration notes (apply ONLY when `engine-v0.9.0` exists; `engine-v0.8.1` is the current pin):**
+**v0.9.0 migration notes (current release — apply when moving your pin from `engine-v0.8.1`):**
 strict `RuntimeLimits` (unknown limit keys now fail config load); typed limits are the ONLY budget
 source (`budget_from_limits(RuntimeLimits|None)` — host-config/duck-typed objects are rejected; the
 old usage-tracking flag no longer disables engine budgets); firewall markers are typed
@@ -278,13 +278,14 @@ low overhead.
 
 ## Release Package For Consumers
 
-`engine-v0.8.1` is a tag-based framework release, not a live-branch contract.
+`engine-v0.9.0` is a tag-based framework release, not a live-branch contract.
 
 Release contents:
 
-- `ai-workflow-engine==0.8.1`: the L0 core engine, workflow builder/executor, config loader,
+- `ai-workflow-engine==0.9.0`: the L0 core engine, workflow builder/executor, config loader,
   budget/usage/trace, observation bundle writer, memory policies, prompt files, evidence/artifact
-  refs, scheduling, replay, and human/suspend mechanics.
+  refs, scheduling, replay, human/suspend mechanics, durable waits (`WaitCoordinator` seam +
+  conformance kit), observation segments, and related-run identity.
 - `ai-workflow-tools==0.3.0`: optional L2 tools package for CLI agents, console clients, tool
   catalog, and media helpers. Consumers install it only when they use those tool packs.
 - `ai_workflow_viewer`: source package for reading/rendering observation bundles. It is a viewer
