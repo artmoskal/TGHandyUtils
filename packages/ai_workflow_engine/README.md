@@ -225,7 +225,7 @@ validated `step` / `branch` / `evaluate` / `fanout` machines over registered cap
 as hand-written workflows. That is enough for a narrow goal compiler, but it is not full arbitrary
 pipeline authoring.
 
-**v1.5a (implemented on branch, pending the `engine-v0.9.0` tag — pin `engine-v0.8.1` until then):**
+**v1.5a (shipped in `engine-v0.9.0`):**
 authored `fanout` is bounded by construction — `max_items` is REQUIRED
 (1..`limits.max_authored_fanout_items`, default 100, engine max 1000; oversize runtime lists fail
 loudly, never truncate) and `max_parallel` outside the profile cap is rejected, never clamped.
@@ -400,9 +400,9 @@ rendered in the hot path. The separate **`ai_workflow_viewer`** package reads bu
 modules. A direct provider client in workflow/product code is a reviewed escape hatch, not the
 default; otherwise you lose observability, cost accounting, and model-swap.
 
-## v0.9 (branch) delta — durable waits: 2-minute migration
+## v0.9.0 delta — durable waits: 2-minute migration
 
-**Pin stays engine-v0.8.1 until the v0.9.0 tag exists.** When you move:
+**Tag `engine-v0.9.0` exists — move your pin from `engine-v0.8.1` when ready.** When you move:
 
 1. Every `.human(node)` now requires a wait policy:
    `.human("gate", wait_policy=LocalWaitPolicy())` = exactly the old suspend/resume;

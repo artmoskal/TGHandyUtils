@@ -7,7 +7,7 @@
 from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
-__version__ = "0.8.1"
+__version__ = "0.9.0"
 
 
 # F-C1 (typed public surface): the SAME export map, statically visible. Type checkers

@@ -80,15 +80,14 @@
 > supported discovery door). A direct provider client in workflow code is a reviewed allow-list
 > entry, not a local shortcut — otherwise you lose observability, cost accounting, and model-swap.
 
-Status: **ready for adoption — pin `engine-v0.8.1`** and build a wheel; never track the live branch.
+Status: **ready for adoption — pin `engine-v0.9.0`** and build a wheel; never track the live branch.
 The `WorkflowDefinition` / `WorkflowExecutor` / DI layer is live and proven (Anki runs on it in
 production; one `WorkflowExecutor` runs the product-neutral examples). The sibling `ai_workflow_tools`
 package ships CLI-agent + console-LLM support (`claude -p` / `codex exec`) and the media pack. See
-**"What engine-v0.8.1 gives you"** at the end for the full capability list.
+**"What engine-v0.8.1 gives you"** at the end for the base capability list, plus the v0.9.0 delta sections.
 Not in v0.8 (deferred): durable/semantic memory STORES beyond the `MemoryStore` seam, FlowArtifact v1.5,
 ProcessArtifact/v2, browser/no-API executors.
-v0.9 BRANCH UPDATE — FlowArtifact v1.5a IMPLEMENTED ON BRANCH (pending independent acceptance +
-the `engine-v0.9.0` tag; do NOT consume until that tag exists — `engine-v0.8.1` stays your pin).
+v0.9.0 UPDATE — FlowArtifact v1.5a SHIPPED in the `engine-v0.9.0` tag.
 The S1 goal-compiler slice: authored `fanout` over a
 registered item capability (max_items REQUIRED, 1..limits.max_authored_fanout_items default 100 /
 engine max 1000; oversize runtime lists fail loudly, never truncate; max_parallel rejected — never
@@ -204,8 +203,8 @@ These points answer the review questions that matter before wiring the sidecar o
   The engine owns queue/drop/cancel behavior and keeps the backend slot until the worker really
   completes.
 - **Goal compiler boundary.** GoPro may use AI to emit structured plans, scenario inputs, or a
-  constrained `FlowArtifact` for registered capabilities. The engine-v0.9.0 tag (implemented on
-  branch, NOT yet tagged — your v0.8.1 pin has neither) widens the authorable subset with
+  constrained `FlowArtifact` for registered capabilities. The engine-v0.9.0 tag (shipped —
+  not in the older v0.8.1 pin) widens the authorable subset with
   bounded `fanout` (v1.5a) and ships the turnkey author capability, so the S1 goal compiler can be
   two engines: an author engine hosting `build_flow_author_capability(...)` wired to the PROCESSING
   engine's registry/limits, and the processing engine executing via `run_authored_flow`. Do not rely
@@ -508,9 +507,9 @@ are unsupported — no deltas to track):
 **GoPro threading contract:** one `WorkflowExecutor` ↔ one event loop; sidecar threads marshal via
 `asyncio.run_coroutine_threadsafe(engine.run(...), engine_loop)`.
 
-## v0.9 (branch) delta — durable waits: 2-minute migration
+## v0.9.0 delta — durable waits: 2-minute migration
 
-**Pin stays engine-v0.8.1 until the v0.9.0 tag exists.** When you move:
+**Tag `engine-v0.9.0` exists — move your pin from `engine-v0.8.1` when ready.** When you move:
 
 1. Every `.human(node)` now requires a wait policy:
    `.human("gate", wait_policy=LocalWaitPolicy())` = exactly the old suspend/resume;

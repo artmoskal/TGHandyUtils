@@ -68,14 +68,13 @@
 > supported discovery door). A direct provider client in workflow code is a reviewed allow-list
 > entry, not a local shortcut — otherwise you lose observability, cost accounting, and model-swap.
 
-Status: **ready for adoption — pin `engine-v0.8.1`** and build a wheel; never track the live branch.
+Status: **ready for adoption — pin `engine-v0.9.0`** and build a wheel; never track the live branch.
 The `WorkflowDefinition` / `WorkflowExecutor` / DI layer is live and proven (Anki runs on it in
 production; the product-neutral examples include site-audit fan-out and the three-axis pilot). The
 sibling `ai_workflow_tools` package ships CLI-agent + console-LLM support (`claude -p` / `codex exec`)
-and the media pack. See **"What engine-v0.8.1 gives you"** at the end for the full capability list.
+and the media pack. See **"What engine-v0.8.1 gives you"** at the end for the base capability list, plus the v0.9.0 delta sections.
 Not in v0.8 (deferred): durable/semantic memory STORES beyond the `MemoryStore` seam, FlowArtifact v1.5,
-ProcessArtifact/v2, browser/no-API executors. v0.9 BRANCH UPDATE (implemented on branch, pending acceptance + the `engine-v0.9.0` tag — pin
-`engine-v0.8.1` until then): FlowArtifact v1.5a — authored
+ProcessArtifact/v2, browser/no-API executors. v0.9.0 UPDATE (shipped in the `engine-v0.9.0` tag): FlowArtifact v1.5a — authored
 bounded `fanout` (max_items REQUIRED) + `build_flow_author_capability(...)`; true per-phase budget
 scopes (N1) remain explicitly FUTURE-STAGE (activation on a concrete MageQA workflow needing
 independent phase ceilings).
@@ -108,7 +107,7 @@ Re-pin, run the migration check above, and continue as designed. The useful new 
 prompt-projection memory for long/deep browser-agent episodes, bounded windowing/compaction for
 large transcripts, and per-node `memory=` so only the workers that need state get it. Durable/semantic
 memory stores remain deferred; FlowArtifact v1.5a authored fan-out + the turnkey author arrive with
-the engine-v0.9.0 tag (implemented on branch, NOT yet tagged — not in your v0.8.1 pin;
+the engine-v0.9.0 tag (shipped — not in the older v0.8.1 pin;
 subworkflow/general-IO authoring still deferred).
 
 Mapped to the MageQA shapes in this doc (browser episodes via `CliAgentCapability`+MCP,
@@ -273,7 +272,7 @@ These points answer the review questions that matter before paying someone to mi
 - **FlowArtifact boundary.** MageQA may let AI emit scenario plans and structured inputs for
   registered capabilities. Do not rely on AI-authored arbitrary workflows for the migration. Shipped
   `FlowArtifact` (v0.8.1, your pin) covers registered steps/branches/evaluators; the engine-v0.9.0
-  tag (implemented on branch, NOT yet tagged) adds v1.5a bounded authored
+  tag (shipped) adds v1.5a bounded authored
   `fanout` with REQUIRED max_items and the turnkey `build_flow_author_capability(...)`; subworkflow
   references, richer dataflow, and reusable generated process pipelines are v1.5-remainder/v2
   future-stage.
@@ -650,9 +649,9 @@ are unsupported — no deltas to track):
   `serve_viewer`). Capture has an off-switch; bundle dir defaults to `data/observations` (override
   `OBSERVATION_DIR`). The disk bundle is transport #1 — swappable to a bus/live consumer later.
 
-## v0.9 (branch) delta — durable waits: 2-minute migration
+## v0.9.0 delta — durable waits: 2-minute migration
 
-**Pin stays engine-v0.8.1 until the v0.9.0 tag exists.** When you move:
+**Tag `engine-v0.9.0` exists — move your pin from `engine-v0.8.1` when ready.** When you move:
 
 1. Every `.human(node)` now requires a wait policy:
    `.human("gate", wait_policy=LocalWaitPolicy())` = exactly the old suspend/resume;
