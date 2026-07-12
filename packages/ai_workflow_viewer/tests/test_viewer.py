@@ -524,9 +524,9 @@ def test_single_resumed_segment_read_is_no_longer_empty(tmp_path):
 
 def test_read_group_reports_abandoned_attempts_without_merging_them(tmp_path):
     """W4R.1 reader side: abandoned crash-attempts appear as typed evidence on the group
-    (with their partial spend inspectable), but never enter canonical records, usage
-    totals, group status, or the index chain — and their duplicate index vs the
-    successful retry is NOT a lineage error."""
+    (with their partial spend included in actual economics), but never enter canonical
+    records, group status, or the index chain — and their duplicate index vs the successful
+    retry is NOT a lineage error."""
 
     from ai_workflow_engine import WorkflowBuilder
     from ai_workflow_viewer import FileEventSource
@@ -540,7 +540,21 @@ def test_read_group_reports_abandoned_attempts_without_merging_them(tmp_path):
             WorkflowTraceEvent(node="finish", decision="start", run_id="logical-run", sequence=1, event_id="dead-t1"),
         ],
         usage_events=[
-            WorkflowUsageEvent(node="finish", total_tokens=3, estimated_usd=0.005, cost_class="metered", run_id="logical-run", sequence=2, event_id="dead-u1"),
+            WorkflowUsageEvent(
+                node="finish", total_tokens=3, estimated_usd=0.005,
+                cost_class="metered", run_id="logical-run", sequence=2,
+                event_id="dead-u1",
+            ),
+            WorkflowUsageEvent(
+                node="finish", total_tokens=2, notional_usd=0.007,
+                cost_class="subscription_notional", run_id="logical-run", sequence=3,
+                event_id="dead-u2", metadata={"cost_known": True},
+            ),
+            WorkflowUsageEvent(
+                node="finish", total_tokens=1, cost_class="metered",
+                run_id="logical-run", sequence=4, event_id="dead-u3",
+                metadata={"cost_known": False},
+            ),
         ],
         meta_extra=_segment_meta(
             "logical-run", "logical-run--s001-dead", 1, parent="logical-run", digest=digest,
@@ -553,10 +567,14 @@ def test_read_group_reports_abandoned_attempts_without_merging_them(tmp_path):
     assert [segment.segment_id for segment in group.abandoned] == ["logical-run--s001-dead"]
     # W4R.3 cost honesty: the crashed attempt's paid call is REAL spend — the primary
     # actual total includes it; the canonical/abandoned split never hides money.
-    assert group.usage_totals["total_tokens"] == 15, "actual spend includes abandoned money"
+    assert group.usage_totals["total_tokens"] == 18, "actual spend includes abandoned work"
     assert group.usage_totals["metered_usd"] == 0.035
+    assert group.usage_totals["notional_usd"] == 0.007
+    assert group.usage_totals["unknown_cost_count"] == 1
     assert group.canonical_usage_totals["total_tokens"] == 12
-    assert group.abandoned_usage_totals["total_tokens"] == 3
+    assert group.abandoned_usage_totals["total_tokens"] == 6
+    assert group.abandoned_usage_totals["notional_usd"] == 0.007
+    assert group.abandoned_usage_totals["unknown_cost_count"] == 1
     assert group.usage_totals["total_tokens"] == (
         group.canonical_usage_totals["total_tokens"]
         + group.abandoned_usage_totals["total_tokens"]
@@ -565,6 +583,13 @@ def test_read_group_reports_abandoned_attempts_without_merging_them(tmp_path):
         "abandoned machine EVENTS still never merge into canonical history"
     )
     assert group.abandoned[0].data.usage_events[0].estimated_usd == 0.005
+    from ai_workflow_viewer import observation_group_to_html
+
+    rendered = observation_group_to_html(group)
+    assert "actual spend (all attempts, counted once)" in rendered
+    assert "notional $0.007" in rendered
+    assert "unknown-cost events 1" in rendered
+    assert "abandoned attempts: 6 tokens" in rendered
 
 
 def test_wait_terminal_segment_closes_the_group_and_fake_definitions_are_loud(tmp_path):

@@ -436,12 +436,16 @@ def _usage_totals_from_events(events: list[WorkflowUsageEvent], *, scope: str) -
     notional = [
         float(event.notional_usd) for event in events if event.notional_usd is not None
     ]
+    unknown_cost_count = sum(
+        1 for event in events if (event.metadata or {}).get("cost_known") is False
+    )
     return {
         "scope": scope,
         "usage_count": len(events),
         "total_tokens": sum(event.total_tokens for event in events),
         "metered_usd": round(sum(metered), 6) if metered else None,
         "notional_usd": round(sum(notional), 6) if notional else None,
+        "unknown_cost_count": unknown_cost_count,
     }
 
 

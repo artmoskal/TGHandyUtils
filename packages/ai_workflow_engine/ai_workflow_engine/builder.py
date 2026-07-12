@@ -202,15 +202,11 @@ class WorkflowEngine:
         current = self.workflows.get(record.workflow_id)
         current_digest = current.definition_digest() if current is not None else None
         outcome = await runtime.deliver(wait_id, event, current_digest=current_digest)
-        if (
-            outcome.kind in ("rejected", "attempts_exhausted")
-            and outcome.wait_status == "failed"
-            and outcome.run_result is None
-        ):
+        if outcome.wait_status == "failed" and outcome.run_result is None:
             # W3R.3: THIS call terminalized the wait without any machine continuation
-            # (digest mismatch, missing snapshot, or exhausted attempts) — the observation
-            # group must not keep reporting a suspended run while the coordinator says
-            # failed. Write the engine-owned terminal evidence segment.
+            # (digest mismatch, missing snapshot, or exhausted attempts), OR it redelivered
+            # after a process died between that terminal commit and evidence finalization.
+            # In either case the observation group must converge to coordinator truth.
             observation = await self._record_wait_terminal_segment(wait_id, runtime)
             outcome = outcome.model_copy(update={"terminal_observation": observation})
         return outcome
@@ -254,6 +250,47 @@ class WorkflowEngine:
             registered = _RegisteredDefinition.model_validate_json(definition_json)
             parent_segment_id = record.origin_segment_id
             segment_index = int(record.origin_segment_index) + 1
+            segment_id = f"{record.run_id}--s{segment_index:03d}-wfail"
+            segment_path = Path(self.observation.bundle_dir) / segment_id
+            meta_path = segment_path / "meta.json"
+            if meta_path.exists():
+                # At-least-once redelivery after the evidence write is a read-only report.
+                # Validate the existing terminal segment rather than appending duplicate
+                # sequence-1 trace rows to it.
+                import json
+
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                existing_definition = _RegisteredDefinition.model_validate_json(
+                    (segment_path / "definition.json").read_text(encoding="utf-8")
+                )
+                expected = {
+                    "run_id": str(record.run_id),
+                    "status": "failed",
+                    "segment_id": segment_id,
+                    "segment_index": segment_index,
+                    "segment_kind": "wait_terminal",
+                    "parent_segment_id": parent_segment_id,
+                    "definition_digest": record.definition_digest,
+                }
+                mismatches = [
+                    name for name, value in expected.items() if meta.get(name) != value
+                ]
+                if existing_definition.definition_digest() != record.definition_digest:
+                    mismatches.append("definition.json")
+                if mismatches:
+                    raise RuntimeError(
+                        f"existing terminal observation segment {segment_id!r} has "
+                        f"DIFFERENT {', '.join(mismatches)} — refusing to call corrupt "
+                        "evidence recorded"
+                    )
+                return "recorded"
+            if segment_path.exists():
+                # A crash during the reconstructible terminal write can leave JSONL files
+                # without meta.json. Rebuild that terminal-only directory from coordinator
+                # facts so duplicate sequence numbers cannot make the repaired group unreadable.
+                import shutil
+
+                shutil.rmtree(segment_path)
             finalize_abandoned_attempt_segments(
                 self.observation.bundle_dir,
                 run_id=str(record.run_id),
@@ -270,7 +307,7 @@ class WorkflowEngine:
                 artifact_policy=self.observation.artifacts,
                 artifact_max_bytes=self.observation.artifact_max_bytes,
                 segment=ObservationSegment(
-                    segment_id=f"{record.run_id}--s{segment_index:03d}-wfail",
+                    segment_id=segment_id,
                     segment_index=segment_index,
                     kind="wait_terminal",
                     parent_segment_id=parent_segment_id,

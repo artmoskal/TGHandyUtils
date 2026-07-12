@@ -2078,6 +2078,11 @@ async def test_snapshot_missing_failure_yields_a_readable_failed_group(tmp_path)
         "the evidence definition file IS the registered bytes — it recomputes to the "
         "registered digest, so strict group readers accept the chain"
     )
+    from ai_workflow_viewer import FileEventSource
+
+    grouped = FileEventSource(tmp_path).read_group("snaploss-run")
+    assert grouped.status == "failed"
+    assert [segment.kind for segment in grouped.segments] == ["initial", "wait_terminal"]
 
 
 async def test_absent_workflow_registration_still_closes_the_group(tmp_path):
@@ -2125,6 +2130,11 @@ async def test_absent_workflow_registration_still_closes_the_group(tmp_path):
     assert written.definition_digest() == stored.definition_digest, (
         "with no current registration, the evidence definition is the REGISTERED bytes"
     )
+    from ai_workflow_viewer import FileEventSource
+
+    grouped = FileEventSource(tmp_path).read_group("restart-run")
+    assert grouped.status == "failed"
+    assert [segment.kind for segment in grouped.segments] == ["initial", "wait_terminal"]
 
     # variant: no observation configured -> typed `skipped`, never a silent nothing
     shared2: dict = {}
@@ -2139,3 +2149,63 @@ async def test_absent_workflow_registration_still_closes_the_group(tmp_path):
         second.wait_handle.wait_id, {"kind": "signal", "event_id": "evt-r2", "payload": "y"}
     )
     assert skipped.kind == "rejected" and skipped.terminal_observation == "skipped"
+
+
+async def test_redelivery_repairs_terminal_evidence_after_post_failure_crash(tmp_path):
+    """A process can die after the coordinator commits ``failed`` but before the engine
+    writes the terminal observation segment. Redelivering the accepted event must repair
+    that evidence without re-executing the workflow or leaving the group suspended."""
+
+    from ai_workflow_engine.models import WorkflowGoal, WorkflowTraceEvent
+    from ai_workflow_engine.waits import WaitEvent
+    from ai_workflow_viewer import FileEventSource
+
+    shared: dict = {}
+    engine, coordinator = _delivery_engine(shared, bundle_dir=tmp_path)
+    goal = WorkflowGoal(
+        workflow_type="durable_flow",
+        objective="repair terminal evidence",
+        metadata={"run_id": "repair-run"},
+    )
+    first = await engine.run("durable_flow", {}, goal=goal)
+    wait_id = first.wait_handle.wait_id
+    event = WaitEvent(kind="signal", event_id="evt-repair", payload="yes")
+
+    # Simulate process loss in WorkflowEngine.deliver_wait_event after the lifecycle
+    # service commits the failed state but before _record_wait_terminal_segment runs.
+    failed = await engine.executor.wait_runtime.deliver(
+        wait_id,
+        event,
+        current_digest=None,
+    )
+    assert failed.kind == "rejected" and (await coordinator.get(wait_id)).status == "failed"
+    partial = tmp_path / "repair-run--s001-wfail"
+    assert not (partial / "meta.json").exists()
+    partial.mkdir()
+    (partial / "trace.jsonl").write_text(
+        WorkflowTraceEvent(
+            node="gate",
+            decision="stale-partial-write",
+            run_id="repair-run",
+            sequence=1,
+            event_id="stale-terminal-event",
+        ).model_dump_json()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    repaired = await engine.deliver_wait_event(wait_id, event)
+    assert repaired.kind == "duplicate"
+    assert repaired.run_result is None, "repair must never re-execute the workflow"
+    assert repaired.terminal_observation == "recorded"
+    grouped = FileEventSource(tmp_path).read_group("repair-run")
+    assert grouped.status == "failed"
+    assert [segment.kind for segment in grouped.segments] == ["initial", "wait_terminal"]
+    assert all(event.event_id != "stale-terminal-event" for event in grouped.trace_events)
+
+    # Further at-least-once deliveries are read-only reports: no duplicate trace rows.
+    again = await engine.deliver_wait_event(wait_id, event)
+    assert again.kind == "duplicate" and again.terminal_observation == "recorded"
+    assert len(FileEventSource(tmp_path).read_group("repair-run").trace_events) == len(
+        grouped.trace_events
+    )
