@@ -138,6 +138,7 @@ def reconcile_prior_attempts(
     definition: Any,
     definition_digest: Optional[str],
     upto_attempt: int,
+    correlation_id: Optional[str] = None,
 ) -> list[str]:
     """Demote every PRIOR attempt of this logical segment to ``abandoned`` (append-only).
 
@@ -168,6 +169,7 @@ def reconcile_prior_attempts(
                     segment_index=segment_index,
                     definition_digest=definition_digest,
                     attempt=attempt,
+                    correlation_id=correlation_id,
                 )
             marker = path / ABANDON_MARKER_NAME
             if not marker.exists():
@@ -271,6 +273,7 @@ async def ensure_terminal_evidence(observation: Any, runtime: Any, wait_id: str)
             definition=registered,
             definition_digest=record.definition_digest,
             upto_attempt=int(record.resume_attempts or 0) + 1,
+            correlation_id=record.correlation_id,
         )
         bundle = open_observation_run_bundle(
             observation.bundle_dir,
@@ -279,6 +282,8 @@ async def ensure_terminal_evidence(observation: Any, runtime: Any, wait_id: str)
             artifact_policy=observation.artifacts,
             artifact_max_bytes=observation.artifact_max_bytes,
             evict_suspended_after_s=observation.evict_suspended_after_s,
+            # the REGISTERED related-run id — never reconstructed from a live context
+            correlation_id=record.correlation_id,
             segment=ObservationSegment(
                 segment_id=segment_id,
                 segment_index=segment_index,
@@ -295,6 +300,7 @@ async def ensure_terminal_evidence(observation: Any, runtime: Any, wait_id: str)
                 error=(record.failure_detail or record.failure_kind or "wait failed")[:500],
                 run_id=str(record.run_id),
                 metadata={
+                    **({"correlation_id": record.correlation_id} if record.correlation_id else {}),
                     "wait_id": wait_id,
                     "failure_kind": record.failure_kind or "unknown",
                     "resume_attempts": record.resume_attempts,

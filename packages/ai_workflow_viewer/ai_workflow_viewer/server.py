@@ -97,7 +97,7 @@ code {{ background: #f0f4f8; border-radius: 4px; padding: 1px 4px; }}
 </head>
 <body>
 <h1>{html.escape(title)}</h1>
-{f'<table><thead><tr><th>Run</th><th>Workflow</th><th>Status</th><th>Timestamp</th><th>Usage</th><th>Open</th></tr></thead><tbody>{rows}</tbody></table>' if rows else '<div class="empty muted">No observation runs found.</div>'}
+{f'<table><thead><tr><th>Run ID</th><th>Related-run ID</th><th>Workflow</th><th>Status</th><th>Timestamp</th><th>Usage</th><th>Open</th></tr></thead><tbody>{rows}</tbody></table>' if rows else '<div class="empty muted">No observation runs found.</div>'}
 </body>
 </html>
 """
@@ -182,9 +182,11 @@ def _run_row(run: dict) -> str:
     notional = run.get("notional_usd")
     usage = _usage_label(total_tokens, metered, notional)
     href = f"?run_id={quote(run_id)}"
+    related = run.get("related_run_id")
     return (
         "<tr>"
         f"<td><code>{html.escape(run_id)}</code></td>"
+        f"<td>{('<code>' + html.escape(str(related)) + '</code>') if related else '-'}</td>"
         f"<td>{html.escape(workflow or '-')}</td>"
         f"<td>{html.escape(status or '-')}</td>"
         f"<td>{html.escape(timestamp or '-')}</td>"

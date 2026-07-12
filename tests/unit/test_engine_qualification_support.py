@@ -969,18 +969,34 @@ async def test_hermetic_slack_cooldown_ack_and_membership_lifecycle(tmp_path):
             raise RuntimeError("provider hiccup")
         return {"classified": True, "message": payload["message"]}
 
+    class OperationalAlertProposal(BaseModel):
+        # W5R.5: a GENUINELY typed, source-neutral alert PROPOSAL — strict at the
+        # capability output boundary; it proposes, it never sends.
+        model_config = {"extra": "forbid"}
+
+        kind: str
+        provider: str
+        proposed_action: str
+
+    class ClassifierOutput(BaseModel):
+        model_config = {"extra": "forbid"}
+
+        classified: bool
+        message: str = ""
+        alert_proposal: OperationalAlertProposal | None = None
+
     def outage_classifier(_context, payload):
         # (b) hard outage until healed — the run must route to cooldown, not die
         if not provider["healed"]:
-            return {
-                "classified": False,
-                "alert_proposal": {  # typed operational-alert PROPOSAL (data, no send)
-                    "kind": "provider_outage",
-                    "provider": "fake-slack-classifier",
-                    "proposed_action": "notify-oncall",
-                },
-            }
-        return {"classified": True, "message": payload["message"]}
+            return ClassifierOutput(
+                classified=False,
+                alert_proposal=OperationalAlertProposal(
+                    kind="provider_outage",
+                    provider="fake-slack-classifier",
+                    proposed_action="notify-oncall",
+                ),
+            )
+        return ClassifierOutput(classified=True, message=payload["message"])
 
 
     def cooldown_gate(context, payload):
@@ -1009,7 +1025,7 @@ async def test_hermetic_slack_cooldown_ack_and_membership_lifecycle(tmp_path):
     builder.register_capability("flaky_classifier", flaky_classifier, kind="deterministic")
     builder.register_capability("outage_classifier", outage_classifier, kind="deterministic")
     builder.register_guard(
-        "outage_router", lambda payload: "cooldown" if not payload.get("classified") else "proceed"
+        "outage_router", lambda payload: "cooldown" if not payload.classified else "proceed"
     )
     builder.register_capability("cooldown_gate", cooldown_gate, kind="deterministic")
     builder.register_capability("retry_classify", retry_classify, kind="deterministic")
@@ -1069,8 +1085,17 @@ async def test_hermetic_slack_cooldown_ack_and_membership_lifecycle(tmp_path):
     assert outage.wait_handle.suspended_node == "cooldown_gate"
     alert = next(
         r.output for r in outage.node_results if r.node_id == "outage_classifier"
-    )["alert_proposal"]
-    assert alert["kind"] == "provider_outage" and alert["proposed_action"] == "notify-oncall"
+    ).alert_proposal
+    assert alert.kind == "provider_outage" and alert.proposed_action == "notify-oncall"
+    # strictness pair: malformed/extra fields refuse BEFORE any downstream action mapping
+    import pytest as _pytest
+
+    with _pytest.raises(Exception):
+        OperationalAlertProposal(kind="provider_outage", provider="x")  # missing action
+    with _pytest.raises(Exception):
+        OperationalAlertProposal(
+            kind="provider_outage", provider="x", proposed_action="y", severity="high"
+        )  # extra field forbidden
     provider["healed"] = True
     current["now"] += timedelta(seconds=901)
     assert [r.wait_id for r in await coordinator.due(clock())] == [outage.wait_handle.wait_id]

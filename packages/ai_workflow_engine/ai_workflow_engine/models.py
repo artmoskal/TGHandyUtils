@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 CapabilityKind = Literal[
@@ -81,13 +81,22 @@ class WorkflowGoal(BaseModel):
     user_id: Optional[int] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
     goal_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    # W5-C4 (user-approved): OPTIONAL stable cross-run correlation — one customer case /
-    # work item may span many engine runs. When set, the engine projects it automatically
-    # into run context, every trace/usage/detail event's metadata, and bundle meta; it
-    # survives snapshots with the goal. It is NEVER a storage identity (run_id stays the
-    # storage key); products stamp it into their ExternalWriteRequest.metadata from
-    # context.run_context.correlation_id.
+    # Related-run id: OPTIONAL caller-supplied grouping key shared by SEPARATE runs that
+    # belong to one case/audit/batch/investigation. The engine projects it automatically
+    # into run context, every engine-written event's metadata, and bundle meta; it
+    # survives snapshots with the goal. It never controls storage, deduplication,
+    # scheduling, or execution — run_id remains the identity of one logical execution
+    # (including its suspension/resume segments). Products copy it into their
+    # ExternalWriteRequest.metadata from context.run_context.correlation_id.
     correlation_id: Optional[str] = None
+
+    @field_validator("correlation_id")
+    @classmethod
+    def _non_blank_correlation(cls, value: Optional[str]) -> Optional[str]:
+        # Absent means absent; a blank id would correlate unrelated runs under "".
+        if value is not None and not value.strip():
+            raise ValueError("correlation_id must be non-blank when provided (or omitted)")
+        return value
 
 
 class WorkflowInstrumentSpec(BaseModel):
@@ -406,7 +415,7 @@ class WorkflowRunContext(BaseModel):
     delivery_target: Optional[str] = None
     user_id: Optional[int] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
-    correlation_id: Optional[str] = None  # W5-C4: mirrors goal.correlation_id
+    correlation_id: Optional[str] = None  # related-run id, mirrors goal.correlation_id
 
 
 class WorkflowInput(BaseModel):

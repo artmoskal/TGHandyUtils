@@ -100,16 +100,11 @@ class SessionScopedUsageSink:
         self.inner = inner
 
     def record(self, event: Any) -> None:
+        # Usage correlation is enriched ONCE in record_usage_event (before aggregation),
+        # so every surface holds the IDENTICAL event — this tee only routes.
         session = current_run_session()
-        if session is not None:
-            correlation = session.run_context.correlation_id
-            metadata = getattr(event, "metadata", None)
-            if correlation and metadata is not None and "correlation_id" not in metadata:
-                event = event.model_copy(
-                    update={"metadata": {**metadata, "correlation_id": correlation}}
-                )
-            if session.bundle is not None:
-                session.bundle.usage_sink.record(event)
+        if session is not None and session.bundle is not None:
+            session.bundle.usage_sink.record(event)
         if self.inner is not None:
             self.inner.record(event)
 

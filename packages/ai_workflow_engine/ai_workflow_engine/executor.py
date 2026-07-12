@@ -1200,6 +1200,7 @@ class WorkflowExecutor:
                 # persisted NOW, while the definition and lineage still exist.
                 definition_json=definition.model_dump_json(),
                 origin_segment_index=snapshot.segment_index,
+                correlation_id=context.run_context.correlation_id,
             )
         )
         if snapshot.durable_wait_id != outcome.handle.wait_id:

@@ -759,3 +759,110 @@ async def test_correlation_id_spans_runs_events_bundles_and_writes(tmp_path):
     await engine.run("case_flow", {}, goal=goal3)
     plain_meta = json.loads((tmp_path / "plain-run" / "meta.json").read_text(encoding="utf-8"))
     assert "correlation_id" not in plain_meta
+
+
+async def test_usage_correlation_is_identical_across_all_five_surfaces(tmp_path):
+    """W5R.2: usage enrichment happens ONCE, before aggregation — the SAME event (same
+    event_id, same correlation) reaches the returned result ledger, the snapshot-restored
+    summary, the observation JSONL, and the configured sink; a conflicting caller-stamped
+    correlation refuses loudly before persistence; uncorrelated events carry no key."""
+
+    import json
+
+    from ai_workflow_engine.models import WorkflowGoal, WorkflowUsageEvent
+    from ai_workflow_engine.usage_events import record_usage_event
+
+    captured_sink: list = []
+
+    class SinkSpy:
+        def record(self, event):
+            captured_sink.append(event)
+
+    engine = _suspend_resume_engine(tmp_path)
+    engine.executor.runner.usage_sink.inner = SinkSpy()
+
+    def spend(context, payload):
+        record_usage_event(
+            WorkflowUsageEvent(node="spend", operation="chat", total_tokens=5, estimated_usd=0.01)
+        )
+        return payload
+
+    engine.register_capability("spend", spend, kind="deterministic")
+    engine.register_workflow(
+        WorkflowBuilder("spend_flow")
+        .step("spend")
+        .human("ask", wait_policy=LocalWaitPolicy())
+        .step("finish")
+        .build()
+    )
+    goal = WorkflowGoal(
+        workflow_type="spend_flow", objective="s", metadata={"run_id": "five-run"},
+        correlation_id="case-5",
+    )
+    first = await engine.run("spend_flow", {}, goal=goal)
+    assert first.status == "requires_user_input"
+
+    # surface 1: returned result ledger
+    [event] = first.usage.events
+    assert event.metadata["correlation_id"] == "case-5"
+    # surface 2: snapshot-persisted summary (what a resume restores)
+    snap_events = first.snapshot.usage["events"]
+    assert snap_events[0]["metadata"]["correlation_id"] == "case-5"
+    # surface 3: observation JSONL (identical event id + correlation)
+    usage_line = json.loads(
+        (tmp_path / "five-run" / "usage.jsonl").read_text(encoding="utf-8").splitlines()[0]
+    )
+    assert usage_line["event_id"] == event.event_id
+    assert usage_line["metadata"]["correlation_id"] == "case-5"
+    # surface 4: configured sink got the SAME enriched object
+    assert captured_sink[0].event_id == event.event_id
+    assert captured_sink[0].metadata["correlation_id"] == "case-5"
+    # surface 5: resumed half restores the correlated summary and keeps stamping
+    resumed = await engine.resume(first.snapshot, "yes")
+    assert all(
+        e.metadata.get("correlation_id") == "case-5" for e in resumed.usage.events
+    ), "the restored ledger and any post-resume events stay identically correlated"
+
+    # conflict refuses loudly BEFORE persistence
+    from ai_workflow_engine.budget import WorkflowBudget, WorkflowUsageContext, workflow_usage_scope
+    from ai_workflow_engine.models import WorkflowRunContext, WorkflowUsageSummary
+
+    conflicted = WorkflowUsageContext(
+        run_context=WorkflowRunContext(
+            workflow_id="r-x", workflow_type="t", correlation_id="case-5"
+        ),
+        summary=WorkflowUsageSummary(),
+        budget=WorkflowBudget(),
+    )
+    with workflow_usage_scope(conflicted):
+        import pytest as _pytest
+
+        with _pytest.raises(ValueError, match="conflicting related-run identity"):
+            record_usage_event(
+                WorkflowUsageEvent(
+                    node="n", operation="chat", total_tokens=1,
+                    metadata={"correlation_id": "case-OTHER"},
+                )
+            )
+    assert conflicted.summary.events == [], "nothing persists past a refused conflict"
+
+    # absent stays absent
+    goal2 = WorkflowGoal(
+        workflow_type="spend_flow", objective="p", metadata={"run_id": "plain-five"}
+    )
+    plain = await engine.run("spend_flow", {}, goal=goal2)
+    assert "correlation_id" not in plain.usage.events[0].metadata
+
+
+def test_blank_correlation_id_is_rejected():
+    """W5R.1: absent means absent — a blank/whitespace related-run id would silently
+    correlate unrelated runs under an empty label."""
+
+    import pytest as _pytest
+
+    from ai_workflow_engine.models import WorkflowGoal
+
+    for blank in ("", "   "):
+        with _pytest.raises(Exception, match="non-blank"):
+            WorkflowGoal(workflow_type="t", objective="o", correlation_id=blank)
+    assert WorkflowGoal(workflow_type="t", objective="o").correlation_id is None

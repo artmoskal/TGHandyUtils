@@ -173,6 +173,10 @@ class WaitRecord(BaseModel):
     # byte-identical. None = the suspension ran without observation (no on-disk group
     # exists that could misreport).
     origin_segment_index: Optional[int] = Field(default=None, ge=0)
+    # Related-run id captured at REGISTRATION as immutable truth: terminal and abandoned
+    # evidence writers project it without touching any live run context or registry.
+    # Optional; never a storage/dedup/scheduling key.
+    correlation_id: Optional[str] = None
 
 
 class WaitReceipt(BaseModel):

@@ -409,6 +409,7 @@ def write_minimal_abandoned_meta(
     segment_index: int,
     definition_digest: Optional[str],
     attempt: int,
+    correlation_id: Optional[str] = None,
 ) -> None:
     """R1: give a crashed, never-finalized attempt directory a minimal attributable meta
     (status ``abandoned``) so group retention owns it. Identity keys come from the same
@@ -436,6 +437,7 @@ def write_minimal_abandoned_meta(
         "trace_count": _line_count(path / "trace.jsonl"),
         "detail_count": _line_count(path / "details.jsonl"),
         "usage_count": _line_count(path / "usage.jsonl"),
+        **({"correlation_id": correlation_id} if correlation_id else {}),
         **_segment_meta_fields(segment),
     }
     (path / "meta.json").write_text(json.dumps(meta, sort_keys=True, indent=2), encoding="utf-8")

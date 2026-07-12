@@ -302,6 +302,10 @@ def observation_group_to_html(group: Any, *, title: Optional[str] = None) -> str
             f'unknown-cost events {values.get("unknown_cost_count", 0)}'
         )
 
+    related = group.segments[0].data.meta.get("correlation_id") if group.segments else None
+    related_label = (
+        f' · Related-run ID <code>{html.escape(str(related))}</code>' if related else ""
+    )
     notes = "\n".join(
         f'<p class="attempt-note muted">⚠ {html.escape(segment.disposition)} attempt at '
         f"segment {segment.segment_index} (<code>{html.escape(segment.segment_id)}</code>) — "
@@ -309,7 +313,7 @@ def observation_group_to_html(group: Any, *, title: Optional[str] = None) -> str
         for segment in getattr(group, "non_canonical", [])
     )
     strip = f"""<section class="segment-strip" id="segments">
-<h2>Run segments ({len(group.segments)}) — logical run <code>{html.escape(group.run_id)}</code></h2>
+<h2>Run segments ({len(group.segments)}) — Run ID <code>{html.escape(group.run_id)}</code>{related_label}</h2>
 <div class="segment-cards">{cards}</div>
 <p class="usage-totals"><strong>actual spend (all attempts, counted once): {totals.get("usage_count")} events,
 {totals.get("total_tokens")} tokens, {cost_summary(totals)}</strong>

@@ -67,6 +67,7 @@ class WaitRegistrationRequest(BaseModel):
     # re-registration stays byte-identical (R1/F2).
     definition_json: str
     origin_segment_index: Optional[int] = Field(default=None, ge=0)
+    correlation_id: Optional[str] = None  # related-run id, immutable once registered
 
     @field_validator("definition_json")
     @classmethod
@@ -317,6 +318,7 @@ class DurableWaitRuntime:
                         existing.origin_segment_index,
                         request.origin_segment_index,
                     ),
+                    ("correlation_id", existing.correlation_id, request.correlation_id),
                 )
                 if stored != current
             ]
@@ -348,6 +350,7 @@ class DurableWaitRuntime:
             created_at=now,
             deadline_at=now + timedelta(seconds=request.policy.timeout_s),
             origin_segment_index=request.origin_segment_index,
+            correlation_id=request.correlation_id,
         )
         raw_receipt = await self.coordinator.register(
             record, request.snapshot_json, request.definition_json

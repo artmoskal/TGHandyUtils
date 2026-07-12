@@ -259,7 +259,7 @@ class FileEventSource:
             non_canonical=non_canonical,
         )
 
-    def list_groups(self) -> list[dict]:
+    def list_groups(self, *, related_run_id: str | None = None) -> list[dict]:
         """One entry per LOGICAL run: segment count, newest status/timestamp (W4.3)."""
 
         root = self.base_path.parent if _is_run_bundle(self.base_path) else self.base_path
@@ -317,9 +317,15 @@ class FileEventSource:
                     "status": newest.get("status"),
                     "timestamp": max(str(item.get("timestamp") or "") for item in entries),
                     "workflow_id": newest.get("workflow_id"),
+                    # human-facing label: Related-run ID (API field: correlation_id)
+                    "related_run_id": newest.get("correlation_id"),
                 }
             )
         groups.sort(key=lambda item: str(item.get("timestamp") or ""), reverse=True)
+        if related_run_id is not None:
+            # Related-run FILTER: selects the independent runs of one case — it never
+            # merges them; each row keeps its own run_id, history, and storage identity.
+            groups = [g for g in groups if g.get("related_run_id") == related_run_id]
         return groups
 
     def _run_path(self, run_id: str | None) -> Path:

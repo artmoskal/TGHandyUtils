@@ -2637,3 +2637,91 @@ async def test_failed_commit_marker_is_typed_and_repaired_by_redelivery(tmp_path
     assert group.status == "completed", (
         "after repair the group shows the completed truth, not a suspended lie"
     )
+
+
+async def test_correlation_is_immutable_registration_truth_across_wait_lifecycle(tmp_path):
+    """W5R.3: the related-run id is captured at REGISTRATION and survives every path that
+    writes after the originating run session is gone — digest-mismatch terminal evidence,
+    crashed-attempt reconciliation, and cancellation — while a re-registration claiming a
+    DIFFERENT correlation is refused like any other identity change. Absent stays absent."""
+
+    from datetime import datetime, timedelta, timezone
+
+    from ai_workflow_engine.models import WorkflowGoal
+
+    current = {"now": datetime(2036, 1, 1, tzinfo=timezone.utc)}
+    clock = lambda: current["now"]  # noqa: E731
+    shared: dict = {}
+    engine, coordinator = _delivery_engine(shared, clock=clock, bundle_dir=tmp_path)
+    goal = WorkflowGoal(
+        workflow_type="durable_flow", objective="corr",
+        metadata={"run_id": "corr-run"}, correlation_id="case-42",
+    )
+    first = await engine.run("durable_flow", {}, goal=goal)
+    wait_id = first.wait_handle.wait_id
+    stored = await coordinator.get(wait_id)
+    assert stored.correlation_id == "case-42", "registration persists the related-run id"
+
+    # crash one attempt so reconciliation writes an abandoned meta later
+    real_resume = engine.executor.resume
+    crash = {"armed": True}
+
+    async def crash_once(*args, **kwargs):
+        if crash.pop("armed", None):
+            raise RuntimeError("boom")
+        return await real_resume(*args, **kwargs)
+
+    engine.executor.resume = crash_once
+    with pytest.raises(RuntimeError):
+        await engine.deliver_wait_event(
+            wait_id, {"kind": "signal", "event_id": "evt-c", "payload": "x"}
+        )
+    current["now"] += timedelta(seconds=301)
+
+    # deliver against a CHANGED definition -> digest mismatch -> terminal evidence
+    changed, coordinator2 = _delivery_engine(shared, clock=clock, bundle_dir=tmp_path)
+    changed.register_workflow(
+        WorkflowBuilder("durable_flow")
+        .human("gate", wait_policy=DurableWaitPolicy(timeout_s=60), timeout_to="escalate")
+        .step("finish")
+        .step("extra", capability="finish")
+        .step("escalate")
+        .build()
+    )
+    outcome = await changed.deliver_wait_event(
+        wait_id, {"kind": "signal", "event_id": "evt-c", "payload": "x"}
+    )
+    assert outcome.kind == "rejected" and outcome.terminal_observation == "recorded"
+
+    wfail_meta = _bundle_meta(tmp_path / "corr-run--s001-wfail")
+    assert wfail_meta["correlation_id"] == "case-42", (
+        "terminal evidence projects the REGISTERED related-run id, no live context needed"
+    )
+    abandoned_meta = _bundle_meta(tmp_path / "corr-run--s001")
+    assert abandoned_meta["status"] == "abandoned"
+    assert abandoned_meta["correlation_id"] == "case-42", (
+        "crashed-attempt reconciliation keeps the registered related-run id"
+    )
+    trace_text = (tmp_path / "corr-run--s001-wfail" / "trace.jsonl").read_text(encoding="utf-8")
+    assert '"correlation_id":"case-42"' in trace_text
+
+    # changed-correlation re-registration is an identity violation (same wait id inputs)
+    from ai_workflow_engine.wait_runtime import DurableWaitRuntime
+
+    runtime = DurableWaitRuntime(coordinator, clock=clock)
+    base = _registration_request()
+    await runtime.register_suspension(base)
+    with pytest.raises(RuntimeError, match="DIFFERENT.*correlation_id"):
+        await runtime.register_suspension(
+            _registration_request(correlation_id="case-OTHER")
+        )
+
+    # absent stays absent: an uncorrelated cancelled wait writes no phantom key
+    goal2 = WorkflowGoal(
+        workflow_type="durable_flow", objective="plain", metadata={"run_id": "plain-w"}
+    )
+    second = await engine.run("durable_flow", {}, goal=goal2)
+    record, observation = await engine.cancel_wait(second.wait_handle.wait_id, reason="op")
+    assert observation == "recorded"
+    plain_meta = _bundle_meta(tmp_path / "plain-w--s001-wfail")
+    assert "correlation_id" not in plain_meta

@@ -718,3 +718,40 @@ def test_chooser_and_detail_agree_on_double_local_resume(tmp_path):
         "the chooser must count CANONICAL segments exactly like the detail page"
     )
     assert rows["dl-run"]["non_canonical_count"] == 1
+
+
+def test_related_run_id_filters_without_merging(tmp_path):
+    """W5R.6: two INDEPENDENT runs sharing one Related-run ID stay two runs — the chooser
+    exposes and filters by the related id (no state/history merge), one resumed run keeps
+    ONE run id across its segments, and uncorrelated rows stay clear."""
+
+    from ai_workflow_engine import WorkflowBuilder
+    from ai_workflow_viewer import FileEventSource, JsonlObservationViewer, observation_group_to_html
+
+    definition = WorkflowBuilder("cases").step("gate").build()
+    digest = definition.definition_digest()
+    for run_id, corr in (("case9-a", "case-9"), ("case9-b", "case-9"), ("lone-run", None)):
+        extra = _segment_meta(run_id, run_id, 0, digest=digest)
+        if corr:
+            extra["correlation_id"] = corr
+        _write_bundle(
+            tmp_path, run_id, definition,
+            trace_events=[WorkflowTraceEvent(node="gate", node_status="completed", phase="node:result", run_id=run_id, sequence=1, event_id=f"e-{run_id}")],
+            meta_extra=extra,
+        )
+
+    source = FileEventSource(tmp_path)
+    rows = {r["run_id"]: r for r in source.list_groups()}
+    assert rows["case9-a"]["related_run_id"] == "case-9"
+    assert rows["lone-run"]["related_run_id"] is None
+
+    related = source.list_groups(related_run_id="case-9")
+    assert sorted(r["run_id"] for r in related) == ["case9-a", "case9-b"], (
+        "the filter selects the case's runs WITHOUT merging them — two rows, two run ids"
+    )
+    assert all(r["segment_count"] == 1 for r in related)
+
+    html = observation_group_to_html(source.read_group("case9-a"))
+    assert "Related-run ID <code>case-9</code>" in html and "Run ID <code>case9-a</code>" in html
+    index = JsonlObservationViewer(source).index_html()
+    assert "Related-run ID" in index and index.count("case-9") >= 2

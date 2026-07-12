@@ -647,6 +647,24 @@ attempt per contiguous logical index; non-canonical attempts stay inspectable
 (actual = canonical + non-canonical; money never disappears). v0.8.1 bundles read as
 groups of one.
 
+**Identity vocabulary (binding).** `run_id` = ONE logical engine execution, including
+all of its suspension/resume segments. `correlation_id` (shown to humans as
+**Related-run ID**) = an optional caller-supplied grouping key shared by SEPARATE runs
+belonging to one case/audit/batch/investigation. It never controls storage,
+deduplication, scheduling, or execution. Example — one customer case spanning two runs:
+
+```python
+triage  = await engine.run("triage",  msg,  goal=WorkflowGoal(..., correlation_id="case-42"))
+followup = await engine.run("follow_up", data, goal=WorkflowGoal(..., correlation_id="case-42"))
+# two run_ids, two observation groups; every engine-written event/bundle of both carries
+# correlation_id "case-42"; the viewer chooser filters by Related-run ID without merging:
+FileEventSource(root).list_groups(related_run_id="case-42")  # -> two independent rows
+```
+
+External writes: the engine cannot mutate product command payloads it does not own —
+products copy `context.run_context.correlation_id` into `ExternalWriteRequest.metadata`
+(documented pattern, test-locked).
+
 **Retention (user-settled policy).** Suspended (in-flight) groups are NEVER evicted by
 default. Opt-in: `ObservationConfig.evict_suspended_after_s` makes groups suspended longer
 than the cap evictable at the normal finalize-time sweep (no engine timer). Eviction

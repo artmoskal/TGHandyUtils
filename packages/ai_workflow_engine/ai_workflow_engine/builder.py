@@ -685,6 +685,7 @@ class WorkflowEngine:
                         definition=definition,
                         definition_digest=definition.definition_digest(),
                         upto_attempt=attempt,
+                        correlation_id=context.run_context.correlation_id,
                     )
                 segment_id = segment_lifecycle.attempt_segment_id(
                     logical_run_id, child_index, attempt
