@@ -497,6 +497,7 @@ def _rich_graph_css() -> str:
 .graph-node.run-status-not_started { border-left: 5px solid #94a3b8; }
 .graph-node.run-status-partial { border-left: 5px solid #ca8a04; }
 .graph-node.run-status-suspended { border-left: 5px solid #7c3aed; }
+.graph-node.run-status-mixed { border-left: 5px solid #78716c; }
 .graph-node.kind-branch { background: #f0fdf4; }
 .graph-node.kind-terminal { background: #f8fafc; }
 .node-topline { display: flex; gap: 6px; align-items: center; justify-content: space-between; margin-bottom: 6px; }
@@ -664,6 +665,23 @@ def _node_view(
     kind = (defined.kind if defined is not None else ("terminal" if node_id == END else (observed.kind if observed else "external")))
     elapsed_ms = observed.elapsed_ms if observed is not None else 0
     metrics = []
+    external_counts = None
+    if kind == "external" and observed is not None:
+        # External activity has no engine-owned lifecycle, so status is INFERRED from its
+        # events — and last-write-wins would let a later accepted call hide an earlier
+        # failure ("completed" over 2 accepted + 1 failed). Count outcomes instead: both
+        # kinds present -> neutral "mixed" + an explicit tally chip.
+        accepted = sum(1 for e in events if e.decision == "accepted")
+        failed = sum(
+            1
+            for e in events
+            if e.decision in ("failed", "rejected") or e.error or e.severity == "error"
+        )
+        if accepted and failed:
+            status = "mixed"
+            external_counts = f"{accepted} accepted \u00b7 {failed} failed"
+        elif failed:
+            status = "failed"
     if observed is not None and observed.attempts:
         metrics.append(f"{observed.attempts} attempt{'s' if observed.attempts != 1 else ''}")
     if elapsed_ms:
@@ -676,6 +694,8 @@ def _node_view(
         metrics.append(f"notional ${observed.notional_usd:.4f}")
     if details:
         metrics.append(f"{len(details)} detail{'s' if len(details) != 1 else ''}")
+    if external_counts:
+        metrics.append(external_counts)
     if not metrics:
         metrics.append("no runtime data")
 

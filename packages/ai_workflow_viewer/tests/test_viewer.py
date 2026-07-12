@@ -1006,3 +1006,37 @@ def test_external_nodes_are_labeled_never_silently_disconnected(tmp_path):
     plain = observation_group_to_html(FileEventSource(tmp_path / "plain").read_group("plain-run"))
     assert "EXTERNAL cards are recorded activity" not in plain, "legend must be conditional"
     assert "outside declared graph — no wiring recorded" not in plain
+
+
+def test_external_mixed_outcomes_never_masked_as_completed(tmp_path):
+    """Codex pre-tag finding: an external node with 2 accepted + 1 failed calls read
+    "completed" because status aggregation was last-write-wins. External activity must show
+    neutral "mixed" + an explicit tally; all-accepted stays completed; declared nodes keep
+    their engine-owned status untouched."""
+
+    from ai_workflow_engine import WorkflowBuilder
+    from ai_workflow_viewer import FileEventSource, observation_group_to_html
+
+    definition = WorkflowBuilder("mixed-ext").step("declared_step").build()
+    digest = definition.definition_digest()
+    _write_bundle(
+        tmp_path, "mixed-run", definition,
+        trace_events=[
+            WorkflowTraceEvent(node="declared_step", node_status="completed", phase="node:result", run_id="mixed-run", sequence=1, event_id="m-1"),
+            WorkflowTraceEvent(node="probe_item", phase="tool:result", decision="accepted", run_id="mixed-run", sequence=2, event_id="m-2"),
+            WorkflowTraceEvent(node="probe_item", phase="tool:result", decision="failed", severity="error", error="unparseable", run_id="mixed-run", sequence=3, event_id="m-3"),
+            WorkflowTraceEvent(node="probe_item", phase="tool:result", decision="accepted", run_id="mixed-run", sequence=4, event_id="m-4"),
+            WorkflowTraceEvent(node="clean_item", phase="tool:result", decision="accepted", run_id="mixed-run", sequence=5, event_id="m-5"),
+        ],
+        meta_extra=_segment_meta("mixed-run", "mixed-run", 0, digest=digest),
+    )
+    page = observation_group_to_html(FileEventSource(tmp_path).read_group("mixed-run"))
+    assert "run-status-mixed" in page, "mixed external must carry the neutral status class"
+    assert "2 accepted · 1 failed" in page, "outcome tally chip missing"
+    assert page.count('class="graph-node run-status-mixed') == 1, (
+        "all-accepted external (clean_item) must NOT be mixed"
+    )
+
+    import re
+    declared_card = re.search(r'<article class="graph-node run-status-(\w+)[^"]*"[^>]*data-node-id="declared_step"', page)
+    assert declared_card and declared_card.group(1) == "completed", "declared node keeps engine-owned status"
