@@ -202,15 +202,18 @@ class WorkflowEngine:
         current = self.workflows.get(record.workflow_id)
         current_digest = current.definition_digest() if current is not None else None
         outcome = await runtime.deliver(wait_id, event, current_digest=current_digest)
-        if self.observation is not None and self.observation.enabled:
-            from ai_workflow_engine import segment_lifecycle  # call-time (F1.1)
+        from ai_workflow_engine import segment_lifecycle  # call-time (F1.1)
 
-            if outcome.kind == "executed" and record.origin_segment_index is not None:
+        observation_on = self.observation is not None and self.observation.enabled
+        if outcome.kind == "executed":
+            if not observation_on or record.origin_segment_index is None:
+                outcome = outcome.model_copy(update={"terminal_observation": "skipped"})
+            else:
                 # R1: the coordinator terminalized THIS attempt — promote its segment to
-                # canonical. An attempt without this marker is provisional: exactly the
-                # crashed-between-finalize-and-terminalize window the reader must not
-                # mistake for history.
-                segment_lifecycle.commit_attempt(
+                # canonical. R0R3-C1: the write's SUCCESS is part of the typed result — a
+                # provisional-looking completed run must be visible immediately, and any
+                # at-least-once redelivery repairs it (branch below).
+                committed = segment_lifecycle.commit_attempt(
                     self.observation.bundle_dir,
                     segment_lifecycle.attempt_segment_id(
                         str(record.run_id),
@@ -224,14 +227,20 @@ class WorkflowEngine:
                     attempt=outcome.attempt,
                     resolution=outcome.run_result.status if outcome.run_result else None,
                 )
-        if outcome.wait_status in ("failed", "cancelled") and outcome.run_result is None:
-            # W3R.3/R1: THIS call terminalized the wait without a machine continuation, OR
-            # it redelivered after a process died between the terminal commit and evidence
-            # finalization. Converge observation with coordinator truth (routing by the
-            # persisted failure_kind lives in the lifecycle owner — resume_failed repairs
-            # the attempt's commit marker instead of writing colliding evidence).
-            from ai_workflow_engine import segment_lifecycle  # call-time (F1.1)
-
+                outcome = outcome.model_copy(
+                    update={"terminal_observation": "recorded" if committed else "failed"}
+                )
+        elif outcome.run_result is None and outcome.wait_status in (
+            "failed",
+            "cancelled",
+            "completed",
+        ):
+            # W3R.3/R1/R0R3-C1: THIS call terminalized the wait without a machine
+            # continuation, OR it redelivered after a process died (or a marker write
+            # failed) between the terminal commit and evidence convergence — for
+            # COMPLETED waits too, not only failures. The lifecycle owner routes by
+            # persisted wait facts: executed-through evidence gets its commit marker
+            # ensured; no-continuation failures get the wait_terminal segment.
             observation = await segment_lifecycle.ensure_terminal_evidence(
                 self.observation, runtime, wait_id
             )

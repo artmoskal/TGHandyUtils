@@ -681,3 +681,40 @@ def test_served_viewer_renders_the_whole_logical_run(tmp_path):
 
     records = viewer.event_records("logical-run")
     assert len(records) == 6, "SSE/event stream carries the merged canonical records"
+
+
+def test_chooser_and_detail_agree_on_double_local_resume(tmp_path):
+    """R0R3-C2 (codex probe, permanent): the run chooser (list_groups) derives its counts
+    from the SAME canonical selection as the detail page (read_group) — two local resumes
+    at one index are 2 canonical + 1 superseded on BOTH surfaces, never 3 + 0."""
+
+    from ai_workflow_engine import WorkflowBuilder
+    from ai_workflow_viewer import FileEventSource
+
+    definition = WorkflowBuilder("grouped").step("gate").step("finish").build()
+    digest = definition.definition_digest()
+    _write_bundle(
+        tmp_path, "dl-run", definition,
+        trace_events=[WorkflowTraceEvent(node="gate", node_status="requires_user_input", phase="node:result", run_id="dl-run", sequence=1, event_id="d-0")],
+        meta_extra=_segment_meta("dl-run", "dl-run", 0, digest=digest, status="requires_user_input"),
+    )
+    for suffix, ts, event in (("aaa", "2026-07-12T10:01:00Z", "d-1"), ("bbb", "2026-07-12T10:02:00Z", "d-2")):
+        _write_bundle(
+            tmp_path, "dl-run", definition, dir_name=f"dl-run--s001-{suffix}",
+            trace_events=[WorkflowTraceEvent(node="finish", node_status="completed", phase="node:result", run_id="dl-run", sequence=1, event_id=event)],
+            meta_extra=_segment_meta(
+                "dl-run", f"dl-run--s001-{suffix}", 1, digest=digest, timestamp=ts
+            ),
+        )
+
+    source = FileEventSource(tmp_path)
+    group = source.read_group("dl-run")
+    assert len(group.segments) == 2 and len(group.non_canonical) == 1
+    assert group.non_canonical[0].disposition == "superseded"
+    assert group.segments[1].segment_id == "dl-run--s001-bbb", "latest committed local wins"
+
+    rows = {row["run_id"]: row for row in source.list_groups()}
+    assert rows["dl-run"]["segment_count"] == 2, (
+        "the chooser must count CANONICAL segments exactly like the detail page"
+    )
+    assert rows["dl-run"]["non_canonical_count"] == 1

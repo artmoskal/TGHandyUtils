@@ -269,20 +269,41 @@ class FileEventSource:
         for path in root.iterdir():
             if path.is_dir() and _is_run_bundle(path):
                 entry = _run_entry(path)
-                entry["_canonical_eligible"] = (
-                    str(entry.get("status")) != "abandoned"
-                    and not (path / _ABANDON_MARKER).exists()
-                    and (
-                        entry.get("attempt") is None
-                        or (path / _COMMIT_MARKER).exists()
-                    )
-                )
+                attempt = entry.get("attempt")
+                entry["_row"] = {
+                    "id": str(entry.get("segment_id") or path.name),
+                    "index": int(entry.get("segment_index") or 0),
+                    "attempt": int(attempt) if attempt is not None else None,
+                    "committed": attempt is None or (path / _COMMIT_MARKER).exists(),
+                    "abandoned": str(entry.get("status")) == "abandoned"
+                    or (path / _ABANDON_MARKER).exists(),
+                    "timestamp": entry.get("timestamp"),
+                    "entry": entry,
+                }
                 grouped.setdefault(str(entry["run_id"]), []).append(entry)
         groups = []
         for run_id, entries in grouped.items():
-            canonical = [item for item in entries if item.pop("_canonical_eligible")] or entries
+            # R0R3-C2: the chooser derives its counts from the SAME canonical-selection
+            # algorithm as the detail page — never a second approximation.
+            try:
+                canonical_rows, non_rows = _canonical_partition(
+                    run_id, [item.pop("_row") for item in entries]
+                )
+            except ValueError:
+                groups.append(
+                    {
+                        "run_id": run_id,
+                        "segment_count": len(entries),
+                        "non_canonical_count": 0,
+                        "status": "corrupt",
+                        "timestamp": max(str(item.get("timestamp") or "") for item in entries),
+                        "workflow_id": entries[0].get("workflow_id"),
+                    }
+                )
+                continue
+            canonical = [row["entry"] for row in canonical_rows]
             newest = max(
-                canonical,
+                canonical or entries,  # all-provisional group: show raw newest, count 0
                 key=lambda item: (
                     int(item.get("segment_index") or 0),
                     str(item.get("timestamp") or ""),
@@ -292,7 +313,7 @@ class FileEventSource:
                 {
                     "run_id": run_id,
                     "segment_count": len(canonical),
-                    "non_canonical_count": len(entries) - len(canonical),
+                    "non_canonical_count": len(non_rows),
                     "status": newest.get("status"),
                     "timestamp": max(str(item.get("timestamp") or "") for item in entries),
                     "workflow_id": newest.get("workflow_id"),
@@ -362,63 +383,87 @@ def _assert_sequence_sane(records: list[ObservationRecord]) -> None:
             seen_ids.add(identity)
 
 
-def _select_canonical_attempts(
-    logical_run_id: str, entries: list[ObservationSegmentData]
-) -> tuple[list[ObservationSegmentData], list[ObservationSegmentData]]:
-    """R1: pick ONE canonical physical attempt per logical index; everything else is
-    typed, inspectable evidence.
+def _canonical_partition(
+    logical_run_id: str, rows: list[dict]
+) -> tuple[list[dict], list[tuple[dict, str]]]:
+    """R1/R0R3-C2: THE canonical-selection algorithm — one implementation shared by
+    ``read_group`` (detail) and ``list_groups`` (chooser), so the two surfaces can never
+    disagree about what counts as history.
 
-    Dispositions: ``abandoned`` (demoted by the engine's reconciler — marker or meta
-    status), ``superseded`` (committed, but a later committed attempt exists at the same
-    ordinal — e.g. an older local re-run), ``provisional`` (finalized but never committed:
-    the crashed-between-finalize-and-terminalize window; conservatively NOT history).
-    Canonical selection per index: the highest-attempt COMMITTED durable attempt wins;
-    with no durable attempts, the newest committed local attempt wins. Two committed
-    durable attempts at one (index, attempt) ordinal are impossible under CAS — seeing
-    them is corruption and raises.
-    """
+    A row is ``{"id", "index", "attempt", "committed", "abandoned", "timestamp", ...}``.
+    Dispositions: ``abandoned`` (demoted by the reconciler), ``superseded`` (committed but
+    outranked — higher committed ordinal, or newer committed local attempt), ``provisional``
+    (finalized, never committed). Two committed durable attempts sharing one ordinal are
+    impossible under single-claimant CAS — corruption, raises."""
 
-    from dataclasses import replace
-
-    canonical: list[ObservationSegmentData] = []
-    non_canonical: list[ObservationSegmentData] = []
-    by_index: dict[int, list[ObservationSegmentData]] = {}
-    for entry in entries:
-        abandoned = entry.status == "abandoned" or (Path(entry.path) / _ABANDON_MARKER).exists()
-        if abandoned:
-            non_canonical.append(replace(entry, disposition="abandoned"))
+    canonical: list[dict] = []
+    non_canonical: list[tuple[dict, str]] = []
+    by_index: dict[int, list[dict]] = {}
+    for row in rows:
+        if row["abandoned"]:
+            non_canonical.append((row, "abandoned"))
             continue
-        by_index.setdefault(entry.segment_index, []).append(entry)
+        by_index.setdefault(int(row["index"]), []).append(row)
     for index in sorted(by_index):
         candidates = by_index[index]
-        committed = [entry for entry in candidates if entry.committed]
-        durable = [entry for entry in committed if entry.attempt is not None]
+        committed = [row for row in candidates if row["committed"]]
+        durable = sorted(
+            (row for row in committed if row["attempt"] is not None),
+            key=lambda row: row["attempt"],
+        )
         if durable:
-            durable.sort(key=lambda entry: entry.attempt)
-            if len(durable) >= 2 and durable[-1].attempt == durable[-2].attempt:
+            if len(durable) >= 2 and durable[-1]["attempt"] == durable[-2]["attempt"]:
                 raise ValueError(
                     f"Observation group {logical_run_id!r}: two COMMITTED attempts share "
-                    f"ordinal {durable[-1].attempt} at segment index {index} "
-                    f"({durable[-2].segment_id} vs {durable[-1].segment_id}) — impossible "
+                    f"ordinal {durable[-1]['attempt']} at segment index {index} "
+                    f"({durable[-2]['id']} vs {durable[-1]['id']}) — impossible "
                     "under single-claimant CAS; refusing corrupt history"
                 )
             winner = durable[-1]
         elif committed:
-            committed.sort(
-                key=lambda entry: (str(entry.data.meta.get("timestamp") or ""), entry.segment_id)
-            )
-            winner = committed[-1]
+            winner = sorted(
+                committed, key=lambda row: (str(row["timestamp"] or ""), row["id"])
+            )[-1]
         else:
             winner = None
-        for entry in candidates:
-            if entry is winner:
-                canonical.append(entry)
-            elif entry.committed:
-                non_canonical.append(replace(entry, disposition="superseded"))
+        for row in candidates:
+            if row is winner:
+                canonical.append(row)
+            elif row["committed"]:
+                non_canonical.append((row, "superseded"))
             else:
-                non_canonical.append(replace(entry, disposition="provisional"))
-    canonical.sort(key=lambda entry: entry.segment_index)
-    non_canonical.sort(key=lambda entry: (entry.segment_index, entry.segment_id))
+                non_canonical.append((row, "provisional"))
+    return canonical, non_canonical
+
+
+def _select_canonical_attempts(
+    logical_run_id: str, entries: list[ObservationSegmentData]
+) -> tuple[list[ObservationSegmentData], list[ObservationSegmentData]]:
+    """Adapter over :func:`_canonical_partition` for full segment data (detail surface)."""
+
+    from dataclasses import replace
+
+    rows = [
+        {
+            "id": entry.segment_id,
+            "index": entry.segment_index,
+            "attempt": entry.attempt,
+            "committed": entry.committed,
+            "abandoned": entry.status == "abandoned"
+            or (Path(entry.path) / _ABANDON_MARKER).exists(),
+            "timestamp": entry.data.meta.get("timestamp"),
+            "entry": entry,
+        }
+        for entry in entries
+    ]
+    canonical_rows, non_rows = _canonical_partition(logical_run_id, rows)
+    canonical = sorted(
+        (row["entry"] for row in canonical_rows), key=lambda entry: entry.segment_index
+    )
+    non_canonical = sorted(
+        (replace(row["entry"], disposition=disposition) for row, disposition in non_rows),
+        key=lambda entry: (entry.segment_index, entry.segment_id),
+    )
     if not canonical:
         raise ValueError(
             f"Observation group {logical_run_id!r} has no canonical history — every "

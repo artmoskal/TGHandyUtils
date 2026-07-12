@@ -2536,3 +2536,58 @@ async def test_stalled_wait_is_visible_and_cancellable_with_terminal_evidence(tm
     group = FileEventSource(tmp_path).read_group("stall-run")
     assert group.status == "cancelled"
     assert group.segments[-1].kind == "wait_terminal"
+
+
+async def test_failed_commit_marker_is_typed_and_repaired_by_redelivery(tmp_path):
+    """R0R3-C1 (codex probe, permanent): a transient marker-write failure on a COMPLETED
+    delivery is (a) visible immediately as terminal_observation='failed', and (b) repaired
+    by any at-least-once redelivery — a completed run may never permanently read as
+    suspended after one recoverable filesystem hiccup."""
+
+    from ai_workflow_engine import segment_lifecycle
+    from ai_workflow_engine.models import WorkflowGoal
+    from ai_workflow_viewer import FileEventSource
+
+    engine, coordinator = _delivery_engine(bundle_dir=tmp_path)
+    goal = WorkflowGoal(
+        workflow_type="durable_flow", objective="marker", metadata={"run_id": "marker-run"}
+    )
+    first = await engine.run("durable_flow", {}, goal=goal)
+    wait_id = first.wait_handle.wait_id
+
+    real_commit = segment_lifecycle.commit_attempt
+    calls = {"n": 0}
+
+    def flaky_commit(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return False  # transient filesystem failure on the FIRST write
+        return real_commit(*args, **kwargs)
+
+    segment_lifecycle.commit_attempt = flaky_commit
+    try:
+        out1 = await engine.deliver_wait_event(
+            wait_id, {"kind": "signal", "event_id": "evt-m", "payload": "yes"}
+        )
+        assert out1.kind == "executed" and out1.run_result.status == "completed"
+        assert out1.terminal_observation == "failed", (
+            "a failed marker write must be VISIBLE on the typed outcome, never silent"
+        )
+        assert not (tmp_path / "marker-run--s001" / "commit.json").exists()
+
+        out2 = await engine.deliver_wait_event(
+            wait_id, {"kind": "signal", "event_id": "evt-m", "payload": "yes"}
+        )
+        assert out2.kind == "duplicate"
+        assert out2.terminal_observation == "recorded", (
+            "at-least-once redelivery must REPAIR the missing marker for completed waits"
+        )
+        assert calls["n"] >= 2, "the redelivery must re-enter the commit path"
+    finally:
+        segment_lifecycle.commit_attempt = real_commit
+
+    assert (tmp_path / "marker-run--s001" / "commit.json").exists()
+    group = FileEventSource(tmp_path).read_group("marker-run")
+    assert group.status == "completed", (
+        "after repair the group shows the completed truth, not a suspended lie"
+    )

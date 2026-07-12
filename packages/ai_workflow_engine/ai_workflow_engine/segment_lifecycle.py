@@ -205,21 +205,24 @@ async def ensure_terminal_evidence(observation: Any, runtime: Any, wait_id: str)
         from ai_workflow_engine.workflow import WorkflowDefinition
 
         record = await runtime.coordinator.get(wait_id)
-        if record is None or record.status not in ("failed", "cancelled"):
+        if record is None or record.status not in ("failed", "cancelled", "completed"):
             return "skipped"
         if record.origin_segment_index is None:
             # registered without observation: no on-disk group exists that could misreport
             return "skipped"
         segment_index = int(record.origin_segment_index) + 1
-        if record.failure_kind == "resume_failed":
-            # the failing continuation attempt is the canonical evidence — promote it
+        if record.status == "completed" or record.failure_kind == "resume_failed":
+            # R0R3-C1: a wait that terminalized THROUGH a continuation (completed, or
+            # failed inside the resumed run) has its evidence already — the executed
+            # attempt. Converge by ensuring ITS commit marker from persisted wait facts,
+            # so a transient marker-write failure is repaired by any later redelivery.
             attempt = int(record.resume_attempts or 1)
             committed = commit_attempt(
                 observation.bundle_dir,
                 attempt_segment_id(str(record.run_id), segment_index, attempt),
                 wait_id=wait_id,
                 attempt=attempt,
-                resolution="failed",
+                resolution=str(record.status if record.status == "completed" else "failed"),
             )
             return "recorded" if committed else "failed"
         definition_json = await runtime.coordinator.load_definition(wait_id)
