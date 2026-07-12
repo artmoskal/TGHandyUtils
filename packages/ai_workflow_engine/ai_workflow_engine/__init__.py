@@ -7,7 +7,7 @@
 from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
-__version__ = "0.9.1"
+__version__ = "0.9.2"
 
 
 # F-C1 (typed public surface): the SAME export map, statically visible. Type checkers
@@ -26,7 +26,7 @@ if TYPE_CHECKING:
         WaitReceipt,
         WaitRecord,
     )
-    from ai_workflow_engine.wait_runtime import WaitDeliveryOutcome
+    from ai_workflow_engine.wait_contract import WaitDeliveryOutcome
     from ai_workflow_engine.builder import WorkflowEngine, WorkflowEngineBuilder, WorkflowPack
     from ai_workflow_engine.config_loader import (
         ObservationConfig,
@@ -347,7 +347,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "WEAK_MODEL_CLEANER": ("ai_workflow_engine.parsing", "WEAK_MODEL_CLEANER"),
     "WaitClaim": ("ai_workflow_engine.waits", "WaitClaim"),
     "WaitCoordinator": ("ai_workflow_engine.waits", "WaitCoordinator"),
-    "WaitDeliveryOutcome": ("ai_workflow_engine.wait_runtime", "WaitDeliveryOutcome"),
+    "WaitDeliveryOutcome": ("ai_workflow_engine.wait_contract", "WaitDeliveryOutcome"),
     "WaitEvent": ("ai_workflow_engine.waits", "WaitEvent"),
     "WaitHandle": ("ai_workflow_engine.waits", "WaitHandle"),
     "WaitHealth": ("ai_workflow_engine.waits", "WaitHealth"),

@@ -5,11 +5,11 @@ excluded from no-wait consumers and re-exports these names."""
 
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict
 
-__all__ = ["WAIT_STATUSES", "WaitStatus", "WaitHandle"]
+__all__ = ["WAIT_STATUSES", "WaitStatus", "WaitDeliveryOutcome", "WaitHandle"]
 
 # C5: closed processing lifecycle — no "expired"/"overdue" terminal states.
 WAIT_STATUSES = ("pending", "claimed", "completed", "failed", "cancelled")
@@ -27,3 +27,31 @@ class WaitHandle(BaseModel):
     suspended_node: str
     deadline_at: AwareDatetime
     status: WaitStatus = "pending"
+
+
+class WaitDeliveryOutcome(BaseModel):
+    """Typed result of the public durable-wait delivery door.
+
+    This DTO lives in the small wait contract leaf so API introspection never needs to
+    import the durable runtime implementation. ``run_result`` is a WorkflowRunResult for
+    executed deliveries, kept as ``Any`` to preserve the leaf dependency direction.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
+
+    kind: Literal[
+        "executed",
+        "duplicate",
+        "already_processing",
+        "not_accepted",
+        "terminal",
+        "rejected",
+        "attempts_exhausted",
+    ]
+    wait_id: str
+    resolution_kind: Optional[Literal["signal", "timeout"]] = None
+    wait_status: str
+    detail: str = ""
+    run_result: Optional[Any] = None
+    terminal_observation: Optional[Literal["recorded", "failed", "skipped"]] = None
+    attempt: Optional[int] = None

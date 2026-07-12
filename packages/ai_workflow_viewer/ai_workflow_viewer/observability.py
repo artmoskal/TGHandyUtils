@@ -56,7 +56,9 @@ class ObservationNode(BaseModel):
     # seen. When both buckets are non-empty the status becomes "mixed"; every reader
     # (card, Nodes table, Mermaid, JSON export) consumes the same status + counts.
     outcome_accepted: int = 0
+    outcome_partial: int = 0
     outcome_failed: int = 0
+    outcome_suspended: int = 0
 
 
 class ObservationGraph(BaseModel):
@@ -102,8 +104,12 @@ def build_observation_graph(
         outcome = _external_outcome(event)
         if outcome == "accepted":
             node.outcome_accepted += 1
+        elif outcome == "partial":
+            node.outcome_partial += 1
         elif outcome == "failed":
             node.outcome_failed += 1
+        elif outcome == "suspended":
+            node.outcome_suspended += 1
         if event.decision:
             node.decisions.append(event.decision)
         if event.error and event.error not in node.errors:
@@ -169,6 +175,10 @@ def build_observation_graph(
             node.status = "mixed"
         elif node.outcome_failed:
             node.status = "failed"
+        elif node.outcome_suspended:
+            node.status = "suspended"
+        elif node.outcome_partial:
+            node.status = "partial"
         elif node.outcome_accepted:
             node.status = "completed"
     return graph
@@ -741,10 +751,19 @@ def _node_view(
     # A1: status is graph-layer truth — build_observation_graph already set "mixed" for
     # external nodes with both outcomes, so the view NEVER recomputes it and the card, the
     # Nodes table, Mermaid, and the JSON export can never disagree.
-    if observed is not None and observed.outcome_accepted and observed.outcome_failed:
-        external_counts = (
-            f"{observed.outcome_accepted} accepted \u00b7 {observed.outcome_failed} failed"
-        )
+    if observed is not None:
+        outcome_parts = [
+            f"{count} {label}"
+            for count, label in (
+                (observed.outcome_accepted, "accepted"),
+                (observed.outcome_partial, "partial"),
+                (observed.outcome_failed, "failed"),
+                (observed.outcome_suspended, "suspended"),
+            )
+            if count
+        ]
+        if len(outcome_parts) > 1:
+            external_counts = " \u00b7 ".join(outcome_parts)
     if observed is not None and observed.attempts:
         metrics.append(f"{observed.attempts} attempt{'s' if observed.attempts != 1 else ''}")
     if elapsed_ms:
@@ -1390,13 +1409,19 @@ def _external_outcome(event: WorkflowTraceEvent) -> Optional[str]:
         return "accepted"
     if terminal in {"failed", "rejected"}:
         return "failed"
-    if terminal is not None:  # partial / requires_user_input / unknown → not a tallied outcome
+    if terminal == "partial":
+        return "partial"
+    if terminal == "requires_user_input":
+        return "suspended"
+    if terminal is not None:
         return None
     decision = event.decision or ""
     if decision in {"accepted", "valid", "answered", "provisional"}:
         return "accepted"
     if decision in {"failed", "rejected", "denied"}:
         return "failed"
+    if decision == "partial":
+        return "partial"
     if event.error or event.severity == "error":
         return "failed"
     return None

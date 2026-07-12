@@ -15,7 +15,7 @@ from typing import Any, Callable, Literal, Optional, Protocol, runtime_checkable
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 
-from ai_workflow_engine.wait_contract import WaitHandle
+from ai_workflow_engine.wait_contract import WaitDeliveryOutcome, WaitHandle
 from ai_workflow_engine.waits import DurableWaitPolicy, WaitReceipt, WaitRecord
 
 __all__ = [
@@ -94,36 +94,6 @@ class WaitRegistrationOutcome(BaseModel):
     deadline_at: AwareDatetime
     adapter_id: Optional[str] = None
     registration_id: Optional[str] = None
-
-
-class WaitDeliveryOutcome(BaseModel):
-    """W3.2: typed result of `deliver_wait_event` — losers and late events get honest
-    terminal reports, never re-execution and never an untyped error."""
-
-    model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
-
-    kind: Literal[
-        "executed",
-        "duplicate",
-        "already_processing",
-        "not_accepted",
-        "terminal",
-        "rejected",
-        "attempts_exhausted",
-    ]
-    wait_id: str
-    resolution_kind: Optional[Literal["signal", "timeout"]] = None
-    wait_status: str
-    detail: str = ""
-    run_result: Optional[Any] = None  # WorkflowRunResult when kind == "executed"
-    # W3R.3b: when THIS delivery terminalized the wait with no continuation run, the engine
-    # says whether the terminal observation segment was actually written — a failed
-    # evidence write is typed, never an indistinguishable fully-observed result.
-    # None = not applicable (executed / non-transitioning outcome).
-    terminal_observation: Optional[Literal["recorded", "failed", "skipped"]] = None
-    # R1: the claim ordinal this outcome refers to (record.resume_attempts) — the engine
-    # facade keys attempt-directory commit markers and evidence repair on it.
-    attempt: Optional[int] = None
 
 
 class DurableWaitRuntime:

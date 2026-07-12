@@ -1,5 +1,7 @@
 """Standalone consumers for ai_workflow_engine observability records."""
 
+__version__ = "0.2.1"
+
 from ai_workflow_viewer.event_source import (
     EventSource,
     FileEventSource,
@@ -22,6 +24,7 @@ from ai_workflow_viewer.server import JsonlObservationViewer, serve_viewer
 from ai_workflow_viewer.viz import save_workflow_html, workflow_to_html, workflow_to_mermaid
 
 __all__ = [
+    "__version__",
     "EventSource",
     "FileEventSource",
     "JsonlObservationViewer",

@@ -28,22 +28,10 @@ from typing import (
 )
 
 if TYPE_CHECKING:
-    from ai_workflow_engine.wait_runtime import WaitDeliveryOutcome
     from ai_workflow_engine.prompt_rendering import PromptRenderService
 
 from ai_workflow_engine.config_loader import ObservationConfig, WorkflowConfigBundle, load_workflow_config
-
-
-def _ensure_wait_delivery_outcome_bound() -> None:
-    """A8: lazily bind ``WaitDeliveryOutcome`` into THIS module's globals so
-    ``typing.get_type_hints(WorkflowEngine.deliver_wait_event)`` can resolve the public
-    typed return. Called from the durable-wait entry points (never at import) — the wait
-    subsystem is opt-in and forbidden in the simple tier."""
-
-    if "WaitDeliveryOutcome" not in globals():
-        from ai_workflow_engine.wait_runtime import WaitDeliveryOutcome as _outcome
-
-        globals()["WaitDeliveryOutcome"] = _outcome
+from ai_workflow_engine.wait_contract import WaitDeliveryOutcome
 from ai_workflow_engine.engine.capabilities import (
     CapabilityRegistry,
     CapabilityRuntime,
@@ -195,7 +183,7 @@ class WorkflowEngine:
         self._profiles: Dict[str, WorkflowProfile] = {}
         self._plans: Dict[str, RuntimePlan] = {}
 
-    async def deliver_wait_event(self, wait_id: str, event: Any) -> "WaitDeliveryOutcome":
+    async def deliver_wait_event(self, wait_id: str, event: Any) -> WaitDeliveryOutcome:
         """W3.2: the ONE public door for durable continuation (signal or timeout).
 
         Returns a typed ``WaitDeliveryOutcome``: executed runs carry the resumed
@@ -203,7 +191,6 @@ class WorkflowEngine:
         reports without re-execution. The registered definition digest must match the
         CURRENTLY registered definition — a changed machine is rejected, never replayed."""
 
-        _ensure_wait_delivery_outcome_bound()  # A8: door introspectable once waits are used
         runtime = getattr(self.executor, "wait_runtime", None)
         if runtime is None:
             raise RuntimeError(
@@ -885,12 +872,6 @@ class WorkflowEngineBuilder:
         import inspect
 
         from ai_workflow_engine.waits import WaitCoordinator  # call-time (leaf discipline)
-
-        # A8: engaging durable waits binds WaitDeliveryOutcome into this module's globals so
-        # `typing.get_type_hints(WorkflowEngine.deliver_wait_event)` resolves the public
-        # typed door. Kept OUT of module-level imports on purpose — the whole wait subsystem
-        # is opt-in and forbidden in the simple tier, so a trivial consumer never loads it.
-        _ensure_wait_delivery_outcome_bound()
 
         _PROTOCOL_METHODS = (
             "register",

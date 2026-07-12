@@ -9,6 +9,7 @@ import inspect
 import asyncio
 import re
 import runpy
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -80,25 +81,13 @@ def test_delivery_outcome_is_public_and_annotated():
     assert "WaitDeliveryOutcome" in str(annotation), (
         f"deliver_wait_event must advertise its typed outcome, got {annotation!r}"
     )
-    # A8: the advertised type must be RUNTIME-RESOLVABLE (not just annotation text) for any
-    # process that has engaged the durable-wait subsystem — the realistic adapter path.
-    # Engaging waits binds WaitDeliveryOutcome into builder globals (it stays OUT of the
-    # simple tier by design), so get_type_hints then resolves the public door.
+    # The advertised type must be runtime-resolvable before composition. Documentation
+    # generators and validation frameworks inspect the public class before an application
+    # builds an engine; the DTO lives in the lightweight wait-contract leaf for this reason.
     import typing
-
-    from ai_workflow_engine import InMemoryWaitCoordinator, WorkflowEngineBuilder
-
-    def _clock():
-        from datetime import datetime, timezone
-
-        return datetime(2026, 1, 1, tzinfo=timezone.utc)
-
-    WorkflowEngineBuilder().with_wait_coordinator(
-        InMemoryWaitCoordinator(clock=_clock), clock=_clock
-    )
     hints = typing.get_type_hints(WorkflowEngine.deliver_wait_event)
     assert hints["return"] is WaitDeliveryOutcome, (
-        "deliver_wait_event's return type must resolve via get_type_hints once waits are engaged"
+        "deliver_wait_event's return type must resolve before runtime composition"
     )
     kinds = WaitDeliveryOutcome.model_fields["kind"].annotation
     assert "executed" in str(kinds) and "duplicate" in str(kinds)
@@ -139,6 +128,7 @@ def test_documentation_index_links_every_consumer_path_and_canonical_guide():
         "concepts.md",
         "operations.md",
         "misuse-risks.md",
+        "migration-v0.9.md",
         "extension-lifecycle.md",
         "observability-levels-feedback.md",
         "gopro-handoff.md",
@@ -186,6 +176,26 @@ def test_product_handoffs_are_current_focused_and_share_the_common_contract():
             assert heading in text, f"{name} lost {heading}"
         assert len(text.splitlines()) <= 350, f"{name} regressed into a release-history dump"
         assert "v0.7.0 delta" not in text and "v0.8.1 delta" not in text
+
+
+def test_viewer_version_and_consumer_package_tables_match():
+    """Viewer fixes need a distinguishable wheel version, not reused 0.2.0 metadata."""
+
+    import ai_workflow_viewer
+
+    viewer_root = PACKAGE_ROOT.parent / "ai_workflow_viewer"
+    pyproject = tomllib.loads((viewer_root / "pyproject.toml").read_text(encoding="utf-8"))
+    expected = pyproject["project"]["version"]
+    assert ai_workflow_viewer.__version__ == expected
+    package_pin = f"ai-workflow-viewer=={expected}"
+    for name in (
+        "gopro-handoff.md",
+        "mageqa-handoff.md",
+        "slackazz-handoff.md",
+        "voice-brain-handoff.md",
+    ):
+        text = (PACKAGE_ROOT / "docs" / name).read_text(encoding="utf-8")
+        assert package_pin in text, f"{name} must pin the released viewer wheel {expected}"
 
 
 def test_framework_request_lifecycle_is_actionable_and_closed():

@@ -5,7 +5,7 @@ declare a workflow, register typed capabilities, and call one engine door. The e
 transitions, retries, fan-out, budgets, waits, trace, usage, and observation bundles; products own
 domain models, provider clients, storage adapters, clocks, and side-effect delivery.
 
-> **`engine-v0.9.1` is the current release.** Pin the immutable tag and build a wheel. Never depend on a
+> **`engine-v0.9.2` is the current release.** Pin the immutable tag and build a wheel. Never depend on a
 > live branch. The binding contract is the repository-level
 > [`executable-workflow-engine-spec.md`](../../docs/executable-workflow-engine-spec.md).
 
@@ -34,20 +34,20 @@ Build from the tag because this monorepo is not published to PyPI:
 
 ```bash
 git clone <TGHandyUtils-repository> /tmp/tghandy-engine
-git -C /tmp/tghandy-engine checkout --detach engine-v0.9.1
+git -C /tmp/tghandy-engine checkout --detach engine-v0.9.2
 python -m pip wheel --no-deps -w ./vendor \
   /tmp/tghandy-engine/packages/ai_workflow_engine
-python -m pip install ./vendor/ai_workflow_engine-0.9.1-py3-none-any.whl
-python -c "import ai_workflow_engine as e; assert e.__version__ == '0.9.1'"
+python -m pip install ./vendor/ai_workflow_engine-0.9.2-py3-none-any.whl
+python -c "import ai_workflow_engine as e; assert e.__version__ == '0.9.2'"
 ```
 
 Optional packages:
 
 | Package | Install when |
 |---|---|
-| `ai-workflow-engine==0.9.1` | Always. Core builder, executor, memory, waits, observation writer. |
+| `ai-workflow-engine==0.9.2` | Always. Core builder, executor, memory, waits, observation writer. |
 | `ai-workflow-tools==0.3.0` | The product uses CLI agents, the tool catalog, or media helpers. |
-| `ai-workflow-viewer==0.2.0` | A developer or product service renders observation bundles. |
+| `ai-workflow-viewer==0.2.1` | A developer or product service renders observation bundles. |
 
 Record the engine tag, source commit, and wheel SHA-256 in the consumer repository. A tag already
 consumed by another repository is frozen; fixes require a new tag.
@@ -110,7 +110,7 @@ minimal profile.
 
 ## Release Highlights
 
-`engine-v0.9.1` includes:
+`engine-v0.9.2` includes:
 
 - declared step, branch, evaluate/retrace/fallback, bounded fan-out, subworkflow, planner, and human
   nodes;

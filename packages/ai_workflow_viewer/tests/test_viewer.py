@@ -1160,6 +1160,26 @@ def test_external_mixed_status_is_graph_layer_truth_across_all_views(tmp_path):
     assert g3.nodes["ext"].status == "mixed"
     assert (g3.nodes["ext"].outcome_accepted, g3.nodes["ext"].outcome_failed) == (1, 1)
 
+    # Patch regression: a later success must not erase an earlier partial/suspended
+    # external outcome. These statuses are legitimate typed engine vocabulary, not
+    # neutral events, and therefore participate in the shared graph-layer aggregate.
+    g4 = build_observation_graph(definition, [
+        ev(node="declared", node_status="completed", phase="node:result", sequence=1, event_id="1"),
+        ev(node="ext", node_status="partial", phase="tool:result", sequence=2, event_id="2"),
+        ev(node="ext", decision="accepted", phase="tool:result", sequence=3, event_id="3"),
+    ], [], [])
+    assert g4.nodes["ext"].status == "partial"
+    assert (g4.nodes["ext"].outcome_accepted, g4.nodes["ext"].outcome_partial) == (1, 1)
+    assert "1 accepted · 1 partial" in observation_graph_to_html(definition, g4)
+
+    g5 = build_observation_graph(definition, [
+        ev(node="declared", node_status="completed", phase="node:result", sequence=1, event_id="1"),
+        ev(node="ext", node_status="requires_user_input", phase="node:result", sequence=2, event_id="2"),
+        ev(node="ext", decision="accepted", phase="tool:result", sequence=3, event_id="3"),
+    ], [], [])
+    assert g5.nodes["ext"].status == "suspended"
+    assert (g5.nodes["ext"].outcome_accepted, g5.nodes["ext"].outcome_suspended) == (1, 1)
+
 
 def test_artifact_section_is_robust_and_escapes_untrusted_manifest_fields(tmp_path):
     """A2/A3: hostile/corrupt manifests can neither inject markup nor crash the page.
