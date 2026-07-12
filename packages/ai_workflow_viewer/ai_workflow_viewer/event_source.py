@@ -13,6 +13,10 @@ from ai_workflow_engine import (
     WorkflowTraceEvent,
     WorkflowUsageEvent,
 )
+from ai_workflow_engine.observation_bundle import (
+    ABANDON_MARKER_NAME as _ABANDON_MARKER,
+    COMMIT_MARKER_NAME as _COMMIT_MARKER,
+)
 
 
 @dataclass(frozen=True)
@@ -57,10 +61,14 @@ class ObservationSegmentData:
     segment_id: str
     segment_index: int
     kind: str
-    parent_segment_id: str | None
     status: str
     path: str
     data: ObservationRunData
+    # R1 attempt lifecycle: durable claim ordinal (None = initial/local), commit-marker
+    # presence, and the reader's disposition verdict for this physical directory.
+    attempt: int | None = None
+    committed: bool = False
+    disposition: str = "canonical"  # canonical | superseded | provisional | abandoned
 
 
 @dataclass(frozen=True)
@@ -79,16 +87,18 @@ class ObservationGroupData:
     segments: list[ObservationSegmentData]
     records: list[ObservationRecord]
     # W4R.3 cost honesty: `usage_totals` is ACTUAL spend — every segment-local usage event
-    # counted exactly once, INCLUDING abandoned crash-attempts (a paid call before a crash
-    # is real money). `canonical_usage_totals`/`abandoned_usage_totals` are the drill-down
-    # split; the split never makes money disappear: actual = canonical + abandoned.
+    # counted exactly once, INCLUDING non-canonical attempts (abandoned, superseded, or
+    # provisional — a paid call before a crash is real money). The split never makes money
+    # disappear: actual = canonical + non_canonical.
     usage_totals: dict
     canonical_usage_totals: dict
-    abandoned_usage_totals: dict
+    non_canonical_usage_totals: dict
     cumulative_meta_totals: dict
-    # W4R.1: crashed delivery attempts, finalized as typed `abandoned` evidence — never
-    # merged into canonical history (their events are the partial prefix of the retry).
-    abandoned: list[ObservationSegmentData]
+    # R1: physical attempts that are NOT canonical history — each carries its disposition
+    # (abandoned = demoted by the reconciler; superseded = committed but outranked by a
+    # later committed attempt; provisional = finalized but never committed, i.e. the
+    # crashed-between-finalize-and-terminalize window). All inspectable, never merged.
+    non_canonical: list[ObservationSegmentData]
 
     @property
     def trace_events(self) -> list[WorkflowTraceEvent]:
@@ -158,14 +168,15 @@ class FileEventSource:
         """Read ALL finalized segments of one logical run and merge them honestly (W4.3).
 
         Single-bundle ``read()`` semantics are untouched — this is the explicit grouped
-        surface. Pre-segment (v0.8.1) bundles are groups of one. Corrupt lineage is LOUD:
-        duplicate segment index, a named parent that is absent, or segments whose
-        definition digests disagree all raise instead of rendering a half-true merge.
+        surface. Pre-segment (v0.8.1) bundles are groups of one. Lineage is LOGICAL (R1):
+        the canonical chain is one committed attempt per contiguous index — physical
+        parent pointers are gone. Corruption is LOUD: a gap in the canonical chain, two
+        committed durable attempts at one ordinal, or definition digests that disagree
+        with the actual files all raise instead of rendering a half-true merge.
         """
 
         root = self.base_path.parent if _is_run_bundle(self.base_path) else self.base_path
-        segments: list[ObservationSegmentData] = []
-        abandoned: list[ObservationSegmentData] = []
+        entries: list[ObservationSegmentData] = []
         for path in sorted(root.iterdir()) if root.exists() else []:
             if not (path.is_dir() and _is_run_bundle(path)):
                 continue
@@ -173,26 +184,28 @@ class FileEventSource:
             if str(meta.get("run_id") or path.name) != logical_run_id:
                 continue
             data = FileEventSource(path).read()  # per-segment sequence sanity runs here
-            segment = ObservationSegmentData(
-                segment_id=str(meta.get("segment_id") or path.name),
-                segment_index=int(meta.get("segment_index") or 0),
-                kind=str(meta.get("segment_kind") or "initial"),
-                parent_segment_id=(
-                    str(meta["parent_segment_id"]) if meta.get("parent_segment_id") else None
-                ),
-                status=str(meta.get("status") or "unknown"),
-                path=str(path),
-                data=data,
+            kind = str(meta.get("segment_kind") or "initial")
+            attempt = meta.get("attempt")
+            entries.append(
+                ObservationSegmentData(
+                    segment_id=str(meta.get("segment_id") or path.name),
+                    segment_index=int(meta.get("segment_index") or 0),
+                    kind=kind,
+                    status=str(meta.get("status") or "unknown"),
+                    path=str(path),
+                    data=data,
+                    attempt=int(attempt) if attempt is not None else None,
+                    # only DURABLE attempts have a separate commit fact (coordinator
+                    # terminalization) — attempt-less segments are committed by finalize
+                    committed=attempt is None or (path / _COMMIT_MARKER).exists(),
+                )
             )
-            # W4R.1: abandoned crash-attempts are typed evidence, never canonical history.
-            (abandoned if segment.status == "abandoned" else segments).append(segment)
-        if not segments:
+        if not entries:
             raise FileNotFoundError(
                 f"No finalized observation segments for logical run {logical_run_id!r} under {root}"
             )
-        segments.sort(key=lambda segment: segment.segment_index)
-        abandoned.sort(key=lambda segment: (segment.segment_index, segment.segment_id))
-        group_digest = _assert_group_lineage_sane(logical_run_id, segments, abandoned)
+        segments, non_canonical = _select_canonical_attempts(logical_run_id, entries)
+        group_digest = _assert_group_lineage_sane(logical_run_id, segments, non_canonical)
         merged: list[ObservationRecord] = []
         seen_ids: set[tuple[str, str]] = set()
 
@@ -211,11 +224,11 @@ class FileEventSource:
         for segment in segments:
             _claim_ids(segment.data.records)  # already sequence-ordered per segment
             merged.extend(segment.data.records)
-        for segment in abandoned:
-            _claim_ids(segment.data.records)  # abandoned money must be unique too
+        for segment in non_canonical:
+            _claim_ids(segment.data.records)  # non-canonical money must be unique too
         usage_events = [item.record for item in merged if item.type == "usage"]
-        abandoned_usage = [
-            record for segment in abandoned for record in segment.data.usage_events
+        non_canonical_usage = [
+            record for segment in non_canonical for record in segment.data.usage_events
         ]
         newest_meta = segments[-1].data.meta
         return ObservationGroupData(
@@ -225,16 +238,16 @@ class FileEventSource:
             records=merged,
             # W4.4/W4R.3: totals come from segment-local EVENTS counted once each —
             # never from per-segment meta totals, which are cumulative-since-run-start on
-            # resumed segments. Actual spend includes abandoned attempts (real money);
-            # the canonical/abandoned split is a drill-down, not a place money hides.
+            # resumed segments. Actual spend includes every non-canonical attempt (real
+            # money); the split is a drill-down, not a place money hides.
             usage_totals=_usage_totals_from_events(
-                usage_events + abandoned_usage, scope="actual_all_attempts"
+                usage_events + non_canonical_usage, scope="actual_all_attempts"
             ),
             canonical_usage_totals=_usage_totals_from_events(
                 usage_events, scope="canonical_chain"
             ),
-            abandoned_usage_totals=_usage_totals_from_events(
-                abandoned_usage, scope="abandoned_attempts"
+            non_canonical_usage_totals=_usage_totals_from_events(
+                non_canonical_usage, scope="non_canonical_attempts"
             ),
             cumulative_meta_totals={
                 "scope": newest_meta.get("usage_totals_scope") or "single_bundle",
@@ -243,7 +256,7 @@ class FileEventSource:
                 "notional_usd": newest_meta.get("notional_usd"),
                 "usage_count": newest_meta.get("usage_count"),
             },
-            abandoned=abandoned,
+            non_canonical=non_canonical,
         )
 
     def list_groups(self) -> list[dict]:
@@ -256,12 +269,18 @@ class FileEventSource:
         for path in root.iterdir():
             if path.is_dir() and _is_run_bundle(path):
                 entry = _run_entry(path)
+                entry["_canonical_eligible"] = (
+                    str(entry.get("status")) != "abandoned"
+                    and not (path / _ABANDON_MARKER).exists()
+                    and (
+                        entry.get("attempt") is None
+                        or (path / _COMMIT_MARKER).exists()
+                    )
+                )
                 grouped.setdefault(str(entry["run_id"]), []).append(entry)
         groups = []
         for run_id, entries in grouped.items():
-            canonical = [
-                item for item in entries if str(item.get("status")) != "abandoned"
-            ] or entries
+            canonical = [item for item in entries if item.pop("_canonical_eligible")] or entries
             newest = max(
                 canonical,
                 key=lambda item: (
@@ -273,7 +292,7 @@ class FileEventSource:
                 {
                     "run_id": run_id,
                     "segment_count": len(canonical),
-                    "abandoned_count": len(entries) - len(canonical),
+                    "non_canonical_count": len(entries) - len(canonical),
                     "status": newest.get("status"),
                     "timestamp": max(str(item.get("timestamp") or "") for item in entries),
                     "workflow_id": newest.get("workflow_id"),
@@ -343,19 +362,81 @@ def _assert_sequence_sane(records: list[ObservationRecord]) -> None:
             seen_ids.add(identity)
 
 
+def _select_canonical_attempts(
+    logical_run_id: str, entries: list[ObservationSegmentData]
+) -> tuple[list[ObservationSegmentData], list[ObservationSegmentData]]:
+    """R1: pick ONE canonical physical attempt per logical index; everything else is
+    typed, inspectable evidence.
+
+    Dispositions: ``abandoned`` (demoted by the engine's reconciler — marker or meta
+    status), ``superseded`` (committed, but a later committed attempt exists at the same
+    ordinal — e.g. an older local re-run), ``provisional`` (finalized but never committed:
+    the crashed-between-finalize-and-terminalize window; conservatively NOT history).
+    Canonical selection per index: the highest-attempt COMMITTED durable attempt wins;
+    with no durable attempts, the newest committed local attempt wins. Two committed
+    durable attempts at one (index, attempt) ordinal are impossible under CAS — seeing
+    them is corruption and raises.
+    """
+
+    from dataclasses import replace
+
+    canonical: list[ObservationSegmentData] = []
+    non_canonical: list[ObservationSegmentData] = []
+    by_index: dict[int, list[ObservationSegmentData]] = {}
+    for entry in entries:
+        abandoned = entry.status == "abandoned" or (Path(entry.path) / _ABANDON_MARKER).exists()
+        if abandoned:
+            non_canonical.append(replace(entry, disposition="abandoned"))
+            continue
+        by_index.setdefault(entry.segment_index, []).append(entry)
+    for index in sorted(by_index):
+        candidates = by_index[index]
+        committed = [entry for entry in candidates if entry.committed]
+        durable = [entry for entry in committed if entry.attempt is not None]
+        if durable:
+            durable.sort(key=lambda entry: entry.attempt)
+            if len(durable) >= 2 and durable[-1].attempt == durable[-2].attempt:
+                raise ValueError(
+                    f"Observation group {logical_run_id!r}: two COMMITTED attempts share "
+                    f"ordinal {durable[-1].attempt} at segment index {index} "
+                    f"({durable[-2].segment_id} vs {durable[-1].segment_id}) — impossible "
+                    "under single-claimant CAS; refusing corrupt history"
+                )
+            winner = durable[-1]
+        elif committed:
+            committed.sort(
+                key=lambda entry: (str(entry.data.meta.get("timestamp") or ""), entry.segment_id)
+            )
+            winner = committed[-1]
+        else:
+            winner = None
+        for entry in candidates:
+            if entry is winner:
+                canonical.append(entry)
+            elif entry.committed:
+                non_canonical.append(replace(entry, disposition="superseded"))
+            else:
+                non_canonical.append(replace(entry, disposition="provisional"))
+    canonical.sort(key=lambda entry: entry.segment_index)
+    non_canonical.sort(key=lambda entry: (entry.segment_index, entry.segment_id))
+    if not canonical:
+        raise ValueError(
+            f"Observation group {logical_run_id!r} has no canonical history — every "
+            "attempt is abandoned or provisional (uncommitted)"
+        )
+    return canonical, non_canonical
+
+
 def _assert_group_lineage_sane(
     logical_run_id: str,
     segments: list[ObservationSegmentData],
-    abandoned: list[ObservationSegmentData],
+    non_canonical: list[ObservationSegmentData],
 ) -> str | None:
-    """W4R.2: REAL lineage integrity, not metadata agreement. Canonical segments must form
-    one contiguous chain — exactly one index-0 ``initial``, indexes 0..N without gaps or
-    duplicates, every continuation's parent equal to the immediately preceding segment,
-    legal kinds (``wait_terminal`` only as the final segment), unique segment ids — and
-    the definition digest is RECOMPUTED from each segment's actual ``definition.json``
-    (a forged/stale meta digest cannot bless a changed machine). Pre-segment (v0.8.1)
-    bundles remain valid groups of one. Returns the group's canonical digest.
-    """
+    """R1: lineage is LOGICAL — one committed attempt per contiguous index, legal kinds,
+    and definition digests RECOMPUTED from each actual ``definition.json`` (a forged or
+    stale meta digest cannot bless a changed machine). Physical parent pointers left the
+    contract; the gap check subsumes the old absent-parent check. Pre-segment (v0.8.1)
+    bundles remain valid groups of one. Returns the group's canonical digest."""
 
     def _fail(reason: str) -> None:
         raise ValueError(f"Observation group {logical_run_id!r}: {reason}")
@@ -364,17 +445,11 @@ def _assert_group_lineage_sane(
     if len(set(ids)) != len(ids):
         _fail(f"duplicate segment ids {sorted(ids)} — refusing to merge ambiguous history")
     indexes = [segment.segment_index for segment in segments]
-    for first, second in zip(segments, segments[1:]):
-        if second.segment_index == first.segment_index:
-            _fail(
-                f"duplicate segment index {second.segment_index} ({first.segment_id} vs "
-                f"{second.segment_id}) — evidence of a re-executed continuation"
-            )
     if indexes != list(range(len(segments))):
         _fail(
-            f"segment indexes {indexes} are not the contiguous chain "
+            f"canonical segment indexes {indexes} are not the contiguous chain "
             f"{list(range(len(segments)))} — history is incomplete (deleted, never "
-            "finalized, or recorded without lineage)"
+            "finalized, or never committed)"
         )
     for position, segment in enumerate(segments):
         if position == 0:
@@ -394,18 +469,12 @@ def _assert_group_lineage_sane(
                     f"wait_terminal segment {segment.segment_id} is not last — nothing can "
                     "continue a terminally failed wait"
                 )
-            if segment.parent_segment_id != segments[position - 1].segment_id:
-                _fail(
-                    f"segment {segment.segment_id} names parent "
-                    f"{segment.parent_segment_id!r} but the preceding segment is "
-                    f"{segments[position - 1].segment_id!r} — the chain must be unbroken"
-                )
-    # Definition truth: recompute from the actual definition.json of EVERY canonical
-    # segment — including wait_terminal evidence, whose file is the REGISTERED definition
-    # bytes persisted at wait registration (W3R.3a), never the changed current machine.
+    # Definition truth: recompute from the actual definition.json of EVERY directory in
+    # the group — canonical and non-canonical alike (wait_terminal files are the
+    # REGISTERED bytes, so they recompute like any other segment).
     recomputed = {
         segment.segment_id: segment.data.definition.definition_digest()
-        for segment in segments
+        for segment in [*segments, *non_canonical]
     }
     distinct = sorted(set(recomputed.values()))
     if len(distinct) > 1:
@@ -414,7 +483,7 @@ def _assert_group_lineage_sane(
             f"{distinct}) — one logical run executes one machine"
         )
     group_digest = distinct[0] if distinct else None
-    for segment in segments + abandoned:
+    for segment in [*segments, *non_canonical]:
         claimed = segment.data.meta.get("definition_digest")
         if claimed and group_digest and str(claimed) != group_digest:
             _fail(

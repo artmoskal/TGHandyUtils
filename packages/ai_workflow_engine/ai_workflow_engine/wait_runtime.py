@@ -60,12 +60,13 @@ class WaitRegistrationRequest(BaseModel):
     occurrence: int = Field(ge=0)
     policy: DurableWaitPolicy
     snapshot_json: str
-    # W3R.3a: the canonical REGISTERED definition bytes and the suspension's observation
-    # lineage — persisted with the wait so terminal evidence never depends on the snapshot
-    # or the currently-registered definition surviving.
+    # W3R.3a: the canonical REGISTERED definition bytes and the suspension's LOGICAL
+    # observation position — persisted with the wait so terminal evidence never depends on
+    # the snapshot or the currently-registered definition surviving. Logical (index, not a
+    # physical directory key): stable across delivery attempts, so chained-wait crash-retry
+    # re-registration stays byte-identical (R1/F2).
     definition_json: str
-    origin_segment_id: Optional[str] = None
-    origin_segment_index: int = Field(default=0, ge=0)
+    origin_segment_index: Optional[int] = Field(default=None, ge=0)
 
     @field_validator("definition_json")
     @classmethod
@@ -94,7 +95,13 @@ class WaitDeliveryOutcome(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
 
     kind: Literal[
-        "executed", "duplicate", "already_processing", "terminal", "rejected", "attempts_exhausted"
+        "executed",
+        "duplicate",
+        "already_processing",
+        "not_accepted",
+        "terminal",
+        "rejected",
+        "attempts_exhausted",
     ]
     wait_id: str
     resolution_kind: Optional[Literal["signal", "timeout"]] = None
@@ -106,6 +113,9 @@ class WaitDeliveryOutcome(BaseModel):
     # evidence write is typed, never an indistinguishable fully-observed result.
     # None = not applicable (executed / non-transitioning outcome).
     terminal_observation: Optional[Literal["recorded", "failed", "skipped"]] = None
+    # R1: the claim ordinal this outcome refers to (record.resume_attempts) — the engine
+    # facade keys attempt-directory commit markers and evidence repair on it.
+    attempt: Optional[int] = None
 
 
 class DurableWaitRuntime:
@@ -175,6 +185,7 @@ class DurableWaitRuntime:
                 wait_status=outcome.record.status,
                 resolution_kind=outcome.record.resolution_kind,
                 detail=f"claim returned {outcome.kind}",
+                attempt=outcome.record.resume_attempts,
             )
         record, claim = outcome.record, outcome.claim
         # W3.2: a changed machine is REJECTED, never replayed through a new graph.
@@ -192,6 +203,7 @@ class DurableWaitRuntime:
                 kind="rejected",
                 wait_id=wait_id,
                 wait_status=failed.status,
+                attempt=record.resume_attempts,
                 detail=(
                     f"registered digest {record.definition_digest!r} does not match the "
                     f"currently registered definition {current_digest!r}"
@@ -203,7 +215,7 @@ class DurableWaitRuntime:
                 wait_id, claim, error="stored snapshot missing", failure_kind="snapshot_missing"
             )
             return WaitDeliveryOutcome(
-                kind="rejected", wait_id=wait_id, wait_status=failed.status,
+                kind="rejected", wait_id=wait_id, wait_status=failed.status, attempt=record.resume_attempts,
                 detail="stored snapshot missing — adapter integrity failure",
             )
         if event.kind == "timeout":
@@ -253,6 +265,7 @@ class DurableWaitRuntime:
             wait_status=terminal.status,
             resolution_kind=terminal.resolution_kind,
             run_result=run_result,
+            attempt=record.resume_attempts,
         )
 
     async def register_suspension(self, request: WaitRegistrationRequest) -> WaitRegistrationOutcome:
@@ -299,7 +312,6 @@ class DurableWaitRuntime:
                     ("definition_digest", existing.definition_digest, request.definition_digest),
                     ("snapshot", stored_snapshot, request.snapshot_json),
                     ("definition", stored_definition, request.definition_json),
-                    ("origin_segment_id", existing.origin_segment_id, request.origin_segment_id),
                     (
                         "origin_segment_index",
                         existing.origin_segment_index,
@@ -335,7 +347,6 @@ class DurableWaitRuntime:
             definition_digest=request.definition_digest,
             created_at=now,
             deadline_at=now + timedelta(seconds=request.policy.timeout_s),
-            origin_segment_id=request.origin_segment_id,
             origin_segment_index=request.origin_segment_index,
         )
         raw_receipt = await self.coordinator.register(

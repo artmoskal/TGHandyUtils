@@ -436,15 +436,32 @@ class WorkflowExecutor:
                 }
             )
             event_payload = event_payload.get("payload")
-        if snapshot.workflow_id != definition.workflow_id:
-            raise ValueError(
-                f"snapshot is for workflow '{snapshot.workflow_id}', not '{definition.workflow_id}'"
-            )
-        if not snapshot.suspended_node:
-            raise ValueError("snapshot has no suspended node — only suspended runs can resume")
-        self._bind_or_validate_event_loop()
-        binding_error = self._preflight(definition)
+        def _close_failed_bundle() -> None:
+            # F8/R0: builder.resume creates the bundle directory EAGERLY, so every exit
+            # path from here on must finalize it — an unfinalized directory is invisible
+            # to retention forever. Mirrors run()'s preflight/raise handling.
+            if observation_bundle is not None:
+                WorkflowRunSession(
+                    workflow_id=definition.workflow_id,
+                    context=context,
+                    definition=definition,
+                    bundle=observation_bundle,
+                ).close("failed")
+
+        try:
+            if snapshot.workflow_id != definition.workflow_id:
+                raise ValueError(
+                    f"snapshot is for workflow '{snapshot.workflow_id}', not '{definition.workflow_id}'"
+                )
+            if not snapshot.suspended_node:
+                raise ValueError("snapshot has no suspended node — only suspended runs can resume")
+            self._bind_or_validate_event_loop()
+            binding_error = self._preflight(definition)
+        except Exception:
+            _close_failed_bundle()
+            raise
         if binding_error is not None:
+            _close_failed_bundle()
             return self._failed_envelope(definition, binding_error)
         compiled = self.compile(definition)
         state = self._initial_state(snapshot.payload, context)
@@ -491,33 +508,38 @@ class WorkflowExecutor:
             # the suspend→resume lifecycle is inspectable end to end, not only in memory.
             bundle=observation_bundle,
         )
-        with observation_capture_scope(self.runtime.observation), run_session_scope(session):
-            # Recorded inside the session scope so the resumed-run envelope carries it too.
-            self.runtime.trace_sink.record(
-                WorkflowTraceEvent(
-                    node=snapshot.suspended_node,
-                    decision="machine:resumed",
-                    run_id=context.run_context.workflow_id,
-                    metadata={
-                        "workflow_id": definition.workflow_id,
-                        "completed_nodes": len(snapshot.node_results),
-                    },
+        try:
+            with observation_capture_scope(self.runtime.observation), run_session_scope(session):
+                # Recorded inside the session scope so the resumed-run envelope carries it too.
+                self.runtime.trace_sink.record(
+                    WorkflowTraceEvent(
+                        node=snapshot.suspended_node,
+                        decision="machine:resumed",
+                        run_id=context.run_context.workflow_id,
+                        metadata={
+                            "workflow_id": definition.workflow_id,
+                            "completed_nodes": len(snapshot.node_results),
+                        },
+                    )
                 )
-            )
-            final_state = await self.runner.run(
-                compiled,
-                state,
-                workflow_type=context.goal.workflow_type,
-                goal=context.goal,
-                graph_config={"recursion_limit": self._recursion_limit(definition, context)},
-                session=session,
-            )
-            # W4.2 (closing a W3 gap): a resumed run that suspends at the NEXT durable
-            # wait registers it under the SAME W2.3 contract as run() — chained/repeated
-            # waits get handles; an unregistered raw snapshot is never exposed.
-            durable_handle, final_state = await self._register_durable_or_fold(
-                definition, final_state, context, session
-            )
+                final_state = await self.runner.run(
+                    compiled,
+                    state,
+                    workflow_type=context.goal.workflow_type,
+                    goal=context.goal,
+                    graph_config={"recursion_limit": self._recursion_limit(definition, context)},
+                    session=session,
+                )
+                # W4.2 (closing a W3 gap): a resumed run that suspends at the NEXT durable
+                # wait registers it under the SAME W2.3 contract as run() — chained/repeated
+                # waits get handles; an unregistered raw snapshot is never exposed.
+                durable_handle, final_state = await self._register_durable_or_fold(
+                    definition, final_state, context, session
+                )
+        except Exception:
+            # F8/R0: a raising resume must still finalize its bundle truthfully (run() parity).
+            session.close("failed")
+            raise
         envelope = self._envelope(definition, final_state, session=session)
         if durable_handle is not None:
             envelope = envelope.model_copy(
@@ -1065,8 +1087,7 @@ class WorkflowExecutor:
                 if hasattr(snapshot_run_context, "model_dump")
                 else None
             ),
-            segment_id=getattr(segment, "segment_id", None),
-            segment_index=getattr(segment, "segment_index", 0) or 0,
+            segment_index=getattr(segment, "segment_index", None),
             durable_wait_id=durable_wait_id,
         )
 
@@ -1178,7 +1199,6 @@ class WorkflowExecutor:
                 # W3R.3a: the immutable facts terminal evidence is built from later —
                 # persisted NOW, while the definition and lineage still exist.
                 definition_json=definition.model_dump_json(),
-                origin_segment_id=snapshot.segment_id,
                 origin_segment_index=snapshot.segment_index,
             )
         )

@@ -176,13 +176,13 @@ def test_jsonl_observation_viewer_lists_runs_for_multi_run_bundle_sources(tmp_pa
 # ---------------------------------------------------------------------------
 
 
-def _segment_meta(run_id, segment_id, index, *, kind=None, parent=None, digest="dig-1", status="completed", timestamp=None):
+def _segment_meta(run_id, segment_id, index, *, kind=None, parent=None, digest="dig-1", status="completed", timestamp=None, attempt=None):
     return {
         "run_id": run_id,
         "segment_id": segment_id,
         "segment_index": index,
         "segment_kind": kind or ("initial" if index == 0 else "resume"),
-        "parent_segment_id": parent,
+        "parent_segment_id": parent,  # informational only since R1 (lineage is logical)
         "definition_digest": digest,
         "usage_totals_scope": "run_cumulative_at_finalize",
         "status": status,
@@ -191,7 +191,14 @@ def _segment_meta(run_id, segment_id, index, *, kind=None, parent=None, digest="
         "metered_usd": None,
         "notional_usd": None,
         "usage_count": 0,
+        "attempt": attempt,
     }
+
+
+def _mark(run_path, marker):
+    import json as _json
+
+    (run_path / marker).write_text(_json.dumps({}), encoding="utf-8")
 
 
 def _write_group(tmp_path, *, duplicate_usage_id=False, second_digest="dig-1"):
@@ -290,9 +297,9 @@ def test_read_group_aggregates_usage_once_and_labels_cumulative(tmp_path):
     assert group.usage_totals["metered_usd"] == 0.03
     assert group.usage_totals["scope"] == "actual_all_attempts"
     assert group.canonical_usage_totals["total_tokens"] == 12, (
-        "with no abandoned attempts, actual == canonical"
+        "with no non-canonical attempts, actual == canonical"
     )
-    assert group.abandoned_usage_totals["usage_count"] == 0
+    assert group.non_canonical_usage_totals["usage_count"] == 0
     assert group.cumulative_meta_totals["scope"] == "run_cumulative_at_finalize"
     assert group.cumulative_meta_totals["total_tokens"] == 12, (
         "cumulative label comes from the NEWEST segment's meta, never a sum of metas"
@@ -317,8 +324,9 @@ def test_read_group_duplicate_event_id_across_segments_is_loud(tmp_path):
 
 
 def test_read_group_lineage_corruption_is_loud(tmp_path):
-    """W4.3: duplicate segment index, a NAMED parent that is absent, and mixed definition
-    digests each refuse loudly — no half-true merge."""
+    """W4.3/R1: committed-ordinal collision, a gapped canonical chain, and definition
+    splits each refuse loudly — no half-true merge. Physical parent pointers left the
+    contract; the LOGICAL chain (contiguous committed indexes) is what integrity means."""
 
     import pytest as _pytest
 
@@ -329,22 +337,33 @@ def test_read_group_lineage_corruption_is_loud(tmp_path):
 
     grouped_definition = WorkflowBuilder("grouped").step("gate").step("finish").build()
 
-    # duplicate index: two finalized segments both claiming index 1
+    # committed-ordinal collision: two COMMITTED durable attempts share (index, attempt) —
+    # impossible under single-claimant CAS, therefore corruption
     _write_group(tmp_path)
-    _write_bundle(
-        tmp_path, "logical-run", grouped_definition, dir_name="logical-run--s001-r2",
-        meta_extra=_segment_meta(
-            "logical-run", "logical-run--s001-r2", 1, parent="logical-run",
-            digest=grouped_definition.definition_digest(),
-        ),
-    )
-    with _pytest.raises(ValueError, match="[Dd]uplicate segment index"):
+    for name in ("logical-run--s001", "logical-run--s001-r2x"):
+        _write_bundle(
+            tmp_path, "logical-run", grouped_definition, dir_name=name,
+            meta_extra=_segment_meta(
+                "logical-run", name, 1, digest=grouped_definition.definition_digest(),
+                attempt=1,
+            ),
+        ) if name != "logical-run--s001" else None
+    # give BOTH index-1 attempts the same ordinal + commit markers
+    import json as _json
+
+    s001_meta = tmp_path / "logical-run--s001" / "meta.json"
+    meta = _json.loads(s001_meta.read_text(encoding="utf-8"))
+    meta["attempt"] = 1
+    s001_meta.write_text(_json.dumps(meta), encoding="utf-8")
+    _mark(tmp_path / "logical-run--s001", "commit.json")
+    _mark(tmp_path / "logical-run--s001-r2x", "commit.json")
+    with _pytest.raises(ValueError, match="share ordinal"):
         FileEventSource(tmp_path).read_group("logical-run")
 
     # broken chain: the suspension half was deleted by hand -> not contiguous
     import shutil
 
-    shutil.rmtree(tmp_path / "logical-run--s001-r2")
+    shutil.rmtree(tmp_path / "logical-run--s001-r2x")
     shutil.rmtree(tmp_path / "logical-run")
     with _pytest.raises(ValueError, match="contiguous|chain"):
         FileEventSource(tmp_path).read_group("logical-run")
@@ -376,7 +395,8 @@ def test_read_group_lineage_corruption_is_loud(tmp_path):
     with _pytest.raises(ValueError, match="DIFFERENT actual workflow definitions"):
         FileEventSource(tmp_path).read_group("split-run")
 
-    # skipped parent: index 2 names index 0 as parent while index 1 exists
+    # gapped chain: canonical history at indexes 0 and 2 with nothing committed at 1 —
+    # execution cannot skip a logical position, so the history is incomplete/corrupt
     for path in tmp_path.iterdir():
         shutil.rmtree(path)
     digest = definition.definition_digest()
@@ -385,14 +405,10 @@ def test_read_group_lineage_corruption_is_loud(tmp_path):
         meta_extra=_segment_meta("skip-run", "skip-run", 0, digest=digest),
     )
     _write_bundle(
-        tmp_path, "skip-run", definition, dir_name="skip-run--s001",
-        meta_extra=_segment_meta("skip-run", "skip-run--s001", 1, parent="skip-run", digest=digest),
-    )
-    _write_bundle(
         tmp_path, "skip-run", definition, dir_name="skip-run--s002",
-        meta_extra=_segment_meta("skip-run", "skip-run--s002", 2, parent="skip-run", digest=digest),
+        meta_extra=_segment_meta("skip-run", "skip-run--s002", 2, digest=digest),
     )
-    with _pytest.raises(ValueError, match="preceding segment"):
+    with _pytest.raises(ValueError, match="contiguous"):
         FileEventSource(tmp_path).read_group("skip-run")
 
     # wrong kind: a continuation claiming to be 'initial'
@@ -457,7 +473,7 @@ def test_read_group_handles_legacy_and_mixed_roots(tmp_path):
     source = FileEventSource(tmp_path)
     old_group = source.read_group("old-run")
     assert len(old_group.segments) == 1 and old_group.segments[0].segment_index == 0
-    assert old_group.segments[0].kind == "initial" and not old_group.abandoned
+    assert old_group.segments[0].kind == "initial" and not old_group.non_canonical
     assert old_group.cumulative_meta_totals["scope"] == "single_bundle"
 
     mixed = source.read_group("mixed-run")
@@ -564,32 +580,33 @@ def test_read_group_reports_abandoned_attempts_without_merging_them(tmp_path):
     group = FileEventSource(tmp_path).read_group("logical-run")
     assert [segment.segment_index for segment in group.segments] == [0, 1]
     assert group.status == "completed"
-    assert [segment.segment_id for segment in group.abandoned] == ["logical-run--s001-dead"]
+    assert [segment.segment_id for segment in group.non_canonical] == ["logical-run--s001-dead"]
+    assert group.non_canonical[0].disposition == "abandoned"
     # W4R.3 cost honesty: the crashed attempt's paid call is REAL spend — the primary
-    # actual total includes it; the canonical/abandoned split never hides money.
+    # actual total includes it; the canonical/non-canonical split never hides money.
     assert group.usage_totals["total_tokens"] == 18, "actual spend includes abandoned work"
     assert group.usage_totals["metered_usd"] == 0.035
     assert group.usage_totals["notional_usd"] == 0.007
     assert group.usage_totals["unknown_cost_count"] == 1
     assert group.canonical_usage_totals["total_tokens"] == 12
-    assert group.abandoned_usage_totals["total_tokens"] == 6
-    assert group.abandoned_usage_totals["notional_usd"] == 0.007
-    assert group.abandoned_usage_totals["unknown_cost_count"] == 1
+    assert group.non_canonical_usage_totals["total_tokens"] == 6
+    assert group.non_canonical_usage_totals["notional_usd"] == 0.007
+    assert group.non_canonical_usage_totals["unknown_cost_count"] == 1
     assert group.usage_totals["total_tokens"] == (
         group.canonical_usage_totals["total_tokens"]
-        + group.abandoned_usage_totals["total_tokens"]
-    ), "actual = canonical + abandoned, nothing double-counted"
+        + group.non_canonical_usage_totals["total_tokens"]
+    ), "actual = canonical + non-canonical, nothing double-counted"
     assert all(record.event_id != "dead-t1" for record in group.records), (
-        "abandoned machine EVENTS still never merge into canonical history"
+        "non-canonical machine EVENTS still never merge into canonical history"
     )
-    assert group.abandoned[0].data.usage_events[0].estimated_usd == 0.005
+    assert group.non_canonical[0].data.usage_events[0].estimated_usd == 0.005
     from ai_workflow_viewer import observation_group_to_html
 
     rendered = observation_group_to_html(group)
     assert "actual spend (all attempts, counted once)" in rendered
     assert "notional $0.007" in rendered
     assert "unknown-cost events 1" in rendered
-    assert "abandoned attempts: 6 tokens" in rendered
+    assert "non-canonical attempts: 6 tokens" in rendered
 
 
 def test_wait_terminal_segment_closes_the_group_and_fake_definitions_are_loud(tmp_path):
@@ -633,3 +650,34 @@ def test_wait_terminal_segment_closes_the_group_and_fake_definitions_are_loud(tm
     )
     with _pytest.raises(ValueError, match="DIFFERENT actual workflow definitions|forged or stale"):
         FileEventSource(tmp_path).read_group("wfail-run")
+
+
+def test_served_viewer_renders_the_whole_logical_run(tmp_path):
+    """R3/F5 (permanent): the SERVED surface (JsonlObservationViewer -> serve_viewer) uses
+    the grouped API — a suspended-then-resumed run renders as ONE completed lifecycle with
+    one index row per logical run; the resumed half is no longer unreachable and the gate
+    no longer reads suspended forever (the original Q-R5 defect, now closed end to end)."""
+
+    import re as _re
+
+    from ai_workflow_viewer import FileEventSource
+
+    _write_group(tmp_path)
+    viewer = JsonlObservationViewer(FileEventSource(tmp_path), title="Grouped serve test")
+
+    rows = viewer.runs()
+    assert [row["run_id"] for row in rows] == ["logical-run"], (
+        "one index row per LOGICAL run — segments must not render as duplicate rows"
+    )
+    assert rows[0]["status"] == "completed" and rows[0]["segment_count"] == 2
+
+    html = viewer.html("logical-run")
+    assert "Run segments (2)" in html, "the served page is the grouped render"
+    gate_row = _re.search(r"<tr[^>]*>\s*<td><code>gate</code></td>.*?</tr>", html, _re.S)
+    assert gate_row and "completed" in gate_row.group(0)
+    assert "suspended" not in gate_row.group(0), (
+        "the suspended-then-completed gate must render completed through the SERVER path"
+    )
+
+    records = viewer.event_records("logical-run")
+    assert len(records) == 6, "SSE/event stream carries the merged canonical records"

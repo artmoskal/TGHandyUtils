@@ -44,13 +44,13 @@ class MachineSnapshot(BaseModel):
     # Optional for backward compatibility with older snapshots.
     goal: Optional[Dict[str, Any]] = None
     run_context: Optional[Dict[str, Any]] = None
-    # W4: observation-segment lineage of the run-half that CAPTURED this snapshot. Resume
-    # derives the continuation segment (parent id + index) from these persisted fields, never
-    # from a directory scan; for durable waits the coordinator stores the snapshot byte-exactly,
-    # so the lineage is persisted with the wait itself. Defaults keep older snapshots loadable
-    # (their resumes then carry no parent lineage — the viewer reports incomplete lineage).
-    segment_id: Optional[str] = None
-    segment_index: int = 0
+    # W4/R1: the LOGICAL observation position of the run-half that captured this snapshot
+    # (segment index within the logical run). Deliberately NOT a physical directory key —
+    # physical attempt identity varies per delivery retry, and the machine position must
+    # stay byte-identical across retries of the same delivery (W2B reuse). None = the run
+    # half executed without observation. Resume derives the continuation's logical index
+    # from this field, never from a directory scan.
+    segment_index: Optional[int] = Field(default=None, ge=0)
     # W3R.1: a DURABLE suspension's snapshot is sealed to its registered wait — the public
     # resume door rejects it; only the engine's claimed delivery path (which validates an
     # unforgeable in-flight claim) may execute it. None = local wait, public resume as ever.

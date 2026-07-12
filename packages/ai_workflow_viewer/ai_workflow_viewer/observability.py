@@ -288,9 +288,9 @@ def observation_group_to_html(group: Any, *, title: Optional[str] = None) -> str
         )
         for segment in group.segments
     )
-    totals = group.usage_totals  # ACTUAL spend incl. abandoned attempts (W4R.3)
+    totals = group.usage_totals  # ACTUAL spend incl. non-canonical attempts (W4R.3/R1)
     canonical = group.canonical_usage_totals
-    abandoned_totals = group.abandoned_usage_totals
+    attempts_totals = group.non_canonical_usage_totals
     cumulative = group.cumulative_meta_totals
 
     def cost_summary(values: dict) -> str:
@@ -303,10 +303,10 @@ def observation_group_to_html(group: Any, *, title: Optional[str] = None) -> str
         )
 
     notes = "\n".join(
-        f'<p class="abandoned-note muted">⚠ abandoned crash-attempt '
-        f"{segment.segment_index} (<code>{html.escape(segment.segment_id)}</code>) — "
-        f"partial evidence, not run history</p>"
-        for segment in getattr(group, "abandoned", [])
+        f'<p class="attempt-note muted">⚠ {html.escape(segment.disposition)} attempt at '
+        f"segment {segment.segment_index} (<code>{html.escape(segment.segment_id)}</code>) — "
+        f"inspectable evidence, not run history</p>"
+        for segment in getattr(group, "non_canonical", [])
     )
     strip = f"""<section class="segment-strip" id="segments">
 <h2>Run segments ({len(group.segments)}) — logical run <code>{html.escape(group.run_id)}</code></h2>
@@ -314,7 +314,7 @@ def observation_group_to_html(group: Any, *, title: Optional[str] = None) -> str
 <p class="usage-totals"><strong>actual spend (all attempts, counted once): {totals.get("usage_count")} events,
 {totals.get("total_tokens")} tokens, {cost_summary(totals)}</strong>
 · canonical chain: {canonical.get("total_tokens")} tokens, {cost_summary(canonical)}
-· abandoned attempts: {abandoned_totals.get("total_tokens")} tokens, {cost_summary(abandoned_totals)}
+· non-canonical attempts: {attempts_totals.get("total_tokens")} tokens, {cost_summary(attempts_totals)}
 · cumulative-at-finalize (engine label: {html.escape(str(cumulative.get("scope")))}): {cumulative.get("total_tokens")} tokens</p>
 {notes}
 <style>

@@ -202,146 +202,65 @@ class WorkflowEngine:
         current = self.workflows.get(record.workflow_id)
         current_digest = current.definition_digest() if current is not None else None
         outcome = await runtime.deliver(wait_id, event, current_digest=current_digest)
-        if outcome.wait_status == "failed" and outcome.run_result is None:
-            # W3R.3: THIS call terminalized the wait without any machine continuation
-            # (digest mismatch, missing snapshot, or exhausted attempts), OR it redelivered
-            # after a process died between that terminal commit and evidence finalization.
-            # In either case the observation group must converge to coordinator truth.
-            observation = await self._record_wait_terminal_segment(wait_id, runtime)
+        if self.observation is not None and self.observation.enabled:
+            from ai_workflow_engine import segment_lifecycle  # call-time (F1.1)
+
+            if outcome.kind == "executed" and record.origin_segment_index is not None:
+                # R1: the coordinator terminalized THIS attempt — promote its segment to
+                # canonical. An attempt without this marker is provisional: exactly the
+                # crashed-between-finalize-and-terminalize window the reader must not
+                # mistake for history.
+                segment_lifecycle.commit_attempt(
+                    self.observation.bundle_dir,
+                    segment_lifecycle.attempt_segment_id(
+                        str(record.run_id),
+                        int(record.origin_segment_index) + 1,
+                        int(outcome.attempt or 1),
+                    ),
+                    wait_id=wait_id,
+                    event_id=getattr(event, "event_id", None) or (
+                        event.get("event_id") if isinstance(event, dict) else None
+                    ),
+                    attempt=outcome.attempt,
+                    resolution=outcome.run_result.status if outcome.run_result else None,
+                )
+        if outcome.wait_status in ("failed", "cancelled") and outcome.run_result is None:
+            # W3R.3/R1: THIS call terminalized the wait without a machine continuation, OR
+            # it redelivered after a process died between the terminal commit and evidence
+            # finalization. Converge observation with coordinator truth (routing by the
+            # persisted failure_kind lives in the lifecycle owner — resume_failed repairs
+            # the attempt's commit marker instead of writing colliding evidence).
+            from ai_workflow_engine import segment_lifecycle  # call-time (F1.1)
+
+            observation = await segment_lifecycle.ensure_terminal_evidence(
+                self.observation, runtime, wait_id
+            )
             outcome = outcome.model_copy(update={"terminal_observation": observation})
         return outcome
 
-    async def _record_wait_terminal_segment(self, wait_id: str, runtime: Any) -> str:
-        """W3R.3b: finalize the ``wait_terminal`` observation segment from facts persisted
-        AT REGISTRATION — origin lineage on the record plus the canonical definition bytes
-        in the coordinator — never from the snapshot or the currently-registered
-        definition, whose loss/change is exactly what fails deliveries. Returns the typed
-        status the delivery outcome carries: ``recorded`` | ``failed`` | ``skipped``
-        (skipped = observation off, or the suspension ran without observation, so no
-        on-disk group exists that could misreport)."""
+    async def cancel_wait(self, wait_id: str, *, reason: str) -> Any:
+        """R2/F9: product-driven terminal escape hatch for a pending or STALLED wait
+        (claimed with an expired lease — the state frozen acceptance makes unrecoverable
+        when the accepted event is lost). Cancels at the coordinator, then converges the
+        observation group so the cancelled run does not read as suspended forever. The
+        engine still never self-fires: discovering stalled waits (``stalled()``/
+        ``health()``) and deciding to cancel remain the product's loop."""
 
-        if self.observation is None or not self.observation.enabled:
-            return "skipped"
-        try:
-            from ai_workflow_engine.observation_bundle import (  # call-time (F1.1)
-                ObservationSegment,
-                finalize_abandoned_attempt_segments,
-                open_observation_run_bundle,
+        runtime = getattr(self.executor, "wait_runtime", None)
+        if runtime is None:
+            raise RuntimeError(
+                "cancel_wait requires a configured WaitCoordinator — compose one via "
+                "WorkflowEngineBuilder.with_wait_coordinator(...)"
             )
-            from ai_workflow_engine.workflow import WorkflowDefinition as _RegisteredDefinition
+        record = await runtime.coordinator.cancel(wait_id, reason=reason)
+        observation = None
+        if self.observation is not None and self.observation.enabled:
+            from ai_workflow_engine import segment_lifecycle  # call-time (F1.1)
 
-            record = await runtime.coordinator.get(wait_id)
-            if record is None or record.status != "failed":
-                return "skipped"
-            if record.origin_segment_id is None:
-                # registered without observation: no suspension segment exists on disk,
-                # so there is no group that could show a stale suspended state.
-                return "skipped"
-            definition_json = await runtime.coordinator.load_definition(wait_id)
-            if not definition_json:
-                logger.error(
-                    "wait %s failed (%s) but the coordinator returned no registered "
-                    "definition bytes — adapter integrity failure; terminal observation "
-                    "cannot be written truthfully",
-                    wait_id,
-                    record.failure_kind,
-                )
-                return "failed"
-            registered = _RegisteredDefinition.model_validate_json(definition_json)
-            parent_segment_id = record.origin_segment_id
-            segment_index = int(record.origin_segment_index) + 1
-            segment_id = f"{record.run_id}--s{segment_index:03d}-wfail"
-            segment_path = Path(self.observation.bundle_dir) / segment_id
-            meta_path = segment_path / "meta.json"
-            if meta_path.exists():
-                # At-least-once redelivery after the evidence write is a read-only report.
-                # Validate the existing terminal segment rather than appending duplicate
-                # sequence-1 trace rows to it.
-                import json
-
-                meta = json.loads(meta_path.read_text(encoding="utf-8"))
-                existing_definition = _RegisteredDefinition.model_validate_json(
-                    (segment_path / "definition.json").read_text(encoding="utf-8")
-                )
-                expected = {
-                    "run_id": str(record.run_id),
-                    "status": "failed",
-                    "segment_id": segment_id,
-                    "segment_index": segment_index,
-                    "segment_kind": "wait_terminal",
-                    "parent_segment_id": parent_segment_id,
-                    "definition_digest": record.definition_digest,
-                }
-                mismatches = [
-                    name for name, value in expected.items() if meta.get(name) != value
-                ]
-                if existing_definition.definition_digest() != record.definition_digest:
-                    mismatches.append("definition.json")
-                if mismatches:
-                    raise RuntimeError(
-                        f"existing terminal observation segment {segment_id!r} has "
-                        f"DIFFERENT {', '.join(mismatches)} — refusing to call corrupt "
-                        "evidence recorded"
-                    )
-                return "recorded"
-            if segment_path.exists():
-                # A crash during the reconstructible terminal write can leave JSONL files
-                # without meta.json. Rebuild that terminal-only directory from coordinator
-                # facts so duplicate sequence numbers cannot make the repaired group unreadable.
-                import shutil
-
-                shutil.rmtree(segment_path)
-            finalize_abandoned_attempt_segments(
-                self.observation.bundle_dir,
-                run_id=str(record.run_id),
-                segment_index=segment_index,
-                parent_segment_id=parent_segment_id,
-                definition=registered,
-                definition_digest=record.definition_digest,
-                upto_attempt=int(record.resume_attempts or 0) + 1,
+            observation = await segment_lifecycle.ensure_terminal_evidence(
+                self.observation, runtime, wait_id
             )
-            bundle = open_observation_run_bundle(
-                self.observation.bundle_dir,
-                str(record.run_id),
-                retention_limit=self.observation.retention_limit,
-                artifact_policy=self.observation.artifacts,
-                artifact_max_bytes=self.observation.artifact_max_bytes,
-                segment=ObservationSegment(
-                    segment_id=segment_id,
-                    segment_index=segment_index,
-                    kind="wait_terminal",
-                    parent_segment_id=parent_segment_id,
-                    # the digest the wait was REGISTERED against — and the finalized
-                    # definition.json below IS those registered bytes, so the viewer
-                    # recomputes this digest from the file like any other segment.
-                    definition_digest=record.definition_digest,
-                ),
-            )
-            bundle.trace_sink.record(
-                WorkflowTraceEvent(
-                    node=record.suspended_node,
-                    decision="wait:failed",
-                    node_status="failed",
-                    phase="node:result",
-                    error=(record.failure_detail or record.failure_kind or "wait failed")[:500],
-                    run_id=str(record.run_id),
-                    metadata={
-                        "wait_id": wait_id,
-                        "failure_kind": record.failure_kind or "unknown",
-                        "resume_attempts": record.resume_attempts,
-                    },
-                )
-            )
-            bundle.finalize(registered, status="failed")
-            return "recorded"
-        except Exception:
-            logger.exception(
-                "failed to write terminal observation segment for wait %s — the typed "
-                "delivery outcome carries terminal_observation=failed; the observation "
-                "group may still show the run as suspended",
-                wait_id,
-            )
-            return "failed"
+        return record, observation
 
     @property
     def wait_coordinator(self) -> Any:
@@ -723,50 +642,47 @@ class WorkflowEngine:
             )
         observation_bundle = None
         if self.observation is not None and self.observation.enabled:
-            # Q-R5/W4.2: the resumed half is the NEXT SEGMENT of the same logical run — the
-            # meta keeps the logical run id; only the physical directory key differs. The
-            # continuation's index/parent come from the snapshot's persisted lineage (for
-            # durable waits the coordinator stored those bytes), never from a directory scan.
+            # Q-R5/R1: the resumed half is one physical ATTEMPT of the next LOGICAL
+            # segment of the same run — meta keeps the logical run id; the physical key
+            # comes from the segment-lifecycle owner. The logical index comes from the
+            # snapshot's persisted position, never a directory scan.
+            from ai_workflow_engine import segment_lifecycle  # call-time (F1.1)
             from ai_workflow_engine.observation_bundle import (  # call-time (F1.1)
                 ObservationSegment,
                 open_observation_run_bundle,
             )
 
             logical_run_id = str(context.run_context.workflow_id)
-            child_index = int(snapshot.segment_index) + 1
+            child_index = int(snapshot.segment_index or 0) + 1
             delivery = (
                 event_payload.get("__wait_delivery__") if isinstance(event_payload, dict) else None
             )
+            attempt: Optional[int] = None
             if isinstance(delivery, dict):
                 # Claimed delivery: deterministic key — only the single claim winner for
                 # this (index, attempt) exists (CAS), and a crash-retry reclaim carries a
                 # higher attempt, so it can never append into a dead attempt's directory.
                 attempt = int(delivery.get("attempt") or 1)
                 if attempt > 1:
-                    # W4R.1: the engine-owned reconciliation moment — every PRIOR crashed
-                    # attempt's leftover directory becomes typed abandoned evidence owned
-                    # by group retention (never touches THIS attempt's directory).
-                    from ai_workflow_engine.observation_bundle import (  # call-time (F1.1)
-                        finalize_abandoned_attempt_segments,
-                    )
-
-                    finalize_abandoned_attempt_segments(
+                    # R1: engine-owned reconciliation — every PRIOR uncommitted attempt
+                    # (finalized or not) becomes typed abandoned evidence owned by group
+                    # retention; the active attempt's directory is never touched.
+                    segment_lifecycle.reconcile_prior_attempts(
                         self.observation.bundle_dir,
                         run_id=logical_run_id,
                         segment_index=child_index,
-                        parent_segment_id=snapshot.segment_id,
                         definition=definition,
                         definition_digest=definition.definition_digest(),
                         upto_attempt=attempt,
                     )
-                segment_id = f"{logical_run_id}--s{child_index:03d}" + (
-                    "" if attempt <= 1 else f"-r{attempt}"
+                segment_id = segment_lifecycle.attempt_segment_id(
+                    logical_run_id, child_index, attempt
                 )
             else:
-                # Local in-process resume: same honest lineage, uuid-unique physical key
-                # (two local resumes of one snapshot then surface as a LOUD duplicate
-                # segment index in the group reader — double execution is evidence).
-                segment_id = f"{logical_run_id}--s{child_index:03d}-{uuid.uuid4().hex[:8]}"
+                # Local in-process resume: unique physical key; the commit marker below
+                # (written only on success) makes the LATEST committed attempt canonical,
+                # so re-running a snapshot stays inspectable without corrupting the group.
+                segment_id = segment_lifecycle.local_segment_id(logical_run_id, child_index)
             observation_bundle = open_observation_run_bundle(
                 self.observation.bundle_dir,
                 logical_run_id,
@@ -777,10 +693,14 @@ class WorkflowEngine:
                     segment_id=segment_id,
                     segment_index=child_index,
                     kind="resume",
-                    parent_segment_id=snapshot.segment_id,
                     definition_digest=definition.definition_digest(),
+                    attempt=attempt,
                 ),
             )
+        # LOCAL resumes need no promotion step: with no coordinator there is no second
+        # commit fact for the disk to disagree with — finalize IS the commit (readers
+        # treat attempt-less segments as committed). Only DURABLE attempts carry a
+        # commit marker, written by deliver_wait_event AFTER terminalization.
         return await self.executor.resume(
             definition, snapshot, event_payload, context, observation_bundle=observation_bundle
         )
@@ -937,12 +857,28 @@ class WorkflowEngineBuilder:
 
         from ai_workflow_engine.waits import WaitCoordinator  # call-time (leaf discipline)
 
+        _PROTOCOL_METHODS = (
+            "register",
+            "get",
+            "load_snapshot",
+            "load_definition",
+            "claim_event",
+            "complete",
+            "fail",
+            "due",
+            "stalled",
+            "cancel",
+            "health",
+        )
         if not isinstance(coordinator, WaitCoordinator):
             raise TypeError(
                 f"{type(coordinator).__name__} does not satisfy the WaitCoordinator protocol "
-                "(async register/get/load_snapshot/load_definition/due/health)"
+                f"(async {'/'.join(_PROTOCOL_METHODS)})"
             )
-        for name in ("register", "get", "load_snapshot", "load_definition", "due", "health"):
+        # F6/R0: EVERY protocol member is async-checked — runtime_checkable verifies
+        # presence only, and a sync claim_event/complete/fail would pass composition and
+        # then TypeError mid-delivery AFTER a claim was taken.
+        for name in _PROTOCOL_METHODS:
             method = inspect.unwrap(getattr(coordinator, name))
             if not inspect.iscoroutinefunction(method):
                 raise TypeError(

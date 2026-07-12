@@ -226,6 +226,7 @@ def test_branch_without_inject_machine_keeps_describe_optional():
 FORBIDDEN_SIMPLE_TIER_MODULES = [
     "ai_workflow_engine.waits",
     "ai_workflow_engine.wait_runtime",
+    "ai_workflow_engine.segment_lifecycle",
     "ai_workflow_engine.memory",
     "ai_workflow_engine.flow_authoring",
     "ai_workflow_engine.vision",
@@ -405,6 +406,13 @@ def test_engine_package_has_no_module_level_import_cycles():
         # path is an injected port, not an import.
         "ai_workflow_engine.wait_runtime": ("ai_workflow_engine.executor",),
         "ai_workflow_engine.waits": ("ai_workflow_engine.executor",),
+        # R1: the segment-lifecycle owner is observation mechanics — it must never import
+        # machine execution or wait lifecycle (the facade composes them).
+        "ai_workflow_engine.segment_lifecycle": (
+            "ai_workflow_engine.executor",
+            "ai_workflow_engine.wait_runtime",
+            "ai_workflow_engine.waits",
+        ),
     }
     layering = [
         f"{module} -> {edge}"

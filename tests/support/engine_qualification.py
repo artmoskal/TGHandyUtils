@@ -452,13 +452,27 @@ def render_suite_report_html(report: SuiteReport) -> str:
     from ai_workflow_viewer import (
         FileEventSource,
         build_observation_graph,
+        observation_group_to_html,
         save_observation_html,
     )
 
     out_dir = Path(report.config.output_dir)
 
     def _render_bundle(bundle_path: str, page_name: str, title: str) -> str:
-        run_data = FileEventSource(bundle_path).read()
+        source = FileEventSource(bundle_path)
+        run_data = source.read()
+        # R3/F5: render the whole LOGICAL run when the bundle is one segment of a
+        # suspended->resumed lifecycle — the report must show the merged truth, not the
+        # half this bundle happens to be. Single-segment groups render identically rich.
+        try:
+            group = source.read_group(str(run_data.run_id))
+        except FileNotFoundError:
+            group = None
+        if group is not None:
+            (out_dir / page_name).write_text(
+                observation_group_to_html(group, title=title), encoding="utf-8"
+            )
+            return str(out_dir / page_name)
         graph = build_observation_graph(
             run_data.definition,
             run_data.trace_events,

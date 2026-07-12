@@ -27,6 +27,7 @@ __all__ = [
     "WaitCoordinator",
     "InMemoryWaitCoordinator",
     "WAIT_STATUSES",
+    "FAILURE_KINDS",
     "RESOLUTION_KINDS",
     "LocalWaitPolicy",
     "DurableWaitPolicy",
@@ -41,6 +42,10 @@ __all__ = [
 ]
 
 from ai_workflow_engine.wait_contract import WAIT_STATUSES, WaitHandle, WaitStatus  # noqa: F401
+
+# W3R.3/R0: closed terminal-failure vocabulary — persisted on WaitRecord and VALIDATED
+# at the store boundary (an unlisted kind would make the record unloadable on reconnect).
+FAILURE_KINDS = ("digest_mismatch", "snapshot_missing", "attempts_exhausted", "resume_failed", "cancelled")
 # (re-exported: the contract leaf is the one shared source for the run-result surface)
 
 RESOLUTION_KINDS = ("signal", "timeout")
@@ -159,15 +164,15 @@ class WaitRecord(BaseModel):
     # W3R.3: terminal failure truth is PERSISTED, not just returned — a reconnected
     # product must be able to tell WHY a wait failed (closed vocabulary + bounded detail).
     failure_kind: Optional[
-        Literal["digest_mismatch", "snapshot_missing", "attempts_exhausted", "resume_failed"]
+        Literal["digest_mismatch", "snapshot_missing", "attempts_exhausted", "resume_failed", "cancelled"]
     ] = None
     failure_detail: Optional[str] = Field(default=None, max_length=500)
-    # W3R.3a: immutable terminal-observation lineage, captured AT REGISTRATION — terminal
-    # evidence must never be reconstructed from the snapshot/current registry whose loss or
-    # change caused the failure. None origin = the suspension ran without observation (no
-    # group exists on disk that could misreport).
-    origin_segment_id: Optional[str] = None
-    origin_segment_index: int = Field(default=0, ge=0)
+    # W3R.3a/R1: immutable terminal-observation lineage, captured AT REGISTRATION. This is
+    # the LOGICAL run position (segment index) of the suspending run-half — stable across
+    # physical delivery attempts, so crash-retry re-registration of a chained wait stays
+    # byte-identical. None = the suspension ran without observation (no on-disk group
+    # exists that could misreport).
+    origin_segment_index: Optional[int] = Field(default=None, ge=0)
 
 
 class WaitReceipt(BaseModel):
@@ -203,11 +208,12 @@ class WaitClaimOutcome(BaseModel):
     - ``claimed``: this caller owns processing (single active claimant; lease set).
     - ``duplicate``: the SAME event id was already accepted — idempotent, no execution.
     - ``already_processing``: a DIFFERENT event lost the race while a live claim exists.
-    - ``rejected``: a DIFFERENT event arrived after acceptance (even with the lease
+    - ``not_accepted``: a DIFFERENT event arrived after acceptance (even with the lease
       expired) — accepted-event identity is FROZEN (W3R.2): lease recovery transfers
       execution ownership only to the SAME accepted event id; nothing ever replaces an
-      accepted resolution. Recovery of a lost accepted event is the product outbox's
-      at-least-once redelivery duty.
+      accepted resolution. This is a TRANSIENT loser report (the wait is still alive) —
+      deliberately distinct from the delivery-level terminal ``rejected`` (F10). Recovery
+      of a lost accepted event is the product outbox's at-least-once redelivery duty.
     - ``terminal``: the wait already resolved — late events get the terminal state, never
       a re-execution.
     - ``attempts_exhausted``: bounded recovery ran out — the engine fails wait AND run.
@@ -216,7 +222,7 @@ class WaitClaimOutcome(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     kind: Literal[
-        "claimed", "duplicate", "already_processing", "rejected", "terminal", "attempts_exhausted"
+        "claimed", "duplicate", "already_processing", "not_accepted", "terminal", "attempts_exhausted"
     ]
     record: WaitRecord
     claim: Optional[WaitClaim] = None
@@ -230,6 +236,10 @@ class WaitHealth(BaseModel):
     pending: int = Field(ge=0)
     claimed: int = Field(ge=0)
     overdue: int = Field(ge=0)
+    # F9: claimed waits whose lease expired — invisible to due() (they are not pending),
+    # unrecoverable by any other event (frozen acceptance), so they MUST be surfaced for
+    # the product to redeliver the accepted event or cancel().
+    stalled: int = Field(default=0, ge=0)
     oldest_pending_deadline: Optional[AwareDatetime] = None
 
 
@@ -263,6 +273,10 @@ class WaitCoordinator(Protocol):
 
 
     async def due(self, now: Any) -> list: ...
+
+    async def stalled(self, now: Any) -> list: ...
+
+    async def cancel(self, wait_id: str, *, reason: str) -> WaitRecord: ...
 
     async def health(self) -> WaitHealth: ...
 
@@ -363,7 +377,7 @@ class InMemoryWaitCoordinator:
                 # (e.g. a timeout racing a slow accepted signal) is rejected and never
                 # overwrites the acceptance.
                 if accepted is not None and accepted != event.event_id:
-                    return WaitClaimOutcome(kind="rejected", record=record.model_copy(deep=True))
+                    return WaitClaimOutcome(kind="not_accepted", record=record.model_copy(deep=True))
                 # lease expired, same accepted event: reclaim (crash recovery) — bounded below
             if record.resume_attempts >= record.policy.max_resume_attempts:
                 failed = record.model_copy(
@@ -426,6 +440,14 @@ class InMemoryWaitCoordinator:
         failure_kind: Optional[str] = None,
         failure_detail: Optional[str] = None,
     ) -> WaitRecord:
+        # F11: model_copy(update=...) skips pydantic validation — enforce the closed
+        # vocabulary HERE so no adapter/subclass can persist an unloadable record.
+        if failure_kind is not None and failure_kind not in FAILURE_KINDS:
+            raise ValueError(
+                f"failure_kind {failure_kind!r} is not in the closed vocabulary {FAILURE_KINDS}"
+            )
+        if failure_detail is not None:
+            failure_detail = str(failure_detail)[:500]
         async with self._lock:
             record = self._records.get(wait_id)
             if record is None:
@@ -462,6 +484,50 @@ class InMemoryWaitCoordinator:
                 if record.status == "pending" and record.deadline_at <= now
             ]
 
+    async def stalled(self, now: Any) -> list:
+        """F9/R2: claimed waits whose lease expired — the ONLY records frozen acceptance
+        makes unrecoverable by any other event. Products redeliver the accepted event
+        (their outbox knows it) or cancel(); the engine still never self-fires."""
+
+        async with self._lock:
+            return [
+                record.model_copy(deep=True)
+                for wait_id, record in self._records.items()
+                if record.status == "claimed"
+                and (lease := self._leases.get(wait_id)) is not None
+                and lease <= now
+            ]
+
+    async def cancel(self, wait_id: str, *, reason: str) -> WaitRecord:
+        """F9/R2: product-driven terminal escape hatch. Legal ONLY for a pending wait or
+        a claimed wait whose lease has expired — an ACTIVE claimant owns its wait, and a
+        terminal wait is already settled (idempotent report)."""
+
+        async with self._lock:
+            record = self._records.get(wait_id)
+            if record is None:
+                raise KeyError(f"unknown wait id {wait_id!r}")
+            if record.status in ("completed", "failed", "cancelled"):
+                return record.model_copy(deep=True)  # idempotent terminal report
+            if record.status == "claimed":
+                lease = self._leases.get(wait_id)
+                if lease is not None and lease > self._clock():
+                    raise ValueError(
+                        f"wait {wait_id!r} has an ACTIVE claimant (lease live) — cancel is "
+                        "an escape hatch for stalled/pending waits, never a preemption"
+                    )
+            cancelled = record.model_copy(
+                update={
+                    "status": "cancelled",
+                    "version": record.version + 1,
+                    "failure_kind": "cancelled",
+                    "failure_detail": str(reason)[:500] if reason else None,
+                }
+            )
+            self._records[wait_id] = cancelled
+            self._leases.pop(wait_id, None)
+            return cancelled.model_copy(deep=True)
+
     async def health(self) -> WaitHealth:
         async with self._lock:  # W2C.2: consistent read under the coordinator lock
             return self._health_locked()
@@ -471,10 +537,18 @@ class InMemoryWaitCoordinator:
         claimed = [r for r in self._records.values() if r.status == "claimed"]
         now = self._clock()
         overdue = [r for r in pending if r.deadline_at <= now]
+        stalled = [
+            wait_id
+            for wait_id, record in self._records.items()
+            if record.status == "claimed"
+            and (lease := self._leases.get(wait_id)) is not None
+            and lease <= now
+        ]
         oldest = min((r.deadline_at for r in pending), default=None)
         return WaitHealth(
             pending=len(pending),
             claimed=len(claimed),
             overdue=len(overdue),
+            stalled=len(stalled),
             oldest_pending_deadline=oldest,
         )

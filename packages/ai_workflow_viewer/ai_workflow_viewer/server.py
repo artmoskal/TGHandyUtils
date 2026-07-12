@@ -10,7 +10,11 @@ from typing import Iterable, Optional
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from ai_workflow_viewer.event_source import EventSource, FileEventSource
-from ai_workflow_viewer.observability import build_observation_graph, observation_graph_to_html
+from ai_workflow_viewer.observability import (
+    build_observation_graph,
+    observation_graph_to_html,
+    observation_group_to_html,
+)
 
 
 class JsonlObservationViewer:
@@ -43,6 +47,12 @@ class JsonlObservationViewer:
             runs = self.runs()
             if len(runs) != 1:
                 return self.index_html(runs)
+            selected_run_id = str(runs[0]["run_id"])
+        group = self._read_group(selected_run_id)
+        if group is not None:
+            # R3/F5: the SERVED page renders the whole logical run — suspension, resumes,
+            # terminal evidence, and honest cross-attempt economics — not one segment.
+            return observation_group_to_html(group, title=self.title)
         run = self.source.read(selected_run_id)
         graph = build_observation_graph(
             run.definition,
@@ -52,6 +62,19 @@ class JsonlObservationViewer:
             run_id=run.run_id,
         )
         return observation_graph_to_html(run.definition, graph, title=self.title)
+
+    def _read_group(self, run_id: Optional[str]):
+        """Grouped read when the source supports it; None falls back to single-bundle.
+        A corrupt group stays LOUD — only the absence of the grouped API or of the run
+        falls back, never a lineage error."""
+
+        read_group = getattr(self.source, "read_group", None)
+        if not callable(read_group) or run_id is None:
+            return None
+        try:
+            return read_group(str(run_id))
+        except FileNotFoundError:
+            return None
 
     def index_html(self, runs: Optional[list[dict]] = None) -> str:
         rows = "\n".join(_run_row(run) for run in (runs if runs is not None else self.runs()))
@@ -80,12 +103,20 @@ code {{ background: #f0f4f8; border-radius: 4px; padding: 1px 4px; }}
 """
 
     def runs(self) -> list[dict]:
+        # R3/F5: one row per LOGICAL run (segments collapse), falling back to the flat
+        # per-bundle listing only when the source has no grouped surface.
+        list_groups = getattr(self.source, "list_groups", None)
+        if callable(list_groups):
+            return list_groups()
         list_runs = getattr(self.source, "list_runs", None)
         if not callable(list_runs):
             return []
         return list_runs()
 
     def event_records(self, run_id: Optional[str] = None) -> list[dict]:
+        group = self._read_group(run_id or self.run_id)
+        if group is not None:
+            return [record.as_event_payload() for record in group.records]
         return [record.as_event_payload() for record in self.source.read(run_id or self.run_id).records]
 
 

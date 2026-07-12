@@ -611,12 +611,25 @@ async def test_broken_adapters_fail_conformance_by_named_invariant():
         async def load_definition(self, wait_id):
             return None
 
+    class StaleAttemptOrdinal(InMemoryWaitCoordinator):
+        # R0/F16 negative: returning the PRE-increment row from claim_event (a common ORM
+        # pattern) makes retries reuse a dead attempt's directory — conformance must name it.
+        async def claim_event(self, wait_id, event, *, lease_until):
+            outcome = await super().claim_event(wait_id, event, lease_until=lease_until)
+            if outcome.kind == "claimed":
+                stale = outcome.record.model_copy(
+                    update={"resume_attempts": outcome.record.resume_attempts - 1}
+                )
+                return outcome.model_copy(update={"record": stale})
+            return outcome
+
     for broken, fragment in (
         (WrongDeadline, "ACCEPTED deadline"),
         (SilentReplace, "rejected"),
         (NotIdempotent, "idempotent"),
         (Amnesiac, "retrievable"),
         (DefinitionDropper, "load_definition"),
+        (StaleAttemptOrdinal, "ordinal"),
     ):
         with pytest.raises(AssertionError, match=fragment.split()[0]):
             await run_wait_registration_conformance(
@@ -640,8 +653,10 @@ def test_builder_rejects_sync_impostor_coordinators():
         def load_definition(self, wait_id): ...
         def claim_event(self, wait_id, event, *, lease_until): ...
         def complete(self, wait_id, claim, *, resolution_kind): ...
-        def fail(self, wait_id, claim, *, error): ...
+        def fail(self, wait_id, claim, *, error, failure_kind="resume_failed"): ...
         def due(self, now): return []
+        def stalled(self, now): return []
+        def cancel(self, wait_id, *, reason): ...
         def health(self): ...
 
     with pytest.raises(TypeError, match="must be async"):
@@ -1497,12 +1512,12 @@ async def test_repeated_waits_produce_ordered_segments_scan_free(tmp_path):
         "every segment's meta must carry the LOGICAL run id"
     )
     assert metas["seg-run"]["segment_kind"] == "initial"
-    assert metas["seg-run"]["parent_segment_id"] is None
-    assert [metas[f"seg-run--s{i:03d}"]["parent_segment_id"] for i in (1, 2, 3)] == [
-        "seg-run",
-        "seg-run--s001",
-        "seg-run--s002",
-    ], "each continuation names the segment whose suspension it continues"
+    assert [metas[f"seg-run--s{i:03d}"]["attempt"] for i in (1, 2, 3)] == [1, 1, 1]
+    for i in (1, 2, 3):
+        assert (tmp_path / f"seg-run--s{i:03d}" / "commit.json").exists(), (
+            "R1: the facade promotes each attempt AFTER the coordinator terminalizes — "
+            "an executed delivery must leave a committed (canonical) segment"
+        )
     assert metas["seg-run--s003"]["status"] == "completed"
     assert all(metas[f"seg-run--s{i:03d}"]["status"] == "requires_user_input" for i in (1, 2))
     digests = {metas[name]["definition_digest"] for name in finalized}
@@ -1598,14 +1613,17 @@ async def test_crashed_attempts_become_typed_abandoned_evidence_owned_by_retenti
     )
     assert outcome.kind == "executed" and outcome.run_result.status == "completed"
 
-    # both dead attempts were reconciled into typed abandoned evidence
+    # both dead attempts were reconciled into typed abandoned evidence (append-only marker)
     for name, attempt in (("crash-run--s001", 1), ("crash-run--s001-r2", 2)):
         meta = _bundle_meta(tmp_path / name)
-        assert meta["status"] == "abandoned" and meta["abandoned_attempt"] == attempt, name
+        assert meta["status"] == "abandoned" and meta["attempt"] == attempt, name
         assert meta["run_id"] == "crash-run" and meta["segment_index"] == 1, name
+        assert (tmp_path / name / "abandoned.json").exists(), name
     retry_meta = _bundle_meta(tmp_path / "crash-run--s001-r3")
     assert retry_meta["segment_index"] == 1 and retry_meta["status"] == "completed"
-    assert retry_meta["parent_segment_id"] == "crash-run"
+    assert (tmp_path / "crash-run--s001-r3" / "commit.json").exists(), (
+        "the surviving attempt is promoted canonical after terminalization"
+    )
 
     # bounded: retention now OWNS the abandoned directories — a newer run rotates the
     # whole crash-run group out, attempts included
@@ -1634,7 +1652,7 @@ async def test_crashed_attempts_become_typed_abandoned_evidence_owned_by_retenti
 
 async def test_accepted_event_identity_is_frozen_across_lease_expiry():
     """W3R.2 (codex probe #2, permanent): after a signal is ACCEPTED and its claimant's
-    lease expires, a DIFFERENT event (here: the timeout) must get a typed `rejected`
+    lease expires, a DIFFERENT event (here: the timeout) must get a typed `not_accepted`
     outcome and must never overwrite the acceptance — one accepted event, forever. The
     SAME accepted event still reclaims (crash recovery preserved)."""
 
@@ -1660,15 +1678,16 @@ async def test_accepted_event_identity_is_frozen_across_lease_expiry():
         WaitEvent(kind="timeout", event_id="evt-replacement"),
         lease_until=clock() + timedelta(seconds=60),
     )
-    assert replacement.kind == "rejected", (
+    assert replacement.kind == "not_accepted", (
         "a different event must NEVER replace an accepted event, even after lease expiry"
     )
 
-    # the engine door reports the same typed loser result
+    # the engine door reports the same typed TRANSIENT loser (F10: distinct from the
+    # terminal `rejected` — this wait is still alive and recoverable)
     outcome = await engine.deliver_wait_event(
         wait_id, {"kind": "timeout", "event_id": "evt-timeout-2"}
     )
-    assert outcome.kind == "rejected"
+    assert outcome.kind == "not_accepted" and outcome.wait_status == "claimed"
 
     # crash recovery for the ACCEPTED event still works and completes the machine
     recovered = await engine.deliver_wait_event(
@@ -1819,7 +1838,7 @@ async def test_wait_failures_without_continuation_are_observable_and_prunable(tm
     assert (wfail_dir / "meta.json").exists(), "terminal evidence segment must be finalized"
     meta = _bundle_meta(wfail_dir)
     assert meta["status"] == "failed" and meta["segment_kind"] == "wait_terminal"
-    assert meta["run_id"] == "wfail-run" and meta["parent_segment_id"] == "wfail-run"
+    assert meta["run_id"] == "wfail-run" and meta["segment_index"] == 1
     assert meta["definition_digest"] == stored.definition_digest, (
         "the evidence segment carries the REGISTERED digest — the group's canonical identity"
     )
@@ -1872,7 +1891,7 @@ async def test_attempts_exhaustion_persists_kind_and_writes_terminal_evidence(tm
     assert _bundle_meta(tmp_path / terminal_dirs[0])["status"] == "failed"
 
 
-def _budgeted_durable_engine(max_estimated_usd, outbox=None, crash_once=None, clock=None):
+def _budgeted_durable_engine(max_estimated_usd, outbox=None, crash_once=None, clock=None, bundle_dir=None):
     """Durable flow whose paid steps go through the REAL budget gate: spend(0.6) ->
     durable gate -> spend(0.6) -> finish. Optional external-write outbox at the
     side-effect boundary and a crash hook for at-least-once recovery tests."""
@@ -1884,8 +1903,15 @@ def _budgeted_durable_engine(max_estimated_usd, outbox=None, crash_once=None, cl
 
     clock = clock or _clock()
     coordinator = InMemoryWaitCoordinator(clock=clock, shared_state={})
+    builder = WorkflowEngineBuilder()
+    if bundle_dir is not None:
+        from ai_workflow_engine import ObservationConfig
+
+        builder = builder.with_observation(
+            ObservationConfig(enabled=True, bundle_dir=str(bundle_dir))
+        )
     builder = (
-        WorkflowEngineBuilder()
+        builder
         .with_wait_coordinator(coordinator, clock=clock)
         .with_profile(
             WorkflowProfile(
@@ -2068,8 +2094,8 @@ async def test_snapshot_missing_failure_yields_a_readable_failed_group(tmp_path)
     wfail = tmp_path / "snaploss-run--s001-wfail"
     meta = _bundle_meta(wfail)
     assert meta["segment_index"] == 1
-    assert meta["parent_segment_id"] == "snaploss-run", (
-        "parent comes from the REGISTERED origin lineage — never a fallback guess"
+    assert meta["attempt"] is None, (
+        "terminal evidence is attempt-less: finalize IS its commit — no marker ceremony"
     )
     written = WorkflowDefinition.model_validate_json(
         (wfail / "definition.json").read_text(encoding="utf-8")
@@ -2123,7 +2149,7 @@ async def test_absent_workflow_registration_still_closes_the_group(tmp_path):
 
     wfail = tmp_path / "restart-run--s001-wfail"
     meta = _bundle_meta(wfail)
-    assert meta["status"] == "failed" and meta["parent_segment_id"] == "restart-run"
+    assert meta["status"] == "failed" and meta["segment_index"] == 1
     written = WorkflowDefinition.model_validate_json(
         (wfail / "definition.json").read_text(encoding="utf-8")
     )
@@ -2209,3 +2235,304 @@ async def test_redelivery_repairs_terminal_evidence_after_post_failure_crash(tmp
     assert len(FileEventSource(tmp_path).read_group("repair-run").trace_events) == len(
         grouped.trace_events
     )
+
+
+# ---------------------------------------------------------------------------
+# R0/R1 — segment-lifecycle reproducers (post-`e0b26eb` adversarial review, F1/F2/F3/F7/F8/F9)
+# ---------------------------------------------------------------------------
+
+
+async def test_redelivery_after_resume_failed_never_writes_colliding_evidence(tmp_path):
+    """F1 (permanent): the wait failed THROUGH a continuation (resume_failed) — its failed
+    attempt IS the evidence. An at-least-once redelivery must repair/confirm that
+    attempt's commit marker, never write a `wait_terminal` at the same logical index; the
+    group stays readable and failed."""
+
+    from ai_workflow_engine.models import WorkflowGoal
+    from ai_workflow_viewer import FileEventSource
+
+    engine, coordinator = _budgeted_durable_engine(max_estimated_usd=1.00, bundle_dir=tmp_path)
+    goal = WorkflowGoal(
+        workflow_type="budget_wait_flow", objective="rf", metadata={"run_id": "rf-run"}
+    )
+    first = await engine.run("budget_wait_flow", {}, goal=goal)
+    wait_id = first.wait_handle.wait_id
+
+    out1 = await engine.deliver_wait_event(
+        wait_id, {"kind": "signal", "event_id": "evt-1", "payload": "go"}
+    )
+    assert out1.kind == "executed" and out1.run_result.status == "failed"
+    assert (await coordinator.get(wait_id)).failure_kind == "resume_failed"
+
+    out2 = await engine.deliver_wait_event(
+        wait_id, {"kind": "signal", "event_id": "evt-1", "payload": "go"}
+    )
+    assert out2.kind == "duplicate"
+    assert out2.terminal_observation == "recorded", (
+        "the redelivery confirms existing evidence — typed, not re-written"
+    )
+    names = sorted(p.name for p in tmp_path.iterdir() if p.is_dir())
+    assert not any(name.endswith("-wfail") for name in names), (
+        f"no wait_terminal may collide with the failed continuation attempt: {names}"
+    )
+    group = FileEventSource(tmp_path).read_group("rf-run")
+    assert group.status == "failed"
+    assert [s.kind for s in group.segments] == ["initial", "resume"]
+
+
+async def test_chained_waits_survive_crash_reclaim_with_observation(tmp_path):
+    """F2 (permanent): chained durable waits + crash recovery. The machine snapshot
+    carries only the LOGICAL segment index, so attempt r2's re-suspension at the child
+    wait re-registers byte-identically (reused, never folded to failed); the child wait
+    stays the same pending wait and the run completes end to end."""
+
+    from datetime import datetime, timedelta, timezone
+
+    from ai_workflow_engine.models import WorkflowGoal
+    from ai_workflow_viewer import FileEventSource
+
+    current = {"now": datetime(2036, 1, 1, tzinfo=timezone.utc)}
+    clock = lambda: current["now"]  # noqa: E731
+    engine, coordinator = _delivery_engine(clock=clock, bundle_dir=tmp_path, gates=("a", "b"))
+    goal = WorkflowGoal(
+        workflow_type="durable_flow", objective="chain-crash", metadata={"run_id": "cc-run"}
+    )
+    first = await engine.run("durable_flow", {}, goal=goal)
+    wait_a = first.wait_handle.wait_id
+
+    # attempt 1 executes fully (registers wait B) but the process dies BEFORE wait A is
+    # terminalized: patch deliver's terminalize path by killing complete() once
+    real_complete = coordinator.complete
+    crash = {"armed": True}
+
+    async def complete_then_crash(*args, **kwargs):
+        if crash.pop("armed", None):
+            raise RuntimeError("simulated death before terminalization")
+        return await real_complete(*args, **kwargs)
+
+    coordinator.complete = complete_then_crash
+    with pytest.raises(RuntimeError, match="before terminalization"):
+        await engine.deliver_wait_event(
+            wait_a, {"kind": "signal", "event_id": "evt-a", "payload": "one"}
+        )
+    handle_b_first = None  # the crashed attempt registered wait B already
+    current["now"] += timedelta(seconds=301)
+
+    retry = await engine.deliver_wait_event(
+        wait_a, {"kind": "signal", "event_id": "evt-a", "payload": "one"}
+    )
+    assert retry.kind == "executed", (
+        f"crash-retry must re-execute cleanly, got {retry.kind}: {retry.detail} / "
+        f"{retry.run_result.error if retry.run_result else ''}"
+    )
+    chained = retry.run_result
+    assert chained.status == "requires_user_input" and chained.wait_handle is not None, (
+        "the re-suspension at the child wait must RE-REGISTER identically (reused), "
+        "never fold the run to failed on a routine at-least-once retry"
+    )
+    wait_b = chained.wait_handle.wait_id
+    assert (await coordinator.get(wait_b)).status == "pending"
+
+    done = await engine.deliver_wait_event(
+        wait_b, {"kind": "signal", "event_id": "evt-b", "payload": "two"}
+    )
+    assert done.kind == "executed" and done.run_result.status == "completed"
+
+    group = FileEventSource(tmp_path).read_group("cc-run")
+    assert group.status == "completed"
+    assert [s.segment_index for s in group.segments] == [0, 1, 2]
+    dispositions = {(s.segment_index, s.disposition) for s in group.non_canonical}
+    assert (1, "abandoned") in dispositions or (1, "provisional") in dispositions, (
+        "the crashed attempt at index 1 is typed evidence, not canonical history"
+    )
+
+
+async def test_attempt_finalized_but_unterminalized_is_not_canonical(tmp_path):
+    """F3 (permanent): an attempt that FINALIZED its bundle but died before the
+    coordinator terminalized has no commit marker — the reclaim's attempt outranks it,
+    the reconciler demotes it to abandoned (append-only marker over its finalized meta),
+    and the group stays readable with both spends visible in actual economics."""
+
+    from datetime import datetime, timedelta, timezone
+
+    from ai_workflow_engine.models import WorkflowGoal
+    from ai_workflow_viewer import FileEventSource
+
+    current = {"now": datetime(2036, 1, 1, tzinfo=timezone.utc)}
+    clock = lambda: current["now"]  # noqa: E731
+    engine, coordinator = _delivery_engine(clock=clock, bundle_dir=tmp_path)
+    goal = WorkflowGoal(
+        workflow_type="durable_flow", objective="fincrash", metadata={"run_id": "fc-run"}
+    )
+    first = await engine.run("durable_flow", {}, goal=goal)
+    wait_id = first.wait_handle.wait_id
+
+    real_complete = coordinator.complete
+    crash = {"armed": True}
+
+    async def complete_then_crash(*args, **kwargs):
+        if crash.pop("armed", None):
+            raise RuntimeError("died after finalize, before terminalize")
+        return await real_complete(*args, **kwargs)
+
+    coordinator.complete = complete_then_crash
+    with pytest.raises(RuntimeError, match="after finalize"):
+        await engine.deliver_wait_event(
+            wait_id, {"kind": "signal", "event_id": "evt-f", "payload": "yes"}
+        )
+    # the attempt FINALIZED (meta exists, status completed) but was never committed
+    dead = tmp_path / "fc-run--s001"
+    assert (dead / "meta.json").exists() and not (dead / "commit.json").exists()
+
+    current["now"] += timedelta(seconds=301)
+    retry = await engine.deliver_wait_event(
+        wait_id, {"kind": "signal", "event_id": "evt-f", "payload": "yes"}
+    )
+    assert retry.kind == "executed" and retry.run_result.status == "completed"
+
+    assert (dead / "abandoned.json").exists(), (
+        "the reconciler demotes a finalized-but-uncommitted attempt — append-only marker; "
+        "its finalized meta is never rewritten by a would-be zombie"
+    )
+    group = FileEventSource(tmp_path).read_group("fc-run")
+    assert group.status == "completed"
+    assert [s.segment_id for s in group.segments if s.segment_index == 1] == ["fc-run--s001-r2"]
+    assert group.non_canonical[0].segment_id == "fc-run--s001"
+    assert group.non_canonical[0].disposition == "abandoned"
+    assert group.usage_totals["usage_count"] >= group.canonical_usage_totals["usage_count"], (
+        "the dead attempt's real spend stays in actual economics"
+    )
+
+
+def _local_seg_engine(bundle_dir):
+    """Local-wait engine with config-first observation (fixture-local; mirrors the
+    observation-config suite's shape without cross-file imports)."""
+
+    from pydantic import BaseModel as _BM
+
+    from ai_workflow_engine import ObservationConfig, WorkflowEngineBuilder
+
+    builder = WorkflowEngineBuilder().with_observation(
+        ObservationConfig(enabled=True, bundle_dir=str(bundle_dir))
+    )
+
+    class Gate(_BM):
+        status: str
+        value: str = ""
+
+    def ask(context, _payload):
+        event = context.metadata.get("resume_event")
+        if event is None:
+            return Gate(status="pending")
+        return Gate(status="answered", value=str(event))
+
+    builder.register_capability("ask", ask, kind="deterministic")
+    builder.register_capability("finish", lambda ctx, p: {"done": True}, kind="deterministic")
+    builder.register_workflow(
+        WorkflowBuilder("seg_flow").human("ask", wait_policy=LocalWaitPolicy()).step("finish").build()
+    )
+    return builder.build()
+
+
+async def test_double_local_resume_stays_readable_with_supersession(tmp_path):
+    """F7 (permanent): resuming the SAME local snapshot twice (operator retry) must not
+    corrupt the group — the LATEST committed attempt is canonical, the earlier one is
+    typed `superseded` evidence, and both remain inspectable."""
+
+    from ai_workflow_engine.models import WorkflowGoal
+    from ai_workflow_viewer import FileEventSource
+
+    engine = _local_seg_engine(tmp_path)
+    goal = WorkflowGoal(workflow_type="seg_flow", objective="twice", metadata={"run_id": "twice-run"})
+    first = await engine.run("seg_flow", {}, goal=goal)
+    assert first.status == "requires_user_input"
+
+    first_resume = await engine.resume(first.snapshot, "answer-1")
+    second_resume = await engine.resume(first.snapshot, "answer-2")
+    assert first_resume.status == "completed" and second_resume.status == "completed"
+
+    group = FileEventSource(tmp_path).read_group("twice-run")
+    assert group.status == "completed"
+    assert [s.segment_index for s in group.segments] == [0, 1]
+    assert len(group.non_canonical) == 1
+    assert group.non_canonical[0].disposition == "superseded"
+    assert group.non_canonical[0].segment_index == 1, (
+        "double execution is inspectable evidence, never an unreadable group"
+    )
+
+
+async def test_raising_resume_finalizes_its_segment(tmp_path):
+    """F8 (permanent): a resume that RAISES (or exits early) must finalize its eagerly
+    created observation directory as failed — nothing may live outside retention."""
+
+    from ai_workflow_engine.models import WorkflowGoal
+
+    engine = _local_seg_engine(tmp_path)
+    goal = WorkflowGoal(workflow_type="seg_flow", objective="boom", metadata={"run_id": "boom-run"})
+    first = await engine.run("seg_flow", {}, goal=goal)
+
+    real_run = engine.executor.runner.run
+
+    async def exploding(*args, **kwargs):
+        raise RuntimeError("runner exploded mid-resume")
+
+    engine.executor.runner.run = exploding
+    with pytest.raises(RuntimeError, match="exploded"):
+        await engine.resume(first.snapshot, "go")
+    engine.executor.runner.run = real_run
+
+    leaked = [
+        p.name
+        for p in tmp_path.iterdir()
+        if p.is_dir() and p.name.startswith("boom-run--s001") and not (p / "meta.json").exists()
+    ]
+    assert leaked == [], f"raising resume left unfinalized directories: {leaked}"
+    failed_dirs = [
+        p.name
+        for p in tmp_path.iterdir()
+        if p.is_dir()
+        and p.name.startswith("boom-run--s001")
+        and _bundle_meta(p).get("status") == "failed"
+    ]
+    assert len(failed_dirs) == 1, "the raising attempt finalizes truthfully as failed"
+
+
+async def test_stalled_wait_is_visible_and_cancellable_with_terminal_evidence(tmp_path):
+    """F9/R2 (permanent): a claimed wait whose claimant died and whose accepted event is
+    never redelivered is surfaced by stalled()/health(), and engine.cancel_wait()
+    terminalizes it AND closes its observation group — no invisible forever-claimed wait,
+    no suspended lie, and the engine still never self-fires."""
+
+    from datetime import datetime, timedelta, timezone
+
+    from ai_workflow_engine.models import WorkflowGoal
+    from ai_workflow_engine.waits import WaitEvent
+    from ai_workflow_viewer import FileEventSource
+
+    current = {"now": datetime(2036, 1, 1, tzinfo=timezone.utc)}
+    clock = lambda: current["now"]  # noqa: E731
+    engine, coordinator = _delivery_engine(clock=clock, bundle_dir=tmp_path)
+    goal = WorkflowGoal(
+        workflow_type="durable_flow", objective="stall", metadata={"run_id": "stall-run"}
+    )
+    first = await engine.run("durable_flow", {}, goal=goal)
+    wait_id = first.wait_handle.wait_id
+
+    claimed = await coordinator.claim_event(
+        wait_id,
+        WaitEvent(kind="signal", event_id="evt-lost", payload="x"),
+        lease_until=clock() + timedelta(seconds=60),
+    )
+    assert claimed.kind == "claimed"
+    current["now"] += timedelta(seconds=61)  # claimant dead; accepted event lost forever
+
+    stalled = await coordinator.stalled(clock())
+    assert [r.wait_id for r in stalled] == [wait_id]
+    assert (await coordinator.health()).stalled == 1
+
+    record, observation = await engine.cancel_wait(wait_id, reason="operator: source queue lost the event")
+    assert record.status == "cancelled" and record.failure_kind == "cancelled"
+    assert observation == "recorded"
+    group = FileEventSource(tmp_path).read_group("stall-run")
+    assert group.status == "cancelled"
+    assert group.segments[-1].kind == "wait_terminal"

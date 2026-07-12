@@ -35,6 +35,10 @@ logger = logging.getLogger(__name__)
 # WorkflowArtifact.path) are archived INSIDE the bundle so they live and die with it —
 # bundle retention is the ONLY cleanup policy; there is no second artifact lifecycle.
 DEFAULT_ARTIFACT_MAX_BYTES = 25 * 1024 * 1024
+# R1 lifecycle markers: append-only files INSIDE a segment directory. meta.json is
+# write-once by its owner; these facts are never expressed by rewriting it.
+COMMIT_MARKER_NAME = "commit.json"
+ABANDON_MARKER_NAME = "abandoned.json"
 ARTIFACT_DIR_NAME = "artifacts"
 ARTIFACT_MANIFEST_NAME = "artifacts.json"
 
@@ -58,8 +62,11 @@ class ObservationSegment:
     segment_id: str
     segment_index: int
     kind: Literal["initial", "resume", "wait_terminal"]
-    parent_segment_id: Optional[str] = None
     definition_digest: Optional[str] = None
+    # R1: durable delivery attempt ordinal (claim ordinal). None for initial and local
+    # resumes. Readers select the canonical attempt per logical index from this + the
+    # commit marker — physical parent pointers are gone; lineage is (run, contiguous index).
+    attempt: Optional[int] = None
 
     def __post_init__(self) -> None:
         if not str(self.segment_id).strip():
@@ -68,10 +75,10 @@ class ObservationSegment:
             raise ValueError(
                 f"observation segment kind must be initial|resume|wait_terminal: {self.kind!r}"
             )
-        if self.kind == "initial" and (self.segment_index != 0 or self.parent_segment_id):
+        if self.kind == "initial" and (self.segment_index != 0 or self.attempt is not None):
             raise ValueError(
-                "initial observation segment must have segment_index=0 and no parent — "
-                f"got index={self.segment_index}, parent={self.parent_segment_id!r}"
+                "initial observation segment must have segment_index=0 and no attempt "
+                f"ordinal — got index={self.segment_index}, attempt={self.attempt!r}"
             )
         if self.kind in ("resume", "wait_terminal") and self.segment_index < 1:
             raise ValueError(
@@ -265,15 +272,7 @@ class ObservationRunBundle:
         if self.segment is not None:
             # W4.1 additive segment identity (schema stays v1: pure addition; absence of
             # these fields marks a pre-segment bundle, which readers treat as a group of one).
-            meta.update(
-                {
-                    "segment_id": self.segment.segment_id,
-                    "segment_index": self.segment.segment_index,
-                    "segment_kind": self.segment.kind,
-                    "parent_segment_id": self.segment.parent_segment_id,
-                    "definition_digest": self.segment.definition_digest,
-                }
-            )
+            meta.update(_segment_meta_fields(self.segment))
         (self.path / "meta.json").write_text(
             json.dumps(meta, sort_keys=True, indent=2),
             encoding="utf-8",
@@ -376,64 +375,56 @@ def open_observation_run_bundle(
     )
 
 
-def finalize_abandoned_attempt_segments(
-    base_dir: str | Path,
+def _segment_meta_fields(segment: ObservationSegment) -> dict:
+    """W4.1/R1 segment identity keys — the ONE source both meta writers share (F12)."""
+
+    return {
+        "segment_id": segment.segment_id,
+        "segment_index": segment.segment_index,
+        "segment_kind": segment.kind,
+        "definition_digest": segment.definition_digest,
+        "attempt": segment.attempt,
+    }
+
+
+def write_minimal_abandoned_meta(
+    path: Path,
     *,
     run_id: str,
-    segment_index: int,
-    parent_segment_id: Optional[str],
     definition: WorkflowDefinition,
+    segment_index: int,
     definition_digest: Optional[str],
-    upto_attempt: int,
-) -> list[str]:
-    """W4R.1: give crashed continuation attempts a TYPED terminal identity.
+    attempt: int,
+) -> None:
+    """R1: give a crashed, never-finalized attempt directory a minimal attributable meta
+    (status ``abandoned``) so group retention owns it. Identity keys come from the same
+    helper the full finalize uses — the two writers cannot drift on the segment contract."""
 
-    A delivery attempt that died between opening its segment directory and finalizing it
-    leaves an unfinalized directory. The next engine-owned moment for this wait (a later
-    delivery attempt, or the terminal-evidence write) calls this to mark every PRIOR
-    attempt's leftover as ``status: abandoned`` — finalized, attributable to the logical
-    run, and therefore owned by group retention instead of leaking outside every limit.
-    Only attempts strictly below ``upto_attempt`` are touched, so the ACTIVE claimant's
-    directory is never raced. Readers treat abandoned segments as evidence, never as
-    canonical history (their events are the partial prefix of the retry that replaced
-    them). Returns the directory names it finalized.
-    """
-
-    base = Path(base_dir)
-    stem = f"{run_id}--s{segment_index:03d}"
-    finalized: list[str] = []
-    for attempt in range(1, max(1, int(upto_attempt))):
-        name = stem if attempt == 1 else f"{stem}-r{attempt}"
-        path = base / name
-        if not path.is_dir() or (path / "meta.json").exists():
-            continue
-        (path / "definition.json").write_text(definition.model_dump_json(), encoding="utf-8")
-        meta = {
-            "bundle_schema_version": 1,
-            "run_id": run_id,
-            "workflow_id": definition.workflow_id,
-            "workflow": definition.workflow_id,
-            "status": "abandoned",
-            "timestamp": _utc_timestamp(),
-            "trace_path": "trace.jsonl",
-            "detail_path": "details.jsonl",
-            "usage_path": "usage.jsonl",
-            "definition_path": "definition.json",
-            "trace_count": _line_count(path / "trace.jsonl"),
-            "detail_count": _line_count(path / "details.jsonl"),
-            "usage_count": _line_count(path / "usage.jsonl"),
-            "segment_id": name,
-            "segment_index": segment_index,
-            "segment_kind": "resume",
-            "parent_segment_id": parent_segment_id,
-            "definition_digest": definition_digest,
-            "abandoned_attempt": attempt,
-        }
-        (path / "meta.json").write_text(
-            json.dumps(meta, sort_keys=True, indent=2), encoding="utf-8"
-        )
-        finalized.append(name)
-    return finalized
+    (path / "definition.json").write_text(definition.model_dump_json(), encoding="utf-8")
+    segment = ObservationSegment(
+        segment_id=path.name,
+        segment_index=segment_index,
+        kind="resume",
+        definition_digest=definition_digest,
+        attempt=attempt,
+    )
+    meta = {
+        "bundle_schema_version": 1,
+        "run_id": run_id,
+        "workflow_id": definition.workflow_id,
+        "workflow": definition.workflow_id,
+        "status": "abandoned",
+        "timestamp": _utc_timestamp(),
+        "trace_path": "trace.jsonl",
+        "detail_path": "details.jsonl",
+        "usage_path": "usage.jsonl",
+        "definition_path": "definition.json",
+        "trace_count": _line_count(path / "trace.jsonl"),
+        "detail_count": _line_count(path / "details.jsonl"),
+        "usage_count": _line_count(path / "usage.jsonl"),
+        **_segment_meta_fields(segment),
+    }
+    (path / "meta.json").write_text(json.dumps(meta, sort_keys=True, indent=2), encoding="utf-8")
 
 
 def prune_observation_bundles(base_dir: str | Path, retention_limit: int) -> None:
@@ -458,12 +449,22 @@ def prune_observation_bundles(base_dir: str | Path, retention_limit: int) -> Non
             groups.setdefault(_bundle_logical_run_id(path), []).append(path)
     prunable: list[tuple[tuple[str, float], list[Path]]] = []
     for paths in groups.values():
-        metas = [_bundle_meta(path) for path in paths]
-        # liveness is judged on CANONICAL history only: an abandoned crash-attempt at a
-        # higher index must not outrank (and unprotect) a still-suspended segment.
-        canonical = [meta for meta in metas if str(meta.get("status")) != "abandoned"] or metas
+        entries = [(_bundle_meta(path), path) for path in paths]
+        # liveness is judged on CANONICAL history only: initial segments and COMMITTED
+        # attempts. Abandoned or merely provisional (finalized-but-uncommitted) attempts
+        # must neither outrank a still-suspended segment nor unprotect the group.
+        canonical = [
+            (meta, path)
+            for meta, path in entries
+            if str(meta.get("status")) != "abandoned"
+            and not (path / ABANDON_MARKER_NAME).exists()
+            and (
+                meta.get("attempt") is None
+                or (path / COMMIT_MARKER_NAME).exists()
+            )
+        ] or entries
         newest_meta = max(
-            canonical,
+            (meta for meta, _ in canonical),
             key=lambda meta: (
                 int(meta.get("segment_index") or 0),
                 str(meta.get("timestamp") or ""),

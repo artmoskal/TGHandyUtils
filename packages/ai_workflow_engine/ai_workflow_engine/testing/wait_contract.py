@@ -1,4 +1,6 @@
-"""W2.4: registration conformance cases every product WaitCoordinator adapter must pass.
+"""W2.4/R0: FULL lifecycle conformance every product WaitCoordinator adapter must pass
+(registration, claim/lease/reclaim, frozen acceptance, terminalization, failure kinds,
+cancel/stalled).
 
 Plain-assert, dependency-free (no pytest): products call
 ``await run_wait_registration_conformance(make_coordinator, clock=...)`` from their own test
@@ -13,7 +15,7 @@ from typing import Any, Callable
 
 from ai_workflow_engine.waits import DurableWaitPolicy, WaitRecord
 
-__all__ = ["run_wait_registration_conformance"]
+__all__ = ["run_wait_registration_conformance"]  # name kept: it now covers the FULL lifecycle
 
 
 def _record(now: datetime, wait_id: str = "w-1", *, timeout_s: float = 60.0) -> WaitRecord:
@@ -144,3 +146,112 @@ async def run_wait_registration_conformance(
         assert await fresh.load_definition(record.wait_id) == definition_json, (
             "reconnected adapter must see the identical registered definition bytes"
         )
+
+    # ================= R0/F6+F16: claim/complete/fail lifecycle conformance =============
+    # The engine's delivery path depends on ALL of this; an adapter that only passes the
+    # registration section above would TypeError or corrupt state mid-delivery. The kit
+    # cannot advance an adapter-owned clock, so lease expiry is exercised by claiming with
+    # a ``lease_until`` already in the past.
+    from ai_workflow_engine.waits import WaitEvent
+
+    signal = WaitEvent(kind="signal", event_id="evt-conf", payload="ok")
+    other = WaitEvent(kind="timeout", event_id="evt-other")
+    live_lease = now + timedelta(days=365)
+    expired_lease = now - timedelta(seconds=1)
+
+    # (a) live-lease semantics: single claimant, idempotent duplicate, losing stranger
+    live = make_coordinator()
+    await live.register(_record(now, wait_id="w-live"), snapshot_json, definition_json)
+    first_claim = await live.claim_event("w-live", signal, lease_until=live_lease)
+    assert first_claim.kind == "claimed", "a pending wait must be claimable"
+    assert first_claim.claim is not None and first_claim.claim.event_id == signal.event_id
+    assert first_claim.record.resume_attempts >= 1, (
+        "claim_event must return the POST-increment attempt ordinal (>= 1) — the engine "
+        "derives the physical attempt-directory key from it; a stale pre-claim row would "
+        "make retries reuse a dead attempt's directory"
+    )
+    duplicate = await live.claim_event("w-live", signal, lease_until=live_lease)
+    assert duplicate.kind == "duplicate", "the SAME accepted event under a live lease is idempotent"
+    blocked = await live.claim_event("w-live", other, lease_until=live_lease)
+    assert blocked.kind == "already_processing", "a DIFFERENT event loses against a live lease"
+    done = await live.complete("w-live", first_claim.claim, resolution_kind="signal")
+    assert done.status == "completed" and done.resolution_kind == "signal"
+    late = await live.claim_event("w-live", other, lease_until=live_lease)
+    assert late.kind == "terminal", "late different events get the terminal state, never re-execution"
+
+    # (b) expiry semantics: frozen acceptance, same-event reclaim, monotonic attempts, CAS
+    expiry = make_coordinator()
+    await expiry.register(_record(now, wait_id="w-expiry"), snapshot_json, definition_json)
+    crashed = await expiry.claim_event("w-expiry", signal, lease_until=expired_lease)
+    assert crashed.kind == "claimed"
+    first_attempt = crashed.record.resume_attempts
+    frozen = await expiry.claim_event("w-expiry", other, lease_until=live_lease)
+    assert frozen.kind == "not_accepted", (
+        "accepted-event identity is FROZEN: after lease expiry a DIFFERENT event must get "
+        "'not_accepted' and never overwrite the acceptance"
+    )
+    reclaim = await expiry.claim_event("w-expiry", signal, lease_until=live_lease)
+    assert reclaim.kind == "claimed", "the SAME accepted event reclaims after lease expiry"
+    assert reclaim.record.resume_attempts > first_attempt, (
+        "attempt ordinals must be STRICTLY MONOTONIC across reclaims — equal/stale "
+        "ordinals collide physical attempt directories"
+    )
+    stale_failed = False
+    try:
+        await expiry.complete("w-expiry", crashed.claim, resolution_kind="signal")
+    except Exception:
+        stale_failed = True
+    assert stale_failed, "a STALE claim token must never terminalize a reclaimed wait (CAS)"
+    recovered = await expiry.complete("w-expiry", reclaim.claim, resolution_kind="signal")
+    assert recovered.status == "completed"
+
+    # (c) fail(): the failure_kind keyword is contract and must PERSIST; unlisted kinds refuse
+    failing = make_coordinator()
+    await failing.register(_record(now, wait_id="w-fail"), snapshot_json, definition_json)
+    fail_claim = await failing.claim_event("w-fail", signal, lease_until=live_lease)
+    failed = await failing.fail(
+        "w-fail", fail_claim.claim, error="conformance failure detail", failure_kind="digest_mismatch"
+    )
+    assert failed.status == "failed" and failed.failure_kind == "digest_mismatch", (
+        "fail(..., failure_kind=) must be accepted AND persisted — a reconnected product "
+        "must see WHY the wait failed"
+    )
+    assert failed.failure_detail == "conformance failure detail"
+    bogus_rejected = False
+    try:
+        refail = make_coordinator()
+        await refail.register(_record(now, wait_id="w-bogus"), snapshot_json, definition_json)
+        bogus_claim = await refail.claim_event("w-bogus", signal, lease_until=live_lease)
+        await refail.fail("w-bogus", bogus_claim.claim, error="x", failure_kind="not-a-kind")
+    except Exception:
+        bogus_rejected = True
+    assert bogus_rejected, (
+        "an UNLISTED failure_kind must be rejected at the store boundary — persisting it "
+        "makes the record unloadable on reconnect"
+    )
+
+    # (d) cancel + stalled: the product-driven escape hatch frozen acceptance requires
+    escape = make_coordinator()
+    await escape.register(_record(now, wait_id="w-guarded"), snapshot_json, definition_json)
+    await escape.claim_event("w-guarded", signal, lease_until=live_lease)
+    live_blocked = False
+    try:
+        await escape.cancel("w-guarded", reason="operator")
+    except Exception:
+        live_blocked = True
+    assert live_blocked, "cancel must NEVER preempt an ACTIVE claimant (live lease)"
+    await escape.register(_record(now, wait_id="w-stall"), snapshot_json, definition_json)
+    await escape.claim_event("w-stall", signal, lease_until=expired_lease)
+    stalled = await escape.stalled(now)
+    assert [r.wait_id for r in stalled] == ["w-stall"], (
+        "stalled(now) must surface claimed waits with expired leases — frozen acceptance "
+        "makes them unrecoverable by any other event, so they MUST be visible"
+    )
+    cancelled = await escape.cancel("w-stall", reason="operator gave up")
+    assert cancelled.status == "cancelled" and cancelled.failure_kind == "cancelled"
+    assert cancelled.failure_detail == "operator gave up"
+    again_cancel = await escape.cancel("w-stall", reason="twice")
+    assert again_cancel.status == "cancelled", "cancel on a terminal wait is an idempotent report"
+    await escape.register(_record(now, wait_id="w-pending"), snapshot_json, definition_json)
+    pending_cancelled = await escape.cancel("w-pending", reason="never needed")
+    assert pending_cancelled.status == "cancelled", "a pending wait is cancellable directly"

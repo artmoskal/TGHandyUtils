@@ -504,10 +504,13 @@ async def test_resumed_bundle_is_a_segment_of_the_logical_run(tmp_path):
     assert initial_meta["run_id"] == "logical-1"
     assert initial_meta["segment_index"] == 0
     assert initial_meta["segment_kind"] == "initial"
-    assert initial_meta["parent_segment_id"] is None
     assert initial_meta["usage_totals_scope"] == "run_cumulative_at_finalize"
-    assert first.snapshot.segment_id == "logical-1" and first.snapshot.segment_index == 0, (
-        "the snapshot must persist the lineage the continuation is derived from"
+    assert first.snapshot.segment_index == 0, (
+        "the snapshot persists the LOGICAL position the continuation derives from — and "
+        "deliberately NO physical directory key (R1: physical identity varies per attempt)"
+    )
+    assert not hasattr(first.snapshot, "segment_id"), (
+        "machine snapshots must not carry a physical storage key"
     )
 
     resumed = await engine.resume(first.snapshot, "yes")
@@ -520,7 +523,7 @@ async def test_resumed_bundle_is_a_segment_of_the_logical_run(tmp_path):
     )
     assert resumed_meta["segment_index"] == 1
     assert resumed_meta["segment_kind"] == "resume"
-    assert resumed_meta["parent_segment_id"] == "logical-1"
+    assert resumed_meta["attempt"] is None, "local resumes carry no claim ordinal"
     assert resumed_meta["definition_digest"] == initial_meta["definition_digest"]
 
 
@@ -600,8 +603,8 @@ def test_malformed_segment_identity_is_loud(tmp_path):
 
     with _pytest.raises(ValueError, match="segment_index=0"):
         ObservationSegment(segment_id="x", segment_index=1, kind="initial")
-    with _pytest.raises(ValueError, match="no parent"):
-        ObservationSegment(segment_id="x", segment_index=0, kind="initial", parent_segment_id="p")
+    with _pytest.raises(ValueError, match="no attempt"):
+        ObservationSegment(segment_id="x", segment_index=0, kind="initial", attempt=1)
     with _pytest.raises(ValueError, match="segment_index >= 1"):
         ObservationSegment(segment_id="x", segment_index=0, kind="resume")
     with _pytest.raises(ValueError, match="initial|resume"):
