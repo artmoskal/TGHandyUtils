@@ -47,14 +47,21 @@ class SessionScopedTraceSink:
     def record(self, event: WorkflowTraceEvent) -> None:
         session = current_run_session()
         if session is not None:
+            from ai_workflow_engine.correlation import enrich_related_run
+
             updates = {}
             if event.run_id is None:
                 updates["run_id"] = session.run_id
-            correlation = session.run_context.correlation_id
-            if correlation and "correlation_id" not in (event.metadata or {}):
-                # W5-C4: the caller's stable cross-run id rides EVERY engine-written
-                # event automatically — no consumer re-plumbing per surface.
-                updates["metadata"] = {**(event.metadata or {}), "correlation_id": correlation}
+            # ONE enrichment rule for every event surface: stamp when absent, REFUSE a
+            # conflicting related-run identity before buffer/bundle/sink persistence.
+            enriched = enrich_related_run(
+                event.metadata,
+                session.run_context.correlation_id,
+                surface="trace",
+                event_id=event.event_id,
+            )
+            if enriched is not event.metadata:
+                updates["metadata"] = enriched
             if updates:
                 event = event.model_copy(update=updates)
             session.trace_events.append(event)
@@ -81,12 +88,18 @@ class SessionScopedDetailSink:
     def record(self, detail: Any) -> None:
         session = current_run_session()
         if session is not None:
-            correlation = session.run_context.correlation_id
-            if correlation and getattr(detail, "metadata", None) is not None:
-                if "correlation_id" not in detail.metadata:
-                    detail = detail.model_copy(
-                        update={"metadata": {**detail.metadata, "correlation_id": correlation}}
-                    )
+            from ai_workflow_engine.correlation import enrich_related_run
+
+            metadata = getattr(detail, "metadata", None)
+            if metadata is not None:
+                enriched = enrich_related_run(
+                    metadata,
+                    session.run_context.correlation_id,
+                    surface="detail",
+                    event_id=getattr(detail, "detail_id", None),
+                )
+                if enriched is not metadata:
+                    detail = detail.model_copy(update={"metadata": enriched})
             if session.bundle is not None:
                 session.bundle.detail_sink.record(detail)
         if self.inner is not None:

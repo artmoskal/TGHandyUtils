@@ -69,6 +69,13 @@ class WaitRegistrationRequest(BaseModel):
     origin_segment_index: Optional[int] = Field(default=None, ge=0)
     correlation_id: Optional[str] = None  # related-run id, immutable once registered
 
+    @field_validator("correlation_id")
+    @classmethod
+    def _non_blank_correlation(cls, value):
+        from ai_workflow_engine.correlation import validate_optional_correlation
+
+        return validate_optional_correlation(value)
+
     @field_validator("definition_json")
     @classmethod
     def _non_blank_definition(cls, value: str) -> str:

@@ -525,3 +525,18 @@ are unsupported — no deltas to track):
    `FileEventSource.read_group(run_id)` / the served viewer (already grouped). Suspended
    groups are never evicted by default; opt-in cap = `ObservationConfig.evict_suspended_after_s`
    (evicts viewer history only; durable waits stay resumable via the coordinator's snapshot — local waits only if you kept yours).
+
+### Run ID vs Related-run ID (identity contract)
+
+| | `run_id` | `correlation_id` (shown as **Related-run ID**) |
+|---|---|---|
+| Means | ONE logical engine execution, incl. all suspension/resume segments | Optional caller-supplied grouping key shared by SEPARATE runs of one case/audit/batch |
+| Set by | engine (or `goal.metadata["run_id"]`) | you: `WorkflowGoal(correlation_id="case-42")` |
+| Controls | storage identity, observation group, dedup | NOTHING — observability metadata only |
+| Where it appears | every event, bundle dir/meta | auto-stamped into every engine-written event's metadata + bundle meta; survives snapshots |
+
+Viewer: the chooser shows a Related-run ID column; clicking it (or `?related_run_id=X`)
+filters to that case's runs WITHOUT merging them. External writes: the engine never
+mutates your command payloads — copy `context.run_context.correlation_id` into your
+`ExternalWriteRequest.metadata`. Blank ids are rejected; conflicting ids on any event
+fail loudly.

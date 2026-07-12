@@ -178,6 +178,13 @@ class WaitRecord(BaseModel):
     # Optional; never a storage/dedup/scheduling key.
     correlation_id: Optional[str] = None
 
+    @field_validator("correlation_id")
+    @classmethod
+    def _non_blank_correlation(cls, value):
+        from ai_workflow_engine.correlation import validate_optional_correlation
+
+        return validate_optional_correlation(value)
+
 
 class WaitReceipt(BaseModel):
     """Adapter ATTESTATION that wait state + timeout intent were accepted together (C2).

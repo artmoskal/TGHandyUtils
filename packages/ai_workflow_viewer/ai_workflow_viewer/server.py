@@ -41,12 +41,13 @@ class JsonlObservationViewer:
     ) -> "JsonlObservationViewer":
         return cls(FileEventSource(path), title=title, run_id=run_id)
 
-    def html(self, run_id: Optional[str] = None) -> str:
+    def html(self, run_id: Optional[str] = None, *, related_run_id: Optional[str] = None) -> str:
         selected_run_id = run_id or self.run_id
         if selected_run_id is None:
-            runs = self.runs()
-            if len(runs) != 1:
-                return self.index_html(runs)
+            runs = self.runs(related_run_id=related_run_id)
+            if related_run_id is not None or len(runs) != 1:
+                # a filter request always shows the (possibly empty) filtered chooser
+                return self.index_html(runs, related_run_id=related_run_id)
             selected_run_id = str(runs[0]["run_id"])
         group = self._read_group(selected_run_id)
         if group is not None:
@@ -76,9 +77,26 @@ class JsonlObservationViewer:
         except FileNotFoundError:
             return None
 
-    def index_html(self, runs: Optional[list[dict]] = None) -> str:
-        rows = "\n".join(_run_row(run) for run in (runs if runs is not None else self.runs()))
+    def index_html(
+        self, runs: Optional[list[dict]] = None, *, related_run_id: Optional[str] = None
+    ) -> str:
+        rows = "\n".join(
+            _run_row(run, related_filter=related_run_id)
+            for run in (runs if runs is not None else self.runs(related_run_id=related_run_id))
+        )
         title = self.title or "Workflow observations"
+        filter_banner = (
+            f'<p class="muted">Filtered by Related-run ID '
+            f"<code>{html.escape(related_run_id)}</code> — runs stay separate "
+            f'(<a href="?">clear filter</a>)</p>'
+            if related_run_id is not None
+            else ""
+        )
+        empty_message = (
+            f"No runs for Related-run ID <code>{html.escape(related_run_id)}</code>."
+            if related_run_id is not None
+            else "No observation runs found."
+        )
         return f"""<!DOCTYPE html>
 <html>
 <head>
@@ -97,17 +115,18 @@ code {{ background: #f0f4f8; border-radius: 4px; padding: 1px 4px; }}
 </head>
 <body>
 <h1>{html.escape(title)}</h1>
-{f'<table><thead><tr><th>Run ID</th><th>Related-run ID</th><th>Workflow</th><th>Status</th><th>Timestamp</th><th>Usage</th><th>Open</th></tr></thead><tbody>{rows}</tbody></table>' if rows else '<div class="empty muted">No observation runs found.</div>'}
+{filter_banner}
+{f'<table><thead><tr><th>Run ID</th><th>Related-run ID</th><th>Workflow</th><th>Status</th><th>Timestamp</th><th>Usage</th><th>Open</th></tr></thead><tbody>{rows}</tbody></table>' if rows else f'<div class="empty muted">{empty_message}</div>'}
 </body>
 </html>
 """
 
-    def runs(self) -> list[dict]:
+    def runs(self, *, related_run_id: Optional[str] = None) -> list[dict]:
         # R3/F5: one row per LOGICAL run (segments collapse), falling back to the flat
         # per-bundle listing only when the source has no grouped surface.
         list_groups = getattr(self.source, "list_groups", None)
         if callable(list_groups):
-            return list_groups()
+            return list_groups(related_run_id=related_run_id)
         list_runs = getattr(self.source, "list_runs", None)
         if not callable(list_runs):
             return []
@@ -131,11 +150,13 @@ def serve_viewer(
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
             parsed = urlparse(self.path)
-            run_id = _request_run_id(parsed.path, parse_qs(parsed.query))
+            query = parse_qs(parsed.query)
+            run_id = _request_run_id(parsed.path, query)
+            related = (query.get("related_run_id") or [None])[0]
             if parsed.path.startswith("/events"):
                 _write_sse(self, viewer, run_id=run_id)
                 return
-            body = viewer.html(run_id=run_id).encode("utf-8")
+            body = viewer.html(run_id=run_id, related_run_id=related).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -172,7 +193,7 @@ def _poll_records(viewer: JsonlObservationViewer, *, seconds: int, run_id: Optio
         time.sleep(0.5)
 
 
-def _run_row(run: dict) -> str:
+def _run_row(run: dict, *, related_filter: Optional[str] = None) -> str:
     run_id = str(run.get("run_id") or "")
     workflow = str(run.get("workflow_id") or run.get("workflow") or "")
     status = str(run.get("status") or "")
@@ -182,11 +203,18 @@ def _run_row(run: dict) -> str:
     notional = run.get("notional_usd")
     usage = _usage_label(total_tokens, metered, notional)
     href = f"?run_id={quote(run_id)}"
+    if related_filter is not None:
+        href += f"&related_run_id={quote(related_filter)}"  # back-navigation keeps the filter
     related = run.get("related_run_id")
+    related_cell = (
+        f'<a href="?related_run_id={quote(str(related))}"><code>{html.escape(str(related))}</code></a>'
+        if related
+        else "-"
+    )
     return (
         "<tr>"
         f"<td><code>{html.escape(run_id)}</code></td>"
-        f"<td>{('<code>' + html.escape(str(related)) + '</code>') if related else '-'}</td>"
+        f"<td>{related_cell}</td>"
         f"<td>{html.escape(workflow or '-')}</td>"
         f"<td>{html.escape(status or '-')}</td>"
         f"<td>{html.escape(timestamp or '-')}</td>"

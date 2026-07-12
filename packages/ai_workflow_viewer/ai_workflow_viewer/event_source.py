@@ -94,6 +94,8 @@ class ObservationGroupData:
     canonical_usage_totals: dict
     non_canonical_usage_totals: dict
     cumulative_meta_totals: dict
+    # the group's SINGLE validated related-run identity (None when uncorrelated)
+    related_run_id: str | None
     # R1: physical attempts that are NOT canonical history — each carries its disposition
     # (abandoned = demoted by the reconciler; superseded = committed but outranked by a
     # later committed attempt; provisional = finalized but never committed, i.e. the
@@ -231,8 +233,14 @@ class FileEventSource:
             record for segment in non_canonical for record in segment.data.usage_events
         ]
         newest_meta = segments[-1].data.meta
+        related_values = {
+            segment.data.meta.get("correlation_id")
+            for segment in segments
+            if segment.data.meta.get("correlation_id")
+        }
         return ObservationGroupData(
             run_id=logical_run_id,
+            related_run_id=next(iter(related_values), None),  # single by partition check
             definition=segments[0].data.definition,
             segments=segments,
             records=merged,
@@ -278,6 +286,8 @@ class FileEventSource:
                     "abandoned": str(entry.get("status")) == "abandoned"
                     or (path / _ABANDON_MARKER).exists(),
                     "timestamp": entry.get("timestamp"),
+                    "correlation": entry.get("correlation_id"),
+                    "new_contract": "segment_index" in entry,
                     "entry": entry,
                 }
                 grouped.setdefault(str(entry["run_id"]), []).append(entry)
@@ -317,8 +327,16 @@ class FileEventSource:
                     "status": newest.get("status"),
                     "timestamp": max(str(item.get("timestamp") or "") for item in entries),
                     "workflow_id": newest.get("workflow_id"),
-                    # human-facing label: Related-run ID (API field: correlation_id)
-                    "related_run_id": newest.get("correlation_id"),
+                    # human-facing label: Related-run ID — the group's SINGLE validated
+                    # identity (drift already raised in the shared partition above)
+                    "related_run_id": next(
+                        (
+                            row["correlation"]
+                            for row in canonical_rows + [r for r, _ in non_rows]
+                            if row.get("correlation")
+                        ),
+                        None,
+                    ),
                 }
             )
         groups.sort(key=lambda item: str(item.get("timestamp") or ""), reverse=True)
@@ -396,11 +414,33 @@ def _canonical_partition(
     ``read_group`` (detail) and ``list_groups`` (chooser), so the two surfaces can never
     disagree about what counts as history.
 
-    A row is ``{"id", "index", "attempt", "committed", "abandoned", "timestamp", ...}``.
+    A row is ``{"id", "index", "attempt", "committed", "abandoned", "timestamp",
+    "correlation", "new_contract", ...}``.
     Dispositions: ``abandoned`` (demoted by the reconciler), ``superseded`` (committed but
     outranked — higher committed ordinal, or newer committed local attempt), ``provisional``
     (finalized, never committed). Two committed durable attempts sharing one ordinal are
-    impossible under single-claimant CAS — corruption, raises."""
+    impossible under single-claimant CAS — corruption, raises. One run also has ONE
+    related-run identity: canonical segments that disagree — including present-vs-absent
+    drift between segments written under the segmented contract — are corruption, never a
+    silent first/newest pick (legacy pre-segment bundles are exempt)."""
+
+    values = {
+        (row.get("correlation"), bool(row.get("new_contract")))
+        for row in rows
+        if not row["abandoned"]
+    }
+    present = sorted({c for c, _ in values if c})
+    if len(present) > 1:
+        raise ValueError(
+            f"Observation group {logical_run_id!r}: segments claim DIFFERENT related-run "
+            f"ids {present} — one run has one related-run identity"
+        )
+    if present and any(c is None and new for c, new in values):
+        raise ValueError(
+            f"Observation group {logical_run_id!r}: related-run id {present[0]!r} is "
+            "present on some segments and absent on other same-contract segments — "
+            "identity drift is corruption, not a display choice"
+        )
 
     canonical: list[dict] = []
     non_canonical: list[tuple[dict, str]] = []
@@ -458,6 +498,8 @@ def _select_canonical_attempts(
             "abandoned": entry.status == "abandoned"
             or (Path(entry.path) / _ABANDON_MARKER).exists(),
             "timestamp": entry.data.meta.get("timestamp"),
+            "correlation": entry.data.meta.get("correlation_id"),
+            "new_contract": "segment_index" in entry.data.meta,
             "entry": entry,
         }
         for entry in entries

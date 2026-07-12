@@ -94,20 +94,17 @@ def record_usage_event(event: WorkflowUsageEvent) -> None:
         event.metadata.setdefault("workflow_id", context.run_context.workflow_id)
         event.metadata.setdefault("workflow_type", context.run_context.workflow_type)
         event.metadata.setdefault("user_id", context.run_context.user_id)
-        correlation = context.run_context.correlation_id
-        if correlation:
-            # Related-run id: enriched ONCE here, BEFORE summary aggregation and sink
-            # fanout, so the identical event reaches the returned ledger, snapshots,
-            # observation JSONL, and configured sinks. A caller-stamped CONFLICTING id
-            # is an identity error, never silently preferred either way.
-            existing = event.metadata.get("correlation_id")
-            if existing is not None and str(existing) != correlation:
-                raise ValueError(
-                    f"usage event {event.event_id} claims correlation_id {existing!r} but "
-                    f"the run is correlated to {correlation!r} — conflicting related-run "
-                    "identity is refused before persistence"
-                )
-            event.metadata.setdefault("correlation_id", correlation)
+        from ai_workflow_engine.correlation import enrich_related_run
+
+        # Related-run id: enriched ONCE here, BEFORE summary aggregation and sink fanout,
+        # through the SAME type-strict rule every event surface uses (int 42 never
+        # "matches" "42"; conflicts refuse before persistence).
+        event.metadata = enrich_related_run(
+            event.metadata,
+            context.run_context.correlation_id,
+            surface="usage",
+            event_id=event.event_id,
+        ) or event.metadata
         context.summary.add_event(event)
         if context.usage_sink is not None:
             context.usage_sink.record(event)

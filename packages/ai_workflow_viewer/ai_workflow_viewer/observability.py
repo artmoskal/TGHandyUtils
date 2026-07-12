@@ -302,7 +302,7 @@ def observation_group_to_html(group: Any, *, title: Optional[str] = None) -> str
             f'unknown-cost events {values.get("unknown_cost_count", 0)}'
         )
 
-    related = group.segments[0].data.meta.get("correlation_id") if group.segments else None
+    related = getattr(group, "related_run_id", None)  # the SINGLE validated identity
     related_label = (
         f' · Related-run ID <code>{html.escape(str(related))}</code>' if related else ""
     )

@@ -866,3 +866,106 @@ def test_blank_correlation_id_is_rejected():
         with _pytest.raises(Exception, match="non-blank"):
             WorkflowGoal(workflow_type="t", objective="o", correlation_id=blank)
     assert WorkflowGoal(workflow_type="t", objective="o").correlation_id is None
+
+
+async def test_conflicting_related_run_identity_is_loud_on_every_event_surface(tmp_path):
+    """W5RR.1/.2: ONE enrichment rule — trace, detail, and usage all REFUSE a conflicting
+    related-run id before any persistence (buffer, bundle, sink, summary), with no string
+    coercion (int 42 never matches "42"); persisted wait schemas refuse blank ids."""
+
+    import pytest as _pytest
+
+    from ai_workflow_engine.models import (
+        ObservationDetail,
+        WorkflowRunContext,
+        WorkflowTraceEvent,
+        WorkflowUsageEvent,
+        WorkflowUsageSummary,
+    )
+    from ai_workflow_engine.run_session import (
+        SessionScopedDetailSink,
+        SessionScopedTraceSink,
+        WorkflowRunSession,
+    )
+    from ai_workflow_engine._runtime_state import run_session_scope
+    from ai_workflow_engine.models import WorkflowGoal
+
+    from types import SimpleNamespace
+
+    goal = WorkflowGoal(workflow_type="t", objective="o", correlation_id="case-right")
+    context = SimpleNamespace(
+        goal=goal,
+        run_context=WorkflowRunContext(
+            workflow_id="r-1", workflow_type="t", correlation_id="case-right"
+        ),
+    )
+    session = WorkflowRunSession(workflow_id="t", context=context)
+
+    class Collect:
+        def __init__(self):
+            self.events = []
+
+        def record(self, e):
+            self.events.append(e)
+
+    inner = Collect()
+    trace_sink = SessionScopedTraceSink(inner)
+    with run_session_scope(session):
+        # conflicting trace event: refused BEFORE buffer/bundle/inner persistence
+        with _pytest.raises(ValueError, match="conflicting related-run identity"):
+            trace_sink.record(
+                WorkflowTraceEvent(node="n", metadata={"correlation_id": "case-wrong"})
+            )
+        assert session.trace_events == [] and inner.events == [], "no partial persistence"
+        # matching + absent both fine, and stamped identically
+        trace_sink.record(WorkflowTraceEvent(node="n"))
+        assert session.trace_events[0].metadata["correlation_id"] == "case-right"
+
+        detail_sink = SessionScopedDetailSink(Collect())
+        with _pytest.raises(ValueError, match="conflicting related-run identity"):
+            detail_sink.record(
+                ObservationDetail(
+                    detail_id="d1", event_id="e1", kind="tool_result", content_type="text/plain",
+                    digest="x", metadata={"correlation_id": "case-wrong"},
+                )
+            )
+
+    # usage: type-strict — int 42 never matches authoritative "42"
+    from ai_workflow_engine.budget import WorkflowBudget, WorkflowUsageContext, workflow_usage_scope
+    from ai_workflow_engine.usage_events import record_usage_event
+
+    typed = WorkflowUsageContext(
+        run_context=WorkflowRunContext(workflow_id="r-2", workflow_type="t", correlation_id="42"),
+        summary=WorkflowUsageSummary(),
+        budget=WorkflowBudget(),
+    )
+    with workflow_usage_scope(typed):
+        with _pytest.raises(ValueError, match="conflicting related-run identity"):
+            record_usage_event(
+                WorkflowUsageEvent(
+                    node="n", operation="chat", total_tokens=1, metadata={"correlation_id": 42}
+                )
+            )
+    assert typed.summary.events == []
+
+    # persisted wait schemas share the non-blank rule
+    from datetime import datetime, timedelta, timezone
+
+    from ai_workflow_engine.waits import DurableWaitPolicy, WaitRecord
+    from ai_workflow_engine.wait_runtime import WaitRegistrationRequest
+
+    now = datetime(2036, 1, 1, tzinfo=timezone.utc)
+    for blank in ("", "   "):
+        with _pytest.raises(Exception, match="non-blank"):
+            WaitRecord(
+                wait_id="w", run_id="r", workflow_id="wf", suspended_node="g",
+                policy=DurableWaitPolicy(timeout_s=1), definition_digest="d",
+                created_at=now, deadline_at=now + timedelta(seconds=1),
+                correlation_id=blank,
+            )
+        with _pytest.raises(Exception, match="non-blank"):
+            WaitRegistrationRequest(
+                run_id="r", workflow_id="wf", definition_digest="d", suspended_node="g",
+                occurrence=0, policy=DurableWaitPolicy(timeout_s=1), snapshot_json="{}",
+                definition_json="{}", correlation_id=blank,
+            )

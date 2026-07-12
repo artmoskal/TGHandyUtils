@@ -93,10 +93,9 @@ class WorkflowGoal(BaseModel):
     @field_validator("correlation_id")
     @classmethod
     def _non_blank_correlation(cls, value: Optional[str]) -> Optional[str]:
-        # Absent means absent; a blank id would correlate unrelated runs under "".
-        if value is not None and not value.strip():
-            raise ValueError("correlation_id must be non-blank when provided (or omitted)")
-        return value
+        from ai_workflow_engine.correlation import validate_optional_correlation
+
+        return validate_optional_correlation(value)
 
 
 class WorkflowInstrumentSpec(BaseModel):
@@ -287,6 +286,8 @@ class ObservationDetail(BaseModel):
     json_value: Optional[Dict[str, Any]] = Field(default=None, alias="json")
     artifact_id: Optional[str] = None
     digest: Optional[str] = None
+    # engine-written enrichment (e.g. related-run id) — same rule as trace/usage events
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _reject_raw_bytes(self) -> "ObservationDetail":
@@ -416,6 +417,13 @@ class WorkflowRunContext(BaseModel):
     user_id: Optional[int] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
     correlation_id: Optional[str] = None  # related-run id, mirrors goal.correlation_id
+
+    @field_validator("correlation_id")
+    @classmethod
+    def _non_blank_correlation(cls, value: Optional[str]) -> Optional[str]:
+        from ai_workflow_engine.correlation import validate_optional_correlation
+
+        return validate_optional_correlation(value)
 
 
 class WorkflowInput(BaseModel):

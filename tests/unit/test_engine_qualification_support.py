@@ -1023,7 +1023,18 @@ async def test_hermetic_slack_cooldown_ack_and_membership_lifecycle(tmp_path):
         return {"done": True, "value": getattr(payload, "value", None) or payload}
 
     builder.register_capability("flaky_classifier", flaky_classifier, kind="deterministic")
-    builder.register_capability("outage_classifier", outage_classifier, kind="deterministic")
+    builder.register_capability(
+        "outage_classifier",
+        outage_classifier,
+        kind="deterministic",
+        output_model=ClassifierOutput,  # W5RR.5: strictness enforced AT the engine boundary
+    )
+    builder.register_capability(
+        "malformed_classifier",
+        lambda _ctx, _p: {"classified": True, "bogus_field": 1},  # violates extra="forbid"
+        kind="deterministic",
+        output_model=ClassifierOutput,
+    )
     builder.register_guard(
         "outage_router", lambda payload: "cooldown" if not payload.classified else "proceed"
     )
@@ -1054,6 +1065,9 @@ async def test_hermetic_slack_cooldown_ack_and_membership_lifecycle(tmp_path):
         .step("finish")
         .step("escalate")
         .build()
+    )
+    builder.register_workflow(
+        WorkflowBuilder("malformed_flow").step("malformed_classifier").build()
     )
     builder.register_workflow(
         WorkflowBuilder("membership_flow")
@@ -1087,15 +1101,17 @@ async def test_hermetic_slack_cooldown_ack_and_membership_lifecycle(tmp_path):
         r.output for r in outage.node_results if r.node_id == "outage_classifier"
     ).alert_proposal
     assert alert.kind == "provider_outage" and alert.proposed_action == "notify-oncall"
-    # strictness pair: malformed/extra fields refuse BEFORE any downstream action mapping
-    import pytest as _pytest
-
-    with _pytest.raises(Exception):
-        OperationalAlertProposal(kind="provider_outage", provider="x")  # missing action
-    with _pytest.raises(Exception):
-        OperationalAlertProposal(
-            kind="provider_outage", provider="x", proposed_action="y", severity="high"
-        )  # extra field forbidden
+    # strictness AT THE ENGINE BOUNDARY (W5RR.5): a handler emitting data that violates
+    # the registered output_model fails the NODE before any routing/action mapping —
+    # not merely a constructor check inside the test.
+    malformed = await engine.run(
+        "malformed_flow", {},
+        goal=WorkflowGoal(workflow_type="malformed_flow", objective="m", metadata={"run_id": "malformed-run"}),
+    )
+    assert malformed.status == "failed", "the capability runtime must reject malformed output"
+    assert "bogus_field" in str(malformed.error) or "extra" in str(malformed.error).lower(), (
+        f"the rejection must name the violation: {malformed.error}"
+    )
     provider["healed"] = True
     current["now"] += timedelta(seconds=901)
     assert [r.wait_id for r in await coordinator.due(clock())] == [outage.wait_handle.wait_id]

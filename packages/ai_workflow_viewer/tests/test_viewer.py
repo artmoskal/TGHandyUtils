@@ -755,3 +755,108 @@ def test_related_run_id_filters_without_merging(tmp_path):
     assert "Related-run ID <code>case-9</code>" in html and "Run ID <code>case9-a</code>" in html
     index = JsonlObservationViewer(source).index_html()
     assert "Related-run ID" in index and index.count("case-9") >= 2
+
+
+def test_group_related_run_identity_drift_is_corruption(tmp_path):
+    """W5RR.3: one run has ONE related-run identity — segments claiming different ids,
+    or present-vs-absent drift between same-contract segments, refuse loudly on the
+    detail read and show status=corrupt on the chooser; legacy all-absent groups stay
+    valid; a consistent group exposes ONE validated value on BOTH surfaces."""
+
+    import pytest as _pytest
+
+    from ai_workflow_engine import WorkflowBuilder
+    from ai_workflow_viewer import FileEventSource
+
+    definition = WorkflowBuilder("grouped").step("gate").step("finish").build()
+    digest = definition.definition_digest()
+
+    def seg(run, name, idx, corr, **kw):
+        extra = _segment_meta(run, name, idx, digest=digest, **kw)
+        if corr is not None:
+            extra["correlation_id"] = corr
+        _write_bundle(tmp_path, run, definition, dir_name=name, meta_extra=extra)
+
+    # (a) two different ids -> loud + corrupt row
+    seg("drift-run", "drift-run", 0, "case-a", status="requires_user_input")
+    seg("drift-run", "drift-run--s001-x", 1, "case-b")
+    source = FileEventSource(tmp_path)
+    with _pytest.raises(ValueError, match="DIFFERENT related-run ids"):
+        source.read_group("drift-run")
+    row = {r["run_id"]: r for r in source.list_groups()}["drift-run"]
+    assert row["status"] == "corrupt", "the chooser must not silently pick first/newest"
+
+    # (b) present-vs-absent drift between same-contract segments -> loud
+    seg("half-corr", "half-corr", 0, "case-c", status="requires_user_input")
+    seg("half-corr", "half-corr--s001-y", 1, None)
+    with _pytest.raises(ValueError, match="identity drift"):
+        source.read_group("half-corr")
+
+    # (c) consistent group: ONE validated value on detail AND chooser
+    seg("good-run", "good-run", 0, "case-ok", status="requires_user_input")
+    seg("good-run", "good-run--s001-z", 1, "case-ok")
+    group = source.read_group("good-run")
+    assert group.related_run_id == "case-ok"
+    rows = {r["run_id"]: r for r in source.list_groups()}
+    assert rows["good-run"]["related_run_id"] == "case-ok"
+
+
+def test_served_viewer_filter_is_real_http_behavior(tmp_path):
+    """W5RR.4: the SERVED chooser filters by Related-run ID — query parsed, exactly the
+    case's rows rendered (still separate runs), links preserve the filter, clear-filter
+    present, and the no-match state is explicit."""
+
+    from ai_workflow_engine import WorkflowBuilder
+    from ai_workflow_viewer import FileEventSource, JsonlObservationViewer
+
+    definition = WorkflowBuilder("cases").step("gate").build()
+    digest = definition.definition_digest()
+    for run_id, corr in (("f-a", "case-9"), ("f-b", "case-9"), ("f-lone", None)):
+        extra = _segment_meta(run_id, run_id, 0, digest=digest)
+        if corr:
+            extra["correlation_id"] = corr
+        _write_bundle(
+            tmp_path, run_id, definition,
+            trace_events=[WorkflowTraceEvent(node="gate", node_status="completed", phase="node:result", run_id=run_id, sequence=1, event_id=f"e-{run_id}")],
+            meta_extra=extra,
+        )
+
+    viewer = JsonlObservationViewer(FileEventSource(tmp_path), title="filter test")
+    page = viewer.html(related_run_id="case-9")  # what do_GET renders for ?related_run_id=
+    assert "Filtered by Related-run ID" in page and "clear filter" in page
+    assert "f-a" in page and "f-b" in page and "f-lone" not in page, (
+        "exactly the case's runs render — still two separate rows"
+    )
+    assert 'href="?run_id=f-a&related_run_id=case-9"' in page, (
+        "open links preserve the active filter for back-navigation"
+    )
+    assert 'href="?related_run_id=case-9"' in viewer.index_html(), (
+        "the Related-run ID cell is the clickable filter control"
+    )
+    empty = viewer.html(related_run_id="case-none")
+    assert "No runs for Related-run ID" in empty and "case-none" in empty
+
+    # OUTERMOST boundary: the real HTTP handler must parse the query itself —
+    # calling viewer.html directly would leave do_GET's parsing untested.
+    import threading
+    import urllib.request
+
+    from ai_workflow_viewer import serve_viewer
+
+    server = serve_viewer(viewer, port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = server.server_address[:2]
+        with urllib.request.urlopen(
+            f"http://{host}:{port}/?related_run_id=case-9", timeout=5
+        ) as response:
+            served = response.read().decode("utf-8")
+        assert "f-a" in served and "f-b" in served and "f-lone" not in served, (
+            "the SERVED page must apply the query filter, not just the Python API"
+        )
+        assert "Filtered by Related-run ID" in served
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
