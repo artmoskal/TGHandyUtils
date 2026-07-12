@@ -29,10 +29,40 @@ from tests.support.engine_qualification import (
 
 ProviderFactory = Callable[[str, str], Any]
 
-# 1x1 red PNG — a real, valid image file for the staged-vision path (no PIL dependency).
-_TINY_PNG = base64.b64decode(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/q842"
-    "iQAAAABJRU5ErkJggg=="
+# Deterministic RECOGNIZABLE frame for the staged-vision path (no PIL dependency at
+# runtime — bytes are embedded): 192x144 scene (sky/ground horizon, sun, tree,
+# "QUAL FRAME 0001" label bar) so the Q4.2 human inspection sees a real image, not a
+# mechanical 1x1 placeholder, and the live vision call has content to describe.
+_QUAL_FRAME_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAMAAAACQCAIAAADRMPOnAAAGKUlEQVR42u2dX0gUeRzAv7trCxUo"
+    "yLZ5BRUo20kmeA9CIuSKbZnpseaLhw9XPUWGiveScLF0PgQeSCj40B8OqXtsMZBgWafFP6QIVwnV"
+    "IqsvGVehhvgQemn3MNcS5+667o6768zn86L8ZuY7w3w/+/39Zn8zsyabzSYAiWLmFEAyZKl/fvrj"
+    "NecCtsSfPxdSgYAuDBAIEAgQCACBAIEAgQCBABAIEAhkJ8yFgT74/Tt3tEW//O1FINiyNxvX0dYk"
+    "BNK/OhE30UojxkDGskeTbRHI6PZo6BACGdQereIgkHHt0SQaAhnanuRjIpDR7UkyMgJhT1LxEQgY"
+    "RFN+0rcXBAIqECAQpL3/SmxfCARUIEAgQCBAIAAEAgQCBAIEggxhm57I0WRfGfFUhs9XGXsFl0tB"
+    "I+HBwi1JE21lZDJ6F+bzVW7JHm03pxfTdi9ZGVt14glFNTJKBdqmsmGoarTdRSix+OadVXjSEt8I"
+    "DiUc2bzT7cGh9MY06yavOJSWaGY9ZRSHUh/HrLNc4lCKLTTrL4s4lMoalqXL/Pl8lQb5ikj1YEt3"
+    "wvOGMojqxI5/R2LmdB/GKULpmrfndg7IMIEybfRqwDlXbigDBAIE0k1/QS9GBQIEAgQCQCBAIEAg"
+    "QCAABIKMEigzp755cIwKBAgECLQT+wv6LyoQGEygzPnQU36oQGBIgTLho0/52dkVKL35wx49dGHp"
+    "yiL26GcMlPpcYo/eBtGpzCj26PMqLDV5xR49X8Zvd3axR3T/nmg1x5o/ZIM6xnrRuIYaoY5x31Sf"
+    "pEaow08d/N8DfisDgZLCGfxnM93IFJOpgEAACAQIBAgECASAQIBAgECAQIBAAAgEkobJ1OCMO40H"
+    "kb/ZCuk9PKACAQIBAgECAWTeHYkzNTYyQQUCBAJAIEAgQCBAIAAEAgQCBAIEAkAgQCBAIEAgAAQC"
+    "BAIEAgQCBAJAIEAgQCBAIAAEAknxg4V//RbkjGzkh1+/5yRQgQCBAIHAQAI1NjYODQ09fvzY7/c3"
+    "NDSojTMzM+EVvv2/qanp7du3+/bt27joW968eTPwlcuXL4dbHj16pChKWVlZxGhzc3N3794NB+nr"
+    "65ubm4sWUESys7P7+/sHBwf7+/uzs7PjbBGRnJycnp6e2dlZzEhWIKfT2dTUVF9fX11dff78+QsX"
+    "Lpw4cSJGoNOnT9++fbuqqir2/lZXV3/8Sl9fX7ilrq7uypUrN2/ejBhtZWWloKDAYrGIiMlkOnLk"
+    "yMrKSrSAItLW1vb06dOamprx8fGWlpY4W0TkwYMHL168+PLlC2YkK1Bzc7PH41laWhKRpaUlj8cT"
+    "Pssb2b179549e+7fv+9yJf7TcMFgMC8vL1q0qampkpISESkqKnr16lXsUFVVVV6vV0S8Xu+pU6fi"
+    "bBGRixcv3rlzBy00EMjhcExNTX2bv6NHj0ZbubKyUlGUUCh06NAhq9Wa2KFUVFSMjo5Gi6YoitPp"
+    "VJc+efIkdii73f7hwwcRef/+vd1uj7NFRNQW0P4FUyaTae/evdGWnjlz5vjx47W1tXl5eWVlZYFA"
+    "INqaVqt1YGBA/b+9vT0UCqktu3btKigoKC8vjxYtEAhcunSpq6urvLz83r17EQN2dnZOTk6S1IwQ"
+    "KBgMFhcXh/NRXFw8PT0tIuvr6xaLZW1tLSsr6/PnzyJisVjy8/MrKirUkZPL5YohkDpkidhy9erV"
+    "xsbG3t7eiNE+fvy4vr5+8OBBEVleXo4RUC0kdrv93bt3+/fvV4tKPC2gZRfW09Pj8XjUy5OcnJzr"
+    "16/funVLRJ49e3by5Ek1u8+fPxeR0tLSly9fqluNj4+ruU+AQCBQUlISI5qiKB0dHcPDw5uG8vv9"
+    "brdbRNxut9/vj7MFtKxAw8PDBw4cePjw4dramsPhEJHDhw+LyLVr17q7u1tbW9ULGRGprq4eGRlR"
+    "t/r06dP8/LzD4bBarYODg2rjxMTEjRs3Nj2UUCh07Nixs2fPbowm//06uK+jo0PVN2IXNjk52dnZ"
+    "KSLd3d29vb3nzp1bWFhobm6OswUSwGSz2eTrdE+MubDc3NzCwsKxsTFhLgxEwrbE+0304uKiMe0B"
+    "pjIgVWMgajUkOAYCoAuDNPAvtrrHTafkPMcAAAAASUVORK5CYII="
 )
 
 
@@ -401,7 +431,7 @@ async def run_gopro_frame_inspection(
     inputs = workdir / "inputs" / "gopro"
     inputs.mkdir(parents=True, exist_ok=True)
     frame_path = inputs / "frame-0001.png"
-    frame_path.write_bytes(_TINY_PNG)
+    frame_path.write_bytes(_QUAL_FRAME_PNG)
 
     # REAL policy code renders the prior-state block from recorded history (no extra LLM
     # call): the same reducer GoPro runs, projected into the inspection prompt.
@@ -490,7 +520,7 @@ async def run_gopro_frame_inspection(
     _require(_worker_calls(result) >= 1, "no real vision call recorded", result)
     blob = str(result.model_dump())
     _require(
-        base64.b64encode(_TINY_PNG).decode()[:24] not in blob,
+        base64.b64encode(_QUAL_FRAME_PNG).decode()[:24] not in blob,
         "raw image bytes leaked into state",
         result,
     )
