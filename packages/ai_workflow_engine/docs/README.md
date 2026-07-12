@@ -1,6 +1,6 @@
 # AI Workflow Engine Documentation
 
-This directory is the consumer documentation home for `engine-v0.9.0`. It is written for both
+This directory is the consumer documentation home for `engine-v0.9.1`. It is written for both
 engineers and coding agents: each file has one responsibility, links to the next action, and avoids
 embedding release history in current instructions.
 

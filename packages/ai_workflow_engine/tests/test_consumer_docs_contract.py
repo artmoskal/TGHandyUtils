@@ -173,9 +173,13 @@ def test_product_handoffs_are_current_focused_and_share_the_common_contract():
         "slackazz-handoff.md": ("SlackAzz-Specific Misuse Risks", "Adopter Contract AC"),
         "voice-brain-handoff.md": ("Voice-Specific Misuse Risks", "Adopter Contract AC"),
     }
+    import ai_workflow_engine
+
+    current_tag = f"engine-v{ai_workflow_engine.__version__}"
     for name, headings in required.items():
         text = (PACKAGE_ROOT / "docs" / name).read_text(encoding="utf-8")
-        assert "engine-v0.9.0" in text
+        # derive from __version__ so a release bump doesn't require hand-editing each tag literal
+        assert current_tag in text, f"{name} must name the current tag {current_tag}"
         assert "extension-lifecycle.md" in text
         assert "One Provider Door" in text
         for heading in headings:

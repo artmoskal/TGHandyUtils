@@ -1,7 +1,7 @@
 # MageQA Engine Adoption Guide
 
-Status: **ready for consumer validation against `engine-v0.9.0`**. MageQA should pin tag
-`engine-v0.9.0`, build wheels, and run its audit canary before replacing its current pin. This guide
+Status: **ready for consumer validation against `engine-v0.9.1`**. MageQA should pin tag
+`engine-v0.9.1`, build wheels, and run its audit canary before replacing its current pin. This guide
 does not claim MageQA has already migrated.
 
 Read first: [getting started](getting-started.md), [framework concepts](concepts.md),
@@ -37,7 +37,7 @@ a defect.
 
 | Package | MageQA use |
 |---|---|
-| `ai-workflow-engine==0.9.0` | Required orchestration/runtime |
+| `ai-workflow-engine==0.9.1` | Required orchestration/runtime |
 | `ai-workflow-tools==0.3.0` | CLI agents, `claude -p`/`codex exec`, tool catalog, media helpers |
 | `ai-workflow-viewer==0.2.0` | Low-level engine run investigation and bundle rendering |
 

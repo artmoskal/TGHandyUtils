@@ -1,7 +1,7 @@
 # GoPro Engine Adoption Guide
 
-Status: **ready for consumer validation against `engine-v0.9.0`**. GoPro should pin tag
-`engine-v0.9.0`, record the source commit and wheel hash, and run its sidecar canary before changing
+Status: **ready for consumer validation against `engine-v0.9.1`**. GoPro should pin tag
+`engine-v0.9.1`, record the source commit and wheel hash, and run its sidecar canary before changing
 the production image. Do not infer the actual GoPro pin from this document; the consumer repository's
 pin file is authoritative for deployed state.
 
@@ -34,7 +34,7 @@ The engine owns execution and gates. GoPro owns inventory semantics and storage.
 
 | Package | GoPro use |
 |---|---|
-| `ai-workflow-engine==0.9.0` | Required in the detection/sidecar runtime |
+| `ai-workflow-engine==0.9.1` | Required in the detection/sidecar runtime |
 | `ai-workflow-tools==0.3.0` | Add only when GoPro uses CLI agents or shared media helpers |
 | `ai-workflow-viewer==0.2.0` | Developer/diagnostic service; not required in the detector image |
 

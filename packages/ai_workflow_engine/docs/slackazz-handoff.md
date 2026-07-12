@@ -1,7 +1,7 @@
 # SlackAzzCovered Engine Adoption Guide
 
-Status: **ready for consumer validation against `engine-v0.9.0`**. SlackAzzCovered should pin tag
-`engine-v0.9.0`, implement its Redis coordinator, and pass the engine conformance kit plus product
+Status: **ready for consumer validation against `engine-v0.9.1`**. SlackAzzCovered should pin tag
+`engine-v0.9.1`, implement its Redis coordinator, and pass the engine conformance kit plus product
 transaction tests before enabling live effects.
 
 This answers the consumer request in
@@ -32,7 +32,7 @@ client event
 
 | Package | SlackAzzCovered use |
 |---|---|
-| `ai-workflow-engine==0.9.0` | Required workflow/wait runtime |
+| `ai-workflow-engine==0.9.1` | Required workflow/wait runtime |
 | `ai-workflow-tools==0.3.0` | Add for CLI agents/tool catalog if the product uses them |
 | `ai-workflow-viewer==0.2.0` | Developer diagnostics or product-linked run inspection |
 
