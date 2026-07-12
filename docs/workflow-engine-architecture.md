@@ -2,7 +2,7 @@
 
 Status: target architecture
 Owner: Artem
-Last updated: 2026-07-01
+Last updated: 2026-07-11
 
 Binding source of truth: `docs/executable-workflow-engine-spec.md`. This file is the design overview;
 if it conflicts with the binding spec, the binding spec wins. Current Anki/workflow acceptance
@@ -76,6 +76,33 @@ It is not:
 
 It is an executable workflow builder/runtime: product workflow definitions are authored by project
 implementers, but the engine owns execution.
+
+### Complexity Governance: powerful without becoming a knot
+
+The architecture minimizes **mandatory consumer complexity and accidental coupling**, not capability
+or implementation depth. A complex, explicitly approved feature is welcome when it belongs to the
+engine, centralizes a universal mechanic, or creates a clean extension seam. "Simple workflows stay
+simple" means consumers that do not select that feature should not have to understand, configure,
+wire, or activate its behavior. Negligible inert plumbing may stay in the canonical runtime when
+splitting it would create more concepts or a parallel execution path. This principle is not permission
+to replace an advanced feature with a reduced version.
+
+Do not invoke the Soul as a generic simplicity/YAGNI veto. Any proposal to reject, defer, remove, or
+narrow functionality must name the concrete architectural harm, the functionality lost, and the least
+destructive alternative; functionality and scope cuts require the user's decision. Module/import/class
+counts are diagnostics, not architecture verdicts.
+
+Complexity should be paid once at the right boundary:
+
+- universal mechanics live in the domain-neutral engine;
+- reusable specialized mechanics live in optional services or packs;
+- product semantics live in domain packs;
+- every substantial addition has a typed contract, bounded behavior, tests, observability, ownership,
+  and explicit degradation analysis.
+
+The prohibited outcome is a knot: product special cases in core, duplicated runtimes, circular
+ownership, stringly hidden contracts, or unrelated consumers forced to change. The prohibited remedy
+is capability stripping: deleting or underspecifying useful behavior just to make the framework look smaller.
 
 ## Executable Workflow Contract
 

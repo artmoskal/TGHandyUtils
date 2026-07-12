@@ -134,8 +134,8 @@ def test_handoff_docs_carry_the_adopter_contract_ac():
 
     for name in ("mageqa-handoff.md", "gopro-handoff.md"):
         text = (DOCS_ROOT / name).read_text(encoding="utf-8")
-        assert "Adopter contract AC" in text, f"{name} lost the adopter AC template"
-        assert "One provider door" in text, f"{name} lost the one-door rule"
+        assert "adopter contract ac" in text.lower(), f"{name} lost the adopter AC template"
+        assert "one provider door" in text.lower(), f"{name} lost the one-door rule"
 
 
 def test_reserved_state_keys_match_the_workflow_state_schema():

@@ -518,10 +518,20 @@ async def run_gopro_frame_inspection(
         result,
     )
     _require(_worker_calls(result) >= 1, "no real vision call recorded", result)
+    # A9: byte-free-state assertion, precise on both axes. (1) EXACT fingerprint — the
+    # staged frame's full base64 (not the universal PNG-header prefix, which matched ANY
+    # base64 PNG) must be absent. (2) STRUCTURAL — no base64 image data-URI of any kind may
+    # appear in result state, per the engine's byte-free rule; this still catches a leaked
+    # DIFFERENT image, which the prefix check would have too, without the header imprecision.
     blob = str(result.model_dump())
     _require(
-        base64.b64encode(_QUAL_FRAME_PNG).decode()[:24] not in blob,
-        "raw image bytes leaked into state",
+        base64.b64encode(_QUAL_FRAME_PNG).decode() not in blob,
+        "the staged frame's raw bytes leaked into state",
+        result,
+    )
+    _require(
+        "data:image/" not in blob and ";base64," not in blob,
+        "a base64 image data-URI leaked into state (byte-free-state violation)",
         result,
     )
     return _outcome("gopro_frame_inspection", result, started)

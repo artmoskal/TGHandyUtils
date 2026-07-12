@@ -1,5 +1,10 @@
 # Executable Workflow Engine — Binding Spec
 
+Consumer documentation starts at
+[`packages/ai_workflow_engine/docs/README.md`](../packages/ai_workflow_engine/docs/README.md).
+This file remains the binding source for architecture invariants and built/deferred status; product
+handoffs contain only product-specific mapping and adoption gates.
+
 Status: **authoritative spec** — this is what we build. Supersedes any "primitive kit" reading.
 Author: Claude, 2026-06-08 · Cleanup pass: 2026-06-20 (renumbered to reading order; identity fixed;
 EXISTS-vs-INTENDED marked; implementation history moved to Appendix A) · Complexity-governance

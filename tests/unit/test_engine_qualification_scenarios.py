@@ -186,6 +186,31 @@ async def test_gopro_scenario_consumes_image_and_prior_state(tmp_path):
     )
 
 
+async def test_gopro_scenario_fails_precisely_on_a_leaked_image_data_uri(tmp_path):
+    """A9: the byte-free-state guard is precise — a vision worker that echoes a base64
+    image data-URI into result state FAILS (byte-free-state violation), and it is caught
+    structurally, not by the universal PNG-header prefix. A clean run still passes, so this
+    is not a blanket 'any PNG anywhere' false positive on unrelated text."""
+
+    import base64 as _b64
+
+    leaked = _b64.b64encode(b"\x89PNG\r\n\x1a\nDIFFERENT-IMAGE-BYTES").decode()
+    fakes = _fakes()
+    # the data-URI rides a legitimate schema field (objects: list[str]) so it SURVIVES into
+    # result state, unlike an extra field the output model would strip.
+    fakes[("gopro_frame_inspection", "frame_inspector")] = FakeSubscriptionLLM(
+        '{"objects": ["mug", "data:image/png;base64,' + leaked + '"], '
+        '"scene_change": false, "confidence": 0.8}',
+        assert_images=True,
+    )
+    import pytest as _pytest
+
+    from tests.support.engine_qualification import ScenarioSemanticError
+
+    with _pytest.raises(ScenarioSemanticError, match="data-URI leaked"):
+        await run_gopro_frame_inspection(_config(tmp_path), _factory(fakes), tmp_path)
+
+
 async def test_gopro_scenario_reports_malformed_vision_output_as_provider_failure(tmp_path):
     """Failure pair: exhausted parse/repair on the vision call returns a classified failed
     outcome with its burn — loud in the ledger, never a fake pass."""

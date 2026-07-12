@@ -49,6 +49,14 @@ class ObservationNode(BaseModel):
     total_tokens: int = 0
     metered_usd: Optional[float] = None
     notional_usd: Optional[float] = None
+    # A1/A4/A5: external activity (fanout item calls, provenance) has no engine-owned
+    # lifecycle, so its outcome is tallied HERE (one owner) — never recomputed per view.
+    # Each event is classified into EXACTLY one bucket (_external_outcome), so an
+    # accepted-with-warning event never double-counts and typed node_status success is
+    # seen. When both buckets are non-empty the status becomes "mixed"; every reader
+    # (card, Nodes table, Mermaid, JSON export) consumes the same status + counts.
+    outcome_accepted: int = 0
+    outcome_failed: int = 0
 
 
 class ObservationGraph(BaseModel):
@@ -91,6 +99,11 @@ def build_observation_graph(
             ObservationNode(node_id=event.node, kind="external"),
         )
         node.attempts = max(node.attempts, event.attempt or 1)
+        outcome = _external_outcome(event)
+        if outcome == "accepted":
+            node.outcome_accepted += 1
+        elif outcome == "failed":
+            node.outcome_failed += 1
         if event.decision:
             node.decisions.append(event.decision)
         if event.error and event.error not in node.errors:
@@ -142,6 +155,22 @@ def build_observation_graph(
         if (detail := detail_by_id.get(detail_id)) is not None
         and (run_id is None or detail.run_id in (None, run_id))
     }
+
+    # A1/A4: external nodes (ids NOT in the declared graph) own their status HERE from the
+    # SAME disjoint outcome tally the card shows, so status and tally can never disagree
+    # (an accepted-with-warning event reads "completed", not "failed"). Declared nodes keep
+    # their engine-owned status untouched; external nodes with only neutral events keep the
+    # folded running/not_started value.
+    declared = {node.id for node in definition.nodes}
+    for node in graph.nodes.values():
+        if node.node_id in declared:
+            continue
+        if node.outcome_accepted and node.outcome_failed:
+            node.status = "mixed"
+        elif node.outcome_failed:
+            node.status = "failed"
+        elif node.outcome_accepted:
+            node.status = "completed"
     return graph
 
 
@@ -259,34 +288,64 @@ mermaid.initialize({{ startOnLoad: true }});
 # content) — SVG/HTML are ACTIVE content and must never execute in the viewer context.
 INLINE_SAFE_MEDIA_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
 
+ARTIFACT_MANIFEST_NAME = "artifacts.json"
+
+# A3: the manifest is UNTRUSTED input — the loader is the ONE place that proves it is a
+# list of dict rows. Sentinels distinguish "no manifest" (absent → no section) from
+# "manifest present but unreadable/malformed" (loud notice / 404), so no reader ever calls
+# ``.get`` on a non-dict.
+_MANIFEST_ABSENT = object()
+_MANIFEST_UNREADABLE = object()
+
+
+def load_artifact_manifest(bundle_dir: str | Path) -> Any:
+    """Return the manifest as a ``list[dict]``, or a sentinel (``_MANIFEST_ABSENT`` /
+    ``_MANIFEST_UNREADABLE``). Shared by the renderer and the served /artifact route so the
+    two surfaces cannot disagree on what a valid manifest is."""
+
+    manifest_path = Path(bundle_dir) / ARTIFACT_MANIFEST_NAME
+    if not manifest_path.exists():
+        return _MANIFEST_ABSENT
+    try:
+        entries = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return _MANIFEST_UNREADABLE
+    if not isinstance(entries, list) or not all(isinstance(e, dict) for e in entries):
+        return _MANIFEST_UNREADABLE
+    return entries
+
+
+def _encode_artifact_path(rel_path: str) -> str:
+    """A7: percent-encode each '/'-segment of a relative artifact path so spaces/#/%/unicode
+    round-trip through browsers AND the /artifact route's per-segment ``unquote``. The ONE
+    encoder shared by the renderer tail, the served-route href, and the exported-report base."""
+
+    return "/".join(quote(segment, safe="") for segment in rel_path.split("/"))
+
 
 def _artifact_section_html(bundle_dir: str, href_base: Optional[str] = None) -> str:
     """Q4.2: resolve the bundle's artifact manifest into USER-FACING evidence — image
     previews and clickable bundle-local links, honest skip reasons for uncopied entries.
-    ``href_base`` is the link prefix from the page's location to the bundle directory
-    (relative preferred); default = the bundle's absolute path (file:// viewing)."""
+    ``href_base`` is the ALREADY-ENCODED link prefix from the page's location to the bundle
+    directory (relative preferred); default = a percent-encoded file:// URL for local viewing."""
 
-    manifest_path = Path(bundle_dir) / "artifacts.json"
-    if not manifest_path.exists():
+    entries = load_artifact_manifest(bundle_dir)
+    if entries is _MANIFEST_ABSENT:
         return ""
-    try:
-        entries = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    if entries is _MANIFEST_UNREADABLE:
         return '<p class="muted">artifact manifest unreadable</p>'
     if not entries:
         return ""
-    base = href_base if href_base is not None else str(Path(bundle_dir))
+    # A7: encode the DEFAULT (file://) base too — callers that pass href_base own their
+    # own encoding (the served lambda and the export harness both go through
+    # _encode_artifact_path); only the local-viewing default is built here.
+    base = href_base if href_base is not None else Path(bundle_dir).resolve().as_uri()
     rows = []
     for entry in entries:
         name = str(entry.get("bundle_path") or entry.get("artifact_id") or "artifact")
         label = html.escape(f"{entry.get('role') or entry.get('kind') or 'artifact'} · {name}")
         if entry.get("copied") and entry.get("bundle_path"):
-            # archives preserve source basenames (spaces/#/%/unicode) — percent-encode each
-            # path segment so the href round-trips through browsers and the /artifact route
-            encoded_path = "/".join(
-                quote(segment, safe="") for segment in str(entry["bundle_path"]).split("/")
-            )
-            href = f"{base}/{encoded_path}"
+            href = f"{base}/{_encode_artifact_path(str(entry['bundle_path']))}"
             media = str(entry.get("media_type") or "")
             preview = (
                 f'<br><a href="{html.escape(href)}"><img src="{html.escape(href)}" '
@@ -296,7 +355,8 @@ def _artifact_section_html(bundle_dir: str, href_base: Optional[str] = None) -> 
             )
             rows.append(
                 f'<li><a href="{html.escape(href)}">{label}</a> '
-                f'<span class="muted">({entry.get("size_bytes")} bytes, '
+                # A2: size_bytes is UNTRUSTED manifest data — escape it like every sibling field
+                f'<span class="muted">({html.escape(str(entry.get("size_bytes")))} bytes, '
                 f'{html.escape(media or "file")}, owner: '
                 f'{html.escape(str(entry.get("owner_node") or "-"))})</span>{preview}</li>'
             )
@@ -463,6 +523,7 @@ dialog.observation-dialog::backdrop { background: rgba(15, 23, 42, 0.35); }
 .status-completed { color: #166534; font-weight: 600; }
 .status-failed { color: #b91c1c; font-weight: 600; }
 .status-running { color: #92400e; font-weight: 600; }
+.status-mixed { color: #78716c; font-weight: 600; }
 .json-tree { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12px; line-height: 1.5; }
 .json-tree summary { cursor: pointer; list-style: none; }
 .json-tree summary::-webkit-details-marker { display: none; }
@@ -677,22 +738,13 @@ def _node_view(
     elapsed_ms = observed.elapsed_ms if observed is not None else 0
     metrics = []
     external_counts = None
-    if kind == "external" and observed is not None:
-        # External activity has no engine-owned lifecycle, so status is INFERRED from its
-        # events — and last-write-wins would let a later accepted call hide an earlier
-        # failure ("completed" over 2 accepted + 1 failed). Count outcomes instead: both
-        # kinds present -> neutral "mixed" + an explicit tally chip.
-        accepted = sum(1 for e in events if e.decision == "accepted")
-        failed = sum(
-            1
-            for e in events
-            if e.decision in ("failed", "rejected") or e.error or e.severity == "error"
+    # A1: status is graph-layer truth — build_observation_graph already set "mixed" for
+    # external nodes with both outcomes, so the view NEVER recomputes it and the card, the
+    # Nodes table, Mermaid, and the JSON export can never disagree.
+    if observed is not None and observed.outcome_accepted and observed.outcome_failed:
+        external_counts = (
+            f"{observed.outcome_accepted} accepted \u00b7 {observed.outcome_failed} failed"
         )
-        if accepted and failed:
-            status = "mixed"
-            external_counts = f"{accepted} accepted \u00b7 {failed} failed"
-        elif failed:
-            status = "failed"
     if observed is not None and observed.attempts:
         metrics.append(f"{observed.attempts} attempt{'s' if observed.attempts != 1 else ''}")
     if elapsed_ms:
@@ -1321,6 +1373,33 @@ def _usage_run_id(event: WorkflowUsageEvent) -> str | None:
         return None
     run_id = event.metadata.get("run_id") or event.metadata.get("workflow_id")
     return str(run_id) if run_id else None
+
+
+def _external_outcome(event: WorkflowTraceEvent) -> Optional[str]:
+    """Classify ONE external-activity event into exactly one outcome bucket, or None.
+
+    Precedence matches ``_next_status`` (typed ``node_status`` is authoritative, then the
+    decision, then error/severity), so the tally can never disagree with the folded status
+    and an accepted-with-warning event is counted once as ``accepted`` (A4), while a
+    typed-``node_status`` success with no decision is still seen (A5). Neutral events
+    (start/request) return None and count toward neither bucket.
+    """
+
+    terminal = getattr(event, "node_status", None)
+    if terminal in {"accepted", "completed"}:
+        return "accepted"
+    if terminal in {"failed", "rejected"}:
+        return "failed"
+    if terminal is not None:  # partial / requires_user_input / unknown → not a tallied outcome
+        return None
+    decision = event.decision or ""
+    if decision in {"accepted", "valid", "answered", "provisional"}:
+        return "accepted"
+    if decision in {"failed", "rejected", "denied"}:
+        return "failed"
+    if event.error or event.severity == "error":
+        return "failed"
+    return None
 
 
 def _next_status(current: str, event: WorkflowTraceEvent) -> str:

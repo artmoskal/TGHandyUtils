@@ -471,13 +471,20 @@ def render_suite_report_html(report: SuiteReport) -> str:
         if group is not None:
             import os
 
+            from ai_workflow_viewer.observability import _encode_artifact_path
+
+            def _relative_href_base(seg_path: str) -> str:
+                # A7: the exported report link resolves RELATIVE to the page, and must
+                # survive '#'/'%'/space/unicode dir names + Windows separators — encode
+                # each segment through the ONE shared codec (POSIX '/' after normalization).
+                rel = os.path.relpath(seg_path, out_dir).replace(os.sep, "/")
+                return _encode_artifact_path(rel)
+
             (out_dir / page_name).write_text(
                 observation_group_to_html(
                     group,
                     title=title,
-                    # Q4.2: artifact links resolve RELATIVE to the page location, so the
-                    # exported report stays clickable wherever the run dir is copied
-                    artifact_href_for=lambda seg_path: os.path.relpath(seg_path, out_dir),
+                    artifact_href_for=_relative_href_base,
                 ),
                 encoding="utf-8",
             )

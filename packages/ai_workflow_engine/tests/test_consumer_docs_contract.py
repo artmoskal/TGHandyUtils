@@ -6,6 +6,9 @@ surface so consumer docs can never drift silently again.
 """
 
 import inspect
+import asyncio
+import re
+import runpy
 from pathlib import Path
 
 import pytest
@@ -77,6 +80,26 @@ def test_delivery_outcome_is_public_and_annotated():
     assert "WaitDeliveryOutcome" in str(annotation), (
         f"deliver_wait_event must advertise its typed outcome, got {annotation!r}"
     )
+    # A8: the advertised type must be RUNTIME-RESOLVABLE (not just annotation text) for any
+    # process that has engaged the durable-wait subsystem — the realistic adapter path.
+    # Engaging waits binds WaitDeliveryOutcome into builder globals (it stays OUT of the
+    # simple tier by design), so get_type_hints then resolves the public door.
+    import typing
+
+    from ai_workflow_engine import InMemoryWaitCoordinator, WorkflowEngineBuilder
+
+    def _clock():
+        from datetime import datetime, timezone
+
+        return datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    WorkflowEngineBuilder().with_wait_coordinator(
+        InMemoryWaitCoordinator(clock=_clock), clock=_clock
+    )
+    hints = typing.get_type_hints(WorkflowEngine.deliver_wait_event)
+    assert hints["return"] is WaitDeliveryOutcome, (
+        "deliver_wait_event's return type must resolve via get_type_hints once waits are engaged"
+    )
     kinds = WaitDeliveryOutcome.model_fields["kind"].annotation
     assert "executed" in str(kinds) and "duplicate" in str(kinds)
 
@@ -95,11 +118,99 @@ def test_release_docs_name_the_current_tag_consistently():
 
     current = f"engine-v{ai_workflow_engine.__version__}"
     assert f"`{current}` is the current release" in README
-    assert f"@{current}#subdirectory" in README, "README install line must pin the current tag"
+    assert (
+        f"checkout --detach {current}" in README
+        or f"@{current}#subdirectory" in README
+    ), "README install instructions must pin the current immutable tag"
     assert "`engine-v0.8.1` is the current release" not in README
     for name in ("gopro-handoff.md", "mageqa-handoff.md"):
         doc = (PACKAGE_ROOT / "docs" / name).read_text(encoding="utf-8")
-        assert f"pin tag `{current}`" in doc, f"{name} PIN header must name {current}"
+        normalized = " ".join(doc.split())
+        assert f"pin tag `{current}`" in normalized, f"{name} PIN header must name {current}"
         assert "is the current pin):**" not in doc.replace(
             f"moving your pin from `engine-v0.8.1`):**", ""
         ), f"{name} still carries a stale current-pin instruction"
+
+
+def test_documentation_index_links_every_consumer_path_and_canonical_guide():
+    index = (PACKAGE_ROOT / "docs" / "README.md").read_text(encoding="utf-8")
+    for name in (
+        "getting-started.md",
+        "concepts.md",
+        "operations.md",
+        "misuse-risks.md",
+        "extension-lifecycle.md",
+        "observability-levels-feedback.md",
+        "gopro-handoff.md",
+        "mageqa-handoff.md",
+        "slackazz-handoff.md",
+        "voice-brain-handoff.md",
+    ):
+        assert f"({name})" in index, f"documentation index lost {name}"
+
+
+def test_all_relative_markdown_links_resolve():
+    """AI/humans must be able to traverse the documentation without repository archaeology."""
+
+    docs = [PACKAGE_ROOT / "README.md", *sorted((PACKAGE_ROOT / "docs").rglob("*.md"))]
+    pattern = re.compile(r"\[[^]]+\]\(([^)]+)\)")
+    missing = []
+    for document in docs:
+        for target in pattern.findall(document.read_text(encoding="utf-8")):
+            path_text = target.split("#", 1)[0]
+            if not path_text or "://" in path_text or path_text.startswith("mailto:"):
+                continue
+            target_path = (document.parent / path_text).resolve()
+            if not target_path.exists():
+                missing.append(f"{document.relative_to(PACKAGE_ROOT)} -> {target}")
+    assert not missing, "broken documentation links:\n" + "\n".join(missing)
+
+
+def test_product_handoffs_are_current_focused_and_share_the_common_contract():
+    required = {
+        "gopro-handoff.md": ("GoPro-Specific Misuse Risks", "Adopter Contract AC"),
+        "mageqa-handoff.md": ("MageQA-Specific Misuse Risks", "Adopter Contract AC"),
+        "slackazz-handoff.md": ("SlackAzz-Specific Misuse Risks", "Adopter Contract AC"),
+        "voice-brain-handoff.md": ("Voice-Specific Misuse Risks", "Adopter Contract AC"),
+    }
+    for name, headings in required.items():
+        text = (PACKAGE_ROOT / "docs" / name).read_text(encoding="utf-8")
+        assert "engine-v0.9.0" in text
+        assert "extension-lifecycle.md" in text
+        assert "One Provider Door" in text
+        for heading in headings:
+            assert heading in text, f"{name} lost {heading}"
+        assert len(text.splitlines()) <= 350, f"{name} regressed into a release-history dump"
+        assert "v0.7.0 delta" not in text and "v0.8.1 delta" not in text
+
+
+def test_framework_request_lifecycle_is_actionable_and_closed():
+    text = (PACKAGE_ROOT / "docs" / "extension-lifecycle.md").read_text(encoding="utf-8")
+    for status in (
+        "`proposed`",
+        "`accepted-adapter`",
+        "`accepted-engine`",
+        "`implemented-unreleased`",
+        "`released`",
+        "`adopted`",
+        "`closed`",
+        "`rejected`",
+    ):
+        assert status in text
+    for section in (
+        "Where Requests Live",
+        "Request Template",
+        "Engine Triage Questions",
+        "Delivery Requirements",
+        "Feedback After Adoption",
+        "Documentation Defects",
+        "Closing A Request",
+    ):
+        assert section in text
+
+
+def test_documented_examples_execute_through_public_engine_doors():
+    examples = PACKAGE_ROOT / "docs" / "examples"
+    for name in ("minimal_step.py", "observed_workflow.py", "durable_wait.py"):
+        namespace = runpy.run_path(str(examples / name), run_name=f"docs_example_{name}")
+        asyncio.run(namespace["main"]())

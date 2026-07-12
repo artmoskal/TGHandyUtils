@@ -11,9 +11,12 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from ai_workflow_viewer.event_source import EventSource, FileEventSource
 from ai_workflow_viewer.observability import (
+    INLINE_SAFE_MEDIA_TYPES,
     build_observation_graph,
+    load_artifact_manifest,
     observation_graph_to_html,
     observation_group_to_html,
+    _encode_artifact_path,
 )
 
 
@@ -60,7 +63,8 @@ class JsonlObservationViewer:
                 group,
                 title=self.title,
                 artifact_href_for=lambda seg_path: (
-                    f"/artifact/{quote(run_key, safe='')}/{quote(Path(seg_path).name, safe='')}"
+                    "/artifact/"
+                    + _encode_artifact_path(f"{run_key}/{Path(seg_path).name}")
                 ),
             )
         run = self.source.read(selected_run_id)
@@ -159,8 +163,6 @@ def _artifact_response(
     Returns ``None`` (→ 404) for anything else.
     """
 
-    import json as _json
-
     parts = path.split("/", 3)  # ["", "artifact", <run>, "<seg>/<bundle_path...>"]
     if len(parts) < 4 or "/" not in parts[3]:
         return None
@@ -172,7 +174,9 @@ def _artifact_response(
     bundle_path = "/".join(unquote(part) for part in raw_bundle_path.split("/"))
     try:
         group = viewer._read_group(run_id)
-    except Exception:
+    except FileNotFoundError:
+        # A6: ONLY absence is a 404 — group-lineage corruption stays LOUD (it raises here,
+        # matching the HTML route for the same run) instead of masquerading as "not found".
         return None
     if group is None:
         return None
@@ -180,12 +184,10 @@ def _artifact_response(
         seg_dir = Path(segment.path)
         if seg_dir.name != segment_name:
             continue
-        manifest_file = seg_dir / "artifacts.json"
-        if not manifest_file.exists():
-            return None
-        try:
-            entries = _json.loads(manifest_file.read_text(encoding="utf-8"))
-        except (OSError, _json.JSONDecodeError):
+        # A3: the shared loader is the ONE manifest contract — non-list/non-dict shapes
+        # return the unreadable sentinel (→ 404) instead of raising AttributeError here.
+        entries = load_artifact_manifest(seg_dir)
+        if not isinstance(entries, list):
             return None
         for entry in entries:
             if entry.get("copied") and entry.get("bundle_path") == bundle_path:
@@ -223,8 +225,6 @@ def serve_viewer(
                     self.end_headers()
                     return
                 data, media_type = resolved
-                from ai_workflow_viewer.observability import INLINE_SAFE_MEDIA_TYPES
-
                 self.send_response(200)
                 if media_type in INLINE_SAFE_MEDIA_TYPES:
                     # inert raster formats may render inline

@@ -970,6 +970,7 @@ def test_served_artifact_links_resolve_over_real_http(tmp_path):
                 assert err.code == 404
     finally:
         server.shutdown()
+        server.server_close()
         thread.join(timeout=5)
 
 
@@ -1105,4 +1106,155 @@ def test_served_artifacts_roundtrip_hostile_names_and_never_serve_active_content
         assert svg_resp.read() == svg
     finally:
         server.shutdown()
+        server.server_close()
         thread.join(timeout=5)
+
+
+def test_external_mixed_status_is_graph_layer_truth_across_all_views(tmp_path):
+    """A1/A4/A5: external outcome status is computed ONCE in build_observation_graph, so the
+    ObservationNode, the Nodes table, the card, and any JSON consumer all agree — no
+    view-layer recount that lets the table say 'completed' while the card says 'mixed'.
+    Also locks the disjoint tally (accepted-with-warning counts once) and typed-node_status
+    success visibility."""
+
+    import re
+
+    from ai_workflow_engine import WorkflowBuilder
+    from ai_workflow_viewer.observability import build_observation_graph, observation_graph_to_html
+
+    definition = WorkflowBuilder("mix-graph").step("declared").build()
+
+    def ev(**k):
+        return WorkflowTraceEvent(run_id="r", **k)
+
+    events = [
+        ev(node="declared", node_status="completed", phase="node:result", sequence=1, event_id="1"),
+        ev(node="ext", phase="tool:result", decision="accepted", sequence=2, event_id="2"),
+        ev(node="ext", phase="tool:result", decision="failed", severity="error", error="boom", sequence=3, event_id="3"),
+        ev(node="ext", phase="tool:result", decision="accepted", sequence=4, event_id="4"),
+    ]
+    graph = build_observation_graph(definition, events, [], [])
+    assert graph.nodes["ext"].status == "mixed", "status is graph-layer truth, not view-local"
+    assert (graph.nodes["ext"].outcome_accepted, graph.nodes["ext"].outcome_failed) == (2, 1)
+    assert graph.nodes["declared"].status == "completed", "declared node untouched"
+
+    page = observation_graph_to_html(definition, graph)
+    assert "run-status-mixed" in page and "2 accepted · 1 failed" in page
+    ext_row = re.search(r"<tr>(?:(?!</tr>).)*?<code>ext</code>.*?</tr>", page, re.S).group(0)
+    assert 'class="status-mixed"' in ext_row, "Nodes table must NOT say completed for a mixed node"
+
+    # A4: accepted-with-warning counts once as accepted → status completed (not failed), no tally
+    g2 = build_observation_graph(definition, [
+        ev(node="declared", node_status="completed", phase="node:result", sequence=1, event_id="1"),
+        ev(node="ext", phase="tool:result", decision="accepted", severity="error", error="warn", sequence=2, event_id="2"),
+    ], [], [])
+    assert g2.nodes["ext"].status == "completed"
+    assert (g2.nodes["ext"].outcome_accepted, g2.nodes["ext"].outcome_failed) == (1, 0)
+
+    # A5: typed-node_status success (no decision) is seen → mixed with the failure
+    g3 = build_observation_graph(definition, [
+        ev(node="declared", node_status="completed", phase="node:result", sequence=1, event_id="1"),
+        ev(node="ext", node_status="completed", phase="tool:result", sequence=2, event_id="2"),
+        ev(node="ext", phase="tool:result", decision="failed", severity="error", error="x", sequence=3, event_id="3"),
+    ], [], [])
+    assert g3.nodes["ext"].status == "mixed"
+    assert (g3.nodes["ext"].outcome_accepted, g3.nodes["ext"].outcome_failed) == (1, 1)
+
+
+def test_artifact_section_is_robust_and_escapes_untrusted_manifest_fields(tmp_path):
+    """A2/A3: hostile/corrupt manifests can neither inject markup nor crash the page.
+    size_bytes is escaped like every field; non-list/non-dict manifests degrade to the
+    'unreadable' notice instead of raising."""
+
+    import json as _json
+
+    from ai_workflow_viewer.observability import _artifact_section_html
+
+    (tmp_path / "artifacts").mkdir()
+    (tmp_path / "artifacts" / "a.png").write_bytes(b"x")
+    (tmp_path / "artifacts.json").write_text(_json.dumps([
+        {"artifact_id": "x", "bundle_path": "artifacts/a.png", "copied": True,
+         "media_type": "image/png", "owner_node": "n", "size_bytes": "<img src=x onerror=alert(1)>"}]))
+    page = _artifact_section_html(str(tmp_path))
+    assert "<img src=x onerror=alert(1)>" not in page, "size_bytes must be escaped"
+    assert "&lt;img src=x onerror=alert(1)&gt;" in page
+
+    for shape in ({"artifacts": []}, ["oops"], [None], "scalar", 42):
+        (tmp_path / "artifacts.json").write_text(_json.dumps(shape))
+        out = _artifact_section_html(str(tmp_path))  # must not raise
+        assert "unreadable" in out, f"shape {shape!r} must degrade, not crash"
+
+    # A7: the default (file://) base is a percent-encoded file URL, not a raw path — so
+    # exported/local hrefs survive '#'/'%'/space/unicode in the bundle directory.
+    (tmp_path / "artifacts.json").write_text(_json.dumps([
+        {"artifact_id": "x", "bundle_path": "artifacts/a.png", "copied": True,
+         "media_type": "image/png", "owner_node": "n", "size_bytes": 1}]))
+    import re as _re
+    default_href = _re.search(r'href="([^"]*a\.png)"', _artifact_section_html(str(tmp_path))).group(1)
+    assert default_href.startswith("file://"), f"default base must be a file URL, got {default_href!r}"
+
+
+def test_served_route_404s_missing_but_stays_loud_on_malformed_and_corruption(tmp_path):
+    """A3/A6: the /artifact route returns 404 for a manifest-shape mismatch (via the shared
+    loader), but a corrupt group lineage must NOT be silently 404'd — it stays loud."""
+
+    import json as _json
+    import threading
+    import urllib.request
+    from urllib.error import HTTPError
+
+    from ai_workflow_engine import WorkflowBuilder
+    from ai_workflow_viewer import FileEventSource, JsonlObservationViewer, serve_viewer
+
+    definition = WorkflowBuilder("route-robust").step("gate").build()
+    digest = definition.definition_digest()
+    _write_bundle(
+        tmp_path, "rr-run", definition,
+        trace_events=[WorkflowTraceEvent(node="gate", node_status="completed", phase="node:result", run_id="rr-run", sequence=1, event_id="g-1")],
+        meta_extra=_segment_meta("rr-run", "rr-run", 0, digest=digest),
+    )
+    bundle = tmp_path / "rr-run"
+    (bundle / "artifacts").mkdir()
+    (bundle / "artifacts" / "a.png").write_bytes(b"x")
+    (bundle / "artifacts.json").write_text(_json.dumps({"artifacts": []}))  # wrong shape
+
+    viewer = JsonlObservationViewer(FileEventSource(tmp_path))
+    server = serve_viewer(viewer, port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        root = f"http://127.0.0.1:{server.server_address[1]}"
+        try:
+            urllib.request.urlopen(f"{root}/artifact/rr-run/rr-run/artifacts/a.png", timeout=5)
+            raise AssertionError("malformed manifest must 404, not serve or crash")
+        except HTTPError as err:
+            assert err.code == 404
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+
+def test_artifact_response_lets_group_corruption_propagate(tmp_path):
+    """A6 (direct): _artifact_response catches ONLY absence. A viewer whose grouped read
+    raises a lineage-corruption error must let it propagate — never convert it to a silent
+    404 (which a blanket `except Exception` would)."""
+
+    import pytest
+
+    from ai_workflow_viewer.server import _artifact_response
+
+    class _CorruptViewer:
+        def _read_group(self, run_id):
+            raise ValueError("duplicate committed attempt at ordinal 0 — corrupt lineage")
+
+    with pytest.raises(ValueError, match="corrupt lineage"):
+        _artifact_response(_CorruptViewer(), "/artifact/r/seg/artifacts/a.png")
+
+    # absence still degrades to None (→ 404), not a raise
+    class _AbsentViewer:
+        def _read_group(self, run_id):
+            raise FileNotFoundError(run_id)
+
+    assert _artifact_response(_AbsentViewer(), "/artifact/r/seg/artifacts/a.png") is None
