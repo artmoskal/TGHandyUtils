@@ -230,7 +230,10 @@ These points answer the review questions that matter before paying someone to mi
   INTO the bundle at finalize: copied under `artifacts/` and listed in `artifacts.json`. Resolution
   recipe for the dashboard: look up the artifact file path in `artifacts.json` by `source_path`,
   then open `bundle_path` relative to the bundle directory; `sha256` gives integrity,
-  `media_type`/`role`/`owner_node` give rendering context. CLI/browser capabilities already return
+  `media_type`/`role`/`owner_node` give rendering context. (The shipped viewer already does
+  this: group pages render manifest entries as clickable links/inline image previews, and the
+  served viewer serves the files via a manifest-allow-listed `/artifact/...` route — a custom
+  dashboard is only needed beyond that.) CLI/browser capabilities already return
   `EvidenceRef.uri == WorkflowArtifact.path`, so evidence refs join directly. If MageQA emits a
   custom non-file URI such as `artifact://...`, it must also return the matching `WorkflowArtifact`
   path (or keep the URI equal to that path) so the dashboard can resolve it. Entries that could not

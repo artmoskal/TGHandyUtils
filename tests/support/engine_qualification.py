@@ -469,8 +469,17 @@ def render_suite_report_html(report: SuiteReport) -> str:
         except FileNotFoundError:
             group = None
         if group is not None:
+            import os
+
             (out_dir / page_name).write_text(
-                observation_group_to_html(group, title=title), encoding="utf-8"
+                observation_group_to_html(
+                    group,
+                    title=title,
+                    # Q4.2: artifact links resolve RELATIVE to the page location, so the
+                    # exported report stays clickable wherever the run dir is copied
+                    artifact_href_for=lambda seg_path: os.path.relpath(seg_path, out_dir),
+                ),
+                encoding="utf-8",
             )
             return str(out_dir / page_name)
         graph = build_observation_graph(

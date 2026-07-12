@@ -53,7 +53,16 @@ class JsonlObservationViewer:
         if group is not None:
             # R3/F5: the SERVED page renders the whole logical run — suspension, resumes,
             # terminal evidence, and honest cross-attempt economics — not one segment.
-            return observation_group_to_html(group, title=self.title)
+            # Q4.2: artifact links route through /artifact/ so archived evidence is
+            # clickable over HTTP, not a dead absolute filesystem path.
+            run_key = str(selected_run_id)
+            return observation_group_to_html(
+                group,
+                title=self.title,
+                artifact_href_for=lambda seg_path: (
+                    f"/artifact/{quote(run_key, safe='')}/{quote(Path(seg_path).name, safe='')}"
+                ),
+            )
         run = self.source.read(selected_run_id)
         graph = build_observation_graph(
             run.definition,
@@ -139,6 +148,54 @@ code {{ background: #f0f4f8; border-radius: 4px; padding: 1px 4px; }}
         return [record.as_event_payload() for record in self.source.read(run_id or self.run_id).records]
 
 
+def _artifact_response(
+    viewer: JsonlObservationViewer, path: str
+) -> Optional[tuple[bytes, str]]:
+    """Resolve ``/artifact/<run_id>/<segment_dir>/<bundle_path...>`` to file bytes.
+
+    Only files LISTED as copied in that segment's ``artifacts.json`` manifest are
+    served, and only after proving the resolved target stays inside the segment
+    directory — the manifest is the allow-list, never the raw filesystem.
+    Returns ``None`` (→ 404) for anything else.
+    """
+
+    import json as _json
+
+    parts = path.split("/", 3)  # ["", "artifact", <run>, "<seg>/<bundle_path...>"]
+    if len(parts) < 4 or "/" not in parts[3]:
+        return None
+    run_id = unquote(parts[2])
+    segment_name, bundle_path = parts[3].split("/", 1)
+    segment_name = unquote(segment_name)
+    try:
+        group = viewer._read_group(run_id)
+    except Exception:
+        return None
+    if group is None:
+        return None
+    for segment in [*group.segments, *getattr(group, "non_canonical", [])]:
+        seg_dir = Path(segment.path)
+        if seg_dir.name != segment_name:
+            continue
+        manifest_file = seg_dir / "artifacts.json"
+        if not manifest_file.exists():
+            return None
+        try:
+            entries = _json.loads(manifest_file.read_text(encoding="utf-8"))
+        except (OSError, _json.JSONDecodeError):
+            return None
+        for entry in entries:
+            if entry.get("copied") and entry.get("bundle_path") == bundle_path:
+                target = (seg_dir / bundle_path).resolve()
+                if not target.is_relative_to(seg_dir.resolve()) or not target.is_file():
+                    return None
+                return target.read_bytes(), str(
+                    entry.get("media_type") or "application/octet-stream"
+                )
+        return None
+    return None
+
+
 def serve_viewer(
     viewer: JsonlObservationViewer,
     *,
@@ -155,6 +212,19 @@ def serve_viewer(
             related = (query.get("related_run_id") or [None])[0]
             if parsed.path.startswith("/events"):
                 _write_sse(self, viewer, run_id=run_id)
+                return
+            if parsed.path.startswith("/artifact/"):
+                resolved = _artifact_response(viewer, parsed.path)
+                if resolved is None:
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                data, media_type = resolved
+                self.send_response(200)
+                self.send_header("Content-Type", media_type)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
                 return
             body = viewer.html(run_id=run_id, related_run_id=related).encode("utf-8")
             self.send_response(200)

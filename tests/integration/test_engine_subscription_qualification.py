@@ -6,23 +6,27 @@ Run (double opt-in, both REQUIRED — either missing means this module SKIPS):
       ./test.sh integration -- --cov-fail-under=0 -q \
       tests/integration/test_engine_subscription_qualification.py
 
-RELEASE PROCEDURE (Q-R3, codex-agreed): run from a DETACHED CLEAN WORKTREE of the reviewed
-commit, with runtime secrets staged explicitly (they are gitignored and thus absent):
+RELEASE PROCEDURE (Q-R3 as EXECUTED for the v0.9.0 run — clean LOCAL CLONE, not a worktree):
+run from a detached clean clone of the reviewed commit, with runtime secrets staged explicitly
+(they are gitignored and thus absent). A `git worktree` does NOT work here: its `.git` is a
+pointer file to the host repo, unresolvable inside the docker test container (identity capture
+fails loudly); `git archive` has no `.git` at all, so the commit binding is unverifiable.
 
-    git worktree add --detach /tmp/qualification-<commit> <commit>
+    git clone --no-hardlinks <main-checkout> /tmp/qualification-<commit>
+    git -C /tmp/qualification-<commit> checkout --detach <commit>
     cp .env /tmp/qualification-<commit>/.env        # runtime-only; gitignored => invisible to porcelain
     cd /tmp/qualification-<commit>
     ALLOW_PAID_TESTS=1 RUN_ENGINE_SUBSCRIPTION_QUALIFICATION=1 ./test.sh integration -- ...
     # QRF: export + cleanup via the TESTED helper (copies evidence out, VERIFIES the
-    # summary exists, removes the staged .env and test outputs) — then a NON-FORCED
-    # removal; anything unexpectedly left behind fails removal loudly instead of being
+    # summary exists, removes the staged .env and test outputs) — then remove the clone
+    # directory; anything unexpectedly left behind fails removal loudly instead of being
     # silently destroyed:
     python -c "from tests.support.engine_qualification import export_evidence_and_clean_worktree as x; \
                x('/tmp/qualification-<commit>', '<main-checkout>/infra/test-results')"
-    git worktree remove /tmp/qualification-<commit>           # NO --force, by contract
+    rm -r /tmp/qualification-<commit>               # plain rm -r (no -f), by contract
 
 The dirty gate is STRICT full porcelain: gitignored files (.env) never appear in it, so the
-worktree passes clean by construction, while ANY untracked source override or tracked edit
+clone passes clean by construction, while ANY untracked source override or tracked edit
 fails the gate.
 
 Caps (settled in docs/_discussion/2026-07-11-engine-cross-consumer-live-qualification-plan.md):

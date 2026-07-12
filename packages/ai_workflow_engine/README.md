@@ -350,7 +350,10 @@ retention pruning, and `result.observation_bundle_path`. Run artifacts (anything
 artifact refs durably — and evidence prunes WITH its bundle: `retention_limit` is the single
 cleanup policy. If a product emits a custom non-file `EvidenceRef.uri`, it must also return the
 matching `WorkflowArtifact.path` (or keep the URI equal to that path) so the dashboard can join the
-evidence to `artifacts.json`. Products write ZERO bundle code; `observation_bundle=` stays as the
+evidence to `artifacts.json`. The shipped viewer renders the manifest for humans: group pages show
+each archived artifact as a clickable bundle-local link (image media as an inline preview, uncopied
+entries with their honest `skip_reason`), and the served HTTP viewer serves the files through a
+manifest-allow-listed `/artifact/...` route. Products write ZERO bundle code; `observation_bundle=` stays as the
 explicit escape hatch.
 
 ## Prompt files + bundle ownership (v0.6.3)

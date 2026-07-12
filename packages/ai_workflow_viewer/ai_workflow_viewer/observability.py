@@ -254,7 +254,55 @@ mermaid.initialize({{ startOnLoad: true }});
 """
 
 
-def observation_group_to_html(group: Any, *, title: Optional[str] = None) -> str:
+def _artifact_section_html(bundle_dir: str, href_base: Optional[str] = None) -> str:
+    """Q4.2: resolve the bundle's artifact manifest into USER-FACING evidence — image
+    previews and clickable bundle-local links, honest skip reasons for uncopied entries.
+    ``href_base`` is the link prefix from the page's location to the bundle directory
+    (relative preferred); default = the bundle's absolute path (file:// viewing)."""
+
+    manifest_path = Path(bundle_dir) / "artifacts.json"
+    if not manifest_path.exists():
+        return ""
+    try:
+        entries = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return '<p class="muted">artifact manifest unreadable</p>'
+    if not entries:
+        return ""
+    base = href_base if href_base is not None else str(Path(bundle_dir))
+    rows = []
+    for entry in entries:
+        name = str(entry.get("bundle_path") or entry.get("artifact_id") or "artifact")
+        label = html.escape(f"{entry.get('role') or entry.get('kind') or 'artifact'} · {name}")
+        if entry.get("copied") and entry.get("bundle_path"):
+            href = f"{base}/{entry['bundle_path']}"
+            media = str(entry.get("media_type") or "")
+            preview = (
+                f'<br><a href="{html.escape(href)}"><img src="{html.escape(href)}" '
+                f'alt="{label}" style="max-width:320px;max-height:240px;border:1px solid #d9e2ec"></a>'
+                if media.startswith("image/")
+                else ""
+            )
+            rows.append(
+                f'<li><a href="{html.escape(href)}">{label}</a> '
+                f'<span class="muted">({entry.get("size_bytes")} bytes, '
+                f'{html.escape(media or "file")}, owner: '
+                f'{html.escape(str(entry.get("owner_node") or "-"))})</span>{preview}</li>'
+            )
+        else:
+            reason = html.escape(str(entry.get("skip_reason") or "not copied"))
+            rows.append(f'<li>{label} <span class="muted">— NOT archived: {reason}</span></li>')
+    return (
+        '<section class="artifacts"><h3>Artifacts</h3><ul>' + "\n".join(rows) + "</ul></section>"
+    )
+
+
+def observation_group_to_html(
+    group: Any,
+    *,
+    title: Optional[str] = None,
+    artifact_href_for: Optional[Any] = None,
+) -> str:
     """Render ONE logical run assembled from its segments (W4.5) — one truthful lifecycle.
 
     The merged group events (all stamped with the logical run id) drive the standard
@@ -312,6 +360,16 @@ def observation_group_to_html(group: Any, *, title: Optional[str] = None) -> str
         f"inspectable evidence, not run history</p>"
         for segment in getattr(group, "non_canonical", [])
     )
+    artifact_sections = "\n".join(
+        section
+        for segment in [*group.segments, *getattr(group, "non_canonical", [])]
+        if (
+            section := _artifact_section_html(
+                segment.path,
+                artifact_href_for(segment.path) if artifact_href_for else None,
+            )
+        )
+    )
     strip = f"""<section class="segment-strip" id="segments">
 <h2>Run segments ({len(group.segments)}) — Run ID <code>{html.escape(group.run_id)}</code>{related_label}</h2>
 <div class="segment-cards">{cards}</div>
@@ -321,6 +379,7 @@ def observation_group_to_html(group: Any, *, title: Optional[str] = None) -> str
 · non-canonical attempts: {attempts_totals.get("total_tokens")} tokens, {cost_summary(attempts_totals)}
 · cumulative-at-finalize (engine label: {html.escape(str(cumulative.get("scope")))}): {cumulative.get("total_tokens")} tokens</p>
 {notes}
+{artifact_sections}
 <style>
 .segment-strip {{ margin: 1rem 0; }}
 .segment-cards {{ display: flex; gap: 0.75rem; flex-wrap: wrap; }}

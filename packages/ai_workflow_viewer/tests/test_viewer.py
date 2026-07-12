@@ -871,3 +871,103 @@ def test_served_viewer_filter_is_real_http_behavior(tmp_path):
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def test_group_html_resolves_artifacts_with_previews_and_skip_reasons(tmp_path):
+    """Q4.2 repair: artifact IDs resolve through artifacts.json into USER-FACING evidence —
+    image artifacts render a preview + clickable bundle-local link, uncopied entries show
+    their honest skip reason, and a caller-supplied href base keeps links relative."""
+
+    import json as _json
+
+    from ai_workflow_engine import WorkflowBuilder
+    from ai_workflow_viewer import FileEventSource, observation_group_to_html
+
+    definition = WorkflowBuilder("arty").step("gate").build()
+    digest = definition.definition_digest()
+    _write_bundle(
+        tmp_path, "art-run", definition,
+        trace_events=[WorkflowTraceEvent(node="gate", node_status="completed", phase="node:result", run_id="art-run", sequence=1, event_id="a-1")],
+        meta_extra=_segment_meta("art-run", "art-run", 0, digest=digest),
+    )
+    bundle = tmp_path / "art-run"
+    (bundle / "artifacts").mkdir()
+    (bundle / "artifacts" / "frame.png").write_bytes(b"\x89PNG fake")
+    (bundle / "artifacts.json").write_text(_json.dumps([
+        {"artifact_id": "art-1", "bundle_path": "artifacts/frame.png", "copied": True,
+         "kind": "media", "media_type": "image/png", "owner_node": "gate",
+         "size_bytes": 9, "skip_reason": None},
+        {"artifact_id": "art-2", "bundle_path": None, "copied": False,
+         "kind": "media", "media_type": "image/png", "owner_node": "gate",
+         "size_bytes": 999, "skip_reason": "exceeds artifact_max_bytes"},
+    ]), encoding="utf-8")
+
+    group = FileEventSource(tmp_path).read_group("art-run")
+    page = observation_group_to_html(group, artifact_href_for=lambda p: "../rel/art-run")
+    assert '<img src="../rel/art-run/artifacts/frame.png"' in page, "image preview rendered"
+    assert '<a href="../rel/art-run/artifacts/frame.png">' in page, "clickable bundle-local link"
+    assert "NOT archived: exceeds artifact_max_bytes" in page, "honest skip reason"
+    default_page = observation_group_to_html(group)  # absolute-path fallback stays clickable
+    assert f'{bundle}/artifacts/frame.png' in default_page
+
+
+def test_served_artifact_links_resolve_over_real_http(tmp_path):
+    """Invariant sweep (Q4.2 sibling surface): the SERVED group page must link archived
+    artifacts through a route the browser can actually fetch — /artifact/... returns the
+    manifest-listed bytes with the manifest media type, while non-manifest files (meta.json)
+    and traversal shapes 404 even though they exist on disk."""
+
+    import json as _json
+    import threading
+    import urllib.request
+    from urllib.error import HTTPError
+
+    from ai_workflow_engine import WorkflowBuilder
+    from ai_workflow_viewer import FileEventSource, JsonlObservationViewer, serve_viewer
+
+    definition = WorkflowBuilder("served-arty").step("gate").build()
+    digest = definition.definition_digest()
+    _write_bundle(
+        tmp_path, "served-art-run", definition,
+        trace_events=[WorkflowTraceEvent(node="gate", node_status="completed", phase="node:result", run_id="served-art-run", sequence=1, event_id="sa-1")],
+        meta_extra=_segment_meta("served-art-run", "served-art-run", 0, digest=digest),
+    )
+    bundle = tmp_path / "served-art-run"
+    (bundle / "artifacts").mkdir()
+    png = b"\x89PNG served"
+    (bundle / "artifacts" / "frame.png").write_bytes(png)
+    (tmp_path / "outside.secret").write_bytes(b"NEVER SERVED")
+    (bundle / "artifacts.json").write_text(_json.dumps([
+        {"artifact_id": "sa-art", "bundle_path": "artifacts/frame.png", "copied": True,
+         "media_type": "image/png", "owner_node": "gate", "size_bytes": len(png)},
+        # hostile manifest row: even a LISTED entry must not escape its segment dir
+        {"artifact_id": "sa-evil", "bundle_path": "../outside.secret", "copied": True,
+         "media_type": "text/plain", "owner_node": "gate", "size_bytes": 12},
+    ]), encoding="utf-8")
+
+    viewer = JsonlObservationViewer(FileEventSource(tmp_path))
+    server = serve_viewer(viewer, port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        root = f"http://127.0.0.1:{server.server_address[1]}"
+        page = urllib.request.urlopen(f"{root}/?run_id=served-art-run", timeout=5).read().decode()
+        href = "/artifact/served-art-run/served-art-run/artifacts/frame.png"
+        assert f'<img src="{href}"' in page and f'<a href="{href}"' in page, page[-2000:]
+        fetched = urllib.request.urlopen(root + href, timeout=5)
+        assert fetched.headers["Content-Type"] == "image/png"
+        assert fetched.read() == png, "served bytes must be the archived artifact"
+        for bad in (
+            "/artifact/served-art-run/served-art-run/meta.json",       # exists, NOT in manifest
+            "/artifact/served-art-run/served-art-run/artifacts/../meta.json",  # traversal shape
+            "/artifact/other-run/served-art-run/artifacts/frame.png",  # wrong run
+            "/artifact/served-art-run/served-art-run/../outside.secret",  # manifest-listed but escapes
+        ):
+            try:
+                urllib.request.urlopen(root + bad, timeout=5)
+                raise AssertionError(f"{bad} must 404, not serve bundle internals")
+            except HTTPError as err:
+                assert err.code == 404
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)

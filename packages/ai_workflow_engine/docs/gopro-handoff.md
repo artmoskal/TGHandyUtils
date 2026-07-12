@@ -461,7 +461,10 @@ are unsupported — no deltas to track):
   its bundle (one retention policy: `retention_limit`; knobs: `artifacts: copy|off`,
   `artifact_max_bytes`). If GoPro emits custom non-file `EvidenceRef.uri` values, it must also return
   the matching `WorkflowArtifact.path` (or keep the URI equal to that path) so the dashboard can join
-  evidence to the manifest. Products never call
+  evidence to the manifest. Archived frames are already human-visible without a custom dashboard:
+  the viewer's group page renders each manifest entry as a clickable link with an inline image
+  preview, and the served viewer exposes the file over HTTP via the manifest-allow-listed
+  `/artifact/...` route. Products never call
   bundle mechanics in the normal path; `engine.run(observation_bundle=)` remains the explicit
   escape hatch (it takes precedence) and `terminal_status=` stays the post-validation hook —
   a raising run archives as failed, and the record can never say completed for a user-visible failure.

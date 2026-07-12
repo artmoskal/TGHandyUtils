@@ -645,7 +645,12 @@ key), `segment_index` (LOGICAL position), `segment_kind`
 attempt per contiguous logical index; non-canonical attempts stay inspectable
 (`abandoned|superseded|provisional`) and their spend counts in the ACTUAL totals
 (actual = canonical + non-canonical; money never disappears). v0.8.1 bundles read as
-groups of one.
+groups of one. Archived artifacts are USER-FACING evidence, not just manifest rows: the
+group HTML resolves each segment's `artifacts.json` into clickable bundle-local links
+(image media additionally rendered as inline previews; uncopied entries show their honest
+`skip_reason`), and the served viewer exposes the same files over HTTP via an
+`/artifact/<run>/<segment>/<bundle_path>` route that serves ONLY manifest-listed, copied
+entries proven to resolve inside their segment directory.
 
 **Identity vocabulary (binding).** `run_id` = ONE logical engine execution, including
 all of its suspension/resume segments. `correlation_id` (shown to humans as
