@@ -971,3 +971,38 @@ def test_served_artifact_links_resolve_over_real_http(tmp_path):
     finally:
         server.shutdown()
         thread.join(timeout=5)
+
+
+def test_external_nodes_are_labeled_never_silently_disconnected(tmp_path):
+    """User-settled UX honesty (Q4.2 round): activity outside the declared graph (fanout
+    item calls, provenance markers) renders as EXTERNAL cards with an explicit
+    "outside declared graph" note + a canvas legend — and the legend appears ONLY when
+    such nodes exist, so ordinary pages carry no dead boilerplate."""
+
+    from ai_workflow_engine import WorkflowBuilder
+    from ai_workflow_viewer import FileEventSource, observation_group_to_html
+
+    definition = WorkflowBuilder("ext-label").step("declared_step").build()
+    digest = definition.definition_digest()
+    _write_bundle(
+        tmp_path, "ext-run", definition,
+        trace_events=[
+            WorkflowTraceEvent(node="declared_step", node_status="completed", phase="node:result", run_id="ext-run", sequence=1, event_id="x-1"),
+            # fanout-item-style activity: node id NOT in the definition
+            WorkflowTraceEvent(node="probe_item", node_status="completed", phase="tool:result", run_id="ext-run", sequence=2, event_id="x-2"),
+        ],
+        meta_extra=_segment_meta("ext-run", "ext-run", 0, digest=digest),
+    )
+    page = observation_group_to_html(FileEventSource(tmp_path).read_group("ext-run"))
+    assert "outside declared graph — no wiring recorded" in page, "external card must be labeled"
+    assert "EXTERNAL cards are recorded activity outside" in page, "canvas legend missing"
+    assert page.count("outside declared graph — no wiring recorded") == 1, "only the external card is labeled"
+
+    _write_bundle(
+        tmp_path / "plain", "plain-run", definition,
+        trace_events=[WorkflowTraceEvent(node="declared_step", node_status="completed", phase="node:result", run_id="plain-run", sequence=1, event_id="p-1")],
+        meta_extra=_segment_meta("plain-run", "plain-run", 0, digest=digest),
+    )
+    plain = observation_group_to_html(FileEventSource(tmp_path / "plain").read_group("plain-run"))
+    assert "EXTERNAL cards are recorded activity" not in plain, "legend must be conditional"
+    assert "outside declared graph — no wiring recorded" not in plain

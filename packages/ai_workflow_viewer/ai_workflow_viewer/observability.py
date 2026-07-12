@@ -505,6 +505,8 @@ def _rich_graph_css() -> str:
 .node-title { font-weight: 700; font-size: 14px; line-height: 1.25; color: #102a43; }
 .node-id { margin-top: 3px; font-size: 11px; color: #627d98; overflow-wrap: anywhere; }
 .node-description { margin-top: 7px; font-size: 12px; line-height: 1.35; color: #334e68; }
+.node-external-note { margin-top: 6px; font-size: 11px; color: #92400e; background: #fef3c7; border-radius: 4px; padding: 2px 6px; display: inline-block; }
+.external-legend { color: #92400e; }
 .node-metrics { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 5px; font-size: 11px; color: #486581; }
 .metric-chip { border: 1px solid #d9e2ec; border-radius: 999px; padding: 1px 6px; background: #f8fafc; }
 .rich-graph[data-mode="overview"] .node-description,
@@ -535,6 +537,13 @@ def _rich_graph_css() -> str:
 def _rich_graph_html(definition: WorkflowDefinition, graph: ObservationGraph) -> str:
     data = _observation_view_data(definition, graph)
     nodes_html = "\n".join(_rich_node_card(node) for node in data["nodes"])
+    external_legend = (
+        '<div class="graph-hint external-legend">EXTERNAL cards are recorded activity outside '
+        "the declared workflow graph (e.g. fanout item calls, authored-flow provenance); the "
+        "viewer never invents edges for them.</div>\n"
+        if any(node["kind"] == "external" for node in data["nodes"])
+        else ""
+    )
     canvas = data["canvas"]
     return f"""
 <section id="investigation">
@@ -549,6 +558,7 @@ def _rich_graph_html(definition: WorkflowDefinition, graph: ObservationGraph) ->
 <button type="button" id="reset-layout">Reset layout</button>
 </div>
 <div class="graph-hint">Click a node to inspect it. Drag nodes to rearrange the canvas. Raw payloads stay available in the inspector and Raw Details section.</div>
+{external_legend}
 <div class="rich-graph-scroll">
 <div id="rich-graph" class="rich-graph" data-mode="investigate" style="--canvas-width: {canvas['width']}px; --canvas-height: {canvas['height']}px;">
 <svg id="rich-edges" class="rich-edge-layer" aria-hidden="true"></svg>
@@ -583,7 +593,12 @@ def _rich_node_card(node: Mapping[str, Any]) -> str:
         f'<div class="node-title">{html.escape(node["label"])}</div>'
         f'<div class="node-id">{html.escape(node["id"])}</div>'
         f'<div class="node-description">{html.escape(node["description"])}</div>'
-        f'<div class="node-metrics">{metrics}</div>'
+        + (
+            '<div class="node-external-note">outside declared graph — no wiring recorded</div>'
+            if node["kind"] == "external"
+            else ""
+        )
+        + f'<div class="node-metrics">{metrics}</div>'
         '</article>'
     )
 
