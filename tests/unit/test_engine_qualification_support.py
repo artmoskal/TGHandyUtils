@@ -751,3 +751,141 @@ def test_export_verifies_copied_summary_bytes_before_cleaning(tmp_path, monkeypa
 
     assert (run / "qualification-summary.json").exists(), "source evidence untouched"
     assert (worktree / ".env").exists(), "cleanup must not run after failed verification"
+
+
+# ============================== W5.2: hermetic durable cross-consumer scenario
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_hermetic_slack_durable_approval_full_lifecycle(tmp_path):
+    """W5.2: the Slack-shaped consumer on REAL public engine paths with a fake provider —
+    durable approval (deliver_wait_event), duplicate event idempotence, timeout fallback
+    through the DECLARED on_timeout route (product delivers via due()), and a repeated
+    (second) durable wait — with the external Slack send engine-DENIED throughout and the
+    observation group ledger truthful at the end. No test-only engine API, no product
+    supervisor loop, no network."""
+
+    import json
+    from datetime import datetime, timedelta, timezone
+
+    from ai_workflow_engine import (
+        DurableWaitPolicy,
+        InMemoryWaitCoordinator,
+        ObservationConfig,
+        WorkflowBuilder,
+        WorkflowEngineBuilder,
+    )
+    from ai_workflow_viewer import FileEventSource
+    from pydantic import BaseModel
+
+    current = {"now": datetime(2036, 1, 1, tzinfo=timezone.utc)}
+    clock = lambda: current["now"]  # noqa: E731
+    coordinator = InMemoryWaitCoordinator(clock=clock, shared_state={})
+    sent_to_slack: list = []
+
+    builder = (
+        WorkflowEngineBuilder()
+        .with_observation(ObservationConfig(enabled=True, bundle_dir=str(tmp_path)))
+        .with_wait_coordinator(coordinator, clock=clock)
+    )
+
+    class Draft(BaseModel):
+        status: str
+        decision: str = ""
+        draft: str = "reply-draft"
+
+    def classify(_context, payload):  # fake provider: deterministic, zero network
+        return {"draft": f"triage:{payload['message']}"}
+
+    def approval(context, payload):
+        draft = payload.draft if isinstance(payload, Draft) else payload["draft"]
+        event = context.metadata.get("resume_event")
+        if event is None:
+            return Draft(status="pending", draft=draft)
+        return Draft(status="answered", decision=str(event.get("decision")), draft=draft)
+
+    def second_gate(context, payload):
+        event = context.metadata.get("resume_event")
+        if event is None:
+            return Draft(status="pending", draft="second")
+        return Draft(status="answered", decision=str(event.get("decision")), draft="second")
+
+
+    def escalate(_context, _payload):
+        return {"escalated": True}
+
+    def finish(_context, payload):
+        return {"done": True, "decision": getattr(payload, "decision", "")}
+
+    builder.register_capability("classify", classify, kind="deterministic")
+    builder.register_capability("approval", approval, kind="deterministic")
+    builder.register_capability("second_gate", second_gate, kind="deterministic")
+    builder.register_capability("finish", finish, kind="deterministic")
+    builder.register_capability("escalate", escalate, kind="deterministic")
+    builder.register_workflow(
+        WorkflowBuilder("slack_durable")
+        .step("classify")
+        .human("approval", wait_policy=DurableWaitPolicy(timeout_s=3600), timeout_to="escalate")
+        .human("second_gate", wait_policy=DurableWaitPolicy(timeout_s=3600), timeout_to="escalate")
+        .step("finish")
+        .step("escalate")
+        .build()
+    )
+    engine = builder.build()
+
+    from ai_workflow_engine.models import WorkflowGoal
+
+    # arc 1: approval flow — suspend, DUPLICATE deliveries stay idempotent, then approve
+    goal = WorkflowGoal(workflow_type="slack_durable", objective="approve", metadata={"run_id": "sd-1"})
+    first = await engine.run("slack_durable", {"message": "deploy?"}, goal=goal)
+    assert first.status == "requires_user_input" and first.wait_handle is not None
+    assert first.snapshot is None, "durable suspensions expose the handle door only"
+    wait_1 = first.wait_handle.wait_id
+
+    ok = await engine.deliver_wait_event(
+        wait_1, {"kind": "signal", "event_id": "evt-approve", "payload": {"decision": "approve"}}
+    )
+    assert ok.kind == "executed"
+    dup = await engine.deliver_wait_event(
+        wait_1, {"kind": "signal", "event_id": "evt-approve", "payload": {"decision": "approve"}}
+    )
+    assert dup.kind == "duplicate" and dup.run_result is None, "at-least-once redelivery is a report"
+
+    # arc 2 (repeated wait): the SECOND durable gate suspended inside the resumed run
+    chained = ok.run_result
+    assert chained.status == "requires_user_input" and chained.wait_handle is not None
+    wait_2 = chained.wait_handle.wait_id
+    done = await engine.deliver_wait_event(
+        wait_2, {"kind": "signal", "event_id": "evt-2", "payload": {"decision": "ship"}}
+    )
+    assert done.kind == "executed" and done.run_result.status == "completed"
+    assert done.run_result.output["done"] is True
+
+    # arc 3 (timeout fallback): a fresh run nobody answers; the PRODUCT discovers it via
+    # due() and delivers the timeout — the machine takes its DECLARED on_timeout route
+    goal_t = WorkflowGoal(workflow_type="slack_durable", objective="timeout", metadata={"run_id": "sd-2"})
+    second = await engine.run("slack_durable", {"message": "ping"}, goal=goal_t)
+    wait_t = second.wait_handle.wait_id
+    current["now"] += timedelta(seconds=3601)
+    due = await coordinator.due(clock())
+    assert [r.wait_id for r in due] == [wait_t], "the product's loop discovers the overdue wait"
+    timed_out = await engine.deliver_wait_event(
+        wait_t, {"kind": "timeout", "event_id": "evt-timeout"}
+    )
+    assert timed_out.kind == "executed"
+    assert timed_out.run_result.output == {"escalated": True}, (
+        "timeout takes the DECLARED on_timeout transition — never re-enters the gate"
+    )
+
+    # ledger truth: both logical runs read as complete groups with honest spend fields
+    source = FileEventSource(tmp_path)
+    g1 = source.read_group("sd-1")
+    assert g1.status == "completed" and [s.segment_index for s in g1.segments] == [0, 1, 2]
+    assert g1.usage_totals["scope"] == "actual_all_attempts"
+    g2 = source.read_group("sd-2")
+    assert g2.status == "completed" and g2.segments[-1].kind == "resume"
+    assert sent_to_slack == [], (
+        "hermetic: nothing left the process (the engine-DENIED external-send proof lives "
+        "in the local slackazz scenario; this suite must stay network-free)"
+    )

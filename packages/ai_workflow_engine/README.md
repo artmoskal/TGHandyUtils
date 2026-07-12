@@ -396,3 +396,24 @@ rendered in the hot path. The separate **`ai_workflow_viewer`** package reads bu
 **One door for model calls (consumers):** construct model clients through sanctioned factory/adapter
 modules. A direct provider client in workflow/product code is a reviewed escape hatch, not the
 default; otherwise you lose observability, cost accounting, and model-swap.
+
+## v0.9 (branch) delta — durable waits: 2-minute migration
+
+**Pin stays engine-v0.8.1 until the v0.9.0 tag exists.** When you move:
+
+1. Every `.human(node)` now requires a wait policy:
+   `.human("gate", wait_policy=LocalWaitPolicy())` = exactly the old suspend/resume;
+   `.human("gate", wait_policy=DurableWaitPolicy(timeout_s=3600), timeout_to="escalate")`
+   = durable (declared timeout route is mandatory graph structure).
+2. Durable needs a coordinator: `builder.with_wait_coordinator(your_adapter, clock=...)`.
+   Validate your adapter with `run_wait_registration_conformance` (full lifecycle:
+   register/claim/lease/frozen-acceptance/CAS/failure kinds/cancel/stalled).
+3. Your loop owns time (engine never self-fires): `due(now)` → deliver timeouts via
+   `engine.deliver_wait_event(wait_id, {"kind": "timeout", ...})`; `stalled(now)` →
+   redeliver the accepted event or `engine.cancel_wait(wait_id, reason=...)`.
+4. Guarantee wording: at-least-once with idempotent effects (key external writes on
+   `context.metadata["wait_idempotency"]`) — never advertise exactly-once.
+5. Observation: one logical run = a GROUP of segments; use
+   `FileEventSource.read_group(run_id)` / the served viewer (already grouped). Suspended
+   groups are never evicted by default; opt-in cap = `ObservationConfig.evict_suspended_after_s`
+   (evicts viewer history only — the wait itself stays resumable).

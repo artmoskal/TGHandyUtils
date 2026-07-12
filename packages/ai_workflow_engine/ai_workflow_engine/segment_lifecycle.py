@@ -278,6 +278,7 @@ async def ensure_terminal_evidence(observation: Any, runtime: Any, wait_id: str)
             retention_limit=observation.retention_limit,
             artifact_policy=observation.artifacts,
             artifact_max_bytes=observation.artifact_max_bytes,
+            evict_suspended_after_s=observation.evict_suspended_after_s,
             segment=ObservationSegment(
                 segment_id=segment_id,
                 segment_index=segment_index,

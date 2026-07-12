@@ -623,6 +623,50 @@ async def test_broken_adapters_fail_conformance_by_named_invariant():
                 return outcome.model_copy(update={"record": stale})
             return outcome
 
+    class LeaseIgnorer(InMemoryWaitCoordinator):
+        # W5.1 negative: granting a claim to a DIFFERENT event while a lease is LIVE
+        # breaks single-claimant atomicity — conformance must name it.
+        async def claim_event(self, wait_id, event, *, lease_until):
+            outcome = await super().claim_event(wait_id, event, lease_until=lease_until)
+            if outcome.kind == "already_processing":
+                async with self._lock:
+                    record = self._records[wait_id]
+                    claimed = record.model_copy(
+                        update={"version": record.version + 1,
+                                "resume_attempts": record.resume_attempts + 1}
+                    )
+                    self._records[wait_id] = claimed
+                from ai_workflow_engine.waits import WaitClaim, WaitClaimOutcome
+
+                return WaitClaimOutcome(
+                    kind="claimed",
+                    record=claimed.model_copy(deep=True),
+                    claim=WaitClaim(
+                        wait_id=wait_id, wait_version=claimed.version,
+                        event_id=event.event_id, claimed_at=self._clock(),
+                        lease_expires_at=lease_until,
+                    ),
+                )
+            return outcome
+
+    class TerminalReviver(InMemoryWaitCoordinator):
+        # W5.1 negative: claiming a TERMINAL wait re-executes settled history.
+        async def claim_event(self, wait_id, event, *, lease_until):
+            outcome = await super().claim_event(wait_id, event, lease_until=lease_until)
+            if outcome.kind == "terminal":
+                from ai_workflow_engine.waits import WaitClaim, WaitClaimOutcome
+
+                return WaitClaimOutcome(
+                    kind="claimed",
+                    record=outcome.record,
+                    claim=WaitClaim(
+                        wait_id=wait_id, wait_version=outcome.record.version,
+                        event_id=event.event_id, claimed_at=self._clock(),
+                        lease_expires_at=lease_until,
+                    ),
+                )
+            return outcome
+
     for broken, fragment in (
         (WrongDeadline, "ACCEPTED deadline"),
         (SilentReplace, "rejected"),
@@ -630,6 +674,8 @@ async def test_broken_adapters_fail_conformance_by_named_invariant():
         (Amnesiac, "retrievable"),
         (DefinitionDropper, "load_definition"),
         (StaleAttemptOrdinal, "ordinal"),
+        (LeaseIgnorer, "DIFFERENT event"),
+        (TerminalReviver, "terminal"),
     ):
         with pytest.raises(AssertionError, match=fragment.split()[0]):
             await run_wait_registration_conformance(

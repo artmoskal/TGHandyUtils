@@ -523,6 +523,24 @@ async def test_complexity_gradient_matrix_contract():
 
         assert adv.status == "completed"
         assert adv.observation_bundle_path, "advanced tier opted into observation"
+        # W5.3: a DURABLE-wait engine is the SAME executor/runtime class as every other
+        # tier — waits are composition (with_wait_coordinator), never a second engine.
+        from datetime import datetime, timezone
+
+        from ai_workflow_engine import InMemoryWaitCoordinator
+
+        clock = lambda: datetime(2036, 1, 1, tzinfo=timezone.utc)  # noqa: E731
+        durable_engine = (
+            WorkflowEngineBuilder()
+            .with_wait_coordinator(InMemoryWaitCoordinator(clock=clock), clock=clock)
+            .build()
+        )
+        assert type(durable_engine.executor) is type(advanced.executor), (
+            "durable waits must run on the SAME executor class — no parallel runtime"
+        )
+        assert getattr(advanced.executor, "wait_runtime", None) is None, (
+            "tiers that never opted into waits carry NO wait machinery"
+        )
         # 1) the node-level policy really RENDERED: the second provider call consumes the
         #    StructuredStateMemory state block (projection -> provider, not just metadata)
         assert len(client.requests) == 2

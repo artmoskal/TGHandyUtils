@@ -172,6 +172,8 @@ class ObservationRunBundle:
     # run-half. Without a segment the bundle keeps the pre-W4 shape exactly (dir = run_id,
     # no segment meta) — a group of one.
     segment: Optional[ObservationSegment] = None
+    # R4-B opt-in policy threaded from ObservationConfig (None = never evict suspended)
+    evict_suspended_after_s: Optional[float] = None
     sequence: ObservationSequence = field(default_factory=ObservationSequence)
 
     def __post_init__(self) -> None:
@@ -278,7 +280,11 @@ class ObservationRunBundle:
             encoding="utf-8",
         )
         if self.retention_limit is not None:
-            prune_observation_bundles(self.base_dir, self.retention_limit)
+            prune_observation_bundles(
+                self.base_dir,
+                self.retention_limit,
+                evict_suspended_after_s=self.evict_suspended_after_s,
+            )
 
     def _archive_artifacts(self, artifacts: list[WorkflowArtifact]) -> list[dict[str, Any]]:
         """Copy run artifacts into the bundle and return honest manifest entries.
@@ -361,6 +367,7 @@ def open_observation_run_bundle(
     artifact_policy: Literal["copy", "off"] = "copy",
     artifact_max_bytes: int = DEFAULT_ARTIFACT_MAX_BYTES,
     segment: Optional[ObservationSegment] = None,
+    evict_suspended_after_s: Optional[float] = None,
 ) -> ObservationRunBundle:
     """Create a per-run observation source bundle (one SEGMENT of a logical run when
     ``segment`` is given; the pre-W4 single-directory shape otherwise)."""
@@ -372,6 +379,7 @@ def open_observation_run_bundle(
         artifact_policy=artifact_policy,
         artifact_max_bytes=artifact_max_bytes,
         segment=segment,
+        evict_suspended_after_s=evict_suspended_after_s,
     )
 
 
@@ -427,7 +435,12 @@ def write_minimal_abandoned_meta(
     (path / "meta.json").write_text(json.dumps(meta, sort_keys=True, indent=2), encoding="utf-8")
 
 
-def prune_observation_bundles(base_dir: str | Path, retention_limit: int) -> None:
+def prune_observation_bundles(
+    base_dir: str | Path,
+    retention_limit: int,
+    *,
+    evict_suspended_after_s: Optional[float] = None,
+) -> None:
     """Keep only the newest logical-run observation groups.
 
     ``0`` means "latest/current only", matching the Anki debug-retention convention.
@@ -471,7 +484,19 @@ def prune_observation_bundles(base_dir: str | Path, retention_limit: int) -> Non
             ),
         )
         if str(newest_meta.get("status")) == "requires_user_input":
-            continue  # in-flight group: a wait may still resume into it
+            # R4-B (opt-in): a group suspended longer than the configured cap becomes
+            # evictable — VIEWER history only; the wait itself stays resumable in the
+            # coordinator. Default (None) = in-flight groups are never evicted.
+            if evict_suspended_after_s is None:
+                continue
+            newest_ts = str(newest_meta.get("timestamp") or "")
+            try:
+                suspended_at = datetime.fromisoformat(newest_ts.replace("Z", "+00:00"))
+            except ValueError:
+                continue  # unparseable timestamp: keep protecting rather than guess
+            age_s = (datetime.now(timezone.utc) - suspended_at).total_seconds()
+            if age_s <= evict_suspended_after_s:
+                continue
         prunable.append((max(_bundle_sort_key(path) for path in paths), paths))
     if len(prunable) <= keep:
         return

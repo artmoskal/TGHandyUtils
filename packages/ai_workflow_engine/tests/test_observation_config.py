@@ -617,3 +617,46 @@ def test_malformed_segment_identity_is_loud(tmp_path):
             "logical",
             segment=ObservationSegment(segment_id="../escape", segment_index=0, kind="initial"),
         )
+
+
+async def test_suspended_eviction_cap_is_opt_in_and_age_based(tmp_path):
+    """R4-B (user-settled policy): by default a suspended group is NEVER evicted; with
+    `evict_suspended_after_s` set, groups suspended longer than the cap rotate out at the
+    normal finalize-time sweep — viewer history only, resumability untouched (the snapshot
+    lives in the coordinator, not the bundle)."""
+
+    import json
+    from datetime import datetime, timedelta, timezone
+
+    from ai_workflow_engine.models import WorkflowGoal
+
+    bundles = tmp_path / "bundles"
+    engine = _suspend_resume_engine(bundles, retention_limit=1)
+    # opt in: anything suspended for more than an hour is evictable
+    engine.observation = engine.observation.model_copy(update={"evict_suspended_after_s": 3600.0})
+
+    goal = WorkflowGoal(workflow_type="seg_flow", objective="old", metadata={"run_id": "aged-run"})
+    aged = await engine.run("seg_flow", {}, goal=goal)
+    assert aged.status == "requires_user_input"
+    # age the suspension two hours into the past (meta timestamp is the sweep's clock)
+    meta_path = bundles / "aged-run" / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["timestamp"] = (
+        (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat().replace("+00:00", "Z")
+    )
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+    fresh_goal = WorkflowGoal(workflow_type="seg_flow", objective="f", metadata={"run_id": "fresh-run"})
+    fresh = await engine.run("seg_flow", {}, goal=fresh_goal)  # suspended NOW (inside cap)
+    for index in (0, 1):
+        goal_n = WorkflowGoal(
+            workflow_type="plain_flow", objective="n", metadata={"run_id": f"done-{index}"}
+        )
+        await engine.run("plain_flow", {}, goal=goal_n)  # terminal groups -> sweep fires
+
+    names = {p.name for p in bundles.iterdir() if (p / "meta.json").exists()}
+    assert "aged-run" not in names, f"over-cap suspended group must rotate out: {names}"
+    assert "fresh-run" in names, "a suspended group INSIDE the cap stays protected"
+    # resumability is untouched: the aged run's snapshot still resumes fine
+    resumed = await engine.resume(aged.snapshot, "late answer")
+    assert resumed.status == "completed", "eviction sacrifices viewer history, never the wait"

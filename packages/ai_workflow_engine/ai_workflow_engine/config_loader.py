@@ -78,6 +78,14 @@ class ObservationConfig(BaseModel):
     enabled: bool = False
     bundle_dir: str = "data/observations"
     retention_limit: Optional[int] = None
+    # R4 (user-settled policy, 2026-07-12): suspended (in-flight) observation groups are
+    # NEVER evicted by default — deleting them would erase a resumable wait's history.
+    # OPT-IN cap: groups suspended longer than this many seconds become evictable by the
+    # normal retention sweep (which runs at every finalize — no engine timer). Eviction
+    # sacrifices VIEWER history only, never resumability: the machine snapshot lives in
+    # the wait coordinator, so a late answer still resumes; its grouped view is then
+    # partial and the reader says so loudly.
+    evict_suspended_after_s: Optional[float] = None
     capture: Literal["off", "full"] = "full"
     # G1 evidence resolution: "copy" archives run artifacts (screenshots, dumps, salvage)
     # into each bundle so EvidenceRefs stay resolvable for dashboards; artifacts prune

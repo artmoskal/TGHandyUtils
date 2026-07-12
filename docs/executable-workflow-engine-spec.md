@@ -602,6 +602,57 @@ requires a deliberate, user-approved decision — never drift:
 | `test.sh` `-k "a or b"` word-split bug | Workaround = paths/single tokens | Next time someone touches test.sh |
 | Done & closed | Media/voice → `ai_workflow_tools.media` (v0.4.0) · `workflow_capability` adapter · durable resume · planner depth ≥2 · executor split · `AgentRunRequest.metadata` passthrough (v0.4.1) · T1 memory seam/store · canonical memory modes · S0 non-default memory replay proof · `validate_graph`/`build_definition_from_artifact` decomposition · `_images_from_output` fail-loud complexity cleanup · runtime observability graph + full byte-free detail capture (v0.5.0) · H1 `NodeExecutionServices` boundary + contract guard batch · H2 `WorkflowRunSession` per-run lifecycle · H3 usage/accounting split behind the `usage` facade (v0.6.1, 823 tests + real-model smoke) · v0.6.2 fix wave: definition digest + (id,digest) compile/registry coherence · nested-suspension loud rejection (stage-1; nested snapshots future/named-consumer) · session-buffer envelope trace (sink-independent) · fanout planner cumulative budget · truthful bundle finalization on Anki post-validation failure · session-bundle finalize contract (830 tests) · v0.7.0: G-0 CLI-runtime correctness (chunked external-process stream read — no 64KiB single-line crash; per-call-type tool policy: text-only console completions run `--tools ""`, staged vision keeps scoped `Read(./inputs/**)`, `CliAgentRequest.allowed_tools` tri-state `None`→`DEFAULT_AGENT_TOOLS`/`[]`→no-tools/list→exact; Bash-in-default honesty — spec auto-declares `workspace_write`+`external_call`, pre-spawn denial when undeclared, owner decision 2026-07-04) · G-T described tool catalog + presets (`ai_workflow_tools.TOOL_CATALOG`/`render_tool_catalog`/`register_from_catalog`, completeness guard, `READ_ONLY`/`WEB`/`INVESTIGATION`/`NO_TOOLS`, media capability wrappers) · G-S one-call façade (`run_single_llm`/`run_single_step` over the real engine — usage/trace/budget intact, loud failures, reuse-safe slots) · v0.6.3: PromptRef/PromptRenderService strict prompt files (Jinja optional dialect) + StructuredLLMNode ref mode · single bundle owner (engine.run observation_bundle= + terminal_status hook) · reserved-state-key guard · post-review: plan-cache invalidation on re-register, terminal-status/result coherence (raising hook finalizes failed), resume preserves goal/run identity in the snapshot · validation edges: hook cannot fabricate suspension without a snapshot, resume overrides are strict (full goal fork or nothing) · v0.6.4: config-first observation — typed `observation:` config section, engine auto-opens/routes/finalizes/prunes per-run bundles, `result.observation_bundle_path`, product bundle plumbing deleted (856 tests) · v0.6.5: evidence resolution (G1) — run artifacts archived into the bundle (`artifacts/` + `artifacts.json` manifest: source_path->bundle_path, sha256, honest skip_reason), EvidenceRefs dashboard-resolvable, artifacts prune WITH the bundle (single retention policy), `ObservationConfig.artifacts`/`artifact_max_bytes` knobs, `WorkflowArtifact` exported · V1: MCP startup failure proven loud (failed episode + stderr diagnostic, test-backed) · v0.6.6: plain-client dispatch fixes (first-execution family probe + profile-resolved client invoked/attributed — codex ship-review), honest provider on FAILED usage events, billed-vs-subscription captions (money honesty), additive provider= on metering APIs · v0.8.0: GoPro P1 memory wave — `StructuredStateMemory` (pure reducer + `reducer_label`, state block = last memory-produced message with pinned repair-round order, byte-free LOUD validation, AC-S2 weak-model anti-repeat behavioral proof) · `WindowedMemory` (last-N; dropped-turn notice = activity tally + bounded output excerpts) · `CompactingMemory` (token threshold, rule-based default compactor, pluggable) · nested base config + strict unknown-option rejection on ALL modes · `memory:projection` gains state_chars/reducer_label · per-NODE `memory=` (builder step kwarg → validate_graph loud → context metadata → planner per-call resolve) · v0.8.1: memory/checkpoint hardening — one shared byte-safety guard for reducer output, rendered prompt state, and checkpoint payloads; bytes/ImageInput/data-URI prompt media/iterators/unsafe keys/opaque objects fail loudly; unsafe `CompactingMemory(inner=StructuredStateMemory)` rejected; compaction wording no longer overclaims finding preservation; R4 end-to-end memory wiring and mid-range compaction threshold tests added | — |
 
+## 12b. DURABLE WAITS + OBSERVATION SEGMENTS (v0.9 branch — IMPLEMENTED ON BRANCH, NOT SHIPPED/TAGGED)
+
+Status: implemented and independently reviewed on `polish/workflow-engine`; consumers keep
+pinning **engine-v0.8.1** until the v0.9.0 tag exists. Migration is a breaking-but-mechanical
+edit: every `.human(node)` MUST declare a wait policy — `.human(node,
+wait_policy=LocalWaitPolicy())` keeps exactly the v0.8 suspend/resume semantics;
+`.human(node, wait_policy=DurableWaitPolicy(timeout_s=...), timeout_to="<node>")` makes the
+wait durable and REQUIRES a declared timeout transition (machine-as-data: the timeout route
+is graph structure, rendered in viz).
+
+**Ownership split (binding).** The ENGINE owns wait identity, registration, claim/lease
+(CAS), bounded resume attempts, terminalization, terminal evidence, and trace. The PRODUCT
+owns storage (a `WaitCoordinator` adapter — validate it with
+`ai_workflow_engine.testing.wait_contract.run_wait_registration_conformance`, which covers
+the FULL lifecycle), event delivery (outbox), and ALL clocks/schedules: the engine never
+self-fires. The product loop is: `due(now)` → deliver timeout events;
+`stalled(now)` / `health().stalled` → redeliver the accepted event or `engine.cancel_wait`.
+
+**Guarantee wording (binding, never "exactly-once"):** deduplicated event acceptance +
+single active claimant (CAS/lease) + at-least-once crash recovery with idempotent effects;
+a terminalized claim never re-executes. Accepted-event identity is FROZEN across lease
+recovery (`not_accepted` for other events); post-wait capabilities key external writes on
+`context.metadata["wait_idempotency"]` (= `wait_id:event_id`). Budgets are cumulative
+across suspension (restored summary).
+
+**Doors.** Durable suspension returns a `WaitHandle` ONLY (no snapshot); the one
+continuation door is `await engine.deliver_wait_event(wait_id, event)` → typed
+`WaitDeliveryOutcome` (`executed|duplicate|already_processing|not_accepted|terminal|
+rejected|attempts_exhausted`, plus `terminal_observation=recorded|failed|skipped` — a
+failed evidence write is visible and repaired by any redelivery). Local waits keep the
+public `engine.resume(snapshot, event)` door unchanged.
+
+**Observation segments (bundle schema, additive v1).** A suspended→resumed run is a GROUP
+of immutable segments under one logical `run_id`: meta gains `segment_id` (physical dir
+key), `segment_index` (LOGICAL position), `segment_kind`
+(`initial|resume|wait_terminal`), `attempt` (durable claim ordinal), `definition_digest`,
+`usage_totals_scope`. Lifecycle is append-only markers inside the segment dir:
+`commit.json` (durable attempt promoted canonical after terminalization) and
+`abandoned.json` (dead attempt demoted); `meta.json` is write-once. Readers
+(`FileEventSource.read_group` / `list_groups` / the served viewer) select ONE canonical
+attempt per contiguous logical index; non-canonical attempts stay inspectable
+(`abandoned|superseded|provisional`) and their spend counts in the ACTUAL totals
+(actual = canonical + non-canonical; money never disappears). v0.8.1 bundles read as
+groups of one.
+
+**Retention (user-settled policy).** Suspended (in-flight) groups are NEVER evicted by
+default. Opt-in: `ObservationConfig.evict_suspended_after_s` makes groups suspended longer
+than the cap evictable at the normal finalize-time sweep (no engine timer). Eviction
+sacrifices VIEWER history only — the wait stays resumable (snapshot lives in the
+coordinator); its later group view is partial and the reader says so loudly.
+
 ## 13. STATUS — EXISTS vs INTENDED (read this before building on a promise)
 | Area | Status |
 |---|---|
