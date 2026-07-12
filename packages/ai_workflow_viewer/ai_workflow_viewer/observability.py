@@ -478,7 +478,11 @@ def _rich_graph_css() -> str:
 .graph-hint { font-size: 13px; color: #52606d; margin-bottom: 8px; }
 .rich-graph-scroll { max-height: 72vh; border: 1px solid #cbd5e1; background: #f8fafc; overflow: auto; position: relative; }
 .rich-graph { position: relative; width: var(--canvas-width); height: var(--canvas-height); min-width: 100%; min-height: 520px; }
-.rich-edge-layer { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+/* NEVER stretch this layer: its viewBox is the FIXED canvas coordinate space the
+   absolutely-positioned node cards live in; CSS 100% sizing on a wider window would
+   rescale+center the edges away from the nodes (min-width:100% grows .rich-graph).
+   The width/height ATTRIBUTES set in renderEdges keep it identity-mapped. */
+.rich-edge-layer { position: absolute; left: 0; top: 0; pointer-events: none; overflow: visible; }
 .rich-edge { fill: none; stroke: #7b8794; stroke-width: 1.4; opacity: 0.78; }
 .rich-edge.decision { stroke-dasharray: 4 3; }
 .rich-edge-label { fill: #334e68; font-size: 11px; paint-order: stroke; stroke: #f8fafc; stroke-width: 3px; stroke-linejoin: round; }
