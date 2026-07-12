@@ -47,7 +47,9 @@ def run_fake_cli(fake_cli_path):
             text=True,
             capture_output=True,
             env=env,
-            timeout=2,
+            # 20s: generous for a trivial subprocess, immune to parallel docker-build
+            # load (this flaked 3x on 2026-07-12 at 2s, passing isolated every time)
+            timeout=20,
             check=False,
         )
         return completed, record_path, workspace
