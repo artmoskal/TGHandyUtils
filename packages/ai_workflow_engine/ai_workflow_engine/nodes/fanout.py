@@ -55,11 +55,15 @@ def build_fanout_node(services, definition: WorkflowDefinition, node: WorkflowNo
         calls = [CapabilityCall(item_capability, item) for item in items]
         results = await gather_capabilities(services.runtime, calls, context, max_parallel=limit)
         outputs = [r.output for r in results if r.status in ("accepted", "partial") and r.output is not None]
+        accepted = [r for r in results if r.status == "accepted"]
+        partials = [r for r in results if r.status == "partial"]
         failures = [r for r in results if r.status not in ("accepted", "partial")]
-        # Partial-failure isolation: parent keeps successes; a wholesale failure halts.
-        if failures and not outputs:
+        # Partial-failure isolation: parent keeps successes; a wholesale failure halts. v0.10:
+        # a timed-out child is PARTIAL (bounded work stopped), so a partial child keeps the
+        # parent partial even without a hard failure — the incomplete work is never hidden.
+        if failures and not (accepted or partials):
             status = "failed"
-        elif failures:
+        elif failures or partials:
             status = "partial"
         else:
             status = "accepted"
@@ -67,8 +71,17 @@ def build_fanout_node(services, definition: WorkflowDefinition, node: WorkflowNo
             status=status,
             output=outputs,
             artifacts=[artifact for r in results for artifact in r.artifacts],
-            error="; ".join(f.error for f in failures if f.error) or None if failures else None,
-            metadata={"total": len(items), "succeeded": len(outputs), "failed": len(failures)},
+            error=(
+                "; ".join(r.error for r in (failures + partials) if r.error) or None
+                if (failures or partials)
+                else None
+            ),
+            metadata={
+                "total": len(items),
+                "succeeded": len(accepted),
+                "partial": len(partials),
+                "failed": len(failures),
+            },
         )
         update = services.record(state, node, combined, attempts=1, input_payload=items)
         services.runtime.trace_sink.record(
@@ -77,7 +90,8 @@ def build_fanout_node(services, definition: WorkflowDefinition, node: WorkflowNo
                 decision="fanout",
                 metadata={
                     "total": len(items),
-                    "succeeded": len(outputs),
+                    "succeeded": len(accepted),
+                    "partial": len(partials),
                     "failed": len(failures),
                     "max_parallel": limit,
                 },

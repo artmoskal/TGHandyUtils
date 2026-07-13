@@ -698,9 +698,11 @@ async def test_gather_capabilities_records_timeout_as_partial_failure():
         max_parallel=3,
     )
 
-    assert [result.status for result in results] == ["accepted", "failed", "accepted"]
-    assert results[1].error == "TimeoutError"
-    assert any(event.node == "slow" and event.decision == "failed" for event in trace.events)
+    # v0.10: a timed-out gather item is PARTIAL (bounded), carrying the execution-window reason.
+    assert [result.status for result in results] == ["accepted", "partial", "accepted"]
+    assert "execution window" in results[1].error
+    assert results[1].metadata.get("timeout_reason") == "execution_window_exceeded"
+    assert any(event.node == "slow" and event.decision == "partial" for event in trace.events)
 
 
 async def test_capability_runtime_denies_disallowed_side_effect_before_handler_call():
@@ -2787,12 +2789,14 @@ async def test_fanout_gather_isolates_partial_failure():
     )
     result = await engine.run("fanout_demo", None)
 
-    # Parent receives partial results; the timed-out child is isolated.
+    # Parent receives partial results; the timed-out child is isolated as PARTIAL (v0.10:
+    # a capability timeout is bounded/partial, not a hard failure).
     assert result.status == "partial"
     assert sorted(result.output) == [10, 30]
     fan_event = next(e for e in result.trace if e.decision == "fanout")
     assert fan_event.metadata["succeeded"] == 2
-    assert fan_event.metadata["failed"] == 1
+    assert fan_event.metadata["partial"] == 1
+    assert fan_event.metadata["failed"] == 0
     # Per-child trace: each worker invocation recorded a start event.
     assert sum(1 for e in result.trace if e.node == "worker" and e.decision == "start") == 3
 

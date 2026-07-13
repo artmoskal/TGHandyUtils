@@ -237,8 +237,9 @@ async def test_capability_timeout_enforced_on_slow_callable():
 
     result = await engine.run("classifier", "a mug")
 
-    assert result.status == "failed"
-    assert any(e.node == "classify" and e.decision == "failed" for e in result.trace)
+    # v0.10: a capability timeout is truthful PARTIAL (bounded work stopped), not failed.
+    assert result.status == "partial"
+    assert any(e.node == "classify" and e.decision == "partial" for e in result.trace)
 
 
 async def test_pre_parse_cleaners_apply_to_callable_output():

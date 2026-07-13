@@ -237,4 +237,4 @@ async def test_capability_timeout_applies_to_vision_call():
     builder.register_workflow(WorkflowBuilder("frame_inspection").step("inspect_frame").build())
     result = await builder.build().run("frame_inspection", {"frame_id": "f", "images": []})
 
-    assert result.status == "failed"
+    assert result.status == "partial"  # v0.10: capability timeout is partial

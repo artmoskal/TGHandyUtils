@@ -48,6 +48,7 @@ from ai_workflow_engine.nodes import NODE_HANDLERS
 from ai_workflow_engine.run_session import WorkflowRunSession
 from ai_workflow_engine._runtime_state import (
     CONTEXT,
+    current_run_session,
     RUNNING_PAYLOAD,
     observation_capture_scope,
     run_session_scope,
@@ -306,6 +307,9 @@ class WorkflowExecutor:
         # Top-level run: WorkflowRunner installs the usage/budget scope + lifecycle logging.
         try:
             with observation_capture_scope(self.runtime.observation), run_session_scope(session):
+                session.start_execution_window(
+                    run_timeout_s=context.limits.timeout_s if context.limits else None
+                )
                 # Run-birth provenance (R7+R12+R-C2-2): engine-owned and UNFORGEABLE from the
                 # public surface — no run() parameter carries it. run_authored_flow stages the
                 # typed payload in a module-private context variable; the executor CONSUMES it
@@ -514,6 +518,10 @@ class WorkflowExecutor:
         )
         try:
             with observation_capture_scope(self.runtime.observation), run_session_scope(session):
+                session.start_execution_window(
+                    run_timeout_s=context.limits.timeout_s if context.limits else None,
+                    prior_active_elapsed_s=getattr(snapshot, "active_elapsed_s", 0.0) or 0.0,
+                )
                 # Recorded inside the session scope so the resumed-run envelope carries it too.
                 self.runtime.trace_sink.record(
                     WorkflowTraceEvent(
@@ -1115,6 +1123,11 @@ class WorkflowExecutor:
                 else None
             ),
             segment_index=getattr(segment, "segment_index", None),
+            active_elapsed_s=(
+                _sess.active_elapsed_s()
+                if (_sess := current_run_session()) is not None
+                else 0.0
+            ),
             durable_wait_id=durable_wait_id,
         )
 

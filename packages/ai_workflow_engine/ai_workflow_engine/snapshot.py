@@ -55,6 +55,11 @@ class MachineSnapshot(BaseModel):
     # resume door rejects it; only the engine's claimed delivery path (which validates an
     # unforgeable in-flight claim) may execute it. None = local wait, public resume as ever.
     durable_wait_id: Optional[str] = None
+    # v0.10: cumulative ACTIVE run-budget already consumed when this snapshot was captured,
+    # as a DURATION in seconds (never a monotonic timestamp — those are process-local and
+    # unsafe to persist). Resume rebuilds the run deadline from the remaining active budget,
+    # so time spent suspended at the gate does not count against the run timeout.
+    active_elapsed_s: float = 0.0
 
     def to_json(self) -> str:
         """Serialize for cross-process resume. Raises loudly on non-serializable payloads."""

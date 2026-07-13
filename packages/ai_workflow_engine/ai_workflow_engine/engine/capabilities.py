@@ -26,7 +26,11 @@ from ai_workflow_engine.models import (
     WorkflowTraceEvent,
     WorkflowUsageSummary,
 )
-from ai_workflow_engine._runtime_state import current_workflow_run_context
+from ai_workflow_engine._runtime_state import current_run_session, current_workflow_run_context
+from ai_workflow_engine.execution_window import (
+    ExecutionWindowInputs,
+    resolve_execution_window,
+)
 from ai_workflow_engine.observability_capture import ObservationCapture
 from ai_workflow_engine.usage import check_budget_before_call
 
@@ -290,6 +294,15 @@ class RuntimePlanCompiler:
         )
 
 
+class _ExecutionTimeout(Exception):
+    """A capability exceeded its resolved execution window. Carries the window so the outcome
+    can be recorded as a truthful PARTIAL (bounded work stopped), not an anonymous failure."""
+
+    def __init__(self, message: str, *, window: Any = None) -> None:
+        super().__init__(message)
+        self.window = window
+
+
 class CapabilityRuntime:
     """Invoke registered capabilities with validation, timeout, result envelope, and trace."""
 
@@ -371,10 +384,38 @@ class CapabilityRuntime:
                 return rejected
             if spec.kind in {"agent", "external"}:
                 check_budget_before_call(spec.kind, name)
+
+            # v0.10 execution window: intersect the capability limit with the run's REMAINING
+            # active budget (owned by the session). The resolved decision is carried on the
+            # context for the handler to inspect, then enforced by kind below.
+            session = current_run_session()
+            window = resolve_execution_window(
+                ExecutionWindowInputs(
+                    capability_timeout_s=spec.timeout_s,
+                    run_remaining_s=session.run_remaining_s() if session is not None else None,
+                )
+            )
+            context = context.model_copy(update={"execution_window": window})
+            hard = window.hard_timeout_s
+
+            # A run whose deadline has ALREADY passed must not start new work.
+            if hard is not None and hard <= 0:
+                raise _ExecutionTimeout(
+                    f"run execution window exhausted before capability '{name}' could start"
+                )
+
             result = handler(context, parsed_payload)
             if inspect.isawaitable(result):
-                if spec.timeout_s:
-                    result = await asyncio.wait_for(result, timeout=spec.timeout_s)
+                # Async handlers are cooperatively cancellable: wait_for cancels the coroutine
+                # at the hard boundary (2.3 seals process-mode kill/reap + inline rejection).
+                if hard is not None:
+                    try:
+                        result = await asyncio.wait_for(result, timeout=hard)
+                    except asyncio.TimeoutError as timeout_exc:
+                        raise _ExecutionTimeout(
+                            f"capability '{name}' exceeded its {hard:g}s execution window",
+                            window=window,
+                        ) from timeout_exc
                 else:
                     result = await result
             output = self._normalize_result(spec, result)
@@ -402,6 +443,42 @@ class CapabilityRuntime:
                 )
             )
             return output
+        except _ExecutionTimeout as timeout_exc:
+            # v0.10: timeout is honest PARTIAL machine data — the work was bounded and stopped,
+            # its already-incurred usage stays counted, and the window rides in metadata.
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            error = str(timeout_exc)
+            timeout_event_id = str(uuid.uuid4())
+            window_meta = (
+                timeout_exc.window.model_dump() if timeout_exc.window is not None else None
+            )
+            self._record(
+                WorkflowTraceEvent(
+                    node=name,
+                    attempt=attempt,
+                    decision="partial",
+                    error=error,
+                    elapsed_ms=elapsed_ms,
+                    phase="tool:result",
+                    severity="error",
+                    event_id=timeout_event_id,
+                    metadata={
+                        "timeout_reason": "execution_window_exceeded",
+                        **({"execution_window": window_meta} if window_meta else {}),
+                    },
+                    detail_refs=self._record_tool_error(
+                        spec, decision="partial", error=error, event_id=timeout_event_id
+                    ),
+                )
+            )
+            return CapabilityResult(
+                status="partial",
+                error=error,
+                metadata={
+                    "timeout_reason": "execution_window_exceeded",
+                    **({"execution_window": window_meta} if window_meta else {}),
+                },
+            )
         except Exception as exc:
             error = str(exc) or exc.__class__.__name__
             elapsed_ms = int((time.monotonic() - start) * 1000)

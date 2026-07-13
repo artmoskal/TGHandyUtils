@@ -14,8 +14,9 @@ per-run state; isolation is proven by ``tests/test_run_session.py``.
 
 from __future__ import annotations
 
+import time
 import uuid
-from typing import Any, List, Optional
+from typing import Any, Callable, List, Optional
 
 from ai_workflow_engine._runtime_state import current_run_session
 from ai_workflow_engine.models import (
@@ -153,6 +154,53 @@ class WorkflowRunSession:
         self.trace_events: List[WorkflowTraceEvent] = []
         self.run_context = self._derive_run_context(workflow_id, context)
         self._closed = False
+        # v0.10 run execution window: the session owns the run's monotonic deadline and the
+        # cumulative ACTIVE elapsed budget. `_clock` is a monotonic source (injectable for
+        # tests). We store a DEADLINE for O(1) remaining-time reads plus `_active_elapsed_s`
+        # so a snapshot persists elapsed DURATION (never a monotonic timestamp) and resume
+        # rebuilds the deadline from the remaining active budget — time spent suspended at a
+        # human/durable gate does not consume it.
+        self._clock: Callable[[], float] = time.monotonic
+        self._run_timeout_s: Optional[float] = None
+        self._deadline_monotonic: Optional[float] = None
+        self._active_elapsed_s: float = 0.0
+
+    def start_execution_window(
+        self,
+        *,
+        run_timeout_s: Optional[float],
+        clock: Optional[Callable[[], float]] = None,
+        prior_active_elapsed_s: float = 0.0,
+    ) -> None:
+        """Open (or reopen on resume) the run's active execution window. ``run_timeout_s`` is
+        the TOTAL active budget; ``prior_active_elapsed_s`` is what a resumed run already
+        spent active (0 for a fresh run). The remaining active budget bounds the deadline."""
+
+        if clock is not None:
+            self._clock = clock
+        self._run_timeout_s = run_timeout_s
+        self._active_elapsed_s = prior_active_elapsed_s
+        if run_timeout_s is None:
+            self._deadline_monotonic = None
+            return
+        remaining = max(0.0, run_timeout_s - prior_active_elapsed_s)
+        self._deadline_monotonic = self._clock() + remaining
+
+    def run_remaining_s(self) -> Optional[float]:
+        """Remaining ACTIVE run budget in seconds, or None if the run is unbounded."""
+
+        if self._deadline_monotonic is None:
+            return None
+        return max(0.0, self._deadline_monotonic - self._clock())
+
+    def active_elapsed_s(self) -> float:
+        """Cumulative active time consumed so far (for snapshot persistence). Suspended
+        wall-time is excluded because the deadline is only live while the session runs."""
+
+        if self._deadline_monotonic is None or self._run_timeout_s is None:
+            return self._active_elapsed_s
+        consumed = self._run_timeout_s - max(0.0, self._deadline_monotonic - self._clock())
+        return min(self._run_timeout_s, max(self._active_elapsed_s, consumed))
 
     @staticmethod
     def _derive_run_context(workflow_id: str, context: CapabilityContext) -> WorkflowRunContext:

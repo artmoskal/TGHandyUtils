@@ -151,6 +151,35 @@ async def test_run_timeout_actually_bounds_slow_async_work():
         "RuntimeLimits(timeout_s=0.3) must bound a 1.5s capability — v0.9.2 declared the "
         "limit but never enforced it, so the run completed"
     )
+    # the timeout is truthful PARTIAL machine data, not an anonymous failure
+    node = result.node("slow")
+    assert result.status == "partial"
+
+
+async def test_timeout_bounds_are_recomputed_from_run_remaining_across_a_capability_limit():
+    """Phase 2.2: the run-remaining budget and the capability limit intersect — the tighter
+    of the two bounds the work, and a run near its deadline stops sooner than the cap limit."""
+
+    import asyncio
+
+    async def slow(_ctx, _payload):
+        await asyncio.sleep(1.0)
+        return {"done": True}
+
+    # capability limit is generous (5s) but the run limit is tight (0.3s) → run limit wins
+    from ai_workflow_engine import CapabilitySpec
+
+    engine = (
+        WorkflowEngineBuilder()
+        .with_profile(_profile("bounded_by_run", timeout_s=0.3))
+        .register_capability(
+            "slow", slow, spec=CapabilitySpec(name="slow", kind="deterministic", timeout_s=5.0)
+        )
+        .register_workflow(WorkflowBuilder("bounded_by_run").step("slow").build())
+        .build()
+    )
+    result = await engine.run("bounded_by_run", {})
+    assert result.status == "partial", "the tighter RUN limit must bound the work, not the 5s cap"
 
 
 async def test_retraced_capability_receives_typed_provenance():
