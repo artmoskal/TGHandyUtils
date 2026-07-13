@@ -8,7 +8,8 @@ import logging
 from pathlib import Path
 import time
 import uuid
-from typing import Any, Callable, Iterable, NamedTuple, Protocol
+from contextvars import ContextVar
+from typing import Any, Callable, Iterable, NamedTuple, Optional, Protocol
 
 from pydantic import ValidationError
 
@@ -294,6 +295,30 @@ class RuntimePlanCompiler:
         )
 
 
+# v0.10 #4: an object with an async ``__call__`` is an async handler too — a bare
+# iscoroutinefunction(handler) misses HumanClarificationCapability / agent capability objects.
+def _handler_is_async(handler: Any) -> bool:
+    if inspect.iscoroutinefunction(handler):
+        return True
+    call = getattr(handler, "__call__", None)
+    return bool(call is not None and inspect.iscoroutinefunction(call))
+
+
+# v0.10 #6a: the SOFT deadline (monotonic) of the currently-executing bounded invocation, so a
+# NESTED invocation (subworkflow/child-plan capability) can only SHORTEN the window, never
+# extend it. Set around the handler call, read by the resolver as parent_soft_remaining_s.
+_ACTIVE_PARENT_SOFT_DEADLINE: "ContextVar[Optional[float]]" = ContextVar(
+    "workflow_active_parent_soft_deadline", default=None
+)
+
+
+def _parent_soft_remaining_s() -> Optional[float]:
+    deadline = _ACTIVE_PARENT_SOFT_DEADLINE.get()
+    if deadline is None:
+        return None
+    return max(0.0, deadline - time.monotonic())
+
+
 class _ExecutionTimeout(Exception):
     """A capability exceeded its resolved execution window. Carries the window so the outcome
     can be recorded as a truthful PARTIAL (bounded work stopped), not an anonymous failure."""
@@ -391,15 +416,21 @@ class CapabilityRuntime:
             if spec.kind in {"agent", "external"}:
                 check_budget_before_call(spec.kind, name)
 
-            # v0.10 execution window: intersect the capability limit with the run's REMAINING
-            # active budget (owned by the session). The resolved decision is carried on the
-            # context for the handler to inspect, then enforced by kind below.
+            # v0.10 execution window. Determine the enforcement mode FIRST (an object with an
+            # async __call__ is async too — #4), so the RESOLVED, PERSISTED decision carries the
+            # truthful enforcement (#2). Intersect the capability limit + run-remaining + any
+            # per-task request the planner attached (#3).
             session = current_run_session()
+            is_async = _handler_is_async(handler)
+            enforcement = spec.resolved_timeout_enforcement(is_async=is_async)
             window = resolve_execution_window(
                 ExecutionWindowInputs(
+                    request=context.execution_request,
                     capability_timeout_s=spec.timeout_s,
                     run_remaining_s=session.run_remaining_s() if session is not None else None,
-                )
+                    parent_soft_remaining_s=_parent_soft_remaining_s(),
+                ),
+                enforcement=enforcement,
             )
             context = context.model_copy(update={"execution_window": window})
             hard = window.hard_timeout_s
@@ -411,12 +442,6 @@ class CapabilityRuntime:
                     window=window,
                 )
 
-            # v0.10 interruptibility honesty: decide HOW this window may be enforced BEFORE
-            # the handler runs, so an uninterruptible inline capability with a DECLARED hard
-            # window is refused rather than run-then-falsely-reported-as-stopped.
-            enforcement = spec.resolved_timeout_enforcement(
-                is_async=inspect.iscoroutinefunction(handler)
-            )
             declared_bound = bool(
                 {"task_request", "capability_limit"} & set(window.limiting_sources)
             )
@@ -428,12 +453,24 @@ class CapabilityRuntime:
                     window=window,
                 )
 
-            result = handler(context, parsed_payload)
-            if inspect.isawaitable(result):
-                if hard is not None and enforcement in ("cooperative", "process"):
-                    result = await self._run_bounded(name, result, hard, window)
-                else:
-                    result = await result
+            # Publish THIS invocation's soft deadline so nested subworkflow/child-plan calls
+            # are bounded by our remaining soft budget (they can only shorten it).
+            soft = window.soft_timeout_s
+            parent_token = (
+                _ACTIVE_PARENT_SOFT_DEADLINE.set(time.monotonic() + soft)
+                if soft is not None
+                else None
+            )
+            try:
+                result = handler(context, parsed_payload)
+                if inspect.isawaitable(result):
+                    if hard is not None and enforcement in ("cooperative", "process"):
+                        result = await self._run_bounded(name, result, hard, window)
+                    else:
+                        result = await result
+            finally:
+                if parent_token is not None:
+                    _ACTIVE_PARENT_SOFT_DEADLINE.reset(parent_token)
             output = self._normalize_result(spec, result)
             elapsed_ms = int((time.monotonic() - start) * 1000)
             result_event_id = str(uuid.uuid4())
@@ -531,10 +568,9 @@ class CapabilityRuntime:
         inner = asyncio.ensure_future(awaitable)
         done, _pending = await asyncio.wait({inner}, timeout=hard)
         if inner in done:
-            raise _CancellationContainmentError(
-                f"capability '{name}' suppressed cancellation at its execution window and "
-                f"returned anyway"
-            )
+            # completed within the window — return its result (or re-raise its own exception,
+            # which the caller maps to a normal failure, NOT a timeout).
+            return inner.result()
         inner.cancel()
         try:
             await asyncio.wait_for(asyncio.shield(inner), timeout=self._CANCEL_GRACE_S)
@@ -554,7 +590,11 @@ class CapabilityRuntime:
                 window=window,
             )
         else:
-            return inner.result()
+            # cancelled but returned a value anyway → suppression → containment FAILURE.
+            raise _CancellationContainmentError(
+                f"capability '{name}' suppressed cancellation at its execution window and "
+                f"returned anyway"
+            )
 
     _CANCEL_GRACE_S = 1.0
 

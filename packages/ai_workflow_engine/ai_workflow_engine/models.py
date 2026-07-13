@@ -639,18 +639,19 @@ class CapabilitySpec(BaseModel):
             self.output_schema_name = self.output_model.__name__
 
     def resolved_timeout_enforcement(self, *, is_async: bool) -> "TimeoutEnforcement":
-        """The effective enforcement mode for THIS invocation: an explicit declaration wins;
-        otherwise external work is process-backed, an async handler is cooperatively
-        cancellable, and a synchronous handler is uninterruptible (``none``)."""
+        """The effective enforcement mode for THIS invocation: an EXPLICIT declaration wins;
+        otherwise an async handler is cooperatively cancellable and a synchronous handler is
+        uninterruptible (``none``). NOTE: ``kind == "external"`` does NOT imply process-backed —
+        a database/write adapter is external but owns no killable subprocess; only a capability
+        that DECLARES ``timeout_enforcement="process"`` (or the real ExternalProcessCapability,
+        wired to the engine window in Phase 3) is process-backed."""
 
         if self.timeout_enforcement is not None:
             return self.timeout_enforcement
-        if self.kind == "external":
-            return "process"
         return "cooperative" if is_async else "none"
 
 
-from ai_workflow_engine.execution_window import ExecutionWindowDecision, TimeoutEnforcement
+from ai_workflow_engine.execution_window import ExecutionWindowDecision, TaskExecutionRequest, TimeoutEnforcement
 
 
 class CapabilityContext(BaseModel):
@@ -670,6 +671,9 @@ class CapabilityContext(BaseModel):
     retrace_provenance: Optional["RetraceProvenance"] = None
     # v0.10: the engine's resolved time-limit decision for this invocation (None = unbounded).
     execution_window: Optional["ExecutionWindowDecision"] = None
+    # v0.10 INPUT: a per-invocation task execution request (timeout/reserve/source) the planner
+    # attaches for a planned task; the runtime feeds it to the window resolver as request=.
+    execution_request: Optional["TaskExecutionRequest"] = None
 
 
 class CapabilityResult(BaseModel):

@@ -1,5 +1,6 @@
 """Reusable workflow runner for graph-based AI processing."""
 
+import asyncio
 import inspect
 import json
 import logging
@@ -43,6 +44,8 @@ class WorkflowRunner:
     def __init__(self, config: Any = None, usage_sink: UsageSink | None = None):
         self.config = config
         self.usage_sink = usage_sink
+
+    _GRAPH_FAILSAFE_MARGIN_S = 2.0
 
     async def run(
         self,
@@ -104,9 +107,35 @@ class WorkflowRunner:
             )
             with workflow_run_context_scope(ctx), workflow_usage_scope(usage_context):
                 try:
-                    result = await self._invoke_graph(graph, state, graph_config)
+                    # v0.10 #6b graph-level fail-safe: a hang OUTSIDE a capability (a node's own
+                    # async code, an uninterruptible `none` handler that runs unbounded) is not
+                    # caught by per-capability enforcement. When the run declares a timeout, bound
+                    # the WHOLE active invocation by that budget plus a generous margin, so honest
+                    # per-capability salvage always fires first and only a true hang trips this.
+                    run_timeout = getattr(limits, "timeout_s", None)
+                    if run_timeout is not None:
+                        result = await asyncio.wait_for(
+                            self._invoke_graph(graph, state, graph_config),
+                            timeout=run_timeout + self._GRAPH_FAILSAFE_MARGIN_S,
+                        )
+                    else:
+                        result = await self._invoke_graph(graph, state, graph_config)
                     outcome = derive_workflow_result_status(result)
                     fallback_error: Optional[Exception] = None
+                except asyncio.TimeoutError:
+                    # A hang outside a capability produced nothing salvageable — return a
+                    # truthful FAILED result (observable), not a raised exception.
+                    result = {
+                        **state,
+                        "status": "failed",
+                        "error": (
+                            "run exceeded its execution window and did not stop at any "
+                            "capability boundary — graph-level fail-safe tripped (a hang "
+                            "outside a capability)"
+                        ),
+                    }
+                    outcome = "failed"
+                    fallback_error = None
                 except Exception as exc:
                     if not recursion_fallback or not self._is_recursion_exhaustion(exc):
                         raise

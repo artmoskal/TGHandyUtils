@@ -454,6 +454,10 @@ async def _invoke_plan_task(
             metadata={"denied": denial},
         )
     task_context = services.context_for_node(node, context, state, plan=plan)
+    if task.execution is not None:
+        # v0.10 #3: the planned task's execution request (timeout/reserve/source) feeds the
+        # engine window resolver as request= for THIS invocation.
+        task_context = task_context.model_copy(update={"execution_request": task.execution})
     return await services.runtime.invoke(task.capability, task.payload, task_context, attempt=1)
 
 def _planned_task_denial(

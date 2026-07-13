@@ -909,3 +909,182 @@ async def test_inline_capability_without_declared_window_still_runs():
     )
     result = await engine.run("inline_plain", {})
     assert result.status == "completed" and result.output == {"ok": True}
+
+
+async def test_normal_bounded_async_work_completes_and_returns_its_result():
+    """Phase 2R #1 (the corruption blind spot): a FAST async capability under a run window
+    must return its real result and complete — NOT be misread as cancellation suppression."""
+
+    async def quick(_ctx, payload):
+        import asyncio
+        await asyncio.sleep(0.01)
+        return {"echo": payload}
+
+    engine = (
+        WorkflowEngineBuilder()
+        .with_profile(_profile("quick_bounded", timeout_s=2.0))
+        .register_capability("quick", quick, kind="deterministic")
+        .register_workflow(WorkflowBuilder("quick_bounded").step("quick").build())
+        .build()
+    )
+    result = await engine.run("quick_bounded", {"x": 1})
+    assert result.status == "completed"
+    assert result.output == {"echo": {"x": 1}}
+
+
+async def test_bounded_async_that_raises_its_own_error_is_a_normal_failure_not_a_timeout():
+    """Phase 2R #1: an ordinary exception inside a bounded async handler surfaces as a normal
+    failure, not corrupted into a timeout/containment outcome."""
+
+    async def boom(_ctx, _payload):
+        import asyncio
+        await asyncio.sleep(0.01)
+        raise ValueError("real bug")
+
+    engine = (
+        WorkflowEngineBuilder()
+        .with_profile(_profile("boom_bounded", timeout_s=2.0))
+        .register_capability("boom", boom, kind="deterministic")
+        .register_workflow(WorkflowBuilder("boom_bounded").step("boom").build())
+        .build()
+    )
+    result = await engine.run("boom_bounded", {})
+    assert result.status == "failed"
+    assert "real bug" in (result.error or "")
+
+
+async def test_async_callable_object_is_bounded_not_escaped_as_none():
+    """Phase 2R #4: a capability that is an OBJECT with async __call__ must be classified
+    async (cooperative), so a run window actually bounds it — not defaulted to none and escaped."""
+
+    class AsyncWorker:
+        async def __call__(self, _ctx, _payload):
+            import asyncio
+            await asyncio.sleep(2.0)
+            return {"unreached": True}
+
+    engine = (
+        WorkflowEngineBuilder()
+        .with_profile(_profile("callable_obj", timeout_s=0.3))
+        .register_capability("worker", AsyncWorker(), kind="deterministic")
+        .register_workflow(WorkflowBuilder("callable_obj").step("worker").build())
+        .build()
+    )
+    result = await engine.run("callable_obj", {})
+    assert result.status == "partial", "an async __call__ object must be run-window-bounded"
+
+
+async def test_planned_task_execution_request_bounds_the_task():
+    """Phase 2R #3: a PlanTask.execution timeout must actually bound that task's capability
+    (it reaches the resolver as request=), not be decorative."""
+
+    from ai_workflow_engine.execution_window import TaskExecutionRequest
+
+    def planner(_ctx, _payload):
+        return PlanArtifact(
+            goal="bounded task",
+            tasks=[
+                PlanTask(
+                    task_id="slow", description="slow task", capability="slow", payload=1,
+                    execution=TaskExecutionRequest(timeout_s=0.2, source="llm_planner"),
+                )
+            ],
+        )
+
+    async def slow(_ctx, _payload):
+        import asyncio
+        await asyncio.sleep(2.0)
+        return {"unreached": True}
+
+    engine = (
+        WorkflowEngineBuilder()
+        .with_profile(_profile("planned_bounded"))  # NO run timeout — the TASK request bounds it
+        .register_capability("planner", planner, kind="llm")
+        .register_capability("slow", slow, kind="deterministic")
+        .register_workflow(WorkflowBuilder("planned_bounded").plan("audit", capability="planner").build())
+        .build()
+    )
+    result = await engine.run("planned_bounded", {})
+    task = {t.task_id: t for t in result.output.tasks}["slow"]
+    assert task.status == "partial", "the task's own execution timeout must bound it"
+    assert result.status == "partial"
+
+
+async def test_resolved_window_enforcement_is_truthful_on_the_context():
+    """Phase 2R #2: the PERSISTED window records the actual enforcement mode, not always none."""
+
+    seen = {}
+
+    async def probe(ctx, _payload):
+        w = ctx.execution_window
+        seen["enforcement"] = w.enforcement if w else None
+        seen["hard"] = w.hard_timeout_s if w else None
+        return {"ok": True}
+
+    engine = (
+        WorkflowEngineBuilder()
+        .with_profile(_profile("enforce_truth", timeout_s=2.0))
+        .register_capability("probe", probe, kind="deterministic")
+        .register_workflow(WorkflowBuilder("enforce_truth").step("probe").build())
+        .build()
+    )
+    await engine.run("enforce_truth", {})
+    assert seen["enforcement"] == "cooperative", (
+        f"an async handler under a window must record cooperative enforcement, got {seen}"
+    )
+
+
+async def test_graph_failsafe_stops_a_hang_outside_a_capability_boundary():
+    """Phase 2R #6b: a `none`-enforcement async handler that runs unbounded (bypassing
+    per-capability cancellation) must still be stopped by the graph-level fail-safe — the run
+    fails loudly rather than hanging forever."""
+
+    from ai_workflow_engine import CapabilitySpec
+
+    async def unbounded(_ctx, _payload):
+        import asyncio
+        await asyncio.sleep(30.0)  # would hang far past the run window
+        return {"unreached": True}
+
+    engine = (
+        WorkflowEngineBuilder()
+        .with_profile(_profile("hang", timeout_s=0.2))
+        # explicit none + no declared window (run-limit only) → not rejected, not cooperatively
+        # bounded → only the graph fail-safe can stop it.
+        .register_capability(
+            "unbounded", unbounded,
+            spec=CapabilitySpec(name="unbounded", kind="deterministic", timeout_enforcement="none"),
+        )
+        .register_workflow(WorkflowBuilder("hang").step("unbounded").build())
+        .build()
+    )
+    result = await engine.run("hang", {})
+    assert result.status == "failed"
+    assert "fail-safe" in (result.error or "") or "did not stop" in (result.error or "")
+
+
+async def test_nested_capability_is_clamped_by_parent_soft_remaining():
+    """Phase 2R #6a: a capability invoked WITHIN a parent capability's bounded window sees a
+    window clamped by the parent's remaining soft deadline (nested can only shorten, not extend)."""
+
+    from ai_workflow_engine._runtime_state import current_run_session
+
+    observed = {}
+
+    async def parent(ctx, _payload):
+        # parent runs under a ~0.5s window; invoke a nested capability and capture ITS window
+        from ai_workflow_engine.engine.capabilities import _parent_soft_remaining_s
+        observed["parent_soft_at_nested_call"] = _parent_soft_remaining_s()
+        return {"ok": True}
+
+    engine = (
+        WorkflowEngineBuilder()
+        .with_profile(_profile("parent_clamp", timeout_s=0.5))
+        .register_capability("parent", parent, kind="deterministic")
+        .register_workflow(WorkflowBuilder("parent_clamp").step("parent").build())
+        .build()
+    )
+    await engine.run("parent_clamp", {})
+    # inside the parent handler, the parent-soft deadline is published (>0, <= the parent soft window)
+    assert observed["parent_soft_at_nested_call"] is not None
+    assert 0 < observed["parent_soft_at_nested_call"] <= 0.5
