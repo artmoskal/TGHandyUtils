@@ -1646,3 +1646,40 @@ async def test_stdout_flood_is_drained_bounded_with_truthful_truncation(tmp_path
     assert io_meta is not None, "bounded capture must record process_io truncation accounting"
     assert io_meta["stdout"]["total_bytes"] >= 6 * 1024 * 1024
     assert io_meta["stdout"]["truncated"] is True
+    assert settled.status == "partial"
+    assert "stdout-as-result was truncated" in (settled.error or "")
+
+
+async def test_external_process_dict_request_validates_nested_io_limits(tmp_path):
+    """Serialized workflow inputs can narrow process I/O without constructing engine objects."""
+
+    import sys
+
+    from ai_workflow_engine import ExternalProcessCapability, ProcessIOLimits
+
+    assert ProcessIOLimits is not None  # documented top-level public configuration surface
+    cap = ExternalProcessCapability(
+        io_limits=ProcessIOLimits(
+            max_stdout_bytes=1024,
+            max_stderr_bytes=1024,
+            max_result_bytes=1024,
+        )
+    )
+    settled = await cap(
+        None,
+        {
+            "command": [sys.executable, "-c", "print('X' * 500)"],
+            "cwd": str(tmp_path),
+            "timeout_s": 10.0,
+            "io_limits": {
+                "max_stdout_bytes": 64,
+                "max_stderr_bytes": 128,
+                "max_result_bytes": 256,
+            },
+        },
+    )
+
+    assert settled.status == "partial"
+    process_io = settled.metadata["process_io"]
+    assert process_io["stdout"]["limit_bytes"] == 64
+    assert process_io["stdout"]["truncated"] is True

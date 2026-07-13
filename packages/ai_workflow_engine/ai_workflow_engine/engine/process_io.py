@@ -28,7 +28,7 @@ from dataclasses import dataclass
 import os
 import stat
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Mapping, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -59,12 +59,21 @@ class ProcessIOLimits(BaseModel):
     max_stderr_bytes: int = Field(default=256 * _KIB, gt=0, strict=True)
     max_result_bytes: int = Field(default=4 * _MIB, gt=0, strict=True)
 
-    def narrow(self, other: Optional["ProcessIOLimits"]) -> "ProcessIOLimits":
+    def narrow(
+        self,
+        other: Optional["ProcessIOLimits | Mapping[str, Any]"],
+    ) -> "ProcessIOLimits":
         """Return a policy no looser than either input — a per-request policy may only tighten
-        the capability's construction-time caps, never enlarge them or select unlimited."""
+        the capability's construction-time caps, never enlarge them or select unlimited.
+
+        Serialized workflow inputs naturally carry nested policy objects as dictionaries. Validate
+        that public shape here so every process-backed caller shares the same strict coercion.
+        """
 
         if other is None:
             return self
+        if not isinstance(other, ProcessIOLimits):
+            other = ProcessIOLimits.model_validate(other)
         return ProcessIOLimits(
             max_stdout_bytes=min(self.max_stdout_bytes, other.max_stdout_bytes),
             max_stderr_bytes=min(self.max_stderr_bytes, other.max_stderr_bytes),

@@ -675,3 +675,5 @@ async def test_cli_agent_bounds_a_stdout_flood_and_surfaces_process_io_truth(
     assert io_meta["stdout"]["truncated"] is True
     assert io_meta["stdout"]["retained_bytes"] <= 2 * 1024 * 1024
     assert len(cap_result.output.text) <= 2 * 1024 * 1024, "retained text must be bounded"
+    assert cap_result.status == "partial"
+    assert cap_result.output.status == "truncated"

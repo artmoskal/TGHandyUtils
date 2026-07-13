@@ -1412,3 +1412,72 @@ def test_process_io_settlement_truth_is_summarized_not_dumped(tmp_path):
     assert "result file: unsafe (symlink)" in page
     # the flood itself is NEVER copied into the page (summary only)
     assert "F" * 10000 not in page
+
+
+def test_raw_detail_surface_uses_the_same_bounded_renderer_as_graph_details():
+    """A large detail appears in graph and raw panes, but neither may duplicate it unbounded."""
+
+    from ai_workflow_engine import WorkflowBuilder
+    from ai_workflow_viewer.observability import build_observation_graph, observation_graph_to_html
+
+    definition = WorkflowBuilder("large-detail").step("probe").build()
+    body = "HEAD-SENTINEL" + ("MIDDLE" * 30_000) + "TAIL-SENTINEL"
+    event = WorkflowTraceEvent(
+        node="probe",
+        phase="tool:result",
+        decision="partial",
+        detail_refs=["large-detail"],
+        run_id="r",
+        sequence=1,
+    )
+    detail = ObservationDetail(
+        detail_id="large-detail",
+        event_id=event.event_id,
+        kind="tool_result",
+        redaction_state="none",
+        text=body,
+        run_id="r",
+        sequence=2,
+    )
+
+    graph = build_observation_graph(definition, [event], [], [detail], run_id="r")
+    page = observation_graph_to_html(definition, graph)
+
+    assert "HEAD-SENTINEL" in page and "TAIL-SENTINEL" in page
+    assert "truncated in this view" in page
+    assert "MIDDLE" * 10_000 not in page
+    assert len(page) < 300_000, f"detail was duplicated into the page without a display cap: {len(page)}"
+
+
+def test_single_detail_body_owner_preserves_structured_json_precedence():
+    """Consolidating the duplicate helper must not change the prior effective rendering order."""
+
+    from ai_workflow_engine import WorkflowBuilder
+    from ai_workflow_viewer.observability import build_observation_graph, observation_graph_to_html
+
+    definition = WorkflowBuilder("structured-detail").step("probe").build()
+    event = WorkflowTraceEvent(
+        node="probe",
+        phase="tool:result",
+        detail_refs=["structured-detail"],
+        run_id="r",
+        sequence=1,
+    )
+    detail = ObservationDetail(
+        detail_id="structured-detail",
+        event_id=event.event_id,
+        kind="tool_result",
+        redaction_state="none",
+        text="legacy-text-must-not-win",
+        json_value={"canonical": "structured-json"},
+        run_id="r",
+        sequence=2,
+    )
+
+    page = observation_graph_to_html(
+        definition,
+        build_observation_graph(definition, [event], [], [detail], run_id="r"),
+    )
+
+    assert "structured-json" in page
+    assert "legacy-text-must-not-win" not in page

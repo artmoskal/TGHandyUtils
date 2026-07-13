@@ -1070,10 +1070,10 @@ def _kind_label(kind: str) -> str:
 
 
 def _detail_body(detail: ObservationDetail) -> str:
-    if detail.text:
-        return detail.text
     if detail.json_value is not None:
         return json.dumps(detail.json_value, indent=2, sort_keys=True, default=str)
+    if detail.text:
+        return detail.text
     if detail.digest:
         return f"digest: {detail.digest}"
     if detail.artifact_id:
@@ -1692,7 +1692,7 @@ def _timeline_row(item: ObservationTimelineEntry, details: Mapping[str, Observat
 
 
 def _detail_row(detail: ObservationDetail) -> str:
-    body = _detail_body(detail)
+    body = _bounded_detail_body(_detail_body(detail))
     digest = f" digest={detail.digest}" if detail.digest else ""
     detail_dom_id = _dom_id("detail", detail.detail_id)
     dialog_id = _dom_id("detail_dialog", detail.detail_id)
@@ -1718,11 +1718,3 @@ def _detail_row(detail: ObservationDetail) -> str:
         "</dialog>"
         "</details>"
     )
-
-
-def _detail_body(detail: ObservationDetail) -> str:
-    if detail.json_value is not None:
-        return json.dumps(detail.json_value, indent=2, sort_keys=True, default=str)
-    if detail.text:
-        return detail.text
-    return detail.digest or ""

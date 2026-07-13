@@ -54,6 +54,7 @@ if TYPE_CHECKING:
         InMemoryExternalWriteSink,
         JsonlExternalWriteSink,
     )
+    from ai_workflow_engine.engine.process_io import ProcessIOLimits
     from ai_workflow_engine.engine.human import (
         HumanClarificationCapability,
         HumanClarificationChannel,
@@ -82,6 +83,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "ExternalAdapterCapability": ("ai_workflow_engine.engine.external", "ExternalAdapterCapability"),
     "ExternalProcessCapability": ("ai_workflow_engine.engine.external", "ExternalProcessCapability"),
     "ExternalProcessRequest": ("ai_workflow_engine.engine.external", "ExternalProcessRequest"),
+    "ProcessIOLimits": ("ai_workflow_engine.engine.process_io", "ProcessIOLimits"),
     "HumanClarificationCapability": ("ai_workflow_engine.engine.human", "HumanClarificationCapability"),
     "HumanClarificationChannel": ("ai_workflow_engine.engine.human", "HumanClarificationChannel"),
     "InMemoryCheckpointStore": ("ai_workflow_engine.engine.checkpoints", "InMemoryCheckpointStore"),
@@ -154,6 +156,7 @@ __all__ = [
     "JsonlExternalWriteSink",
     "ExternalProcessCapability",
     "ExternalProcessRequest",
+    "ProcessIOLimits",
     "HumanClarificationCapability",
     "HumanClarificationChannel",
     "InMemoryHumanClarificationChannel",

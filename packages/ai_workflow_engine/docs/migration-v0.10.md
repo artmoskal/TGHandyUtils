@@ -114,8 +114,9 @@ bounds time. `engine-v0.10.0` is superseded for NEW adoption; move directly to t
   console doors) retains only a bounded head+tail of stdout/stderr — defaults stdout `1 MiB`,
   stderr `256 KiB`, result file `4 MiB` — draining the rest to EOF and recording truthful
   total-byte and truncation accounting under `metadata["process_io"]`. A noisy process can no
-  longer exhaust memory. Configure the caps at capability construction via `ProcessIOLimits`;
-  a per-request `io_limits` may only tighten them (never select unlimited).
+  longer exhaust memory. Configure the caps at capability construction via
+  `from ai_workflow_engine import ProcessIOLimits`; a serialized per-request `io_limits` mapping
+  may only tighten them (never select unlimited).
 - **Safe result-file reading.** The declared result file is opened descriptor-first
   (`O_NOFOLLOW`/`O_NONBLOCK`/`O_CLOEXEC`) and validated with `fstat` — a FIFO/socket/device/
   directory/symlink is rejected WITHOUT being read (a FIFO no longer blocks the event loop past

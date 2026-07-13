@@ -50,6 +50,7 @@ def test_process_io_limits_are_strict_positive_and_narrow_only():
     tighter = ProcessIOLimits(max_stdout_bytes=10, max_stderr_bytes=10, max_result_bytes=10)
     assert base.narrow(looser).max_stdout_bytes == 1000
     assert base.narrow(tighter).max_stdout_bytes == 10
+    assert base.narrow({"max_stdout_bytes": 20}).max_stdout_bytes == 20
     assert base.narrow(None) is base
 
 
@@ -182,7 +183,7 @@ def test_result_relative_path_resolves_against_cwd(tmp_path):
         (0, True, "missing", True, "partial"),     # no result, truncated stdout-as-result -> partial
         (0, True, "unsafe", False, "failed"),      # unsafe result -> failed (typed reason)
         (0, True, "oversize", False, "failed"),    # oversize result -> failed
-        (0, False, "missing", True, "accepted"),   # no result requested -> stdout truncation is fine
+        (0, False, "missing", True, "partial"),    # stdout is the result and is incomplete
     ],
 )
 def test_settlement_classifier_outcome_matrix(

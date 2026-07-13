@@ -44,7 +44,7 @@ class ExternalProcessRequest:
     kill_grace_s: float = 10.0
     # v0.10.1: OPTIONAL per-request I/O policy; it may only NARROW the capability's caps
     # (never enlarge or select unlimited).
-    io_limits: ProcessIOLimits | None = None
+    io_limits: ProcessIOLimits | dict[str, Any] | None = None
 
 
 class ExternalProcessCapability:
@@ -278,6 +278,12 @@ class ExternalProcessCapability:
             # copying the bounded-but-large stdout into a second field only duplicates volume.
             # stdout stays available in its own field; the error names the rejection.
             return "failed", f"external process result file rejected: {reason}", ""
+        if stdout.truncated:
+            return (
+                "partial",
+                "external process stdout-as-result was truncated (incomplete result)",
+                stdout.text,
+            )
         return "accepted", None, stdout.text
 
     @classmethod
