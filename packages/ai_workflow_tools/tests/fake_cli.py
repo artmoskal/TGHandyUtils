@@ -55,6 +55,10 @@ def main() -> int:
         Path(result_file).write_text(result_text, encoding="utf-8")
         print("stdout fallback")
         return 0
+    if mode == "flood":
+        # v0.10.1: emit far more stdout than any capture cap, to prove the door bounds it.
+        sys.stdout.write("F" * int(os.environ.get("FAKE_CLI_FLOOD_BYTES", str(6 * 1024 * 1024))))
+        return 0
     if mode == "garbage":
         print("not json at all")
         return 0

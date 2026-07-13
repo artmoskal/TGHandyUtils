@@ -504,6 +504,12 @@ class CapabilityRuntime:
             process_bound = output.metadata.get("process_execution_bound")
             if isinstance(process_bound, dict):
                 result_metadata["process_execution_bound"] = dict(process_bound)
+            # v0.10.1: carry the bounded-capture truth (byte totals / truncation / result-file
+            # settlement) onto the trace event so the viewer can project it. It is byte-free
+            # (counts + closed vocab), never the captured bytes.
+            process_io = output.metadata.get("process_io")
+            if isinstance(process_io, dict):
+                result_metadata["process_io"] = dict(process_io)
             self._record(
                 WorkflowTraceEvent(
                     node=name,

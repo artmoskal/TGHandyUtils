@@ -652,3 +652,83 @@ async def test_v010_real_timeout_through_engine_run_salvages_reaps_and_projects(
     )
     page = observation_graph_to_html(run_data.definition, graph)
     assert "window: soft" in page and "process: work" in page and "timed out" in page
+
+
+async def test_v0101_real_process_flood_and_unsafe_result_project_bounded_through_bundle_viewer(
+    tmp_path,
+):
+    """v0.10.1 Phase 2 gate: a REAL subprocess flood + an unsafe (symlink) result file, run
+    through ``WorkflowEngine.run`` with a real observation bundle. The engine bounds capture
+    (retained memory O(cap), not O(6 MiB)), rejects the symlinked result as failed WITHOUT
+    disclosing its target, and the bundle + viewer project a CONCISE settlement summary — no
+    flood copied anywhere."""
+
+    import os
+    import sys
+
+    from ai_workflow_engine import ObservationConfig, WorkflowBuilder, WorkflowEngineBuilder
+    from ai_workflow_engine.engine.external import ExternalProcessCapability, ExternalProcessRequest
+    from ai_workflow_engine.models import SafetyPolicy, WorkflowProfile
+    from ai_workflow_viewer import FileEventSource, build_observation_graph
+    from ai_workflow_viewer.observability import _observation_view_data, observation_graph_to_html
+
+    bundle_dir = tmp_path / "bundle"
+    secret = tmp_path / "host-secret.env"
+    secret.write_text("SENTINEL-E2E-DO-NOT-LEAK-77aa", encoding="utf-8")
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    result_link = workspace / "codex-last-message.txt"
+    os.symlink(secret, result_link)
+
+    cap = ExternalProcessCapability(name="probe", side_effects=["external_call"])
+    engine = (
+        WorkflowEngineBuilder()
+        .with_observation(ObservationConfig(enabled=True, bundle_dir=str(bundle_dir)))
+        .with_profile(
+            WorkflowProfile(
+                workflow_type="proc_e2e",
+                safety=SafetyPolicy(allowed_side_effects=["external_call"]),
+            )
+        )
+        .register_capability("probe", cap, spec=cap.spec)
+        .register_workflow(WorkflowBuilder("proc_e2e").step("probe").build())
+        .build()
+    )
+    # a child that floods stdout with 6 MiB AND leaves the symlinked result in place, exit 0
+    flood = "import sys; sys.stdout.write('F' * (6 * 1024 * 1024))"
+    result = await engine.run(
+        "proc_e2e",
+        ExternalProcessRequest(
+            command=[sys.executable, "-c", flood],
+            cwd=str(workspace),
+            result_file=str(result_link),
+            timeout_s=30.0,
+        ),
+    )
+
+    # exit 0 but the requested result file is a symlink -> failed settlement, target NOT disclosed
+    assert result.status == "failed", f"an unsafe result file is a failed settlement: {result.status}"
+    envelope = result.model_dump_json()
+    assert "SENTINEL-E2E-DO-NOT-LEAK-77aa" not in envelope, "the symlink target leaked into the result"
+    # capture stayed bounded despite 6 MiB of stdout
+    assert len(result.output["stdout"]) <= 2 * 1024 * 1024
+
+    # the observation bundle + viewer project the same bounded truth from persisted records
+    run_data = FileEventSource(str(bundle_dir)).read()
+    graph = build_observation_graph(
+        run_data.definition, run_data.trace_events, run_data.usage_events, run_data.details,
+        run_id=run_data.run_id,
+    )
+    metrics = {n["id"]: n["metrics"] for n in _observation_view_data(run_data.definition, graph)["nodes"]}
+    probe_metrics = " || ".join(metrics.get("probe", []))
+    assert "capture: stdout" in probe_metrics and "truncated" in probe_metrics
+    assert "result file: unsafe (symlink)" in probe_metrics
+
+    page = observation_graph_to_html(run_data.definition, graph)
+    # the FULL 6 MiB flood is never copied anywhere — only the bounded salvage (<= 1 MiB cap)
+    # can appear as extractable detail, and the page stays far below the source volume.
+    assert "F" * (2 * 1024 * 1024) not in page, "the full flood must never reach the page"
+    assert len(page) < 3 * 1024 * 1024, f"the page must stay bounded, not echo the flood ({len(page)})"
+    assert "SENTINEL-E2E-DO-NOT-LEAK-77aa" not in page, "the viewer must never disclose the symlink target"
+    # and the source counter (total bytes observed) is preserved for diagnosis
+    assert any("6.0 MiB" in m for m in metrics["probe"]), "the 6 MiB source total must remain visible"

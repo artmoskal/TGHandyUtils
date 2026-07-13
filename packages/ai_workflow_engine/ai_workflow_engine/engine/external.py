@@ -274,7 +274,10 @@ class ExternalProcessCapability:
                     )
                 return "accepted", None, stdout.text
             reason = result_capture.reason or f"unsafe result file ({result_capture.status})"
-            return "failed", f"external process result file rejected: {reason}", stdout.text
+            # NEVER echo stdout as the result here: the result was REJECTED (not produced), and
+            # copying the bounded-but-large stdout into a second field only duplicates volume.
+            # stdout stays available in its own field; the error names the rejection.
+            return "failed", f"external process result file rejected: {reason}", ""
         return "accepted", None, stdout.text
 
     @classmethod

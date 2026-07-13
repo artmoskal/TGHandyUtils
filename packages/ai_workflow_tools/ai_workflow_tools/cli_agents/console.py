@@ -254,7 +254,14 @@ class ConsoleLLMClient:
                 metadata={
                     "process_execution_bound": external.metadata.get(
                         "process_execution_bound", process_bound.metadata()
-                    )
+                    ),
+                    # v0.10.1: the console door surfaces the same bounded-capture truth as every
+                    # other process-backed door — one invariant, no drift.
+                    **(
+                        {"process_io": external.metadata["process_io"]}
+                        if isinstance(external.metadata.get("process_io"), dict)
+                        else {}
+                    ),
                 },
             )
 

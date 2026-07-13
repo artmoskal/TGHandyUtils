@@ -646,3 +646,32 @@ async def test_engine_window_actually_bounds_a_real_slow_subprocess_and_salvages
     assert result.new_artifact_count == 1
     assert [artifact.role for artifact in result.artifacts] == ["screenshot"]
     assert cap_result.metadata["execution_bound_source"] == "engine_window"
+
+
+# --------------------------------------------------------------------------------------
+# v0.10.1 door sweep: the CLI agent inherits the shared bounded-process-I/O semantics and
+# surfaces the same capture truth — the invariant must not drift between process doors.
+# --------------------------------------------------------------------------------------
+
+
+async def test_cli_agent_bounds_a_stdout_flood_and_surfaces_process_io_truth(
+    capability_context, fake_cli_path, monkeypatch, tmp_path
+):
+    workspace = tmp_path / "workspace"
+    _configure_fake_cli(monkeypatch, tmp_path, workspace, mode="flood")
+    monkeypatch.setenv("FAKE_CLI_FLOOD_BYTES", str(6 * 1024 * 1024))  # 6 MiB, well over the cap
+    cap = _bashless(_fake_flavor(claude_p, fake_cli_path))
+    context = _windowed(capability_context, hard=30.0)
+
+    cap_result = await cap(
+        context,
+        CliAgentRequest(prompt="flood", workspace_dir=str(workspace), allowed_tools=["Read"]),
+    )
+
+    # the child ran to completion; the door retained only a bounded slice, not 6 MiB
+    io_meta = cap_result.metadata.get("process_io")
+    assert io_meta is not None, "the CLI door must surface process_io capture truth"
+    assert io_meta["stdout"]["total_bytes"] >= 6 * 1024 * 1024
+    assert io_meta["stdout"]["truncated"] is True
+    assert io_meta["stdout"]["retained_bytes"] <= 2 * 1024 * 1024
+    assert len(cap_result.output.text) <= 2 * 1024 * 1024, "retained text must be bounded"

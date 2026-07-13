@@ -667,6 +667,19 @@ async def test_broken_adapters_fail_conformance_by_named_invariant():
                 )
             return outcome
 
+    class DueLiar(InMemoryWaitCoordinator):
+        # R10.1 negative (SlackAzz gap): an adapter that never reports due waits silently
+        # strands every product timeout — conformance must name the due() invariant.
+        async def due(self, now):
+            return []
+
+    class HealthLiar(InMemoryWaitCoordinator):
+        # R10.1 negative: a health() that hides overdue waits blinds operators to a stuck
+        # queue — conformance must name the DERIVED-overdue invariant.
+        async def health(self):
+            real = await super().health()
+            return real.model_copy(update={"overdue": 0})
+
     for broken, fragment in (
         (WrongDeadline, "ACCEPTED deadline"),
         (SilentReplace, "rejected"),
@@ -676,6 +689,8 @@ async def test_broken_adapters_fail_conformance_by_named_invariant():
         (StaleAttemptOrdinal, "ordinal"),
         (LeaseIgnorer, "DIFFERENT event"),
         (TerminalReviver, "terminal"),
+        (DueLiar, "surface"),
+        (HealthLiar, "overdue"),
     ):
         with pytest.raises(AssertionError, match=fragment.split()[0]):
             await run_wait_registration_conformance(

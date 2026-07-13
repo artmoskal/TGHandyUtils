@@ -826,6 +826,7 @@ def _runtime_bound_metrics(events: list[ObservationTimelineEntry]) -> list[str]:
 
     window: dict[str, Any] | None = None
     process_bound: dict[str, Any] | None = None
+    process_io: dict[str, Any] | None = None
     timeout_reason: str | None = None
     retrace: tuple[Any, Any] | None = None
     for event in events:
@@ -836,6 +837,9 @@ def _runtime_bound_metrics(events: list[ObservationTimelineEntry]) -> list[str]:
         process_candidate = metadata.get("process_execution_bound")
         if isinstance(process_candidate, dict):
             process_bound = process_candidate
+        io_candidate = metadata.get("process_io")
+        if isinstance(io_candidate, dict):
+            process_io = io_candidate
         if metadata.get("timeout_reason"):
             timeout_reason = str(metadata["timeout_reason"])
         if metadata.get("retrace_target"):
@@ -867,6 +871,12 @@ def _runtime_bound_metrics(events: list[ObservationTimelineEntry]) -> list[str]:
         if source:
             label += f" [{source}]"
         metrics.append(label)
+    if process_io is not None:
+        # v0.10.1: a CONCISE settlement summary — byte totals, truncation, and result-file
+        # state — so operators diagnose without the viewer copying the flood into the page.
+        io_label = _process_io_summary(process_io)
+        if io_label:
+            metrics.append(io_label)
     if timeout_reason is not None:
         if window is None:
             metrics.append("window: not recorded")
@@ -876,6 +886,41 @@ def _runtime_bound_metrics(events: list[ObservationTimelineEntry]) -> list[str]:
         prefix = f"retrace round {round_no}" if round_no is not None else "retrace"
         metrics.append(f"{prefix} → {target}")
     return metrics
+
+
+def _format_bytes(value: Any) -> str:
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return "?"
+    if n < 1024:
+        return f"{n} B"
+    if n < 1024 * 1024:
+        return f"{n / 1024:.0f} KiB"
+    return f"{n / (1024 * 1024):.1f} MiB"
+
+
+def _process_io_summary(process_io: dict[str, Any]) -> str | None:
+    """One concise line summarizing bounded-capture truth — never the captured bytes."""
+
+    parts: list[str] = []
+    for stream in ("stdout", "stderr"):
+        entry = process_io.get(stream)
+        if isinstance(entry, dict) and entry.get("total_bytes"):
+            piece = f"{stream} {_format_bytes(entry.get('total_bytes'))}"
+            if entry.get("truncated"):
+                piece += " (truncated)"
+            parts.append(piece)
+    capture = f"capture: {' / '.join(parts)}" if parts else None
+    result = process_io.get("result_file")
+    result_label = None
+    if isinstance(result, dict):
+        status = result.get("status")
+        if status and status not in ("ok", "missing"):
+            kind = result.get("kind")
+            result_label = f"result file: {status}" + (f" ({kind})" if kind else "")
+    joined = " · ".join(p for p in (capture, result_label) if p)
+    return joined or None
 
 
 def _event_view(event: ObservationTimelineEntry) -> dict[str, Any]:
@@ -892,8 +937,27 @@ def _event_view(event: ObservationTimelineEntry) -> dict[str, Any]:
     }
 
 
+# v0.10.1: a hard ceiling on how much of any one detail body the PAGE renders. The full
+# (already engine-bounded) record stays in the bundle and remains extractable; the viewer must
+# not echo a multi-megabyte captured log into the HTML.
+_DETAIL_BODY_DISPLAY_LIMIT = 64 * 1024
+
+
+def _bounded_detail_body(body: str) -> str:
+    if len(body) <= _DETAIL_BODY_DISPLAY_LIMIT:
+        return body
+    head = _DETAIL_BODY_DISPLAY_LIMIT // 2
+    tail = _DETAIL_BODY_DISPLAY_LIMIT - head
+    dropped = len(body) - head - tail
+    return (
+        f"{body[:head]}\n"
+        f"...[{dropped} chars truncated in this view — full record in the bundle]...\n"
+        f"{body[-tail:]}"
+    )
+
+
 def _detail_view(detail: ObservationDetail) -> dict[str, Any]:
-    body = _detail_body(detail)
+    body = _bounded_detail_body(_detail_body(detail))
     return {
         "id": detail.detail_id,
         "kind": detail.kind,

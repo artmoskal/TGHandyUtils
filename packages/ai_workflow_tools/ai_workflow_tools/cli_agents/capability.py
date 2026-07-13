@@ -249,21 +249,28 @@ class CliAgentCapability:
             stderr_tail=stderr[-800:],
         )
         self._record_usage(request, result, capability_status=capability_status, error=error)
+        agent_metadata = {
+            "flavor": self.flavor.name,
+            "agent_status": result.status,
+            "new_artifact_count": result.new_artifact_count,
+            "input_fingerprints": result.input_fingerprints,
+            "cost_known": result.notional_cost_usd is not None,
+            "execution_bound_s": bound.timeout_s,
+            "execution_bound_source": bound.source,
+            "process_execution_bound": bound.metadata(),
+        }
+        # v0.10.1: surface the bounded-capture truth (byte totals / truncation / result-file
+        # settlement) from the shared process owner so the CLI door is as observable as a direct
+        # external-process run — the same invariant must not drift between doors.
+        process_io = external.metadata.get("process_io") if external.metadata else None
+        if isinstance(process_io, dict):
+            agent_metadata["process_io"] = process_io
         return CapabilityResult(
             status=capability_status,
             output=result,
             error=error,
             artifacts=workflow_artifacts,
-            metadata={
-                "flavor": self.flavor.name,
-                "agent_status": result.status,
-                "new_artifact_count": result.new_artifact_count,
-                "input_fingerprints": result.input_fingerprints,
-                "cost_known": result.notional_cost_usd is not None,
-                "execution_bound_s": bound.timeout_s,
-                "execution_bound_source": bound.source,
-                "process_execution_bound": bound.metadata(),
-            },
+            metadata=agent_metadata,
         )
 
     def _resolve_execution_bound(

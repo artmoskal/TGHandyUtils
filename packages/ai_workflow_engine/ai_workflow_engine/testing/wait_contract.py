@@ -255,3 +255,69 @@ async def run_wait_registration_conformance(
     await escape.register(_record(now, wait_id="w-pending"), snapshot_json, definition_json)
     pending_cancelled = await escape.cancel("w-pending", reason="never needed")
     assert pending_cancelled.status == "cancelled", "a pending wait is cancellable directly"
+
+    # ================= due()/health() surface (R10.1: SlackAzz-reported gap) =============
+    # The engine's product-driven timeout path reads due(now); operators read health(). An
+    # adapter that only passed the sections above could TypeError or LIE here — the earlier
+    # sections never exercised either method. health() derives overdue/stalled from the
+    # coordinator's INJECTED clock, so the adapter under test MUST share the ``clock`` passed
+    # to this kit. Assertions are membership/DELTA based so they hold whether make_coordinator
+    # returns isolated stores or (for a reconnectable adapter) one shared backend.
+    surface = make_coordinator()
+    before = await surface.health()
+    past = now - timedelta(seconds=120)
+    due_record = _record(past, wait_id="w-due", timeout_s=60.0)  # deadline = now-60 (elapsed)
+    not_due_record = _record(now, wait_id="w-notdue", timeout_s=3600.0)  # deadline = now+3600
+    await surface.register(due_record, snapshot_json, definition_json)
+    await surface.register(not_due_record, snapshot_json, definition_json)
+    # a terminal wait must never appear as due; a claimed+lease-expired wait must be 'stalled'
+    await surface.register(_record(past, wait_id="w-term", timeout_s=60.0), snapshot_json, definition_json)
+    term_claim = await surface.claim_event("w-term", signal, lease_until=live_lease)
+    await surface.complete("w-term", term_claim.claim, resolution_kind="signal")
+    await surface.register(_record(now, wait_id="w-surface-stall"), snapshot_json, definition_json)
+    await surface.claim_event("w-surface-stall", signal, lease_until=expired_lease)
+
+    due_ids = {r.wait_id for r in await surface.due(now)}
+    assert "w-due" in due_ids, "due(now) must surface a pending wait whose deadline has elapsed"
+    assert "w-notdue" not in due_ids, "due(now) must NEVER return a not-yet-due pending wait"
+    assert "w-term" not in due_ids, "due(now) must NEVER return a terminal wait"
+    assert "w-surface-stall" not in due_ids, "due(now) must NEVER return a claimed wait"
+    assert all(r.status == "pending" for r in await surface.due(now)), (
+        "due() yields only pending records"
+    )
+    assert "w-due" not in {r.wait_id for r in await surface.due(past - timedelta(seconds=1))}, (
+        "due(t) before a wait's deadline must not return it — the engine must never fire early"
+    )
+
+    after = await surface.health()
+    # DELTA invariants: w-due(+pending), w-notdue(+pending), w-surface-stall(net +claimed),
+    # w-term(register->claim->complete = net 0). Robust to any pre-existing records in the store.
+    assert after.pending - before.pending == 2, (
+        f"health.pending must rise by exactly the 2 new pending waits: {before.pending}->{after.pending}"
+    )
+    assert after.claimed - before.claimed == 1, (
+        f"health.claimed must rise by the 1 stalled (claimed) wait: {before.claimed}->{after.claimed}"
+    )
+    assert after.overdue - before.overdue == 1, (
+        "health.overdue (DERIVED, never stored) must rise by the 1 now-elapsed pending wait (w-due)"
+    )
+    assert after.stalled - before.stalled == 1, (
+        "health.stalled must rise by the 1 claimed+lease-expired wait — invisible to due(), "
+        "unrecoverable by any other event, so health() MUST surface it"
+    )
+    assert after.oldest_pending_deadline is not None
+    assert after.oldest_pending_deadline <= due_record.deadline_at, (
+        "oldest_pending_deadline must be no later than any pending wait's deadline (w-due here)"
+    )
+
+    # due() is DERIVED from persisted records, so it survives reconnect: a fresh adapter over
+    # the same store computes the same due set from the same deadline, not from memory.
+    if reconnect is not None:
+        fresh_surface = reconnect()
+        reconnected_due = {r.wait_id for r in await fresh_surface.due(record.deadline_at + timedelta(seconds=1))}
+        assert record.wait_id in reconnected_due, (
+            "a reconnected adapter computes due() from the persisted deadline, not memory"
+        )
+        assert record.wait_id not in {r.wait_id for r in await fresh_surface.due(now)}, (
+            "the reconnected w-1 (deadline in the future) must not be due at now"
+        )

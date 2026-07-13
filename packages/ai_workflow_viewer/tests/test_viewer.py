@@ -1360,3 +1360,55 @@ def test_execution_window_timeout_and_retrace_project_from_persisted_truth(tmp_p
     assert "process: work 7s / cleanup 1s / settle 0.25s" in page
     assert "retrace round 1" in page
     assert "window: not recorded" in page
+
+
+def test_process_io_settlement_truth_is_summarized_not_dumped(tmp_path):
+    """v0.10.1: the viewer projects a CONCISE process-I/O settlement summary (byte totals,
+    truncation, result-file rejection) from persisted trace truth — it must never copy the
+    captured flood into the page."""
+
+    from ai_workflow_engine import WorkflowBuilder
+    from ai_workflow_viewer.observability import (
+        _observation_view_data,
+        build_observation_graph,
+        observation_graph_to_html,
+    )
+
+    definition = WorkflowBuilder("proc-run").step("probe").build()
+
+    def ev(**k):
+        return WorkflowTraceEvent(run_id="r", phase="tool:result", **k)
+
+    events = [
+        ev(
+            node="probe",
+            decision="failed",
+            severity="error",
+            sequence=1,
+            event_id="1",
+            error="external process result file rejected: result path is a symlink",
+            metadata={
+                "process_io": {
+                    "stdout": {"total_bytes": 6 * 1024 * 1024, "retained_bytes": 1024,
+                               "limit_bytes": 1024 * 1024, "truncated": True},
+                    "stderr": {"total_bytes": 12, "retained_bytes": 12,
+                               "limit_bytes": 256 * 1024, "truncated": False},
+                    "result_file": {"status": "unsafe", "kind": "symlink",
+                                    "total_bytes": None, "limit_bytes": None,
+                                    "reason": "result path is a symlink"},
+                }
+            },
+        ),
+    ]
+    graph = build_observation_graph(definition, events, [], [])
+    metrics = {n["id"]: n["metrics"] for n in _observation_view_data(definition, graph)["nodes"]}
+
+    probe = " || ".join(metrics["probe"])
+    assert "capture: stdout 6.0 MiB (truncated)" in probe
+    assert "result file: unsafe (symlink)" in probe
+
+    page = observation_graph_to_html(definition, graph)
+    assert "capture: stdout 6.0 MiB (truncated)" in page
+    assert "result file: unsafe (symlink)" in page
+    # the flood itself is NEVER copied into the page (summary only)
+    assert "F" * 10000 not in page

@@ -207,6 +207,7 @@ def test_settlement_classifier_outcome_matrix(
     assert status == expected_status
     if expected_status == "failed" and result_status in ("unsafe", "oversize"):
         assert "result file rejected" in (error or "")
-    # a rejected result never leaks its (never-captured) content into the output field
+    # a rejected result never leaks its (never-captured) content, and never duplicates stdout
+    # into the result field either — it is empty; stdout stays in its own field
     if result_status in ("unsafe", "oversize"):
-        assert result_text == "OUT"
+        assert result_text == ""
