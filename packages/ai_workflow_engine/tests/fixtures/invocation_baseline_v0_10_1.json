@@ -2,36 +2,90 @@
   "artifact_result": {
     "details": [
       {
+        "artifact": null,
+        "content_type": "application/json",
+        "digest_consistent": true,
+        "event": "E0",
         "has_digest": true,
-        "has_json": true,
-        "has_text": true,
+        "json": {
+          "capability": "art",
+          "kind": "deterministic",
+          "payload": {}
+        },
         "kind": "tool_payload",
+        "metadata": {},
         "privacy": "internal",
-        "redaction_state": "none"
+        "redaction_state": "none",
+        "text": "{\n  \"capability\": \"art\",\n  \"kind\": \"deterministic\",\n  \"payload\": {}\n}"
       },
       {
+        "artifact": null,
+        "content_type": "application/json",
+        "digest_consistent": true,
+        "event": "E1",
         "has_digest": true,
-        "has_json": true,
-        "has_text": true,
+        "json": {
+          "artifact_refs": [
+            {
+              "artifact_id": "A0",
+              "kind": "media",
+              "owner_node": "art",
+              "source": "x"
+            }
+          ],
+          "capability": "art",
+          "error": null,
+          "kind": "deterministic",
+          "metadata": {},
+          "output": {
+            "ok": 1
+          },
+          "status": "accepted"
+        },
         "kind": "tool_result",
+        "metadata": {},
         "privacy": "internal",
-        "redaction_state": "none"
+        "redaction_state": "none",
+        "text": "{\n  \"artifact_refs\": [\n    {\n      \"artifact_id\": \"A0\",\n      \"kind\": \"media\",\n      \"owner_node\": \"art\",\n      \"source\": \"x\"\n    }\n  ],\n  \"capability\": \"art\",\n  \"error\": null,\n  \"kind\": \"deterministic\",\n  \"metadata\": {},\n  \"output\": {\n    \"ok\": 1\n  },\n  \"status\": \"accepted\"\n}"
       },
       {
+        "artifact": null,
+        "content_type": "application/json",
+        "digest_consistent": true,
+        "event": "E1",
         "has_digest": true,
-        "has_json": true,
-        "has_text": true,
+        "json": {
+          "artifact": {
+            "artifact_id": "A0",
+            "cleanup_on_failure": true,
+            "kind": "media",
+            "metadata": {},
+            "owner_node": "art",
+            "path": "a.png",
+            "source": "x"
+          },
+          "capability": "art"
+        },
         "kind": "artifact_preview",
+        "metadata": {},
         "privacy": "internal",
-        "redaction_state": "none"
+        "redaction_state": "none",
+        "text": "{\n  \"artifact\": {\n    \"artifact_id\": \"A0\",\n    \"cleanup_on_failure\": true,\n    \"kind\": \"media\",\n    \"metadata\": {},\n    \"owner_node\": \"art\",\n    \"path\": \"a.png\",\n    \"source\": \"x\"\n  },\n  \"capability\": \"art\"\n}"
       }
     ],
     "exception": null,
     "handler_calls": 1,
     "result": {
-      "artifact_count": 1,
-      "artifact_kinds": [
-        "media"
+      "artifacts": [
+        {
+          "artifact": "A0",
+          "cleanup_on_failure": true,
+          "kind": "media",
+          "metadata": {},
+          "owner_node": "art",
+          "path": "a.png",
+          "source": "x"
+        }
       ],
       "error": null,
       "kind": "result",
@@ -43,36 +97,45 @@
     },
     "trace": [
       {
-        "artifact_ref_count": 0,
+        "artifacts": [],
         "attempt": 1,
         "decision": "start",
-        "detail_ref_count": 1,
+        "detail_refs": [
+          "D0"
+        ],
         "error": null,
+        "event": "E0",
         "metadata": {},
         "node": "art",
         "phase": "tool:request",
         "severity": "info"
       },
       {
-        "artifact_ref_count": 1,
+        "artifacts": [
+          "A0"
+        ],
         "attempt": 1,
         "decision": "accepted",
-        "detail_ref_count": 2,
+        "detail_refs": [
+          "D1",
+          "D2"
+        ],
         "error": null,
+        "event": "E1",
         "metadata": {},
         "node": "art",
         "phase": "tool:result",
         "severity": "info"
       }
-    ]
+    ],
+    "usage": null
   },
   "async_success": {
     "details": [],
     "exception": null,
     "handler_calls": 1,
     "result": {
-      "artifact_count": 0,
-      "artifact_kinds": [],
+      "artifacts": [],
       "error": null,
       "kind": "result",
       "metadata": {},
@@ -83,36 +146,38 @@
     },
     "trace": [
       {
-        "artifact_ref_count": 0,
+        "artifacts": [],
         "attempt": 1,
         "decision": "start",
-        "detail_ref_count": 0,
+        "detail_refs": [],
         "error": null,
+        "event": "E0",
         "metadata": {},
         "node": "async_ok",
         "phase": "tool:request",
         "severity": "info"
       },
       {
-        "artifact_ref_count": 0,
+        "artifacts": [],
         "attempt": 1,
         "decision": "accepted",
-        "detail_ref_count": 0,
+        "detail_refs": [],
         "error": null,
+        "event": "E1",
         "metadata": {},
         "node": "async_ok",
         "phase": "tool:result",
         "severity": "info"
       }
-    ]
+    ],
+    "usage": null
   },
   "budget_denied": {
     "details": [],
     "exception": null,
     "handler_calls": 0,
     "result": {
-      "artifact_count": 0,
-      "artifact_kinds": [],
+      "artifacts": [],
       "error": "Workflow max_worker_calls budget exceeded before agent node agent_worker: 0/0",
       "kind": "result",
       "metadata": {},
@@ -121,28 +186,40 @@
     },
     "trace": [
       {
-        "artifact_ref_count": 0,
+        "artifacts": [],
         "attempt": 1,
         "decision": "start",
-        "detail_ref_count": 0,
+        "detail_refs": [],
         "error": null,
+        "event": "E0",
         "metadata": {},
         "node": "agent_worker",
         "phase": "tool:request",
         "severity": "info"
       },
       {
-        "artifact_ref_count": 0,
+        "artifacts": [],
         "attempt": 1,
         "decision": "failed",
-        "detail_ref_count": 0,
+        "detail_refs": [],
         "error": "Workflow max_worker_calls budget exceeded before agent node agent_worker: 0/0",
+        "event": "E1",
         "metadata": {},
         "node": "agent_worker",
         "phase": "tool:result",
         "severity": "error"
       }
-    ]
+    ],
+    "usage": {
+      "events": [],
+      "image_call_count": 0,
+      "metered_usd": null,
+      "notional_usd": null,
+      "text_call_count": 0,
+      "tool_call_count": 0,
+      "total_tokens": 0,
+      "worker_call_count": 0
+    }
   },
   "caller_cancellation": {
     "details": [],
@@ -153,42 +230,67 @@
     "result": null,
     "trace": [
       {
-        "artifact_ref_count": 0,
+        "artifacts": [],
         "attempt": 1,
         "decision": "start",
-        "detail_ref_count": 0,
+        "detail_refs": [],
         "error": null,
+        "event": "E0",
         "metadata": {},
         "node": "blocker",
         "phase": "tool:request",
         "severity": "info"
       }
-    ]
+    ],
+    "usage": null
   },
   "capture_full": {
     "details": [
       {
+        "artifact": null,
+        "content_type": "application/json",
+        "digest_consistent": true,
+        "event": "E0",
         "has_digest": true,
-        "has_json": true,
-        "has_text": true,
+        "json": {
+          "capability": "cap_full",
+          "kind": "deterministic",
+          "payload": {}
+        },
         "kind": "tool_payload",
+        "metadata": {},
         "privacy": "internal",
-        "redaction_state": "none"
+        "redaction_state": "none",
+        "text": "{\n  \"capability\": \"cap_full\",\n  \"kind\": \"deterministic\",\n  \"payload\": {}\n}"
       },
       {
+        "artifact": null,
+        "content_type": "application/json",
+        "digest_consistent": true,
+        "event": "E1",
         "has_digest": true,
-        "has_json": true,
-        "has_text": true,
+        "json": {
+          "artifact_refs": [],
+          "capability": "cap_full",
+          "error": null,
+          "kind": "deterministic",
+          "metadata": {},
+          "output": {
+            "ok": 1
+          },
+          "status": "accepted"
+        },
         "kind": "tool_result",
+        "metadata": {},
         "privacy": "internal",
-        "redaction_state": "none"
+        "redaction_state": "none",
+        "text": "{\n  \"artifact_refs\": [],\n  \"capability\": \"cap_full\",\n  \"error\": null,\n  \"kind\": \"deterministic\",\n  \"metadata\": {},\n  \"output\": {\n    \"ok\": 1\n  },\n  \"status\": \"accepted\"\n}"
       }
     ],
     "exception": null,
     "handler_calls": 1,
     "result": {
-      "artifact_count": 0,
-      "artifact_kinds": [],
+      "artifacts": [],
       "error": null,
       "kind": "result",
       "metadata": {},
@@ -199,36 +301,42 @@
     },
     "trace": [
       {
-        "artifact_ref_count": 0,
+        "artifacts": [],
         "attempt": 1,
         "decision": "start",
-        "detail_ref_count": 1,
+        "detail_refs": [
+          "D0"
+        ],
         "error": null,
+        "event": "E0",
         "metadata": {},
         "node": "cap_full",
         "phase": "tool:request",
         "severity": "info"
       },
       {
-        "artifact_ref_count": 0,
+        "artifacts": [],
         "attempt": 1,
         "decision": "accepted",
-        "detail_ref_count": 1,
+        "detail_refs": [
+          "D1"
+        ],
         "error": null,
+        "event": "E1",
         "metadata": {},
         "node": "cap_full",
         "phase": "tool:result",
         "severity": "info"
       }
-    ]
+    ],
+    "usage": null
   },
   "capture_off": {
     "details": [],
     "exception": null,
     "handler_calls": 1,
     "result": {
-      "artifact_count": 0,
-      "artifact_kinds": [],
+      "artifacts": [],
       "error": null,
       "kind": "result",
       "metadata": {},
@@ -239,28 +347,31 @@
     },
     "trace": [
       {
-        "artifact_ref_count": 0,
+        "artifacts": [],
         "attempt": 1,
         "decision": "start",
-        "detail_ref_count": 0,
+        "detail_refs": [],
         "error": null,
+        "event": "E0",
         "metadata": {},
         "node": "cap_off",
         "phase": "tool:request",
         "severity": "info"
       },
       {
-        "artifact_ref_count": 0,
+        "artifacts": [],
         "attempt": 1,
         "decision": "accepted",
-        "detail_ref_count": 0,
+        "detail_refs": [],
         "error": null,
+        "event": "E1",
         "metadata": {},
         "node": "cap_off",
         "phase": "tool:result",
         "severity": "info"
       }
-    ]
+    ],
+    "usage": null
   },
   "concurrent_invocations": {
     "isolation_ok": false,
@@ -274,8 +385,7 @@
     "exception": null,
     "handler_calls": 1,
     "result": {
-      "artifact_count": 0,
-      "artifact_kinds": [],
+      "artifacts": [],
       "error": "capability 'slow_async' exceeded its 0.25s execution window (work deadline)",
       "kind": "result",
       "metadata": {
@@ -301,22 +411,24 @@
     },
     "trace": [
       {
-        "artifact_ref_count": 0,
+        "artifacts": [],
         "attempt": 1,
         "decision": "start",
-        "detail_ref_count": 0,
+        "detail_refs": [],
         "error": null,
+        "event": "E0",
         "metadata": {},
         "node": "slow_async",
         "phase": "tool:request",
         "severity": "info"
       },
       {
-        "artifact_ref_count": 0,
+        "artifacts": [],
         "attempt": 1,
         "decision": "partial",
-        "detail_ref_count": 0,
+        "detail_refs": [],
         "error": "capability 'slow_async' exceeded its 0.25s execution window (work deadline)",
+        "event": "E1",
         "metadata": {
           "execution_window": {
             "capability_timeout_s": null,
@@ -339,7 +451,8 @@
         "phase": "tool:result",
         "severity": "error"
       }
-    ]
+    ],
+    "usage": null
   },
   "detail_sink_failure": {
     "details": [],
@@ -349,15 +462,15 @@
     },
     "handler_calls": 0,
     "result": null,
-    "trace": []
+    "trace": [],
+    "usage": null
   },
   "explicit_partial": {
     "details": [],
     "exception": null,
     "handler_calls": 1,
     "result": {
-      "artifact_count": 0,
-      "artifact_kinds": [],
+      "artifacts": [],
       "error": "cut short",
       "kind": "result",
       "metadata": {
@@ -370,36 +483,38 @@
     },
     "trace": [
       {
-        "artifact_ref_count": 0,
+        "artifacts": [],
         "attempt": 1,
         "decision": "start",
-        "detail_ref_count": 0,
+        "detail_refs": [],
         "error": null,
+        "event": "E0",
         "metadata": {},
         "node": "partial_cap",
         "phase": "tool:request",
         "severity": "info"
       },
       {
-        "artifact_ref_count": 0,
+        "artifacts": [],
         "attempt": 1,
         "decision": "partial",
-        "detail_ref_count": 0,
+        "detail_refs": [],
         "error": null,
+        "event": "E1",
         "metadata": {},
         "node": "partial_cap",
         "phase": "tool:result",
         "severity": "error"
       }
-    ]
+    ],
+    "usage": null
   },
   "handler_exception": {
     "details": [],
     "exception": null,
     "handler_calls": 1,
     "result": {
-      "artifact_count": 0,
-      "artifact_kinds": [],
+      "artifacts": [],
       "error": "boom",
       "kind": "result",
       "metadata": {},
@@ -408,36 +523,38 @@
     },
     "trace": [
       {
-        "artifact_ref_count": 0,
+        "artifacts": [],
         "attempt": 1,
         "decision": "start",
-        "detail_ref_count": 0,
+        "detail_refs": [],
         "error": null,
+        "event": "E0",
         "metadata": {},
         "node": "raiser",
         "phase": "tool:request",
         "severity": "info"
       },
       {
-        "artifact_ref_count": 0,
+        "artifacts": [],
         "attempt": 1,
         "decision": "failed",
-        "detail_ref_count": 0,
+        "detail_refs": [],
         "error": "boom",
+        "event": "E1",
         "metadata": {},
         "node": "raiser",
         "phase": "tool:result",
         "severity": "error"
       }
-    ]
+    ],
+    "usage": null
   },
   "handler_owned_timeout": {
     "details": [],
     "exception": null,
     "handler_calls": 1,
     "result": {
-      "artifact_count": 0,
-      "artifact_kinds": [],
+      "artifacts": [],
       "error": "my own timeout, not the engine's",
       "kind": "result",
       "metadata": {},
@@ -446,36 +563,38 @@
     },
     "trace": [
       {
-        "artifact_ref_count": 0,
+        "artifacts": [],
         "attempt": 1,
         "decision": "start",
-        "detail_ref_count": 0,
+        "detail_refs": [],
         "error": null,
+        "event": "E0",
         "metadata": {},
         "node": "self_timeout",
         "phase": "tool:request",
         "severity": "info"
       },
       {
-        "artifact_ref_count": 0,
+        "artifacts": [],
         "attempt": 1,
         "decision": "failed",
-        "detail_ref_count": 0,
+        "detail_refs": [],
         "error": "my own timeout, not the engine's",
+        "event": "E1",
         "metadata": {},
         "node": "self_timeout",
         "phase": "tool:result",
         "severity": "error"
       }
-    ]
+    ],
+    "usage": null
   },
   "invalid_input": {
     "details": [],
     "exception": null,
     "handler_calls": 0,
     "result": {
-      "artifact_count": 0,
-      "artifact_kinds": [],
+      "artifacts": [],
       "error": "needs_in input validation failed: 1 validation error for _In\nx\n  Input should be a valid integer, unable to parse string as an integer [type=int_parsing, input_value='no', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/int_parsing",
       "kind": "result",
       "metadata": {},
@@ -484,25 +603,26 @@
     },
     "trace": [
       {
-        "artifact_ref_count": 0,
+        "artifacts": [],
         "attempt": 1,
         "decision": "failed",
-        "detail_ref_count": 0,
+        "detail_refs": [],
         "error": "needs_in input validation failed: 1 validation error for _In\nx\n  Input should be a valid integer, unable to parse string as an integer [type=int_parsing, input_value='no', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/int_parsing",
+        "event": "E0",
         "metadata": {},
         "node": "needs_in",
         "phase": "tool:result",
         "severity": "error"
       }
-    ]
+    ],
+    "usage": null
   },
   "invalid_output": {
     "details": [],
     "exception": null,
     "handler_calls": 1,
     "result": {
-      "artifact_count": 0,
-      "artifact_kinds": [],
+      "artifacts": [],
       "error": "bad_out output validation failed: 1 validation error for _Out\ny\n  Field required [type=missing, input_value={'wrong': 'shape'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing",
       "kind": "result",
       "metadata": {},
@@ -511,28 +631,31 @@
     },
     "trace": [
       {
-        "artifact_ref_count": 0,
+        "artifacts": [],
         "attempt": 1,
         "decision": "start",
-        "detail_ref_count": 0,
+        "detail_refs": [],
         "error": null,
+        "event": "E0",
         "metadata": {},
         "node": "bad_out",
         "phase": "tool:request",
         "severity": "info"
       },
       {
-        "artifact_ref_count": 0,
+        "artifacts": [],
         "attempt": 1,
         "decision": "failed",
-        "detail_ref_count": 0,
+        "detail_refs": [],
         "error": "bad_out output validation failed: 1 validation error for _Out\ny\n  Field required [type=missing, input_value={'wrong': 'shape'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing",
+        "event": "E1",
         "metadata": {},
         "node": "bad_out",
         "phase": "tool:result",
         "severity": "error"
       }
-    ]
+    ],
+    "usage": null
   },
   "nested_invocation": {
     "child_window": {
@@ -566,22 +689,24 @@
     },
     "trace": [
       {
-        "artifact_ref_count": 0,
+        "artifacts": [],
         "attempt": 1,
         "decision": "start",
-        "detail_ref_count": 0,
+        "detail_refs": [],
         "error": null,
+        "event": "E0",
         "metadata": {},
         "node": "proc",
         "phase": "tool:request",
         "severity": "info"
       },
       {
-        "artifact_ref_count": 0,
+        "artifacts": [],
         "attempt": 1,
         "decision": "partial",
-        "detail_ref_count": 0,
+        "detail_refs": [],
         "error": null,
+        "event": "E1",
         "metadata": {
           "process_execution_bound": {
             "cleanup_headroom_s": 0.0,
@@ -618,15 +743,15 @@
         "phase": "tool:result",
         "severity": "error"
       }
-    ]
+    ],
+    "usage": null
   },
   "side_effect_denied": {
     "details": [],
     "exception": null,
     "handler_calls": 0,
     "result": {
-      "artifact_count": 0,
-      "artifact_kinds": [],
+      "artifacts": [],
       "error": "Capability side effects denied by safety policy: network",
       "kind": "result",
       "metadata": {
@@ -639,22 +764,24 @@
     },
     "trace": [
       {
-        "artifact_ref_count": 0,
+        "artifacts": [],
         "attempt": 1,
         "decision": "start",
-        "detail_ref_count": 0,
+        "detail_refs": [],
         "error": null,
+        "event": "E0",
         "metadata": {},
         "node": "writer",
         "phase": "tool:request",
         "severity": "info"
       },
       {
-        "artifact_ref_count": 0,
+        "artifacts": [],
         "attempt": 1,
         "decision": "rejected",
-        "detail_ref_count": 0,
+        "detail_refs": [],
         "error": "Capability side effects denied by safety policy: network",
+        "event": "E1",
         "metadata": {
           "denied_side_effects": [
             "network"
@@ -664,15 +791,15 @@
         "phase": "tool:result",
         "severity": "error"
       }
-    ]
+    ],
+    "usage": null
   },
   "swallowed_cancellation": {
     "details": [],
     "exception": null,
     "handler_calls": 1,
     "result": {
-      "artifact_count": 0,
-      "artifact_kinds": [],
+      "artifacts": [],
       "error": "capability 'swallower' suppressed cancellation at its execution window and returned anyway",
       "kind": "result",
       "metadata": {
@@ -698,22 +825,24 @@
     },
     "trace": [
       {
-        "artifact_ref_count": 0,
+        "artifacts": [],
         "attempt": 1,
         "decision": "start",
-        "detail_ref_count": 0,
+        "detail_refs": [],
         "error": null,
+        "event": "E0",
         "metadata": {},
         "node": "swallower",
         "phase": "tool:request",
         "severity": "info"
       },
       {
-        "artifact_ref_count": 0,
+        "artifacts": [],
         "attempt": 1,
         "decision": "failed",
-        "detail_ref_count": 0,
+        "detail_refs": [],
         "error": "capability 'swallower' suppressed cancellation at its execution window and returned anyway",
+        "event": "E1",
         "metadata": {
           "execution_window": {
             "capability_timeout_s": null,
@@ -736,15 +865,15 @@
         "phase": "tool:result",
         "severity": "error"
       }
-    ]
+    ],
+    "usage": null
   },
   "sync_success": {
     "details": [],
     "exception": null,
     "handler_calls": 1,
     "result": {
-      "artifact_count": 0,
-      "artifact_kinds": [],
+      "artifacts": [],
       "error": null,
       "kind": "result",
       "metadata": {},
@@ -755,28 +884,31 @@
     },
     "trace": [
       {
-        "artifact_ref_count": 0,
+        "artifacts": [],
         "attempt": 1,
         "decision": "start",
-        "detail_ref_count": 0,
+        "detail_refs": [],
         "error": null,
+        "event": "E0",
         "metadata": {},
         "node": "sync_ok",
         "phase": "tool:request",
         "severity": "info"
       },
       {
-        "artifact_ref_count": 0,
+        "artifacts": [],
         "attempt": 1,
         "decision": "accepted",
-        "detail_ref_count": 0,
+        "detail_refs": [],
         "error": null,
+        "event": "E1",
         "metadata": {},
         "node": "sync_ok",
         "phase": "tool:result",
         "severity": "info"
       }
-    ]
+    ],
+    "usage": null
   },
   "trace_sink_failure": {
     "details": [],
@@ -786,7 +918,8 @@
     },
     "handler_calls": 0,
     "result": null,
-    "trace": []
+    "trace": [],
+    "usage": null
   },
   "unknown_capability": {
     "details": [],
@@ -796,6 +929,58 @@
     },
     "handler_calls": 0,
     "result": null,
-    "trace": []
+    "trace": [],
+    "usage": null
+  },
+  "worker_call_accounting": {
+    "details": [],
+    "exception": null,
+    "handler_calls": 1,
+    "result": {
+      "artifacts": [],
+      "error": null,
+      "kind": "result",
+      "metadata": {},
+      "output": {
+        "ok": 1
+      },
+      "status": "accepted"
+    },
+    "trace": [
+      {
+        "artifacts": [],
+        "attempt": 1,
+        "decision": "start",
+        "detail_refs": [],
+        "error": null,
+        "event": "E0",
+        "metadata": {},
+        "node": "counted_worker",
+        "phase": "tool:request",
+        "severity": "info"
+      },
+      {
+        "artifacts": [],
+        "attempt": 1,
+        "decision": "accepted",
+        "detail_refs": [],
+        "error": null,
+        "event": "E1",
+        "metadata": {},
+        "node": "counted_worker",
+        "phase": "tool:result",
+        "severity": "info"
+      }
+    ],
+    "usage": {
+      "events": [],
+      "image_call_count": 0,
+      "metered_usd": null,
+      "notional_usd": null,
+      "text_call_count": 0,
+      "tool_call_count": 0,
+      "total_tokens": 0,
+      "worker_call_count": 1
+    }
   }
 }

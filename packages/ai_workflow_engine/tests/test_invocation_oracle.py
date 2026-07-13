@@ -48,23 +48,44 @@ async def test_corpus_matches_sealed_v0_10_1_baseline():
 
 def test_comparator_and_canonicalizer_detect_real_drift():
     """The oracle is load-bearing: prove the comparator FAILS on every category of drift it must
-    catch (>= 5 oracle mutations). A comparator that passes drift would silently bless a refactor."""
+    catch — control, trace, the reference GRAPH (event<->detail<->artifact edges), full detail
+    payload/digest, artifact fields, usage classification/summary, and schema default/constraint.
+    A comparator that passes any of these would silently bless a behavior-changing refactor."""
 
     base = {
         "s": {
-            "result": {"kind": "result", "status": "accepted", "output": {"a": 1},
-                       "error": None, "artifact_count": 0, "artifact_kinds": [], "metadata": {}},
+            "result": {
+                "kind": "result", "status": "accepted", "output": {"a": 1}, "error": None,
+                "artifacts": [{"artifact": "A0", "path": "a.png", "kind": "media", "source": "x",
+                               "owner_node": "art", "cleanup_on_failure": True, "metadata": {}}],
+                "metadata": {},
+            },
             "exception": None,
             "handler_calls": 1,
             "trace": [
                 {"node": "n", "attempt": 1, "phase": "tool:request", "decision": "start",
-                 "severity": "info", "error": None, "metadata": {}, "detail_ref_count": 0,
-                 "artifact_ref_count": 0},
+                 "severity": "info", "error": None, "metadata": {}, "event": "E0",
+                 "detail_refs": ["D0"], "artifacts": []},
                 {"node": "n", "attempt": 1, "phase": "tool:result", "decision": "accepted",
-                 "severity": "info", "error": None, "metadata": {}, "detail_ref_count": 0,
-                 "artifact_ref_count": 0},
+                 "severity": "info", "error": None, "metadata": {}, "event": "E1",
+                 "detail_refs": ["D1"], "artifacts": ["A0"]},
             ],
-            "details": [],
+            "details": [
+                {"kind": "tool_payload", "privacy": "internal", "redaction_state": "none",
+                 "content_type": "application/json", "event": "E0", "artifact": None,
+                 "text": "{payload}", "json": {"capability": "n", "payload": {"a": 1}},
+                 "metadata": {}, "has_digest": True, "digest_consistent": True},
+            ],
+            "usage": {
+                "worker_call_count": 1, "text_call_count": 0, "image_call_count": 0,
+                "tool_call_count": 0, "total_tokens": 3, "metered_usd": None, "notional_usd": None,
+                "events": [{"provider": "openai", "operation": "chat", "cost_class": "metered",
+                            "node": "n", "model": "m", "input_tokens": 1, "output_tokens": 2,
+                            "total_tokens": 3, "success": True, "error": None}],
+            },
+            # schema-shaped block: the SAME comparator walks full JSON schemas in the public-surface
+            # lock, so a default/constraint change there fails identically to these leaf mutations.
+            "schema": {"properties": {"x": {"type": "integer", "default": 0, "maximum": 10}}},
         }
     }
 
@@ -74,29 +95,37 @@ def test_comparator_and_canonicalizer_detect_real_drift():
         fn(c["s"])
         return compare_records(base, c)
 
-    # 1) status change
-    assert mutated(lambda s: s["result"].__setitem__("status", "failed"))
-    # 2) output change
-    assert mutated(lambda s: s["result"].__setitem__("output", {"a": 2}))
-    # 3) error text change
-    assert mutated(lambda s: s["result"].__setitem__("error", "new"))
-    # 4) handler call count change
-    assert mutated(lambda s: s.__setitem__("handler_calls", 2))
-    # 5) event removed
-    assert mutated(lambda s: s["trace"].pop())
-    # 6) event reordered
-    assert mutated(lambda s: s["trace"].reverse())
-    # 7) event decision change
-    assert mutated(lambda s: s["trace"][1].__setitem__("decision", "partial"))
-    # 8) detail-ref count change
-    assert mutated(lambda s: s["trace"][1].__setitem__("detail_ref_count", 3))
-    # 9) a NEW candidate field is a difference, not silently ignored
-    assert mutated(lambda s: s["result"].__setitem__("brand_new_field", True))
-    # 10) a scenario appearing only on one side is caught
-    assert compare_records(base, {**base, "extra": {"x": 1}})
-    # a truly-equal comparison yields no mismatches
+    # --- control + trace ---
+    assert mutated(lambda s: s["result"].__setitem__("status", "failed"))          # status literal
+    assert mutated(lambda s: s["result"].__setitem__("output", {"a": 2}))          # output value
+    assert mutated(lambda s: s["result"].__setitem__("error", "new"))              # error text
+    assert mutated(lambda s: s.__setitem__("handler_calls", 2))                    # handler-call count
+    assert mutated(lambda s: s["trace"].pop())                                     # event removed
+    assert mutated(lambda s: s["trace"].reverse())                                 # event reordered
+    assert mutated(lambda s: s["trace"][1].__setitem__("decision", "partial"))     # event decision
+    # --- reference graph (edges, not counts) ---
+    assert mutated(lambda s: s["trace"][0].__setitem__("detail_refs", ["D9"]))     # event->detail relinked
+    assert mutated(lambda s: s["trace"][0].__setitem__("detail_refs", ["D0", "D1"]))  # extra link (count too)
+    assert mutated(lambda s: s["trace"][1].__setitem__("artifacts", []))           # event->artifact ref dropped
+    assert mutated(lambda s: s["details"][0].__setitem__("event", "E1"))           # detail re-parented
+    # --- full detail payload + digest ---
+    assert mutated(lambda s: s["details"][0]["json"].__setitem__("payload", {"a": 2}))  # payload corruption
+    assert mutated(lambda s: s["details"][0].__setitem__("digest_consistent", False))   # digest drift
+    assert mutated(lambda s: s["details"][0].__setitem__("redaction_state", "digest_only"))  # redaction
+    # --- artifact fields ---
+    assert mutated(lambda s: s["result"]["artifacts"][0].__setitem__("path", "b.png"))      # artifact field
+    assert mutated(lambda s: s["result"]["artifacts"][0].__setitem__("kind", "file"))       # artifact kind
+    # --- usage ---
+    assert mutated(lambda s: s["usage"].__setitem__("worker_call_count", 2))               # summary value
+    assert mutated(lambda s: s["usage"]["events"][0].__setitem__("cost_class", "subscription_notional"))  # classification
+    # --- schema default + constraint ---
+    assert mutated(lambda s: s["schema"]["properties"]["x"].__setitem__("default", 1))     # schema default
+    assert mutated(lambda s: s["schema"]["properties"]["x"].__setitem__("maximum", 5))     # schema constraint
+    # --- structural ---
+    assert mutated(lambda s: s["result"].__setitem__("brand_new_field", True))     # NEW field is a diff
+    assert compare_records(base, {**base, "extra": {"x": 1}})                      # scenario only one side
     import copy as _c
-    assert compare_records(base, _c.deepcopy(base)) == []
+    assert compare_records(base, _c.deepcopy(base)) == []                          # equal => no mismatches
 
 
 @pytest.mark.asyncio
@@ -124,7 +153,12 @@ _PUBLIC_FIXTURE = Path(__file__).parent / "fixtures" / "public_surface_v0_10_1.j
 def _public_surface_snapshot() -> dict:
     import ai_workflow_engine as pkg
     from ai_workflow_engine.engine.capabilities import CapabilityRuntime
-    from ai_workflow_engine.models import CapabilityResult, CapabilitySpec
+    from ai_workflow_engine.models import (
+        CapabilityContext,
+        CapabilityResult,
+        CapabilitySpec,
+        WorkflowArtifact,
+    )
 
     def _sig(obj) -> str:
         try:
@@ -132,6 +166,8 @@ def _public_surface_snapshot() -> dict:
         except (TypeError, ValueError):
             return "<no-signature>"
 
+    # Full normalized JSON schemas — not just property names — so a changed type, default,
+    # constraint, enum, or required-set is a path mismatch. compare_records walks the nested schema.
     return {
         "exports": sorted(getattr(pkg, "__all__", []) or [n for n in dir(pkg) if not n.startswith("_")]),
         "signatures": {
@@ -139,8 +175,10 @@ def _public_surface_snapshot() -> dict:
             "CapabilityRuntime.invoke": _sig(CapabilityRuntime.invoke),
         },
         "schemas": {
-            "CapabilitySpec": sorted(CapabilitySpec.model_json_schema().get("properties", {})),
-            "CapabilityResult": sorted(CapabilityResult.model_json_schema().get("properties", {})),
+            "CapabilitySpec": CapabilitySpec.model_json_schema(),
+            "CapabilityResult": CapabilityResult.model_json_schema(),
+            "CapabilityContext": CapabilityContext.model_json_schema(),
+            "WorkflowArtifact": WorkflowArtifact.model_json_schema(),
         },
     }
 

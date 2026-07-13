@@ -16,6 +16,8 @@ tmp paths); any OTHER difference is a real behavior delta, never silently ignore
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import re
 from typing import Any, Callable
 
@@ -35,6 +37,7 @@ from ai_workflow_engine import (
     CapabilitySpec,
     WorkflowArtifact,
 )
+from ai_workflow_engine.budget import current_usage_context
 from ai_workflow_engine.engine.capabilities import (
     CapabilityRegistry,
     CapabilityRuntime,
@@ -97,85 +100,193 @@ def _fixed_context(*, allowed_side_effects=None, execution_request=None) -> Capa
     return CapabilityContext(**kwargs)
 
 
-def _canon(value: Any) -> Any:
-    """Canonicalize a value for cross-version comparison: sort dict keys, drop intrinsically
-    volatile metadata leaves, and stringify opaque objects deterministically."""
+def _build_alias_map(trace_events: Any, detail_records: Any, artifacts: Any) -> dict[str, str]:
+    """Map every generated id (event/detail/artifact uuid) to a DETERMINISTIC position alias
+    (E0/D0/A0...). Behavior-preserving runs produce ids in the same order, so aliases match across
+    the baseline and candidate wheels; a broken/dropped/reordered link shifts the alias sequence and
+    the comparator catches it. This preserves the reference GRAPH while neutralizing only the id
+    values themselves — the opposite of reducing links to a bare count."""
 
+    amap: dict[str, str] = {}
+    for i, e in enumerate(trace_events or []):
+        eid = getattr(e, "event_id", None)
+        if eid and eid not in amap:
+            amap[eid] = f"E{i}"
+    for j, d in enumerate(detail_records or []):
+        did = getattr(d, "detail_id", None)
+        if did and did not in amap:
+            amap[did] = f"D{j}"
+    for k, a in enumerate(artifacts or []):
+        aid = getattr(a, "artifact_id", None)
+        if aid and aid not in amap:
+            amap[aid] = f"A{k}"
+    return amap
+
+
+def _apply_aliases(text: str, amap: dict[str, str]) -> str:
+    for _id, token in amap.items():
+        if _id and _id in text:
+            text = text.replace(_id, token)
+    return text
+
+
+def _canon(value: Any, amap: dict[str, str] | None = None) -> Any:
+    """Canonicalize a value for cross-version comparison: sort dict keys, drop intrinsically
+    volatile metadata leaves, alias generated ids, and stringify opaque objects deterministically."""
+
+    amap = amap or {}
     if isinstance(value, dict):
         out = {}
         for k in sorted(value.keys(), key=str):
             if k in _VOLATILE_METADATA_KEYS:
                 out[k] = "<volatile>"
-            elif k == "execution_window" and isinstance(value[k], dict):
-                # window durations are deterministic given fixed task requests; keep structural
-                out[k] = _canon(value[k])
             else:
-                out[k] = _canon(value[k])
+                out[k] = _canon(value[k], amap)
         return out
     if isinstance(value, (list, tuple)):
-        return [_canon(v) for v in value]
+        return [_canon(v, amap) for v in value]
     if isinstance(value, str):
-        return _round_decimals_in_string(value)
+        return _round_decimals_in_string(_apply_aliases(value, amap))
     if isinstance(value, (int, float, bool)) or value is None:
         return value
     # opaque object (pydantic model, etc.): dump structurally when possible
     dump = getattr(value, "model_dump", None)
     if callable(dump):
         try:
-            return _canon(dump(mode="json"))
+            return _canon(dump(mode="json"), amap)
         except Exception:
             return f"<obj:{type(value).__name__}>"
     return f"<obj:{type(value).__name__}>"
 
 
-def _canon_result(result: "CapabilityResult") -> dict[str, Any]:
+def _canon_artifact(artifact: Any, amap: dict[str, str]) -> dict[str, Any]:
+    """A full artifact record (aliased id) — not just its kind. Field loss now shows as a path
+    mismatch: path, kind, source, owner_node, cleanup_on_failure, and metadata are all compared."""
+
+    return {
+        "artifact": amap.get(getattr(artifact, "artifact_id", None)),
+        "path": artifact.path,
+        "kind": artifact.kind,
+        "source": artifact.source,
+        "owner_node": artifact.owner_node,
+        "cleanup_on_failure": artifact.cleanup_on_failure,
+        "metadata": _canon(dict(artifact.metadata or {}), amap),
+    }
+
+
+def _canon_result(result: "CapabilityResult", amap: dict[str, str] | None = None) -> dict[str, Any]:
+    amap = amap or {}
     output = result.output
     output_repr: Any
     dump = getattr(output, "model_dump", None)
     if callable(dump):
         try:
-            output_repr = _canon(dump(mode="json"))
+            output_repr = _canon(dump(mode="json"), amap)
         except Exception:
             output_repr = f"<obj:{type(output).__name__}>"
     else:
-        output_repr = _canon(output)
+        output_repr = _canon(output, amap)
     return {
         "kind": "result",
         "status": result.status,
         "output": output_repr,
-        "error": _round_decimals_in_string(result.error) if result.error else result.error,
-        "artifact_count": len(result.artifacts),
-        "artifact_kinds": sorted(a.kind for a in result.artifacts),
-        "metadata": _canon(result.metadata),
+        "error": _canon(result.error, amap) if result.error else result.error,
+        "artifacts": [_canon_artifact(a, amap) for a in result.artifacts],
+        "metadata": _canon(result.metadata, amap),
     }
 
 
-def _canon_event(event: Any) -> dict[str, Any]:
-    """Canonical semantic trace event: the FACTS that must be preserved (node/attempt/phase/
-    decision/severity/error/metadata), with volatile ids/elapsed and detail-ref UUIDs reduced
-    to a structural count."""
+def _canon_event(event: Any, amap: dict[str, str] | None = None) -> dict[str, Any]:
+    """Canonical semantic trace event with the reference GRAPH preserved: node/attempt/phase/
+    decision/severity/error/metadata, this event's alias, and its ORDERED detail/artifact edges
+    (aliased ids, NOT bare counts) — a broken, dropped, or reordered link now shows as a path
+    mismatch instead of surviving because the count happened to match."""
 
+    amap = amap or {}
     return {
         "node": event.node,
         "attempt": event.attempt,
         "phase": event.phase,
         "decision": event.decision,
         "severity": event.severity,
-        "error": _round_decimals_in_string(event.error) if event.error else event.error,
-        "metadata": _canon(dict(event.metadata or {})),
-        "detail_ref_count": len(getattr(event, "detail_refs", []) or []),
-        "artifact_ref_count": len(getattr(event, "artifacts", []) or []),
+        "error": _canon(event.error, amap) if event.error else event.error,
+        "metadata": _canon(dict(event.metadata or {}), amap),
+        "event": amap.get(getattr(event, "event_id", None)),
+        "detail_refs": [amap.get(r, r) for r in (getattr(event, "detail_refs", []) or [])],
+        "artifacts": [amap.get(a, a) for a in (getattr(event, "artifacts", []) or [])],
     }
 
 
-def _canon_detail(detail: Any) -> dict[str, Any]:
+def _digest_consistent(detail: Any) -> bool | None:
+    """Whether the stored digest matches a re-digest of the stored json payload. Mirrors
+    observability_capture.payload_digest (a stable helper untouched by v0.11); detects a projector
+    that ever desyncs a detail's digest from its content. Deterministic within a run (uses the
+    detail's OWN raw payload), so it is stable across the baseline and candidate wheels."""
+
+    digest = getattr(detail, "digest", None)
+    payload = getattr(detail, "json_value", None)
+    if digest is None or payload is None:
+        return None
+    raw = json.dumps(payload, sort_keys=True, default=str, ensure_ascii=True).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest() == digest
+
+
+def _canon_detail(detail: Any, amap: dict[str, str] | None = None) -> dict[str, Any]:
+    """Full byte-safe detail record with the reference graph preserved via aliases: content
+    (text/json/metadata), classification (kind/privacy/redaction_state/content_type), the event
+    this detail hangs off, the artifact it describes, and digest integrity — payload corruption,
+    digest drift, and broken linkage can no longer pass as EQUAL."""
+
+    amap = amap or {}
     return {
         "kind": detail.kind,
         "privacy": getattr(detail, "privacy", None),
         "redaction_state": getattr(detail, "redaction_state", None),
-        "has_text": bool(getattr(detail, "text", None)),
-        "has_json": getattr(detail, "json_value", None) is not None,
+        "content_type": getattr(detail, "content_type", None),
+        "event": amap.get(getattr(detail, "event_id", None)),        # EDGE: detail -> its event
+        "artifact": amap.get(getattr(detail, "artifact_id", None)),  # EDGE: detail -> its artifact
+        "text": _canon(getattr(detail, "text", None), amap),
+        "json": _canon(getattr(detail, "json_value", None), amap),
+        "metadata": _canon(dict(getattr(detail, "metadata", {}) or {}), amap),
         "has_digest": bool(getattr(detail, "digest", None)),
+        "digest_consistent": _digest_consistent(detail),
+    }
+
+
+def _canon_usage(context: Any) -> dict[str, Any] | None:
+    """Canonical usage summary + events from the ambient usage scope (None when no scope is
+    active). Strips volatile per-event facts (request_id/elapsed_ms/sequence/run_id); keeps the
+    metered classification, call counts, tokens, and cost that invoke's budget admission governs."""
+
+    if context is None:
+        return None
+    summary = getattr(context, "summary", None)
+    if summary is None:
+        return None
+    events = getattr(summary, "events", None) or []
+    return {
+        "worker_call_count": getattr(summary, "worker_call_count", None),
+        "text_call_count": getattr(summary, "text_call_count", None),
+        "image_call_count": getattr(summary, "image_call_count", None),
+        "tool_call_count": getattr(summary, "tool_call_count", None),
+        "total_tokens": getattr(summary, "total_tokens", None),
+        "metered_usd": getattr(summary, "metered_usd", None),
+        "notional_usd": getattr(summary, "notional_usd", None),
+        "events": [
+            {
+                "provider": getattr(ev, "provider", None),
+                "operation": getattr(ev, "operation", None),
+                "cost_class": getattr(ev, "cost_class", None),
+                "node": getattr(ev, "node", None),
+                "model": getattr(ev, "model", None),
+                "input_tokens": getattr(ev, "input_tokens", None),
+                "output_tokens": getattr(ev, "output_tokens", None),
+                "total_tokens": getattr(ev, "total_tokens", None),
+                "success": getattr(ev, "success", None),
+                "error": getattr(ev, "error", None),
+            }
+            for ev in events
+        ],
     }
 
 
@@ -216,23 +327,29 @@ async def capture_invocation(
         registry, trace, detail_sink=details, capture_detail_text=(capture == "full")
     )
     ctx = context if context is not None else _fixed_context()
-    exc: dict[str, Any] | None = None
-    result_rec: dict[str, Any] | None = None
+    raw_exc: BaseException | None = None
+    result_obj: Any = None
     target = invoke_name if invoke_name is not None else (name or spec.name)
     try:
-        result = await runtime.invoke(target, payload, ctx)
-        result_rec = _canon_result(result)
+        result_obj = await runtime.invoke(target, payload, ctx)
     except BaseException as e:  # noqa: BLE001 - the oracle must record loud paths too
-        exc = {"type": type(e).__name__, "message": str(e)}
+        raw_exc = e
 
     trace_events = getattr(trace, "events", None) or []
     detail_records = getattr(details, "details", None) or [] if details is not None else []
+    artifacts = list(getattr(result_obj, "artifacts", []) or []) if result_obj is not None else []
+    amap = _build_alias_map(trace_events, detail_records, artifacts)
     return {
-        "result": result_rec,
-        "exception": exc,
+        "result": _canon_result(result_obj, amap) if result_obj is not None else None,
+        "exception": (
+            {"type": type(raw_exc).__name__,
+             "message": _round_decimals_in_string(_apply_aliases(str(raw_exc), amap))}
+            if raw_exc is not None else None
+        ),
         "handler_calls": calls["n"],
-        "trace": [_canon_event(e) for e in trace_events],
-        "details": [_canon_detail(d) for d in detail_records],
+        "trace": [_canon_event(e, amap) for e in trace_events],
+        "details": [_canon_detail(d, amap) for d in detail_records],
+        "usage": _canon_usage(current_usage_context()),
     }
 
 
@@ -286,6 +403,22 @@ async def _sc_budget_denied():
     usage = WorkflowUsageContext(ctx.run_context, WorkflowUsageSummary(), WorkflowBudget(max_worker_calls=0))
     with workflow_usage_scope(usage):
         return await capture_invocation(spec=_spec("agent_worker", kind="agent"), handler=_noop, payload={})
+
+
+async def _sc_worker_call_accounting():
+    """Complements budget_denied for P-06: a worker-kind capability that SUCCEEDS under a generous
+    budget. invoke's pre-call admission (check_budget_before_call) counts the worker call, so the
+    captured usage summary must show worker_call_count == 1 — proving invoke still accounts worker
+    calls and that the usage capture is non-empty, not just locking zeros."""
+
+    from ai_workflow_engine.budget import WorkflowBudget
+    from ai_workflow_engine.usage import WorkflowUsageContext, workflow_usage_scope
+    from ai_workflow_engine.models import WorkflowUsageSummary
+
+    ctx = _fixed_context()
+    usage = WorkflowUsageContext(ctx.run_context, WorkflowUsageSummary(), WorkflowBudget(max_worker_calls=5))
+    with workflow_usage_scope(usage):
+        return await capture_invocation(spec=_spec("counted_worker", kind="agent"), handler=_noop, payload={})
 
 
 async def _sc_sync_success():
@@ -371,12 +504,14 @@ async def _sc_caller_cancellation():
         cancelled = True
     except BaseException:
         cancelled = False
+    amap = _build_alias_map(trace.events, [], [])
     return {
         "result": None,
         "exception": {"type": "CancelledError"} if cancelled else {"type": "other"},
         "handler_calls": 1,
-        "trace": [_canon_event(e) for e in trace.events],
+        "trace": [_canon_event(e, amap) for e in trace.events],
         "details": [],
+        "usage": None,
     }
 
 
@@ -436,8 +571,9 @@ async def _sc_process_timeout():
         },
         "exception": None,
         "handler_calls": 1,
-        "trace": [_canon_event(e) for e in trace.events],
+        "trace": [_canon_event(e, _build_alias_map(trace.events, [], [])) for e in trace.events],
         "details": [],
+        "usage": None,
     }
 
 
@@ -507,6 +643,7 @@ SCENARIOS: dict[str, Callable] = {
     "invalid_input": _sc_invalid_input,
     "side_effect_denied": _sc_side_effect_denied,
     "budget_denied": _sc_budget_denied,
+    "worker_call_accounting": _sc_worker_call_accounting,
     "sync_success": _sc_sync_success,
     "async_success": _sc_async_success,
     "explicit_partial": _sc_explicit_partial,
