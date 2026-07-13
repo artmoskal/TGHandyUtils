@@ -34,6 +34,7 @@ from ai_workflow_engine.execution_window import (
     reset_invocation_window,
     resolve_execution_window,
 )
+from ai_workflow_engine.engine.capability_observation import CapabilityObservationProjector
 from ai_workflow_engine.observability_capture import ObservationCapture
 from ai_workflow_engine.usage import check_budget_before_call
 
@@ -353,6 +354,9 @@ class CapabilityRuntime:
             detail_sink=detail_sink,
             mode="full" if capture_detail_text else "off",
         )
+        # v0.11: one owner for capability observation projection (start/terminal trace + linked
+        # details). It receives decided facts and never makes a control decision.
+        self._projector = CapabilityObservationProjector(self.trace_sink.record, self.observation)
 
     async def invoke(
         self,
@@ -366,22 +370,7 @@ class CapabilityRuntime:
         start = time.monotonic()
         try:
             parsed_payload = self._validate_payload(spec, payload)
-            start_event = WorkflowTraceEvent(
-                node=name,
-                attempt=attempt,
-                decision="start",
-                phase="tool:request",
-            )
-            start_event = start_event.model_copy(
-                update={
-                    "detail_refs": self._record_tool_payload(
-                        spec,
-                        parsed_payload,
-                        event_id=start_event.event_id,
-                    )
-                }
-            )
-            self._record(start_event)
+            self._projector.start(name=name, attempt=attempt, spec=spec, payload=parsed_payload)
             denied = self._denied_side_effects(spec, context)
             if denied:
                 elapsed_ms = int((time.monotonic() - start) * 1000)
@@ -391,25 +380,9 @@ class CapabilityRuntime:
                     error=error,
                     metadata={"denied_side_effects": denied},
                 )
-                rejected_event_id = str(uuid.uuid4())
-                self._record(
-                    WorkflowTraceEvent(
-                        node=name,
-                        attempt=attempt,
-                        decision="rejected",
-                        error=error,
-                        elapsed_ms=elapsed_ms,
-                        metadata={"denied_side_effects": denied},
-                        phase="tool:result",
-                        severity="error",
-                        event_id=rejected_event_id,
-                        detail_refs=self._record_tool_result(
-                            spec,
-                            rejected,
-                            error=error,
-                            event_id=rejected_event_id,
-                        ),
-                    )
+                self._projector.rejected(
+                    name=name, attempt=attempt, spec=spec, result=rejected,
+                    error=error, elapsed_ms=elapsed_ms,
                 )
                 return rejected
             if spec.kind in {"agent", "external"}:
@@ -493,7 +466,6 @@ class CapabilityRuntime:
                     reset_invocation_window(parent_token)
             output = self._normalize_result(spec, result)
             elapsed_ms = int((time.monotonic() - start) * 1000)
-            result_event_id = str(uuid.uuid4())
             # v0.10: record the resolved window on the result event of a BOUNDED call so the
             # viewer/audit can project the effective soft/hard window + clamps + enforcement on
             # a node that finished normally too — not only on the timeout path. Byte-free
@@ -510,27 +482,9 @@ class CapabilityRuntime:
             process_io = output.metadata.get("process_io")
             if isinstance(process_io, dict):
                 result_metadata["process_io"] = dict(process_io)
-            self._record(
-                WorkflowTraceEvent(
-                    node=name,
-                    attempt=attempt,
-                    decision=output.status,
-                    artifacts=[artifact.artifact_id for artifact in output.artifacts],
-                    elapsed_ms=elapsed_ms,
-                    phase="tool:result",
-                    severity="error" if output.status in {"failed", "rejected"} or output.error else "info",
-                    event_id=result_event_id,
-                    metadata=result_metadata,
-                    detail_refs=[
-                        *self._record_tool_result(
-                            spec,
-                            output,
-                            error=output.error,
-                            event_id=result_event_id,
-                        ),
-                        *self._record_artifact_previews(spec, output, event_id=result_event_id),
-                    ],
-                )
+            self._projector.terminal(
+                name=name, attempt=attempt, spec=spec, output=output,
+                elapsed_ms=elapsed_ms, metadata=result_metadata,
             )
             return output
         except _ExecutionTimeout as timeout_exc:
@@ -538,37 +492,18 @@ class CapabilityRuntime:
             # its already-incurred usage stays counted, and the window rides in metadata.
             elapsed_ms = int((time.monotonic() - start) * 1000)
             error = str(timeout_exc)
-            timeout_event_id = str(uuid.uuid4())
             window_meta = (
                 timeout_exc.window.model_dump() if timeout_exc.window is not None else None
             )
-            self._record(
-                WorkflowTraceEvent(
-                    node=name,
-                    attempt=attempt,
-                    decision="partial",
-                    error=error,
-                    elapsed_ms=elapsed_ms,
-                    phase="tool:result",
-                    severity="error",
-                    event_id=timeout_event_id,
-                    metadata={
-                        "timeout_reason": "execution_window_exceeded",
-                        **({"execution_window": window_meta} if window_meta else {}),
-                    },
-                    detail_refs=self._record_tool_error(
-                        spec, decision="partial", error=error, event_id=timeout_event_id
-                    ),
-                )
+            timeout_metadata = {
+                "timeout_reason": "execution_window_exceeded",
+                **({"execution_window": window_meta} if window_meta else {}),
+            }
+            self._projector.timeout(
+                name=name, attempt=attempt, spec=spec, error=error,
+                elapsed_ms=elapsed_ms, metadata=timeout_metadata,
             )
-            return CapabilityResult(
-                status="partial",
-                error=error,
-                metadata={
-                    "timeout_reason": "execution_window_exceeded",
-                    **({"execution_window": window_meta} if window_meta else {}),
-                },
-            )
+            return CapabilityResult(status="partial", error=error, metadata=timeout_metadata)
         except Exception as exc:
             error = str(exc) or exc.__class__.__name__
             elapsed_ms = int((time.monotonic() - start) * 1000)
@@ -586,25 +521,9 @@ class CapabilityRuntime:
                 if containment_window is not None
                 else {}
             )
-            error_event_id = str(uuid.uuid4())
-            self._record(
-                WorkflowTraceEvent(
-                    node=name,
-                    attempt=attempt,
-                    decision=decision,
-                    error=error,
-                    elapsed_ms=elapsed_ms,
-                    phase="tool:result",
-                    severity="error",
-                    event_id=error_event_id,
-                    metadata=failure_metadata,
-                    detail_refs=self._record_tool_error(
-                        spec,
-                        decision=decision,
-                        error=error,
-                        event_id=error_event_id,
-                    ),
-                )
+            self._projector.failed(
+                name=name, attempt=attempt, spec=spec, error=error, decision=decision,
+                elapsed_ms=elapsed_ms, metadata=failure_metadata,
             )
             return CapabilityResult(status="failed", error=error, metadata=failure_metadata)
 
@@ -703,98 +622,6 @@ class CapabilityRuntime:
                 logger.exception("detached capability task failed after cancellation")
 
         inner.add_done_callback(_consume)
-
-    def _record(self, event: WorkflowTraceEvent) -> None:
-        self.trace_sink.record(event)
-
-    def _record_tool_payload(self, spec: CapabilitySpec, payload: Any, event_id: str | None = None) -> list[str]:
-        event_id = event_id or str(uuid.uuid4())
-        detail = self.observation.record_detail(
-            event_id=event_id,
-            kind="tool_payload",
-            payload={
-                "capability": spec.name,
-                "kind": spec.kind,
-                "payload": payload,
-            },
-        )
-        return [detail.detail_id] if detail else []
-
-    def _record_tool_result(
-        self,
-        spec: CapabilitySpec,
-        output: CapabilityResult,
-        *,
-        error: str | None = None,
-        event_id: str | None = None,
-    ) -> list[str]:
-        event_id = event_id or str(uuid.uuid4())
-        artifact_refs = [
-            {
-                "artifact_id": artifact.artifact_id,
-                "kind": artifact.kind,
-                "owner_node": artifact.owner_node or spec.name,
-                "source": artifact.source,
-            }
-            for artifact in output.artifacts
-        ]
-        detail = self.observation.record_detail(
-            event_id=event_id,
-            kind="tool_result",
-            payload={
-                "capability": spec.name,
-                "kind": spec.kind,
-                "status": output.status,
-                "output": output.output,
-                "error": output.error,
-                "artifact_refs": artifact_refs,
-                "metadata": output.metadata,
-            },
-        )
-        return [detail.detail_id] if detail else []
-
-    def _record_tool_error(
-        self,
-        spec: CapabilitySpec,
-        *,
-        decision: str,
-        error: str,
-        event_id: str | None = None,
-    ) -> list[str]:
-        event_id = event_id or str(uuid.uuid4())
-        detail = self.observation.record_detail(
-            event_id=event_id,
-            kind="tool_result",
-            payload={
-                "capability": spec.name,
-                "kind": spec.kind,
-                "status": decision,
-                "error": error,
-            },
-        )
-        return [detail.detail_id] if detail else []
-
-    def _record_artifact_previews(
-        self,
-        spec: CapabilitySpec,
-        output: CapabilityResult,
-        *,
-        event_id: str | None = None,
-    ) -> list[str]:
-        event_id = event_id or str(uuid.uuid4())
-        detail_refs: list[str] = []
-        for artifact in output.artifacts:
-            detail = self.observation.record_detail(
-                event_id=event_id,
-                kind="artifact_preview",
-                payload={
-                    "capability": spec.name,
-                    "artifact": artifact,
-                },
-            )
-            if detail:
-                detail_refs.append(detail.detail_id)
-        return detail_refs
 
     @staticmethod
     def _validate_payload(spec: CapabilitySpec, payload: Any) -> Any:
