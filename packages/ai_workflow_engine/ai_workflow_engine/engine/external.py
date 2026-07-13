@@ -16,6 +16,13 @@ from ai_workflow_engine.execution_window import (
     invocation_window_remaining_s,
     resolve_invocation_bound,
 )
+from ai_workflow_engine.engine.process_io import (
+    BoundedStreamCollector,
+    ProcessIOLimits,
+    ResultCapture,
+    StreamCapture,
+    capture_result_file,
+)
 from ai_workflow_engine.models import (
     CapabilityContext,
     CapabilityResult,
@@ -35,6 +42,9 @@ class ExternalProcessRequest:
     stdin_data: str | None = None
     result_file: str | None = None
     kill_grace_s: float = 10.0
+    # v0.10.1: OPTIONAL per-request I/O policy; it may only NARROW the capability's caps
+    # (never enlarge or select unlimited).
+    io_limits: ProcessIOLimits | None = None
 
 
 class ExternalProcessCapability:
@@ -54,7 +64,11 @@ class ExternalProcessCapability:
         name: str = "external_process",
         description: str | None = None,
         side_effects: list[str] | None = None,
+        io_limits: ProcessIOLimits | None = None,
     ) -> None:
+        # v0.10.1: construction-time I/O policy (finite defaults; zero-config safe). A
+        # per-request policy may only tighten it.
+        self.io_limits = io_limits or ProcessIOLimits()
         self.spec = CapabilitySpec(
             name=name,
             kind="external",
@@ -112,8 +126,15 @@ class ExternalProcessCapability:
             # isolate it so timeout/cancellation can stop descendants as well as the CLI PID.
             start_new_session=os.name == "posix",
         )
-        stdout_task = asyncio.create_task(self._read_stream(process.stdout))
-        stderr_task = asyncio.create_task(self._read_stream(process.stderr))
+        # v0.10.1: BOUNDED stream capture — drain to EOF (no child pipe deadlock) but retain
+        # only a bounded head+tail per stream, counting every source byte.
+        io_limits = self.io_limits.narrow(request.io_limits)
+        stdout_task = asyncio.create_task(
+            BoundedStreamCollector(io_limits.max_stdout_bytes).collect(process.stdout)
+        )
+        stderr_task = asyncio.create_task(
+            BoundedStreamCollector(io_limits.max_stderr_bytes).collect(process.stderr)
+        )
         driver_task = asyncio.create_task(
             self._drive_process(process, request.stdin_data)
         )
@@ -134,20 +155,26 @@ class ExternalProcessCapability:
                 await asyncio.gather(driver_task, return_exceptions=True)
                 stdout = await stdout_task
                 stderr = await stderr_task
-                result_text = self._read_result_file(request)
+                # Timeout is truthful PARTIAL regardless of result-file state; an unsafe/oversize
+                # result is RECORDED but never upgrades the partial to a clean success.
+                result_capture = await capture_result_file(
+                    request.result_file, request.cwd, io_limits.max_result_bytes
+                )
+                result_text = result_capture.text if result_capture.is_present_and_safe else stdout.text
                 return CapabilityResult(
                     status="partial",
                     error=f"external process timed out after {effective_timeout_s}s",
                     output={
                         "returncode": process.returncode,
-                        "stdout": stdout,
-                        "stderr": stderr,
-                        "result": result_text if result_text is not None else stdout,
+                        "stdout": stdout.text,
+                        "stderr": stderr.text,
+                        "result": result_text,
                     },
                     metadata={
                         **request.metadata,
                         **bound_meta,
                         "killed_after_grace": killed_after_grace,
+                        "process_io": self._io_metadata(stdout, stderr, result_capture),
                     },
                 )
             # Re-raise a write/process-wait failure before reporting a successful process.
@@ -175,22 +202,80 @@ class ExternalProcessCapability:
             await asyncio.gather(driver_task, return_exceptions=True)
             await self._settle_readers(stdout_task, stderr_task)
 
-        result_text = self._read_result_file(request)
-        status = "accepted" if process.returncode == 0 else "failed"
+        # v0.10.1: SAFE result capture (descriptor-based; never blocks on a FIFO, never follows
+        # a symlink, never slurps an over-cap file) + ONE settlement classifier.
+        result_capture = await capture_result_file(
+            request.result_file, request.cwd, io_limits.max_result_bytes
+        )
+        status, error, result_text = self._classify_settlement(
+            returncode=process.returncode,
+            result_requested=bool(request.result_file),
+            result_capture=result_capture,
+            stdout=stdout,
+        )
         return CapabilityResult(
             status=status,
-            error=None if process.returncode == 0 else f"external process exited {process.returncode}",
+            error=error,
             output={
                 "returncode": process.returncode,
-                "stdout": stdout,
-                "stderr": stderr,
-                "result": result_text if result_text is not None else stdout,
+                "stdout": stdout.text,
+                "stderr": stderr.text,
+                "result": result_text,
             },
             metadata={
                 **request.metadata,
                 **bound_meta,
+                "process_io": self._io_metadata(stdout, stderr, result_capture),
             },
         )
+
+    @staticmethod
+    def _io_metadata(
+        stdout: StreamCapture, stderr: StreamCapture, result: ResultCapture
+    ) -> dict[str, Any]:
+        """One structured owner for capture truth: byte totals, truncation, and result-file
+        settlement state — persisted to the bundle; summarized (not dumped) by the viewer."""
+
+        return {
+            "stdout": stdout.metadata(),
+            "stderr": stderr.metadata(),
+            "result_file": result.metadata(),
+        }
+
+    @staticmethod
+    def _classify_settlement(
+        *,
+        returncode: int | None,
+        result_requested: bool,
+        result_capture: ResultCapture,
+        stdout: StreamCapture,
+    ) -> tuple[str, str | None, str]:
+        """Map (exit, result request, safe result capture, stdout truncation) → one outcome.
+
+        Non-zero exit → failed. Exit-zero with a valid complete result → accepted (even if
+        diagnostics were truncated). Exit-zero, result requested but missing → the ordinary
+        stdout fallback, downgraded to partial when that stdout-as-result is itself truncated
+        (never an accepted INCOMPLETE result). An unsafe/oversize result → failed with a typed
+        reason, and its content is never disclosed."""
+
+        if returncode != 0:
+            fallback = result_capture.text if result_capture.is_present_and_safe else stdout.text
+            return "failed", f"external process exited {returncode}", fallback
+        if result_requested:
+            if result_capture.status == "ok":
+                return "accepted", None, result_capture.text or ""
+            if result_capture.status == "missing":
+                if stdout.truncated:
+                    return (
+                        "partial",
+                        "external process produced no result file and its stdout-as-result was "
+                        "truncated (incomplete result)",
+                        stdout.text,
+                    )
+                return "accepted", None, stdout.text
+            reason = result_capture.reason or f"unsafe result file ({result_capture.status})"
+            return "failed", f"external process result file rejected: {reason}", stdout.text
+        return "accepted", None, stdout.text
 
     @classmethod
     async def _drive_process(
@@ -302,32 +387,6 @@ class ExternalProcessCapability:
                 process.kill()
         except ProcessLookupError:
             return
-
-    @staticmethod
-    def _read_result_file(request: ExternalProcessRequest) -> str | None:
-        if not request.result_file:
-            return None
-        result_path = Path(request.result_file)
-        if not result_path.is_absolute() and request.cwd:
-            result_path = Path(request.cwd) / result_path
-        if not result_path.exists():
-            return None
-        return result_path.read_text(encoding="utf-8")
-
-    @staticmethod
-    async def _read_stream(stream: asyncio.StreamReader | None) -> str:
-        if stream is None:
-            return ""
-        chunks: list[bytes] = []
-        while True:
-            # Bounded chunks, not readline(): a single line beyond asyncio's 64KiB stream
-            # limit raises LimitOverrunError — and CLI workers legitimately emit huge
-            # single-line JSON envelopes.
-            chunk = await stream.read(8192)
-            if not chunk:
-                break
-            chunks.append(chunk)
-        return b"".join(chunks).decode("utf-8", errors="replace")
 
 
 class InMemoryExternalWriteSink:

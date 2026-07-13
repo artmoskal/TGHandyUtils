@@ -1456,3 +1456,192 @@ async def test_inner_timeout_error_is_not_relabeled_as_the_graph_failsafe():
             {"engine_context": SimpleNamespace(limits=RuntimeLimits(timeout_s=5.0))},
             workflow_type="inner_timeout",
         )
+
+
+# --------------------------------------------------------------------------------------
+# R10.1 (engine-v0.10.1 corrective): the external-process RESULT-SETTLEMENT boundary must
+# be as bounded as the execution window itself. Written RED against engine-v0.10.0: a child
+# can defeat the deadline/memory contract AFTER its own reap via the result path (FIFO,
+# symlink, oversize) or during capture (output flood). Each test is attack-shaped, bounded
+# by its own watchdog, and leaks no process/file.
+# --------------------------------------------------------------------------------------
+
+
+def test_fifo_result_file_cannot_block_the_engine_past_its_deadline(tmp_path):
+    """R10.1 defect 1: the child replaces its declared result file with a FIFO and exits 0.
+    ``exists()`` is true; a blocking ``open()``/``read_text()`` on a writer-less FIFO then
+    freezes the ENTIRE event loop forever — after the child was reaped, past every declared
+    window (the graph fail-safe cannot fire on a blocked loop). The settlement must return
+    within the represented window instead. Runs the capability on a dedicated thread+loop so
+    the test itself can never hang."""
+
+    import os
+    import subprocess
+    import sys
+    import threading
+
+    from ai_workflow_engine.engine.external import (
+        ExternalProcessCapability,
+        ExternalProcessRequest,
+    )
+
+    result_file = tmp_path / "codex-last-message.txt"
+    child = (
+        "import os, sys; os.mkfifo(sys.argv[1])"  # declared result becomes a FIFO trap
+    )
+    outcome: dict = {}
+
+    def run() -> None:
+        async def call():
+            cap = ExternalProcessCapability()
+            return await cap(
+                None,
+                ExternalProcessRequest(
+                    command=[sys.executable, "-c", child, str(result_file)],
+                    cwd=str(tmp_path),
+                    timeout_s=5.0,
+                    result_file=str(result_file),
+                ),
+            )
+
+        outcome["result"] = asyncio.run(call())
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(timeout=8.0)  # child exits instantly; 8s covers slow CI, not the hang
+    if worker.is_alive():
+        # unblock the trapped reader so the thread can die, then fail for the named reason
+        try:
+            fd = os.open(result_file, os.O_WRONLY | os.O_NONBLOCK)
+            os.close(fd)
+        except OSError:
+            subprocess.run(  # last resort: a writer via the shell
+                ["sh", "-c", f": > {result_file}"], timeout=5, check=False
+            )
+        worker.join(timeout=5.0)
+        pytest.fail(
+            "FIFO result file blocked the engine event loop past its declared window "
+            "(settlement is not bounded)"
+        )
+    settled = outcome["result"]
+    assert settled is not None
+    # the settlement must be truthful about the unsafe result — never a clean acceptance
+    assert settled.status == "failed", (
+        f"a FIFO in place of the declared result is an unsafe settlement: {settled.status}"
+    )
+
+
+async def test_result_symlink_never_discloses_out_of_workspace_content(tmp_path):
+    """R10.1 defect 3: the child symlinks its declared result file at a secret OUTSIDE the
+    workspace and exits 0. Following it reads the secret into output/observation — a
+    disclosure primitive. The settlement must reject the non-regular result and the sentinel
+    must appear NOWHERE in the result envelope."""
+
+    import json as _json
+    import sys
+
+    from ai_workflow_engine.engine.external import (
+        ExternalProcessCapability,
+        ExternalProcessRequest,
+    )
+
+    secret = tmp_path / "outside" / "host-secret.env"
+    secret.parent.mkdir()
+    secret.write_text("SENTINEL-DO-NOT-DISCLOSE-c0ffee", encoding="utf-8")
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    result_file = workspace / "codex-last-message.txt"
+    child = "import os, sys; os.symlink(sys.argv[2], sys.argv[1])"
+
+    cap = ExternalProcessCapability()
+    settled = await cap(
+        None,
+        ExternalProcessRequest(
+            command=[sys.executable, "-c", child, str(result_file), str(secret)],
+            cwd=str(workspace),
+            timeout_s=5.0,
+            result_file=str(result_file),
+        ),
+    )
+
+    envelope = _json.dumps(
+        {"status": settled.status, "output": settled.output, "error": settled.error,
+         "metadata": {k: str(v) for k, v in settled.metadata.items()}}
+    )
+    assert "SENTINEL-DO-NOT-DISCLOSE-c0ffee" not in envelope, (
+        "a result symlink was FOLLOWED — out-of-workspace content leaked into the envelope"
+    )
+    assert settled.status == "failed", (
+        f"a symlinked result target is an unsafe settlement, not a clean success: {settled.status}"
+    )
+
+
+async def test_oversized_result_file_is_bounded_not_slurped(tmp_path):
+    """R10.1 defect 2 (result side): an 8 MiB result file must not be read whole into engine
+    state. Over the configured cap it is a bounded failed settlement — never an unbounded
+    allocation reported as accepted."""
+
+    import sys
+
+    from ai_workflow_engine.engine.external import (
+        ExternalProcessCapability,
+        ExternalProcessRequest,
+    )
+
+    result_file = tmp_path / "codex-last-message.txt"
+    # the child writes >4 MiB (the eventual default result cap) then exits 0
+    child = "import sys; open(sys.argv[1], 'w').write('B' * (8 * 1024 * 1024))"
+
+    cap = ExternalProcessCapability()
+    settled = await cap(
+        None,
+        ExternalProcessRequest(
+            command=[sys.executable, "-c", child, str(result_file)],
+            cwd=str(tmp_path),
+            timeout_s=10.0,
+            result_file=str(result_file),
+        ),
+    )
+
+    retained = settled.output.get("result") if isinstance(settled.output, dict) else ""
+    assert len(retained) <= 5 * 1024 * 1024, (
+        f"an oversized result was slurped whole ({len(retained)} bytes) — capture is unbounded"
+    )
+    assert settled.status == "failed", (
+        f"an over-cap result file is a bounded failed settlement: {settled.status}"
+    )
+
+
+async def test_stdout_flood_is_drained_bounded_with_truthful_truncation(tmp_path):
+    """R10.1 defect 2 (stream side): a noisy process must not exhaust memory. stdout beyond
+    the cap is drained to EOF (no child pipe deadlock) but only a bounded head/tail is
+    retained, with truthful total-bytes and truncation accounting."""
+
+    import sys
+
+    from ai_workflow_engine.engine.external import (
+        ExternalProcessCapability,
+        ExternalProcessRequest,
+    )
+
+    # ~6 MiB of stdout, well over the eventual 1 MiB stdout cap
+    child = "import sys; sys.stdout.write('F' * (6 * 1024 * 1024))"
+
+    cap = ExternalProcessCapability()
+    settled = await cap(
+        None,
+        ExternalProcessRequest(
+            command=[sys.executable, "-c", child],
+            cwd=str(tmp_path),
+            timeout_s=10.0,
+        ),
+    )
+
+    stdout = settled.output.get("stdout") if isinstance(settled.output, dict) else ""
+    assert len(stdout) <= 2 * 1024 * 1024, (
+        f"stdout flood retained unbounded ({len(stdout)} bytes) — memory sink"
+    )
+    io_meta = settled.metadata.get("process_io") if isinstance(settled.metadata, dict) else None
+    assert io_meta is not None, "bounded capture must record process_io truncation accounting"
+    assert io_meta["stdout"]["total_bytes"] >= 6 * 1024 * 1024
+    assert io_meta["stdout"]["truncated"] is True
