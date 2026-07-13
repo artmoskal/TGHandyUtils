@@ -32,9 +32,26 @@ class CapabilityObservationProjector:
     that owns detail recording (and honors the capture mode). Both are supplied by the runtime.
     """
 
-    def __init__(self, trace_record: Callable[[WorkflowTraceEvent], None], observation: Any) -> None:
-        self._record = trace_record
-        self._observation = observation
+    def __init__(
+        self,
+        trace_record_provider: Callable[[], Callable[[WorkflowTraceEvent], None]],
+        observation_provider: Callable[[], Any],
+    ) -> None:
+        # Resolve the runtime's CURRENT collaborators at EACH record, matching v0.10.1's call-time
+        # ``self.trace_sink.record(...)`` / ``self.observation.record_detail(...)``. A consumer may
+        # replace ``runtime.trace_sink`` or ``runtime.observation`` AFTER construction (the shipped
+        # GoPro pilot tees the trace sink this way), and those replacements must receive this
+        # invocation's events/details. Capturing the bound method or the instance here would freeze
+        # the originals — a silent, supported-behavior observation regression.
+        self._trace_record_provider = trace_record_provider
+        self._observation_provider = observation_provider
+
+    def _record(self, event: WorkflowTraceEvent) -> None:
+        self._trace_record_provider()(event)
+
+    @property
+    def _observation(self) -> Any:
+        return self._observation_provider()
 
     # ---------------------------------------------------------------- terminal projections
 

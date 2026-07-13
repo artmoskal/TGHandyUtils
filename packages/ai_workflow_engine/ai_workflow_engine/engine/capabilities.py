@@ -7,7 +7,6 @@ import inspect
 import logging
 from pathlib import Path
 import time
-import uuid
 from typing import Any, Callable, Iterable, NamedTuple, Optional, Protocol
 
 
@@ -351,8 +350,14 @@ class CapabilityRuntime:
             mode="full" if capture_detail_text else "off",
         )
         # v0.11: one owner for capability observation projection (start/terminal trace + linked
-        # details). It receives decided facts and never makes a control decision.
-        self._projector = CapabilityObservationProjector(self.trace_sink.record, self.observation)
+        # details). It receives decided facts and never makes a control decision. Pass PROVIDERS,
+        # not the bound method/instance, so each record resolves the runtime's CURRENT trace sink
+        # and observation — a consumer may swap either after construction (v0.10.1 call-time
+        # semantics; the GoPro pilot tees ``runtime.trace_sink`` this way).
+        self._projector = CapabilityObservationProjector(
+            lambda: self.trace_sink.record,
+            lambda: self.observation,
+        )
 
     async def invoke(
         self,

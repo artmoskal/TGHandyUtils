@@ -24,7 +24,7 @@ from invocation_oracle import (
     run_corpus,
 )
 
-pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
+pytestmark = [pytest.mark.unit]  # async tests are marked individually — do not mark sync tests async
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "invocation_baseline_v0_10_1.json"
 
@@ -34,6 +34,7 @@ def test_behavior_inventory_is_complete():
     assert missing == [], f"behavior-inventory rows without a scenario: {missing}"
 
 
+@pytest.mark.asyncio
 async def test_corpus_matches_sealed_v0_10_1_baseline():
     records = await run_corpus()
     if os.environ.get("ORACLE_REGEN") == "1" or not _FIXTURE.exists():
@@ -98,6 +99,7 @@ def test_comparator_and_canonicalizer_detect_real_drift():
     assert compare_records(base, _c.deepcopy(base)) == []
 
 
+@pytest.mark.asyncio
 async def test_canonicalizer_strips_only_approved_volatile_facts():
     """Two corpus runs must be equal after canonicalization (ids/timestamps/elapsed differ each
     run), proving the canonicalizer neutralizes intrinsically-volatile facts and nothing else."""
