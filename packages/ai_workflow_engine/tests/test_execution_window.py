@@ -135,6 +135,27 @@ def test_decision_is_serializable_and_deterministic():
     assert ExecutionWindowDecision.model_validate_json(d.model_dump_json()).hard_timeout_s == 6.0
 
 
+def test_exhausted_run_is_a_typed_zero_window_not_an_invalid_decision():
+    from ai_workflow_engine.execution_window import ExecutionWindowDecision
+
+    exhausted = resolve_execution_window(ExecutionWindowInputs(run_remaining_s=0.0))
+
+    assert exhausted.is_bounded and exhausted.is_exhausted
+    assert exhausted.hard_timeout_s == exhausted.soft_timeout_s == 0
+    assert exhausted.limiting_sources == ["run_limit"]
+    assert exhausted.clamps == ["run_remaining"]
+    assert ExecutionWindowDecision.model_validate_json(exhausted.model_dump_json()) == exhausted
+
+    with pytest.raises(ValueError, match="must come from exhausted run/parent"):
+        ExecutionWindowDecision(
+            capability_timeout_s=0.0,
+            hard_timeout_s=0.0,
+            soft_timeout_s=0.0,
+            limiting_sources=["capability_limit"],
+            clamps=["capability"],
+        )
+
+
 def test_decision_model_seals_lying_windows():
     """F5: ExecutionWindowDecision cannot be CONSTRUCTED in a lying shape — a bounded window
     with no limiting source, a soft that doesn't match hard-minus-reserve, or a bounded label

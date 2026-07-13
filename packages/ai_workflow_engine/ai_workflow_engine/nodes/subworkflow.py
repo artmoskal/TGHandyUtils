@@ -59,9 +59,14 @@ def build_subworkflow_node(services, definition: WorkflowDefinition, node: Workf
                 )
             )
             return update
-        ok = child_result.status in ("completed", "partial")
+        if child_result.status == "completed":
+            capability_status = "accepted"
+        elif child_result.status == "partial":
+            capability_status = "partial"
+        else:
+            capability_status = "failed"
         cap = CapabilityResult(
-            status="accepted" if ok else "failed",
+            status=capability_status,
             output=child_result.output,
             artifacts=child_result.artifacts,
             error=child_result.error,
@@ -72,7 +77,7 @@ def build_subworkflow_node(services, definition: WorkflowDefinition, node: Workf
             WorkflowTraceEvent(
                 node=node.id,
                 decision="subworkflow",
-                error=None if ok else child_result.error,
+                error=None if capability_status == "accepted" else child_result.error,
                 metadata={
                     "parent_workflow": definition.workflow_id,
                     "child_workflow": child_def.workflow_id,

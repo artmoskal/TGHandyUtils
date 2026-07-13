@@ -401,7 +401,8 @@ class CapabilityRuntime:
             # A run whose deadline has ALREADY passed must not start new work.
             if hard is not None and hard <= 0:
                 raise _ExecutionTimeout(
-                    f"run execution window exhausted before capability '{name}' could start"
+                    f"run execution window exhausted before capability '{name}' could start",
+                    window=window,
                 )
 
             result = handler(context, parsed_payload)

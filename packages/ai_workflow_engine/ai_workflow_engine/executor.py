@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 _AUTHORED_PROVENANCE: ContextVar[Optional[Dict[str, Any]]] = ContextVar(
     "ai_workflow_engine_authored_provenance", default=None
 )
-from ai_workflow_engine.engine.runner import WorkflowRunner
+from ai_workflow_engine.engine.runner import WorkflowRunner, derive_workflow_result_status
 from ai_workflow_engine.engine.scheduler import WorkflowScheduler
 from ai_workflow_engine.model_binding import model_profile_scope
 from ai_workflow_engine.node_services import ExecutorNodeServices, NodeExecutionServices
@@ -411,7 +411,14 @@ class WorkflowExecutor:
         compiled = self.compile(definition)
         graph_config = {"recursion_limit": self._recursion_limit(definition, context)}
         with observation_capture_scope(self.runtime.observation):
-            final_state = await compiled.ainvoke(self._initial_state(payload, context), config=graph_config)
+            child_state = self._initial_state(payload, context)
+            if (session := current_run_session()) is not None:
+                # Child workflows share the parent's usage/budget scope. Carry that same
+                # summary into the child envelope too; an empty fabricated summary would make
+                # nested costs look like zero and emitted a false plumbing warning on every run.
+                child_state["usage_summary"] = session.usage_summary
+                child_state["workflow_context"] = session.run_context
+            final_state = await compiled.ainvoke(child_state, config=graph_config)
         return self._envelope(definition, final_state)
 
     async def resume(
@@ -1282,16 +1289,7 @@ class WorkflowExecutor:
             final_state.get(CONTEXT), "run_context", None
         )
         run_id = str(run_context.workflow_id) if run_context and run_context.workflow_id else None
-        explicit = final_state.get("status")
-        status: WorkflowResultStatus
-        if explicit == "failed":
-            status = "failed"
-        elif explicit == "requires_user_input":
-            status = "requires_user_input"
-        elif any(record.status == "partial" for record in node_results):
-            status = "partial"
-        else:
-            status = "completed"
+        status: WorkflowResultStatus = derive_workflow_result_status(final_state)
         usage = final_state.get("usage_summary")
         if usage is None:
             # Runner always seeds the summary; absence means a plumbing bug upstream. Report
@@ -1299,6 +1297,13 @@ class WorkflowExecutor:
             # fabricated $0 would read as cost truth.
             logger.warning("run produced no usage_summary — reporting an empty one (plumbing bug?)")
             usage = WorkflowUsageSummary()
+        error = final_state.get("error")
+        if error is None and status in ("partial", "failed"):
+            # A child workflow crosses its parent boundary through WorkflowRunResult. Preserve
+            # terminal node reasons there so partial/failure provenance cannot disappear even
+            # though the child state itself has no single global error field.
+            reasons = [record.error for record in node_results if record.error]
+            error = "; ".join(dict.fromkeys(reasons)) or None
         snapshot: Optional[MachineSnapshot] = None
         if status == "requires_user_input":
             suspended = next(
@@ -1311,7 +1316,7 @@ class WorkflowExecutor:
             workflow_id=definition.workflow_id,
             status=status,
             output=final_state.get(RUNNING_PAYLOAD),
-            error=final_state.get("error"),
+            error=error,
             fallback_reason=final_state.get("fallback_reason"),
             node_results=node_results,
             artifacts=list(final_state.get("artifacts", [])),

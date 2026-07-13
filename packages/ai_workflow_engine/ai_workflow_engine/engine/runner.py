@@ -8,7 +8,12 @@ import uuid
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 from ai_workflow_engine._runtime_state import workflow_run_context_scope
-from ai_workflow_engine.models import WorkflowGoal, WorkflowRunContext, WorkflowUsageSummary
+from ai_workflow_engine.models import (
+    WorkflowGoal,
+    WorkflowResultStatus,
+    WorkflowRunContext,
+    WorkflowUsageSummary,
+)
 from ai_workflow_engine.usage import (
     UsageSink,
     WorkflowUsageContext,
@@ -17,6 +22,19 @@ from ai_workflow_engine.usage import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def derive_workflow_result_status(state: Dict[str, Any]) -> WorkflowResultStatus:
+    """Derive terminal machine truth once for both the result envelope and lifecycle log."""
+
+    explicit = state.get("status")
+    if explicit == "failed":
+        return "failed"
+    if explicit == "requires_user_input":
+        return "requires_user_input"
+    if any(getattr(record, "status", None) == "partial" for record in state.get("node_results", [])):
+        return "partial"
+    return "completed"
 
 
 class WorkflowRunner:
@@ -87,7 +105,7 @@ class WorkflowRunner:
             with workflow_run_context_scope(ctx), workflow_usage_scope(usage_context):
                 try:
                     result = await self._invoke_graph(graph, state, graph_config)
-                    outcome = "success"
+                    outcome = derive_workflow_result_status(result)
                     fallback_error: Optional[Exception] = None
                 except Exception as exc:
                     if not recursion_fallback or not self._is_recursion_exhaustion(exc):

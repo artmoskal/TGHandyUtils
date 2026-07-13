@@ -195,6 +195,12 @@ class ExecutionWindowDecision(BaseModel):
     def is_bounded(self) -> bool:
         return self.hard_timeout_s is not None
 
+    @property
+    def is_exhausted(self) -> bool:
+        """Whether an enclosing run/parent consumed the entire window before invocation."""
+
+        return self.hard_timeout_s == 0
+
     @field_validator(
         "requested_timeout_s",
         "capability_timeout_s",
@@ -247,8 +253,25 @@ class ExecutionWindowDecision(BaseModel):
                 f"hard_timeout_s={self.hard_timeout_s!r} must equal the minimum proposed "
                 f"bound {expected_hard!r}"
             )
-        if self.hard_timeout_s <= 0:
-            raise ValueError(f"hard_timeout_s must be > 0, got {self.hard_timeout_s!r}")
+        if self.hard_timeout_s == 0:
+            # Zero is not a runnable timeout request. It is a terminal resolution produced
+            # only when an enclosing run/parent has no time left, and lets the runtime refuse
+            # the invocation with the same typed provenance as an in-flight timeout.
+            if not ({"run_limit", "parent_window"} & set(expected_sources)):
+                raise ValueError(
+                    "a zero execution window must come from exhausted run/parent remaining time"
+                )
+            if self.soft_timeout_s != 0:
+                raise ValueError("an exhausted execution window must have soft_timeout_s=0")
+            if self.limiting_sources != expected_sources:
+                raise ValueError(
+                    f"limiting_sources must exactly match the winning bounds: {expected_sources!r}"
+                )
+            if self.clamps != expected_clamps:
+                raise ValueError(
+                    f"clamps must exactly match the applied bound reductions: {expected_clamps!r}"
+                )
+            return self
         if self.soft_timeout_s is None:
             raise ValueError("a bounded window must have a soft_timeout_s")
         if not (0 <= self.completion_reserve_s < self.hard_timeout_s):
@@ -316,6 +339,15 @@ def resolve_execution_window(
                 "is only meaningful inside a finite window"
             )
         return ExecutionWindowDecision(**common)
+
+    if hard == 0:
+        return ExecutionWindowDecision(
+            **common,
+            hard_timeout_s=0,
+            soft_timeout_s=0,
+            limiting_sources=limiting_sources,
+            clamps=clamps,
+        )
 
     if reserve >= hard:
         raise ValueError(

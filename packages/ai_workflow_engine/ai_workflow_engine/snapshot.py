@@ -59,7 +59,7 @@ class MachineSnapshot(BaseModel):
     # as a DURATION in seconds (never a monotonic timestamp — those are process-local and
     # unsafe to persist). Resume rebuilds the run deadline from the remaining active budget,
     # so time spent suspended at the gate does not count against the run timeout.
-    active_elapsed_s: float = 0.0
+    active_elapsed_s: float = Field(default=0.0, ge=0, allow_inf_nan=False, strict=True)
 
     def to_json(self) -> str:
         """Serialize for cross-process resume. Raises loudly on non-serializable payloads."""

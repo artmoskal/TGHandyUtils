@@ -2868,6 +2868,45 @@ async def test_subworkflow_failure_boundary_halts_parent():
     assert sub_event.metadata["child_status"] == "failed"
 
 
+async def test_subworkflow_partial_boundary_never_turns_parent_green():
+    finish_calls = 0
+
+    async def slow(_ctx, payload):
+        await asyncio.sleep(0.1)
+        return payload
+
+    def finish(_ctx, payload):
+        nonlocal finish_calls
+        finish_calls += 1
+        return payload
+
+    child = WorkflowBuilder("bounded_child").step("slow").build()
+    parent = (
+        WorkflowBuilder("partial_parent")
+        .subworkflow("child", workflow=child)
+        .step("finish")
+        .build()
+    )
+    engine = (
+        WorkflowEngineBuilder()
+        .register_capability("slow", slow, kind="deterministic", timeout_s=0.01)
+        .register_capability("finish", finish, kind="deterministic")
+        .register_workflow(child)
+        .register_workflow(parent)
+        .build()
+    )
+
+    result = await engine.run("partial_parent", {})
+
+    assert finish_calls == 1, "partial preserves salvageable flow rather than acting as failure"
+    assert result.status == "partial"
+    assert result.node("child").status == "partial"
+    assert result.node("child").error
+    sub_event = next(event for event in result.trace if event.decision == "subworkflow")
+    assert sub_event.metadata["child_status"] == "partial"
+    assert sub_event.error
+
+
 def _clarify_engine(channel: InMemoryHumanClarificationChannel) -> WorkflowEngine:
     human_cap = HumanClarificationCapability(channel, name="ask")
     workflow = WorkflowBuilder("clarify").human("ask", wait_policy=LocalWaitPolicy()).step("use_answer").build()

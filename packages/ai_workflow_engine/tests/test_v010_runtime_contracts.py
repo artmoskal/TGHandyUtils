@@ -128,7 +128,7 @@ async def test_partial_task_metadata_that_leaks_bytes_fails_loudly():
     assert "byte" in str(exc.value).lower() or "bytes" in str(exc.value).lower()
 
 
-async def test_run_timeout_actually_bounds_slow_async_work():
+async def test_run_timeout_actually_bounds_slow_async_work(caplog):
     """Defect 2: ``RuntimeLimits.timeout_s`` is a declared contract — a run whose async
     capability exceeds it must be stopped and reported honestly, not allowed to run to
     completion as if no limit existed."""
@@ -154,6 +154,53 @@ async def test_run_timeout_actually_bounds_slow_async_work():
     # the timeout is truthful PARTIAL machine data, not an anonymous failure
     node = result.node("slow")
     assert result.status == "partial"
+    assert node is not None and node.status == "partial"
+    assert '"outcome": "partial"' in caplog.text
+
+
+async def test_exhausted_run_refuses_downstream_work_as_typed_partial():
+    calls = {"after": 0}
+
+    async def consume(_ctx, _payload):
+        await asyncio.sleep(1.0)
+        return {"unreachable": True}
+
+    def after(_ctx, _payload):
+        calls["after"] += 1
+        return {"also": "unreachable"}
+
+    engine = (
+        WorkflowEngineBuilder()
+        .with_profile(_profile("exhausted", timeout_s=0.05))
+        .register_capability("consume", consume, kind="deterministic")
+        .register_capability("after", after, kind="deterministic")
+        .register_workflow(WorkflowBuilder("exhausted").step("consume").step("after").build())
+        .build()
+    )
+
+    result = await engine.run("exhausted", {})
+
+    assert result.status == "partial"
+    assert calls["after"] == 0, "an exhausted run must refuse work before calling its handler"
+    after_result = result.node("after")
+    assert after_result is not None and after_result.status == "partial"
+    terminal = next(
+        event
+        for event in result.trace
+        if event.node == "after" and event.decision == "partial"
+    )
+    assert terminal.metadata["timeout_reason"] == "execution_window_exceeded"
+    assert terminal.metadata["execution_window"]["hard_timeout_s"] == 0
+
+
+async def test_snapshot_active_elapsed_duration_is_strict_finite_and_non_negative():
+    from ai_workflow_engine.snapshot import MachineSnapshot
+
+    common = {"workflow_id": "w", "suspended_node": "gate"}
+    assert MachineSnapshot(**common, active_elapsed_s=1.25).active_elapsed_s == 1.25
+    for invalid in (-1.0, float("nan"), float("inf"), True, "1.0"):
+        with pytest.raises(ValueError):
+            MachineSnapshot(**common, active_elapsed_s=invalid)
 
 
 async def test_timeout_bounds_are_recomputed_from_run_remaining_across_a_capability_limit():
