@@ -1,14 +1,14 @@
 # GoPro Engine Adoption Guide
 
-Status: **ready for consumer validation against `engine-v0.9.2`**. GoPro should pin tag
-`engine-v0.9.2`, record the source commit and wheel hash, and run its sidecar canary before changing
+Status: **ready for consumer validation against `engine-v0.10.0`**. GoPro should pin tag
+`engine-v0.10.0`, record the source commit and wheel hash, and run its sidecar canary before changing
 the production image. Do not infer the actual GoPro pin from this document; the consumer repository's
 pin file is authoritative for deployed state.
 
 Read first: [getting started](getting-started.md), [framework concepts](concepts.md), and
 [misuse risks](misuse-risks.md). This file contains only GoPro-specific mapping.
 
-Moving from `engine-v0.8.1`? Read [migration-v0.9](migration-v0.9.md) first — every breaking change (strict RuntimeLimits, typed firewall markers, hard-zero caps, failed-call accounting, `.human` wait policy) is listed there.
+Moving to `engine-v0.10.0`? Read [migration-v0.10](migration-v0.10.md) — the `partial` timeout/plan contract, enforced `RuntimeLimits.timeout_s`, interruptibility declaration, and the dropped CLI 600s default. Coming from `engine-v0.8.1`, also read [migration-v0.9](migration-v0.9.md) — strict RuntimeLimits, typed firewall markers, hard-zero caps, failed-call accounting, and `.human` wait policy.
 
 ## Product Outcome
 
@@ -34,9 +34,9 @@ The engine owns execution and gates. GoPro owns inventory semantics and storage.
 
 | Package | GoPro use |
 |---|---|
-| `ai-workflow-engine==0.9.2` | Required in the detection/sidecar runtime |
-| `ai-workflow-tools==0.3.0` | Add only when GoPro uses CLI agents or shared media helpers |
-| `ai-workflow-viewer==0.2.1` | Developer/diagnostic service; not required in the detector image |
+| `ai-workflow-engine==0.10.0` | Required in the detection/sidecar runtime |
+| `ai-workflow-tools==0.4.0` | Add only when GoPro uses CLI agents or shared media helpers |
+| `ai-workflow-viewer==0.2.2` | Developer/diagnostic service; not required in the detector image |
 
 Vendoring only the engine wheel is the correct lightweight configuration for the current direct-VLM
 path.

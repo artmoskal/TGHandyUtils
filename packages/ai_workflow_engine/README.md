@@ -5,7 +5,7 @@ declare a workflow, register typed capabilities, and call one engine door. The e
 transitions, retries, fan-out, budgets, waits, trace, usage, and observation bundles; products own
 domain models, provider clients, storage adapters, clocks, and side-effect delivery.
 
-> **`engine-v0.9.2` is the current release.** Pin the immutable tag and build a wheel. Never depend on a
+> **`engine-v0.10.0` is the current release.** Pin the immutable tag and build a wheel. Never depend on a
 > live branch. The binding contract is the repository-level
 > [`executable-workflow-engine-spec.md`](../../docs/executable-workflow-engine-spec.md).
 
@@ -34,20 +34,20 @@ Build from the tag because this monorepo is not published to PyPI:
 
 ```bash
 git clone <TGHandyUtils-repository> /tmp/tghandy-engine
-git -C /tmp/tghandy-engine checkout --detach engine-v0.9.2
+git -C /tmp/tghandy-engine checkout --detach engine-v0.10.0
 python -m pip wheel --no-deps -w ./vendor \
   /tmp/tghandy-engine/packages/ai_workflow_engine
-python -m pip install ./vendor/ai_workflow_engine-0.9.2-py3-none-any.whl
-python -c "import ai_workflow_engine as e; assert e.__version__ == '0.9.2'"
+python -m pip install ./vendor/ai_workflow_engine-0.10.0-py3-none-any.whl
+python -c "import ai_workflow_engine as e; assert e.__version__ == '0.10.0'"
 ```
 
 Optional packages:
 
 | Package | Install when |
 |---|---|
-| `ai-workflow-engine==0.9.2` | Always. Core builder, executor, memory, waits, observation writer. |
-| `ai-workflow-tools==0.3.0` | The product uses CLI agents, the tool catalog, or media helpers. |
-| `ai-workflow-viewer==0.2.1` | A developer or product service renders observation bundles. |
+| `ai-workflow-engine==0.10.0` | Always. Core builder, executor, memory, waits, observation writer. |
+| `ai-workflow-tools==0.4.0` | The product uses CLI agents, the tool catalog, or media helpers. |
+| `ai-workflow-viewer==0.2.2` | A developer or product service renders observation bundles. |
 
 Record the engine tag, source commit, and wheel SHA-256 in the consumer repository. A tag already
 consumed by another repository is frozen; fixes require a new tag.
@@ -110,7 +110,21 @@ minimal profile.
 
 ## Release Highlights
 
-`engine-v0.9.2` includes:
+`engine-v0.10.0` includes (new this release — see
+[`migration-v0.10.md`](docs/migration-v0.10.md) for the breaking changes):
+
+- an engine-owned, **enforced** execution window (soft work deadline, hard timeout, completion
+  reserve, named limiting sources/clamps) intersecting task request, capability limit, remaining run
+  budget, and parent window; a timed-out capability is a truthful **`partial`**, never a laundered
+  `failed` or false-green success;
+- truthful terminal **`partial`** planner tasks (error/output/artifacts preserved, never rewritten to
+  `done`), propagated through fan-out, nested plans, resume, trace, bundles, and workflow status;
+- declared interruptibility (`process` / `cooperative` / `none`) so the engine never claims to
+  hard-stop an uninterruptible inline handler; CLI agents inherit the engine window (no hidden 600s);
+- typed retrace provenance delivered to the retraced capability and projected — with the execution
+  window and timeout reason — at the node in the generic viewer;
+
+and, from earlier releases:
 
 - declared step, branch, evaluate/retrace/fallback, bounded fan-out, subworkflow, planner, and human
   nodes;

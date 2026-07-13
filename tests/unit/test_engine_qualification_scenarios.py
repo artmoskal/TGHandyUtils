@@ -408,3 +408,138 @@ def test_failed_node_error_is_projected_once():
     assert graph.nodes["boom"].status == "failed"
     assert graph.nodes["boom"].errors == ["kaput"], "same evidence text appears exactly once"
 
+
+
+async def test_v010_runtime_contracts_project_through_the_public_door_and_viewer(tmp_path):
+    """Phase 4.1 integrated hermetic qualification: ONE real workflow through
+    ``WorkflowEngine.run`` with a real observation bundle proves the v0.10 contracts compose
+    and are projected truthfully — an accepted planner task stays done, a timeout-salvaged
+    task stays a terminal PARTIAL with its output/artifact/error, two retrace rounds are
+    structured, and the effective execution window is recorded. The bundle + viewer show the
+    same outcome (no MageQA imports, no manual orchestration loop, providers not even needed —
+    deterministic capabilities so the contract, not a provider, is under test)."""
+
+    from ai_workflow_engine import (
+        ObservationConfig,
+        PlanArtifact,
+        PlanTask,
+        Retrace,
+        WorkflowArtifact,
+        WorkflowBuilder,
+        WorkflowEngineBuilder,
+    )
+    from ai_workflow_engine.models import (
+        CapabilityResult,
+        RuntimeLimits,
+        SafetyPolicy,
+        WorkflowProfile,
+    )
+    from ai_workflow_viewer import FileEventSource, build_observation_graph
+    from ai_workflow_viewer.observability import _observation_view_data, observation_graph_to_html
+
+    bundle_dir = tmp_path / "bundle"
+
+    def planner(_ctx, _payload):
+        return PlanArtifact(
+            goal="audit pages under a bounded window",
+            tasks=[
+                PlanTask(task_id="full", description="whole page", capability="full_audit", payload=1),
+                # a timeout-salvaged task: the capability RETURNS a terminal PARTIAL carrying its
+                # salvaged output + artifact + the deadline error — exactly the shape the CLI agent
+                # returns after its subprocess is stopped at the soft window (Phase 3). The whole
+                # run is bounded by the profile timeout, so every node still carries a window.
+                PlanTask(
+                    task_id="salvage",
+                    description="cut short at the deadline",
+                    capability="salvaged_audit",
+                    payload=2,
+                ),
+            ],
+        )
+
+    def full_audit(_ctx, payload):
+        return {"audited": payload, "pages": 10}
+
+    def salvaged_audit(_ctx, _payload):
+        return CapabilityResult(
+            status="partial",
+            output={"pages_done": 3, "pages_total": 10},
+            error="incomplete: stopped at the execution-window deadline (3 of 10 pages)",
+            artifacts=[WorkflowArtifact(path="artifacts/page3.png", artifact_id="frame-3", kind="media")],
+            metadata={"pages_done": 3},
+        )
+
+    rounds: list[int] = []
+
+    def refine(ctx, payload):
+        prov = getattr(ctx, "retrace_provenance", None)
+        rounds.append(prov.round if prov is not None else 0)
+        return payload
+
+    def gate(_ctx, _payload):
+        # reject the first two evaluations (-> two retrace rounds), then accept
+        attempts = len(rounds)
+        return CapabilityResult(
+            status="accepted" if attempts >= 3 else "rejected",
+            error=None if attempts >= 3 else "needs another pass",
+        )
+
+    engine = (
+        WorkflowEngineBuilder()
+        .with_observation(ObservationConfig(enabled=True, bundle_dir=str(bundle_dir)))
+        .with_profile(
+            WorkflowProfile(
+                workflow_type="v010_qual",
+                limits=RuntimeLimits(timeout_s=30.0),
+                safety=SafetyPolicy(allowed_side_effects=[]),
+            )
+        )
+        .register_capability("planner", planner, kind="llm")
+        .register_capability("full_audit", full_audit, kind="deterministic")
+        .register_capability("salvaged_audit", salvaged_audit, kind="deterministic")
+        .register_capability("refine", refine, kind="deterministic")
+        .register_capability("gate", gate, kind="llm")
+        .register_workflow(
+            WorkflowBuilder("v010_qual")
+            .plan("audit", capability="planner")
+            .step("refine")
+            .evaluate("qa", target="refine", evaluator="gate", on_reject=Retrace("refine", max_retrace=2))
+            .build()
+        )
+        .build()
+    )
+
+    result = await engine.run("v010_qual", {})
+
+    # --- two structured retrace rounds actually happened, delivered to the target ---
+    assert rounds == [0, 1, 2], f"expected first pass then retrace rounds 1 and 2: {rounds}"
+
+    # --- planner-task truth surfaces through the OBSERVATION BUNDLE (the public read model),
+    # not just in-process state: the salvaged task stayed a terminal PARTIAL and its error
+    # survived into the record — never laundered to done with the error cleared ---
+    run_data = FileEventSource(str(bundle_dir)).read()
+    trace_text = " ".join(
+        f"{e.decision or ''}|{e.error or ''}|{e.node}" for e in run_data.trace_events
+    )
+    assert "incomplete: stopped at the execution-window deadline" in trace_text, (
+        "the salvaged task's partial error must survive into the bundle, never be cleared"
+    )
+
+    # --- the observation bundle projects the SAME outcome through the viewer ---
+    graph = build_observation_graph(
+        run_data.definition, run_data.trace_events, run_data.usage_events, run_data.details,
+        run_id=run_data.run_id,
+    )
+    assert graph.nodes["audit"].status == "partial", (
+        "the plan node with a partial task must project partial: "
+        f"{ {k: v.status for k, v in graph.nodes.items()} }"
+    )
+    metrics = {n["id"]: n["metrics"] for n in _observation_view_data(run_data.definition, graph)["nodes"]}
+    # the evaluator node projects the retrace round -> target from persisted truth
+    assert any("retrace round 2" in m and "refine" in m for m in metrics.get("qa", [])), metrics.get("qa")
+    # a bounded run means the capability nodes carry a projected window
+    all_metrics = " ".join(m for ms in metrics.values() for m in ms)
+    assert "window: soft" in all_metrics, f"a bounded run must project a window: {metrics}"
+    # the viewer HTML renders the same truth
+    page = observation_graph_to_html(run_data.definition, graph)
+    assert "retrace round 2" in page

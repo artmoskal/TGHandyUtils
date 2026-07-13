@@ -1,17 +1,22 @@
 # MageQA Engine Adoption Guide
 
-Status: **BLOCKED for MageQA adoption — do not migrate yet.** `engine-v0.9.2` (current general
-release; other consumers pin tag `engine-v0.9.2` normally) fails MageQA's E0 acceptance gates:
-planned `partial` results are rewritten to `done` with their error cleared, `RuntimeLimits.timeout_s`
-is declared but not enforced on execution, retrace provenance is not exposed to the retraced
-capability, the CLI request carries a hidden 600s default, and the tools wheel identity (`0.3.0`)
-was reused for changed code. These ship together in `engine-v0.10.0` (see the active v0.10 plan);
-MageQA stays pinned to `engine-v0.8.1` until that immutable tag exists and E0 canaries pass.
+Status: **BLOCKED for MageQA adoption until the immutable tag exists.** The five E0 blockers that
+failed MageQA against `engine-v0.9.2` — planned `partial` rewritten to `done` with the error
+cleared, `RuntimeLimits.timeout_s` declared but not enforced, retrace provenance not exposed to the
+retraced capability, the CLI request's hidden 600s default, and the reused `0.3.0` tools wheel
+identity — are all **addressed in `engine-v0.10.0`** (tools `0.4.0`, viewer `0.2.2`). MageQA must
+still pin tag `engine-v0.10.0` from a clean checkout, rebuild wheels, and pass its E0 canaries before
+migrating; it stays pinned to `engine-v0.8.1` until that immutable tag exists and those canaries pass.
+Do not infer the actual MageQA pin from this document; the consumer repository's pin file is
+authoritative for deployed state.
 
 Read first: [getting started](getting-started.md), [framework concepts](concepts.md),
 [operations](operations.md), and [misuse risks](misuse-risks.md).
 
-Moving from `engine-v0.7.0`/`v0.8.1`? Read [migration-v0.9](migration-v0.9.md) first — every breaking change is listed there.
+Moving to `engine-v0.10.0`? Read [migration-v0.10](migration-v0.10.md) — the `partial` timeout/plan
+contract, enforced `RuntimeLimits.timeout_s`, interruptibility declaration, and the dropped CLI
+600s default are all listed there. Coming from `engine-v0.7.0`/`v0.8.1`, also read
+[migration-v0.9](migration-v0.9.md) first.
 
 ## Product Outcome
 
@@ -41,9 +46,9 @@ a defect.
 
 | Package | MageQA use |
 |---|---|
-| `ai-workflow-engine==0.9.2` | Required orchestration/runtime |
-| `ai-workflow-tools==0.3.0` | CLI agents, `claude -p`/`codex exec`, tool catalog, media helpers |
-| `ai-workflow-viewer==0.2.1` | Low-level engine run investigation and bundle rendering |
+| `ai-workflow-engine==0.10.0` | Required orchestration/runtime |
+| `ai-workflow-tools==0.4.0` | CLI agents, `claude -p`/`codex exec`, tool catalog, media helpers |
+| `ai-workflow-viewer==0.2.2` | Low-level engine run investigation and bundle rendering |
 
 The MageQA Next.js dashboard remains product-owned. It may link/embed/project engine bundle data, but
 it must not create a duplicate trace or workflow runtime.
