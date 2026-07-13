@@ -9,10 +9,12 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
+from ai_workflow_engine.execution_window import TaskExecutionRequest
+
 from pydantic import BaseModel, Field
 
 
-PlanTaskStatus = Literal["pending", "in_progress", "done", "failed", "skipped"]
+PlanTaskStatus = Literal["pending", "in_progress", "done", "partial", "failed", "skipped"]
 
 
 class PlanTask(BaseModel):
@@ -25,6 +27,14 @@ class PlanTask(BaseModel):
     status: PlanTaskStatus = "pending"
     error: Optional[str] = None
     output_ref: Optional[str] = None
+    # v0.10 truthful terminal evidence: stable artifact ids and byte-safe result metadata
+    # ride the task for partial/done outcomes; raw bytes and whole outputs never do —
+    # ``output_ref`` keeps pointing into the plan's task-output map.
+    artifact_refs: list[str] = Field(default_factory=list)
+    result_metadata: dict[str, Any] = Field(default_factory=dict)
+    # v0.10: optional per-task execution request (timeout/reserve/source). Absent -> the task
+    # inherits only capability + run + parent bounds; simple plans set nothing.
+    execution: Optional["TaskExecutionRequest"] = None
 
 
 class PlanArtifact(BaseModel):

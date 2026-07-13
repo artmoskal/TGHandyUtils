@@ -632,6 +632,9 @@ class CapabilitySpec(BaseModel):
             self.output_schema_name = self.output_model.__name__
 
 
+from ai_workflow_engine.execution_window import ExecutionWindowDecision
+
+
 class CapabilityContext(BaseModel):
     """Context passed into a capability invocation."""
 
@@ -645,6 +648,10 @@ class CapabilityContext(BaseModel):
     # Per-node declarative model binding, resolved by the executor for this invocation.
     model_profile: Optional[ModelProfile] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    # v0.10: set for exactly the retraced invocation of a capability; None otherwise.
+    retrace_provenance: Optional["RetraceProvenance"] = None
+    # v0.10: the engine's resolved time-limit decision for this invocation (None = unbounded).
+    execution_window: Optional["ExecutionWindowDecision"] = None
 
 
 class CapabilityResult(BaseModel):
@@ -665,6 +672,24 @@ class CriticismEnvelope(BaseModel):
     severity: Literal["low", "medium", "high", "blocking"] = "medium"
     target_capability: Optional[str] = None
     user_visible_effect: str = ""
+
+
+class RetraceProvenance(BaseModel):
+    """Typed retrace control state delivered to the retraced capability for ONE invocation.
+
+    v0.10: the target learns it is being retraced as machine data — round, the evaluator
+    node, the rejected source node, and the retrace target — instead of inferring control
+    state from criticism prose. Retry/repair/replan do not produce this; only an actual
+    retrace round does. The criticism rides as feedback, never as a control encoding.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    round: int = Field(ge=1)
+    evaluator_node: str
+    source_node: str
+    target_node: str
+    criticism: Optional[CriticismEnvelope] = None
 
 
 class EvaluationDecision(BaseModel):

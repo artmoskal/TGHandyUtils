@@ -51,6 +51,7 @@ from ai_workflow_engine._runtime_state import (
     RUNNING_PAYLOAD,
     observation_capture_scope,
     run_session_scope,
+    _ACTIVE_RETRACE_PROVENANCE,
 )
 from ai_workflow_engine.models import (
     CapabilityContext,
@@ -102,6 +103,9 @@ class WorkflowState(TypedDict, total=False):
     resume_suspended_node: Optional[str]
     resume_event: Any
     machine_replay_done: bool
+    # v0.10: {"target": <node id>, "provenance": RetraceProvenance} set by the evaluate
+    # retrace route; consumed exactly once when the target node re-runs.
+    pending_retrace_provenance: Any
 
 
 class UnsupportedNodeError(ValueError):
@@ -569,12 +573,29 @@ class WorkflowExecutor:
                         )
                     )
                     return {}
-                update = await fn(state)
+                update = await self._run_with_retrace_provenance(node, fn, state)
                 update["machine_replay_done"] = True
                 return update
-            return await fn(state)
+            return await self._run_with_retrace_provenance(node, fn, state)
 
         return replay_aware
+
+    async def _run_with_retrace_provenance(self, node, fn, state):
+        """v0.10 generic retrace delivery: if a retrace routed to THIS node, publish its typed
+        provenance for the invocation boundary (any node kind reads it via
+        ``_context_for_node``) and clear the stamp in the returned update — exactly once, on
+        every path the handler can take."""
+
+        pending = state.get("pending_retrace_provenance")
+        if not (isinstance(pending, dict) and pending.get("target") == node.id):
+            return await fn(state)
+        token = _ACTIVE_RETRACE_PROVENANCE.set(pending.get("provenance"))
+        try:
+            update = await fn(state)
+        finally:
+            _ACTIVE_RETRACE_PROVENANCE.reset(token)
+        update["pending_retrace_provenance"] = None  # consumed
+        return update
 
     def _bind_or_validate_event_loop(self) -> None:
         current = asyncio.get_running_loop()
@@ -789,6 +810,12 @@ class WorkflowExecutor:
         if node.inject_machine and definition is not None:
             # The machine describes itself to its navigator: legal moves + LIVE gate budgets.
             extra["machine"] = render_machine_card(definition, node.id, state)
+        provenance = _ACTIVE_RETRACE_PROVENANCE.get()
+        if provenance is not None:
+            extra_update: Dict[str, Any] = {"retrace_provenance": provenance}
+            if extra:
+                extra_update["metadata"] = {**context.metadata, **extra}
+            return context.model_copy(update=extra_update)
         if not extra:
             return context
         return context.model_copy(update={"metadata": {**context.metadata, **extra}})

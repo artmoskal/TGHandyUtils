@@ -56,6 +56,10 @@ def build_evaluate_node(services, definition: WorkflowDefinition, node: Workflow
         update["routes"] = {**state.get("routes", {}), node.id: effect["route"]}
         update["eval_counters"] = {**state.get("eval_counters", {}), node.id: counters}
         update[RUNNING_PAYLOAD] = effect["output"]
+        # v0.10: carry the retrace provenance stamp (set only by the retrace route) into
+        # state so the target node consumes it on its next invocation.
+        if "pending_retrace_provenance" in effect:
+            update["pending_retrace_provenance"] = effect["pending_retrace_provenance"]
         if effect["status"] == "requires_user_input":
             update["status"] = "requires_user_input"
         services.runtime.trace_sink.record(
@@ -167,7 +171,24 @@ async def _apply_eval(
         counters["retrace"] += 1
         target = decision.retrace_to or (node.on_reject.target if isinstance(node.on_reject, Retrace) else None)
         base = state.get("node_inputs", {}).get(target, evaluated_payload)
-        return {"route": "retrace", "status": "rejected", "output": _with_criticism(base, decision.criticism), "error": decision.rationale}
+        # v0.10: typed retrace provenance for the target's next invocation (consumed once
+        # when that node re-runs). ONLY the retrace route stamps it — retry/replan do not.
+        from ai_workflow_engine.models import RetraceProvenance
+
+        provenance = RetraceProvenance(
+            round=counters["retrace"],
+            evaluator_node=node.id,
+            source_node=node.target_capability or node.id,
+            target_node=target or node.id,
+            criticism=decision.criticism,
+        )
+        return {
+            "route": "retrace",
+            "status": "rejected",
+            "output": _with_criticism(base, decision.criticism),
+            "error": decision.rationale,
+            "pending_retrace_provenance": {"target": target, "provenance": provenance},
+        }
     if action == "replan":
         counters["replan"] += 1
         target = decision.retrace_to or (node.on_reject.target if isinstance(node.on_reject, Replan) else None)

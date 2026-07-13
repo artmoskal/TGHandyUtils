@@ -1,8 +1,12 @@
 # MageQA Engine Adoption Guide
 
-Status: **ready for consumer validation against `engine-v0.9.2`**. MageQA should pin tag
-`engine-v0.9.2`, build wheels, and run its audit canary before replacing its current pin. This guide
-does not claim MageQA has already migrated.
+Status: **BLOCKED for MageQA adoption — do not migrate yet.** `engine-v0.9.2` (current general
+release; other consumers pin tag `engine-v0.9.2` normally) fails MageQA's E0 acceptance gates:
+planned `partial` results are rewritten to `done` with their error cleared, `RuntimeLimits.timeout_s`
+is declared but not enforced on execution, retrace provenance is not exposed to the retraced
+capability, the CLI request carries a hidden 600s default, and the tools wheel identity (`0.3.0`)
+was reused for changed code. These ship together in `engine-v0.10.0` (see the active v0.10 plan);
+MageQA stays pinned to `engine-v0.8.1` until that immutable tag exists and E0 canaries pass.
 
 Read first: [getting started](getting-started.md), [framework concepts](concepts.md),
 [operations](operations.md), and [misuse risks](misuse-risks.md).

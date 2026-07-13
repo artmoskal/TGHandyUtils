@@ -37,6 +37,7 @@ RESERVED_STATE_KEYS = frozenset(
         "resume_suspended_node",
         "resume_event",
         "machine_replay_done",
+        "pending_retrace_provenance",
     }
 )
 
@@ -46,6 +47,15 @@ _ACTIVE_WORKFLOW_CONTEXT: ContextVar[Optional[Any]] = ContextVar(
 )
 _ACTIVE_OBSERVATION_CAPTURE: ContextVar[Optional[Any]] = ContextVar(
     "workflow_observation_capture",
+    default=None,
+)
+
+# v0.10: the retrace provenance for the CURRENTLY-executing target node invocation, set by
+# the generic node wrapper and read at the generic capability-invocation boundary — so any
+# retrace target (step/planner/fanout/...) receives typed provenance exactly once, cleared
+# on every return path.
+_ACTIVE_RETRACE_PROVENANCE: ContextVar[Optional[Any]] = ContextVar(
+    "workflow_active_retrace_provenance",
     default=None,
 )
 

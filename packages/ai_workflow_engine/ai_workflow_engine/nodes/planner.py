@@ -8,6 +8,7 @@ import asyncio
 from typing import Any, Dict, Optional
 from pydantic import ValidationError
 from ai_workflow_engine.models import CapabilityContext, CapabilityResult, WorkflowArtifact, WorkflowTraceEvent
+from ai_workflow_engine.byte_safety import assert_byte_safe
 from ai_workflow_engine.models import RuntimeLimits as _RL
 _DEFAULT_LIMITS = _RL()
 from ai_workflow_engine.planning import PlanArtifact, PlanTask
@@ -88,7 +89,8 @@ def build_planner_node(services, definition: WorkflowDefinition, node: WorkflowN
             executed_plan = executed_plan.model_copy(
                 update={"metadata": {**executed_plan.metadata, "task_outputs": task_outputs}}
             )
-        status = "partial" if task_failures else "accepted"
+        partial_count = sum(1 for task in executed_plan.tasks if task.status == "partial")
+        status = "partial" if (task_failures or partial_count) else "accepted"
         if executed_plan.tasks and all(task.status in ("failed", "skipped") for task in executed_plan.tasks):
             status = "failed"
         result = CapabilityResult(
@@ -96,7 +98,11 @@ def build_planner_node(services, definition: WorkflowDefinition, node: WorkflowN
             output=executed_plan,
             artifacts=task_artifacts,
             error="; ".join(task_failures) or planner_result.error,
-            metadata={"tasks": len(executed_plan.tasks), "failed": len(task_failures)},
+            metadata={
+                "tasks": len(executed_plan.tasks),
+                "failed": len(task_failures),
+                "partial": partial_count,
+            },
         )
         update = services.record(
             state,
@@ -166,7 +172,7 @@ def _merge_replanned_plan(prior: PlanArtifact, proposed: PlanArtifact) -> PlanAr
     immutable = {
         task.task_id: task
         for task in prior.tasks
-        if task.status in ("done", "failed", "skipped")
+        if task.status in ("done", "partial", "failed", "skipped")
     }
     merged: list[PlanTask] = []
     seen: set[str] = set()
@@ -252,7 +258,7 @@ async def _execute_plan(
 
     current_plan = plan
     for index, task in enumerate(tasks):
-        if task.status in ("done", "failed", "skipped"):
+        if task.status in ("done", "partial", "failed", "skipped"):
             continue
         if task_budget["remaining"] <= 0:
             exhausted = task.model_copy(update={
@@ -280,11 +286,7 @@ async def _execute_plan(
         if output_key and result.output is not None:
             task_outputs[output_key] = result.output
         artifacts.extend(result.artifacts)
-        if finished.status == "failed":
-            failures.append(f"{finished.task_id}: {finished.error or 'failed'}")
-            _trace_plan_task(services, node, finished, "plan:task_failed", error=finished.error)
-        else:
-            _trace_plan_task(services, node, finished, "plan:task_done")
+        _record_finished_task(services, node, finished, failures)
     return current_plan, task_outputs, artifacts, failures
 
 async def _maybe_execute_child_plan(
@@ -349,12 +351,17 @@ async def _maybe_execute_child_plan(
     for key, value in child_outputs.items():
         task_outputs[f"{task.task_id}.{key}"] = value
     artifacts.extend(child_artifacts)
+    child_partials = [t.task_id for t in executed_child.tasks if t.status == "partial"]
     if child_failures:
         failures.extend(f"{task.task_id}>{item}" for item in child_failures)
     services.runtime.trace_sink.record(
         WorkflowTraceEvent(
             node=node.id,
-            decision="plan:subplan_done" if not child_failures else "plan:subplan_partial",
+            decision=(
+                "plan:subplan_done"
+                if not (child_failures or child_partials)
+                else "plan:subplan_partial"
+            ),
             metadata={
                 "parent_task": task.task_id,
                 "depth": child_depth,
@@ -362,7 +369,7 @@ async def _maybe_execute_child_plan(
             },
         )
     )
-    status = "accepted" if not child_failures else "partial"
+    status = "accepted" if not (child_failures or child_partials) else "partial"
     return CapabilityResult(status=status, output=executed_child, artifacts=child_artifacts)
 
 async def _execute_plan_fanout(
@@ -377,7 +384,7 @@ async def _execute_plan_fanout(
         task_budget = {"remaining": node.max_total_planned_tasks}
     pending = [
         index for index, task in enumerate(plan.tasks)
-        if task.status not in ("done", "failed", "skipped")
+        if task.status not in ("done", "partial", "failed", "skipped")
     ]
     tasks = list(plan.tasks)
     budget_failures: list[str] = []
@@ -428,11 +435,7 @@ async def _execute_plan_fanout(
         if output_key and result.output is not None:
             task_outputs[output_key] = result.output
         artifacts.extend(result.artifacts)
-        if finished.status == "failed":
-            failures.append(f"{finished.task_id}: {finished.error or 'failed'}")
-            _trace_plan_task(services, node, finished, "plan:task_failed", error=finished.error)
-        else:
-            _trace_plan_task(services, node, finished, "plan:task_done")
+        _record_finished_task(services, node, finished, failures)
     return plan.model_copy(update={"tasks": tasks}), task_outputs, artifacts, failures
 
 async def _invoke_plan_task(
@@ -473,15 +476,56 @@ def _planned_task_denial(
             return ["budget_exhausted"]
     return []
 
+def _record_finished_task(services, node: WorkflowNode, finished: PlanTask, failures: list[str]) -> None:
+    """One owner of finished-task trace/failure semantics for BOTH execution paths —
+    sequential and fanout must never classify the same outcome differently."""
+
+    if finished.status == "failed":
+        failures.append(f"{finished.task_id}: {finished.error or 'failed'}")
+        _trace_plan_task(services, node, finished, "plan:task_failed", error=finished.error)
+    elif finished.status == "partial":
+        _trace_plan_task(services, node, finished, "plan:task_partial", error=finished.error)
+    else:
+        _trace_plan_task(services, node, finished, "plan:task_done")
+
+
 def _finish_plan_task(
     node: WorkflowNode,
     task: PlanTask,
     result: CapabilityResult,
 ) -> tuple[PlanTask, Optional[str]]:
-    if result.status in ("accepted", "partial"):
+    """EXACT terminal mapping (v0.10 truth contract): accepted -> done, partial -> partial
+    (error and evidence PRESERVED), anything else -> failed. Partial is never promoted to
+    done — a plan of unfinished work must read unfinished on every surface."""
+
+    # v0.10: task evidence is PERSISTED into plan state (snapshots/bundles) — result_metadata
+    # must be byte-safe (no raw bytes/media/transport refs) exactly like every checkpointed
+    # value, or the run fails loudly rather than smuggling bytes into durable state.
+    metadata = dict(result.metadata or {})
+    assert_byte_safe(metadata, mode="persist", path=f"plan_task[{task.task_id}].result_metadata")
+    evidence = {
+        "artifact_refs": [artifact.artifact_id for artifact in result.artifacts],
+        "result_metadata": metadata,
+    }
+    if result.status == "accepted":
         output_key = f"{node.id}.{task.task_id}"
         return (
-            task.model_copy(update={"status": "done", "error": None, "output_ref": output_key}),
+            task.model_copy(
+                update={"status": "done", "error": None, "output_ref": output_key, **evidence}
+            ),
+            output_key,
+        )
+    if result.status == "partial":
+        output_key = f"{node.id}.{task.task_id}" if result.output is not None else None
+        return (
+            task.model_copy(
+                update={
+                    "status": "partial",
+                    "error": result.error,
+                    "output_ref": output_key or task.output_ref,
+                    **evidence,
+                }
+            ),
             output_key,
         )
     return (
@@ -490,6 +534,7 @@ def _finish_plan_task(
                 "status": "failed",
                 "error": result.error or f"task capability returned {result.status}",
                 "output_ref": None,
+                **evidence,
             }
         ),
         None,
