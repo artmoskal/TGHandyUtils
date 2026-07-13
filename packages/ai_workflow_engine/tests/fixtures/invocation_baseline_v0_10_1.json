@@ -1,0 +1,801 @@
+{
+  "artifact_result": {
+    "details": [
+      {
+        "has_digest": true,
+        "has_json": true,
+        "has_text": true,
+        "kind": "tool_payload",
+        "privacy": "internal",
+        "redaction_state": "none"
+      },
+      {
+        "has_digest": true,
+        "has_json": true,
+        "has_text": true,
+        "kind": "tool_result",
+        "privacy": "internal",
+        "redaction_state": "none"
+      },
+      {
+        "has_digest": true,
+        "has_json": true,
+        "has_text": true,
+        "kind": "artifact_preview",
+        "privacy": "internal",
+        "redaction_state": "none"
+      }
+    ],
+    "exception": null,
+    "handler_calls": 1,
+    "result": {
+      "artifact_count": 1,
+      "artifact_kinds": [
+        "media"
+      ],
+      "error": null,
+      "kind": "result",
+      "metadata": {},
+      "output": {
+        "ok": 1
+      },
+      "status": "accepted"
+    },
+    "trace": [
+      {
+        "artifact_ref_count": 0,
+        "attempt": 1,
+        "decision": "start",
+        "detail_ref_count": 1,
+        "error": null,
+        "metadata": {},
+        "node": "art",
+        "phase": "tool:request",
+        "severity": "info"
+      },
+      {
+        "artifact_ref_count": 1,
+        "attempt": 1,
+        "decision": "accepted",
+        "detail_ref_count": 2,
+        "error": null,
+        "metadata": {},
+        "node": "art",
+        "phase": "tool:result",
+        "severity": "info"
+      }
+    ]
+  },
+  "async_success": {
+    "details": [],
+    "exception": null,
+    "handler_calls": 1,
+    "result": {
+      "artifact_count": 0,
+      "artifact_kinds": [],
+      "error": null,
+      "kind": "result",
+      "metadata": {},
+      "output": {
+        "ok": 1
+      },
+      "status": "accepted"
+    },
+    "trace": [
+      {
+        "artifact_ref_count": 0,
+        "attempt": 1,
+        "decision": "start",
+        "detail_ref_count": 0,
+        "error": null,
+        "metadata": {},
+        "node": "async_ok",
+        "phase": "tool:request",
+        "severity": "info"
+      },
+      {
+        "artifact_ref_count": 0,
+        "attempt": 1,
+        "decision": "accepted",
+        "detail_ref_count": 0,
+        "error": null,
+        "metadata": {},
+        "node": "async_ok",
+        "phase": "tool:result",
+        "severity": "info"
+      }
+    ]
+  },
+  "budget_denied": {
+    "details": [],
+    "exception": null,
+    "handler_calls": 0,
+    "result": {
+      "artifact_count": 0,
+      "artifact_kinds": [],
+      "error": "Workflow max_worker_calls budget exceeded before agent node agent_worker: 0/0",
+      "kind": "result",
+      "metadata": {},
+      "output": null,
+      "status": "failed"
+    },
+    "trace": [
+      {
+        "artifact_ref_count": 0,
+        "attempt": 1,
+        "decision": "start",
+        "detail_ref_count": 0,
+        "error": null,
+        "metadata": {},
+        "node": "agent_worker",
+        "phase": "tool:request",
+        "severity": "info"
+      },
+      {
+        "artifact_ref_count": 0,
+        "attempt": 1,
+        "decision": "failed",
+        "detail_ref_count": 0,
+        "error": "Workflow max_worker_calls budget exceeded before agent node agent_worker: 0/0",
+        "metadata": {},
+        "node": "agent_worker",
+        "phase": "tool:result",
+        "severity": "error"
+      }
+    ]
+  },
+  "caller_cancellation": {
+    "details": [],
+    "exception": {
+      "type": "CancelledError"
+    },
+    "handler_calls": 1,
+    "result": null,
+    "trace": [
+      {
+        "artifact_ref_count": 0,
+        "attempt": 1,
+        "decision": "start",
+        "detail_ref_count": 0,
+        "error": null,
+        "metadata": {},
+        "node": "blocker",
+        "phase": "tool:request",
+        "severity": "info"
+      }
+    ]
+  },
+  "capture_full": {
+    "details": [
+      {
+        "has_digest": true,
+        "has_json": true,
+        "has_text": true,
+        "kind": "tool_payload",
+        "privacy": "internal",
+        "redaction_state": "none"
+      },
+      {
+        "has_digest": true,
+        "has_json": true,
+        "has_text": true,
+        "kind": "tool_result",
+        "privacy": "internal",
+        "redaction_state": "none"
+      }
+    ],
+    "exception": null,
+    "handler_calls": 1,
+    "result": {
+      "artifact_count": 0,
+      "artifact_kinds": [],
+      "error": null,
+      "kind": "result",
+      "metadata": {},
+      "output": {
+        "ok": 1
+      },
+      "status": "accepted"
+    },
+    "trace": [
+      {
+        "artifact_ref_count": 0,
+        "attempt": 1,
+        "decision": "start",
+        "detail_ref_count": 1,
+        "error": null,
+        "metadata": {},
+        "node": "cap_full",
+        "phase": "tool:request",
+        "severity": "info"
+      },
+      {
+        "artifact_ref_count": 0,
+        "attempt": 1,
+        "decision": "accepted",
+        "detail_ref_count": 1,
+        "error": null,
+        "metadata": {},
+        "node": "cap_full",
+        "phase": "tool:result",
+        "severity": "info"
+      }
+    ]
+  },
+  "capture_off": {
+    "details": [],
+    "exception": null,
+    "handler_calls": 1,
+    "result": {
+      "artifact_count": 0,
+      "artifact_kinds": [],
+      "error": null,
+      "kind": "result",
+      "metadata": {},
+      "output": {
+        "ok": 1
+      },
+      "status": "accepted"
+    },
+    "trace": [
+      {
+        "artifact_ref_count": 0,
+        "attempt": 1,
+        "decision": "start",
+        "detail_ref_count": 0,
+        "error": null,
+        "metadata": {},
+        "node": "cap_off",
+        "phase": "tool:request",
+        "severity": "info"
+      },
+      {
+        "artifact_ref_count": 0,
+        "attempt": 1,
+        "decision": "accepted",
+        "detail_ref_count": 0,
+        "error": null,
+        "metadata": {},
+        "node": "cap_off",
+        "phase": "tool:result",
+        "severity": "info"
+      }
+    ]
+  },
+  "concurrent_invocations": {
+    "isolation_ok": false,
+    "tight_status": "partial",
+    "tight_window_ok": false,
+    "wide_status": "partial",
+    "wide_window_ok": false
+  },
+  "cooperative_deadline": {
+    "details": [],
+    "exception": null,
+    "handler_calls": 1,
+    "result": {
+      "artifact_count": 0,
+      "artifact_kinds": [],
+      "error": "capability 'slow_async' exceeded its 0.25s execution window (work deadline)",
+      "kind": "result",
+      "metadata": {
+        "execution_window": {
+          "capability_timeout_s": null,
+          "clamps": [],
+          "completion_reserve_s": 0.05,
+          "enforcement": "cooperative",
+          "hard_timeout_s": 0.3,
+          "limiting_sources": [
+            "task_request"
+          ],
+          "parent_remaining_s": null,
+          "request_source": "planner_task",
+          "requested_timeout_s": "<volatile>",
+          "run_remaining_s": null,
+          "soft_timeout_s": 0.25
+        },
+        "timeout_reason": "execution_window_exceeded"
+      },
+      "output": null,
+      "status": "partial"
+    },
+    "trace": [
+      {
+        "artifact_ref_count": 0,
+        "attempt": 1,
+        "decision": "start",
+        "detail_ref_count": 0,
+        "error": null,
+        "metadata": {},
+        "node": "slow_async",
+        "phase": "tool:request",
+        "severity": "info"
+      },
+      {
+        "artifact_ref_count": 0,
+        "attempt": 1,
+        "decision": "partial",
+        "detail_ref_count": 0,
+        "error": "capability 'slow_async' exceeded its 0.25s execution window (work deadline)",
+        "metadata": {
+          "execution_window": {
+            "capability_timeout_s": null,
+            "clamps": [],
+            "completion_reserve_s": 0.05,
+            "enforcement": "cooperative",
+            "hard_timeout_s": 0.3,
+            "limiting_sources": [
+              "task_request"
+            ],
+            "parent_remaining_s": null,
+            "request_source": "planner_task",
+            "requested_timeout_s": "<volatile>",
+            "run_remaining_s": null,
+            "soft_timeout_s": 0.25
+          },
+          "timeout_reason": "execution_window_exceeded"
+        },
+        "node": "slow_async",
+        "phase": "tool:result",
+        "severity": "error"
+      }
+    ]
+  },
+  "detail_sink_failure": {
+    "details": [],
+    "exception": {
+      "message": "detail sink down",
+      "type": "RuntimeError"
+    },
+    "handler_calls": 0,
+    "result": null,
+    "trace": []
+  },
+  "explicit_partial": {
+    "details": [],
+    "exception": null,
+    "handler_calls": 1,
+    "result": {
+      "artifact_count": 0,
+      "artifact_kinds": [],
+      "error": "cut short",
+      "kind": "result",
+      "metadata": {
+        "pages_done": 3
+      },
+      "output": {
+        "half": 1
+      },
+      "status": "partial"
+    },
+    "trace": [
+      {
+        "artifact_ref_count": 0,
+        "attempt": 1,
+        "decision": "start",
+        "detail_ref_count": 0,
+        "error": null,
+        "metadata": {},
+        "node": "partial_cap",
+        "phase": "tool:request",
+        "severity": "info"
+      },
+      {
+        "artifact_ref_count": 0,
+        "attempt": 1,
+        "decision": "partial",
+        "detail_ref_count": 0,
+        "error": null,
+        "metadata": {},
+        "node": "partial_cap",
+        "phase": "tool:result",
+        "severity": "error"
+      }
+    ]
+  },
+  "handler_exception": {
+    "details": [],
+    "exception": null,
+    "handler_calls": 1,
+    "result": {
+      "artifact_count": 0,
+      "artifact_kinds": [],
+      "error": "boom",
+      "kind": "result",
+      "metadata": {},
+      "output": null,
+      "status": "failed"
+    },
+    "trace": [
+      {
+        "artifact_ref_count": 0,
+        "attempt": 1,
+        "decision": "start",
+        "detail_ref_count": 0,
+        "error": null,
+        "metadata": {},
+        "node": "raiser",
+        "phase": "tool:request",
+        "severity": "info"
+      },
+      {
+        "artifact_ref_count": 0,
+        "attempt": 1,
+        "decision": "failed",
+        "detail_ref_count": 0,
+        "error": "boom",
+        "metadata": {},
+        "node": "raiser",
+        "phase": "tool:result",
+        "severity": "error"
+      }
+    ]
+  },
+  "handler_owned_timeout": {
+    "details": [],
+    "exception": null,
+    "handler_calls": 1,
+    "result": {
+      "artifact_count": 0,
+      "artifact_kinds": [],
+      "error": "my own timeout, not the engine's",
+      "kind": "result",
+      "metadata": {},
+      "output": null,
+      "status": "failed"
+    },
+    "trace": [
+      {
+        "artifact_ref_count": 0,
+        "attempt": 1,
+        "decision": "start",
+        "detail_ref_count": 0,
+        "error": null,
+        "metadata": {},
+        "node": "self_timeout",
+        "phase": "tool:request",
+        "severity": "info"
+      },
+      {
+        "artifact_ref_count": 0,
+        "attempt": 1,
+        "decision": "failed",
+        "detail_ref_count": 0,
+        "error": "my own timeout, not the engine's",
+        "metadata": {},
+        "node": "self_timeout",
+        "phase": "tool:result",
+        "severity": "error"
+      }
+    ]
+  },
+  "invalid_input": {
+    "details": [],
+    "exception": null,
+    "handler_calls": 0,
+    "result": {
+      "artifact_count": 0,
+      "artifact_kinds": [],
+      "error": "needs_in input validation failed: 1 validation error for _In\nx\n  Input should be a valid integer, unable to parse string as an integer [type=int_parsing, input_value='no', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/int_parsing",
+      "kind": "result",
+      "metadata": {},
+      "output": null,
+      "status": "failed"
+    },
+    "trace": [
+      {
+        "artifact_ref_count": 0,
+        "attempt": 1,
+        "decision": "failed",
+        "detail_ref_count": 0,
+        "error": "needs_in input validation failed: 1 validation error for _In\nx\n  Input should be a valid integer, unable to parse string as an integer [type=int_parsing, input_value='no', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/int_parsing",
+        "metadata": {},
+        "node": "needs_in",
+        "phase": "tool:result",
+        "severity": "error"
+      }
+    ]
+  },
+  "invalid_output": {
+    "details": [],
+    "exception": null,
+    "handler_calls": 1,
+    "result": {
+      "artifact_count": 0,
+      "artifact_kinds": [],
+      "error": "bad_out output validation failed: 1 validation error for _Out\ny\n  Field required [type=missing, input_value={'wrong': 'shape'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing",
+      "kind": "result",
+      "metadata": {},
+      "output": null,
+      "status": "failed"
+    },
+    "trace": [
+      {
+        "artifact_ref_count": 0,
+        "attempt": 1,
+        "decision": "start",
+        "detail_ref_count": 0,
+        "error": null,
+        "metadata": {},
+        "node": "bad_out",
+        "phase": "tool:request",
+        "severity": "info"
+      },
+      {
+        "artifact_ref_count": 0,
+        "attempt": 1,
+        "decision": "failed",
+        "detail_ref_count": 0,
+        "error": "bad_out output validation failed: 1 validation error for _Out\ny\n  Field required [type=missing, input_value={'wrong': 'shape'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing",
+        "metadata": {},
+        "node": "bad_out",
+        "phase": "tool:result",
+        "severity": "error"
+      }
+    ]
+  },
+  "nested_invocation": {
+    "child_window": {
+      "clamps": null,
+      "hard_positive_and_bounded": false,
+      "sources": null
+    },
+    "exception": null,
+    "handler_calls": 2,
+    "result": {
+      "child_status": "partial",
+      "kind": "result",
+      "status": "accepted"
+    },
+    "trace_node_set": [
+      "child",
+      "parent"
+    ]
+  },
+  "process_timeout": {
+    "details": [],
+    "exception": null,
+    "handler_calls": 1,
+    "result": {
+      "error_has_timeout": true,
+      "has_process_io": true,
+      "kind": "result",
+      "output_returncode": -15,
+      "output_stdout_len": 0,
+      "status": "partial"
+    },
+    "trace": [
+      {
+        "artifact_ref_count": 0,
+        "attempt": 1,
+        "decision": "start",
+        "detail_ref_count": 0,
+        "error": null,
+        "metadata": {},
+        "node": "proc",
+        "phase": "tool:request",
+        "severity": "info"
+      },
+      {
+        "artifact_ref_count": 0,
+        "attempt": 1,
+        "decision": "partial",
+        "detail_ref_count": 0,
+        "error": null,
+        "metadata": {
+          "process_execution_bound": {
+            "cleanup_headroom_s": 0.0,
+            "engine_hard_s": null,
+            "engine_soft_s": null,
+            "kill_grace_s": "<volatile>",
+            "settle_reserve_s": 0.0,
+            "source": "explicit",
+            "work_timeout_s": 0.4
+          },
+          "process_io": {
+            "result_file": {
+              "kind": null,
+              "limit_bytes": null,
+              "reason": null,
+              "status": "missing",
+              "total_bytes": null
+            },
+            "stderr": {
+              "limit_bytes": 262144,
+              "retained_bytes": 0,
+              "total_bytes": 0,
+              "truncated": false
+            },
+            "stdout": {
+              "limit_bytes": 1048576,
+              "retained_bytes": 0,
+              "total_bytes": 0,
+              "truncated": false
+            }
+          }
+        },
+        "node": "proc",
+        "phase": "tool:result",
+        "severity": "error"
+      }
+    ]
+  },
+  "side_effect_denied": {
+    "details": [],
+    "exception": null,
+    "handler_calls": 0,
+    "result": {
+      "artifact_count": 0,
+      "artifact_kinds": [],
+      "error": "Capability side effects denied by safety policy: network",
+      "kind": "result",
+      "metadata": {
+        "denied_side_effects": [
+          "network"
+        ]
+      },
+      "output": null,
+      "status": "rejected"
+    },
+    "trace": [
+      {
+        "artifact_ref_count": 0,
+        "attempt": 1,
+        "decision": "start",
+        "detail_ref_count": 0,
+        "error": null,
+        "metadata": {},
+        "node": "writer",
+        "phase": "tool:request",
+        "severity": "info"
+      },
+      {
+        "artifact_ref_count": 0,
+        "attempt": 1,
+        "decision": "rejected",
+        "detail_ref_count": 0,
+        "error": "Capability side effects denied by safety policy: network",
+        "metadata": {
+          "denied_side_effects": [
+            "network"
+          ]
+        },
+        "node": "writer",
+        "phase": "tool:result",
+        "severity": "error"
+      }
+    ]
+  },
+  "swallowed_cancellation": {
+    "details": [],
+    "exception": null,
+    "handler_calls": 1,
+    "result": {
+      "artifact_count": 0,
+      "artifact_kinds": [],
+      "error": "capability 'swallower' suppressed cancellation at its execution window and returned anyway",
+      "kind": "result",
+      "metadata": {
+        "execution_window": {
+          "capability_timeout_s": null,
+          "clamps": [],
+          "completion_reserve_s": 0.05,
+          "enforcement": "cooperative",
+          "hard_timeout_s": 0.3,
+          "limiting_sources": [
+            "task_request"
+          ],
+          "parent_remaining_s": null,
+          "request_source": "planner_task",
+          "requested_timeout_s": "<volatile>",
+          "run_remaining_s": null,
+          "soft_timeout_s": 0.25
+        },
+        "timeout_reason": "cancellation_containment_failed"
+      },
+      "output": null,
+      "status": "failed"
+    },
+    "trace": [
+      {
+        "artifact_ref_count": 0,
+        "attempt": 1,
+        "decision": "start",
+        "detail_ref_count": 0,
+        "error": null,
+        "metadata": {},
+        "node": "swallower",
+        "phase": "tool:request",
+        "severity": "info"
+      },
+      {
+        "artifact_ref_count": 0,
+        "attempt": 1,
+        "decision": "failed",
+        "detail_ref_count": 0,
+        "error": "capability 'swallower' suppressed cancellation at its execution window and returned anyway",
+        "metadata": {
+          "execution_window": {
+            "capability_timeout_s": null,
+            "clamps": [],
+            "completion_reserve_s": 0.05,
+            "enforcement": "cooperative",
+            "hard_timeout_s": 0.3,
+            "limiting_sources": [
+              "task_request"
+            ],
+            "parent_remaining_s": null,
+            "request_source": "planner_task",
+            "requested_timeout_s": "<volatile>",
+            "run_remaining_s": null,
+            "soft_timeout_s": 0.25
+          },
+          "timeout_reason": "cancellation_containment_failed"
+        },
+        "node": "swallower",
+        "phase": "tool:result",
+        "severity": "error"
+      }
+    ]
+  },
+  "sync_success": {
+    "details": [],
+    "exception": null,
+    "handler_calls": 1,
+    "result": {
+      "artifact_count": 0,
+      "artifact_kinds": [],
+      "error": null,
+      "kind": "result",
+      "metadata": {},
+      "output": {
+        "ok": 1
+      },
+      "status": "accepted"
+    },
+    "trace": [
+      {
+        "artifact_ref_count": 0,
+        "attempt": 1,
+        "decision": "start",
+        "detail_ref_count": 0,
+        "error": null,
+        "metadata": {},
+        "node": "sync_ok",
+        "phase": "tool:request",
+        "severity": "info"
+      },
+      {
+        "artifact_ref_count": 0,
+        "attempt": 1,
+        "decision": "accepted",
+        "detail_ref_count": 0,
+        "error": null,
+        "metadata": {},
+        "node": "sync_ok",
+        "phase": "tool:result",
+        "severity": "info"
+      }
+    ]
+  },
+  "trace_sink_failure": {
+    "details": [],
+    "exception": {
+      "message": "trace sink down",
+      "type": "RuntimeError"
+    },
+    "handler_calls": 0,
+    "result": null,
+    "trace": []
+  },
+  "unknown_capability": {
+    "details": [],
+    "exception": {
+      "message": "'Unknown capability: ghost'",
+      "type": "KeyError"
+    },
+    "handler_calls": 0,
+    "result": null,
+    "trace": []
+  }
+}
