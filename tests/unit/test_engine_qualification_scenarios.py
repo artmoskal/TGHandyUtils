@@ -543,3 +543,109 @@ async def test_v010_runtime_contracts_project_through_the_public_door_and_viewer
     # the viewer HTML renders the same truth
     page = observation_graph_to_html(run_data.definition, graph)
     assert "retrace round 2" in page
+
+
+async def test_v010_real_timeout_through_engine_run_salvages_reaps_and_projects(
+    tmp_path, monkeypatch
+):
+    """5R finding 6 — the promised END-TO-END guarantee, no manufactured partial: a REAL
+    slow subprocess (fake CLI writes a PNG then sleeps far past the budget) behind the REAL
+    CliAgentCapability, invoked through ``WorkflowEngine.run`` under an enforced
+    ``RuntimeLimits.timeout_s``. The engine window stops the child BEFORE the hard deadline,
+    the pre-deadline artifact is salvaged into a truthful PARTIAL, the child is REAPED (no
+    survivor, no zombie), and the observation bundle + viewer project the same truth."""
+
+    import asyncio
+    import os
+    import sys
+    import time as _t
+
+    from ai_workflow_engine import ObservationConfig, WorkflowBuilder, WorkflowEngineBuilder
+    from ai_workflow_engine.models import RuntimeLimits, SafetyPolicy, WorkflowProfile
+    from ai_workflow_tools.cli_agents import CliAgentCapability, CliAgentRequest, claude_p
+    from ai_workflow_viewer import FileEventSource, build_observation_graph
+    from ai_workflow_viewer.observability import _observation_view_data, observation_graph_to_html
+
+    fake_cli = Path(__file__).parents[2] / "packages" / "ai_workflow_tools" / "tests" / "fake_cli.py"
+    assert fake_cli.exists(), f"fake CLI missing at {fake_cli}"
+    workspace = tmp_path / "workspace"
+    record_path = tmp_path / "record.json"
+    bundle_dir = tmp_path / "bundle"
+    monkeypatch.setenv("FAKE_CLI_MODE", "sleep")
+    monkeypatch.setenv("FAKE_CLI_SLEEP_S", "20")  # far past every bound below
+    monkeypatch.setenv("FAKE_CLI_WORKSPACE", str(workspace))
+    monkeypatch.setenv("FAKE_CLI_RECORD", str(record_path))
+
+    cap = CliAgentCapability(
+        claude_p.model_copy(update={"base_argv": [sys.executable, str(fake_cli)]}),
+        name="browser_probe",
+        side_effects=[],
+    )
+    engine = (
+        WorkflowEngineBuilder()
+        .with_observation(ObservationConfig(enabled=True, bundle_dir=str(bundle_dir)))
+        .with_profile(
+            WorkflowProfile(
+                workflow_type="real_timeout",
+                limits=RuntimeLimits(timeout_s=3.0),  # the ONLY bound — no request timeout
+                safety=SafetyPolicy(allowed_side_effects=[]),
+            )
+        )
+        .register_capability("browser_probe", cap, spec=cap.spec)
+        .register_workflow(WorkflowBuilder("real_timeout").step("browser_probe").build())
+        .build()
+    )
+
+    started = _t.monotonic()
+    result = await engine.run(
+        "real_timeout",
+        CliAgentRequest(
+            prompt="Capture the page", workspace_dir=str(workspace), allowed_tools=[]
+        ).model_dump(),
+    )
+    elapsed = _t.monotonic() - started
+
+    # the engine window (run budget), not the 20s sleep, decided when this ended — and the
+    # capability salvaged + returned BEFORE the authoritative hard deadline (no containment).
+    assert result.status == "partial", f"a stopped bounded run is PARTIAL truth: {result.status}"
+    assert elapsed < 6.0, f"the run must end at the ~3s window, not the 20s sleep ({elapsed:.1f}s)"
+    node = result.node("browser_probe")
+    assert node is not None and node.status == "partial"
+
+    # the pre-deadline PNG survived as salvage on the real result path
+    cap_output = node.output
+    assert getattr(cap_output, "status", None) == "truncated"
+    assert [a.role for a in cap_output.artifacts] == ["screenshot"]
+
+    # the child was killed AND reaped — no survivor, no zombie outliving the engine's claim
+    pid = json.loads(record_path.read_text(encoding="utf-8"))["pid"]
+    reap_deadline = _t.monotonic() + 2.0
+    while _t.monotonic() < reap_deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        await asyncio.sleep(0.05)
+    else:
+        os.kill(pid, 9)
+        raise AssertionError(f"child {pid} still alive after the run — not killed/reaped")
+
+    # the observation bundle + viewer project the SAME truth from persisted records
+    run_data = FileEventSource(str(bundle_dir)).read()
+    graph = build_observation_graph(
+        run_data.definition, run_data.trace_events, run_data.usage_events, run_data.details,
+        run_id=run_data.run_id,
+    )
+    assert graph.nodes["browser_probe"].status == "partial"
+    assert any("timed out" in e for e in graph.nodes["browser_probe"].errors), (
+        f"the timeout evidence must persist: {graph.nodes['browser_probe'].errors}"
+    )
+    metrics = {
+        n["id"]: n["metrics"]
+        for n in _observation_view_data(run_data.definition, graph)["nodes"]
+    }
+    assert any(m.startswith("window: soft") for m in metrics["browser_probe"]), (
+        f"the enforced window must be projected from persisted truth: {metrics['browser_probe']}"
+    )
+    page = observation_graph_to_html(run_data.definition, graph)
+    assert "window: soft" in page and "timed out" in page

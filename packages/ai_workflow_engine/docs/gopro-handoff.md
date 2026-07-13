@@ -1,6 +1,7 @@
 # GoPro Engine Adoption Guide
 
-Status: **ready for consumer validation against `engine-v0.10.0`**. GoPro should pin tag
+Status: **release candidate — the `engine-v0.10.0` tag is pending final review and does not exist
+yet; do not re-pin until it is cut.** Once tagged, GoPro should then pin tag
 `engine-v0.10.0`, record the source commit and wheel hash, and run its sidecar canary before changing
 the production image. Do not infer the actual GoPro pin from this document; the consumer repository's
 pin file is authoritative for deployed state.

@@ -8,7 +8,6 @@ import logging
 from pathlib import Path
 import time
 import uuid
-from contextvars import ContextVar
 from typing import Any, Callable, Iterable, NamedTuple, Optional, Protocol
 
 from pydantic import ValidationError
@@ -30,6 +29,9 @@ from ai_workflow_engine.models import (
 from ai_workflow_engine._runtime_state import current_run_session, current_workflow_run_context
 from ai_workflow_engine.execution_window import (
     ExecutionWindowInputs,
+    invocation_soft_remaining_s,
+    publish_invocation_soft_deadline,
+    reset_invocation_soft_deadline,
     resolve_execution_window,
 )
 from ai_workflow_engine.observability_capture import ObservationCapture
@@ -304,19 +306,12 @@ def _handler_is_async(handler: Any) -> bool:
     return bool(call is not None and inspect.iscoroutinefunction(call))
 
 
-# v0.10 #6a: the SOFT deadline (monotonic) of the currently-executing bounded invocation, so a
-# NESTED invocation (subworkflow/child-plan capability) can only SHORTEN the window, never
-# extend it. Set around the handler call, read by the resolver as parent_soft_remaining_s.
-_ACTIVE_PARENT_SOFT_DEADLINE: "ContextVar[Optional[float]]" = ContextVar(
-    "workflow_active_parent_soft_deadline", default=None
-)
-
-
+# v0.10 #6a / 5R: the active invocation's SOFT deadline lives on the ONE engine-owned
+# surface in execution_window.py — nested invocations read it as parent_soft_remaining_s
+# (can only SHORTEN the window), and process-backed doors (CLI/console/external) read it as
+# their ambient work bound. Set around the handler call by invoke().
 def _parent_soft_remaining_s() -> Optional[float]:
-    deadline = _ACTIVE_PARENT_SOFT_DEADLINE.get()
-    if deadline is None:
-        return None
-    return max(0.0, deadline - time.monotonic())
+    return invocation_soft_remaining_s()
 
 
 class _ExecutionTimeout(Exception):
@@ -453,11 +448,13 @@ class CapabilityRuntime:
                     window=window,
                 )
 
-            # Publish THIS invocation's soft deadline so nested subworkflow/child-plan calls
-            # are bounded by our remaining soft budget (they can only shorten it).
+            # Publish THIS invocation's soft deadline on the engine-owned surface: nested
+            # subworkflow/child-plan calls are bounded by our remaining soft budget (they can
+            # only shorten it), and process-backed doors (CLI/console/external) read it as
+            # their ambient work bound.
             soft = window.soft_timeout_s
             parent_token = (
-                _ACTIVE_PARENT_SOFT_DEADLINE.set(time.monotonic() + soft)
+                publish_invocation_soft_deadline(time.monotonic() + soft)
                 if soft is not None
                 else None
             )
@@ -470,7 +467,7 @@ class CapabilityRuntime:
                         result = await result
             finally:
                 if parent_token is not None:
-                    _ACTIVE_PARENT_SOFT_DEADLINE.reset(parent_token)
+                    reset_invocation_soft_deadline(parent_token)
             output = self._normalize_result(spec, result)
             elapsed_ms = int((time.monotonic() - start) * 1000)
             result_event_id = str(uuid.uuid4())

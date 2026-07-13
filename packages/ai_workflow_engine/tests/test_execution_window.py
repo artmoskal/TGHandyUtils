@@ -255,3 +255,47 @@ def test_request_source_label_is_bounded_strict_and_byte_safe():
         ExecutionWindowDecision(request_source="x" * 129)
     with pytest.raises(ValueError):
         ExecutionWindowDecision(request_source=b"planner")
+
+
+def test_invocation_bound_narrows_only_and_carves_represented_cleanup_headroom():
+    """5R: the ONE invocation-bound surface for process-backed doors — an explicit product
+    timeout narrows the engine bound, never widens it; a reserveless window carves visible
+    cleanup headroom so terminate/kill/reap always completes BEFORE the hard deadline."""
+
+    from ai_workflow_engine.execution_window import (
+        PROCESS_MIN_CLEANUP_HEADROOM_S,
+        resolve_invocation_bound,
+    )
+
+    # explicit narrows an ample engine bound
+    b = resolve_invocation_bound(engine_soft_s=100.0, engine_hard_s=100.0, explicit_timeout_s=5.0)
+    assert b.timeout_s == 5.0 and b.source == "explicit" and b.headroom_s == 0.0
+
+    # explicit can NEVER widen: engine window wins; the reserve hosts the kill grace
+    b = resolve_invocation_bound(engine_soft_s=8.0, engine_hard_s=10.0, explicit_timeout_s=100.0)
+    assert b.timeout_s == 8.0 and b.source == "engine_window"
+    assert b.timeout_s + b.kill_grace_s <= 10.0
+
+    # reserveless window (soft == hard): represented headroom carved from work
+    b = resolve_invocation_bound(engine_soft_s=5.0, engine_hard_s=5.0)
+    assert b.timeout_s == pytest.approx(5.0 - PROCESS_MIN_CLEANUP_HEADROOM_S)
+    assert b.headroom_s == PROCESS_MIN_CLEANUP_HEADROOM_S
+    assert b.timeout_s + b.kill_grace_s <= 5.0
+
+    # tiny windows stay usable: headroom scales to a quarter of the hard bound
+    b = resolve_invocation_bound(engine_soft_s=1.2, engine_hard_s=1.2)
+    assert b.headroom_s == pytest.approx(0.3) and b.timeout_s == pytest.approx(0.9)
+    assert b.timeout_s + b.kill_grace_s <= 1.2
+
+    # ambient-only (no hard in sight): the owner's reserve hosts cleanup; no carve
+    b = resolve_invocation_bound(engine_soft_s=7.0, explicit_timeout_s=240.0)
+    assert b.timeout_s == 7.0 and b.headroom_s == 0.0 and b.source == "engine_window"
+
+    # no bound anywhere: unbounded unless the caller REQUIRES one (loud, no hidden default)
+    assert resolve_invocation_bound(engine_soft_s=None).timeout_s is None
+    required = resolve_invocation_bound(engine_soft_s=None, require_bound=True, owner="cli_agent 'x'")
+    assert required.error is not None and "no execution bound" in required.error
+
+    # non-finite inputs are rejected, never silently trusted
+    assert resolve_invocation_bound(engine_soft_s=math.inf).error is not None
+    assert resolve_invocation_bound(engine_soft_s=5.0, explicit_timeout_s=-1.0).error is not None

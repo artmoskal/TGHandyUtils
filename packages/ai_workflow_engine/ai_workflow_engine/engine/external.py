@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import dataclass, field
 import json
 from pathlib import Path
 from typing import Any
 
+from ai_workflow_engine.execution_window import (
+    invocation_soft_remaining_s,
+    resolve_invocation_bound,
+)
 from ai_workflow_engine.models import (
     CapabilityContext,
     CapabilityResult,
+    CapabilitySpec,
     ExternalWriteRequest,
     ExternalWriteResult,
 )
@@ -29,7 +35,37 @@ class ExternalProcessRequest:
 
 
 class ExternalProcessCapability:
-    """Run a subprocess as a bounded capability with partial-output salvage."""
+    """Run a subprocess as a bounded capability with partial-output salvage.
+
+    This is the engine's REAL process-enforced door: it owns a killable child and always
+    reaps it — at the work deadline (terminate→grace→kill→wait), on outer cancellation
+    (the authoritative hard boundary fired: immediate kill + reap + reader settle), and on
+    any unexpected error (a belt in ``finally``). The engine's ambient invocation window
+    clamps ``request.timeout_s`` (an explicit request may narrow it, never widen it).
+    ``spec`` declares ``timeout_enforcement="process"`` so direct registration is honest.
+    """
+
+    def __init__(
+        self,
+        *,
+        name: str = "external_process",
+        description: str | None = None,
+        side_effects: list[str] | None = None,
+    ) -> None:
+        self.spec = CapabilitySpec(
+            name=name,
+            kind="external",
+            description=description
+            or "Bounded subprocess with partial-output salvage (process-enforced kill/reap).",
+            # The historical registration contract (§4): an external step declares
+            # external_call; registrants whose COMMAND also writes pass side_effects= with
+            # workspace_write — the capability cannot know what an arbitrary command does.
+            # NOTE: registration auto-adopts this spec (handler.spec), so overrides belong
+            # HERE (constructor), not in register_capability kwargs.
+            side_effects=side_effects if side_effects is not None else ["external_call"],
+            timeout_s=None,
+            timeout_enforcement="process",
+        )
 
     async def __call__(
         self,
@@ -41,6 +77,19 @@ class ExternalProcessCapability:
         if not request.command:
             return CapabilityResult(status="failed", error="external process command is empty")
 
+        # 5R: the engine's ambient invocation window bounds the child — the request timeout
+        # may only NARROW it. Outside any engine run the explicit request timeout stands.
+        bound = resolve_invocation_bound(
+            engine_soft_s=invocation_soft_remaining_s(),
+            explicit_timeout_s=request.timeout_s,
+            default_kill_grace_s=request.kill_grace_s,
+            owner="external_process",
+        )
+        if bound.error is not None:
+            return CapabilityResult(status="failed", error=bound.error)
+        effective_timeout_s = bound.timeout_s
+        kill_grace_s = bound.kill_grace_s
+
         process = await asyncio.create_subprocess_exec(
             *request.command,
             cwd=request.cwd,
@@ -51,34 +100,52 @@ class ExternalProcessCapability:
         )
         stdout_task = asyncio.create_task(self._read_stream(process.stdout))
         stderr_task = asyncio.create_task(self._read_stream(process.stderr))
-        if request.stdin_data is not None:
-            await self._write_stdin(process, request.stdin_data)
+        bound_meta = {
+            "timeout_s": effective_timeout_s,
+            "requested_timeout_s": request.timeout_s,
+            "kill_grace_s": kill_grace_s,
+            "bound_source": bound.source,
+        }
         try:
-            await asyncio.wait_for(process.wait(), timeout=request.timeout_s)
-        except asyncio.TimeoutError:
-            killed_after_grace = await self._terminate_with_grace(process, request.kill_grace_s)
+            if request.stdin_data is not None:
+                await self._write_stdin(process, request.stdin_data)
+            try:
+                await asyncio.wait_for(process.wait(), timeout=effective_timeout_s)
+            except asyncio.TimeoutError:
+                killed_after_grace = await self._terminate_with_grace(process, kill_grace_s)
+                stdout = await stdout_task
+                stderr = await stderr_task
+                result_text = self._read_result_file(request)
+                return CapabilityResult(
+                    status="partial",
+                    error=f"external process timed out after {effective_timeout_s}s",
+                    output={
+                        "returncode": process.returncode,
+                        "stdout": stdout,
+                        "stderr": stderr,
+                        "result": result_text if result_text is not None else stdout,
+                    },
+                    metadata={
+                        **request.metadata,
+                        **bound_meta,
+                        "killed_after_grace": killed_after_grace,
+                    },
+                )
+
             stdout = await stdout_task
             stderr = await stderr_task
-            result_text = self._read_result_file(request)
-            return CapabilityResult(
-                status="partial",
-                error=f"external process timed out after {request.timeout_s}s",
-                output={
-                    "returncode": process.returncode,
-                    "stdout": stdout,
-                    "stderr": stderr,
-                    "result": result_text if result_text is not None else stdout,
-                },
-                metadata={
-                    **request.metadata,
-                    "timeout_s": request.timeout_s,
-                    "kill_grace_s": request.kill_grace_s,
-                    "killed_after_grace": killed_after_grace,
-                },
-            )
+        except asyncio.CancelledError:
+            # The outer boundary (engine hard deadline / caller cancel) fired mid-flight.
+            # The child must not outlive the engine's claim that it stopped: kill NOW (the
+            # polite grace belongs to the timeout path — cancellation means the deadline
+            # already passed), reap, settle the reader tasks, then propagate the cancel.
+            await self._reap_on_cancel(process, stdout_task, stderr_task)
+            raise
+        finally:
+            # Belt for ANY exit path that left the child alive (unexpected exception): a
+            # subprocess must never outlive its capability invocation.
+            await self._ensure_child_reaped(process)
 
-        stdout = await stdout_task
-        stderr = await stderr_task
         result_text = self._read_result_file(request)
         status = "accepted" if process.returncode == 0 else "failed"
         return CapabilityResult(
@@ -92,10 +159,35 @@ class ExternalProcessCapability:
             },
             metadata={
                 **request.metadata,
-                "timeout_s": request.timeout_s,
-                "kill_grace_s": request.kill_grace_s,
+                **bound_meta,
             },
         )
+
+    @staticmethod
+    async def _ensure_child_reaped(process: asyncio.subprocess.Process) -> None:
+        """Immediate kill + reap for any exit path that left the child alive: a subprocess
+        must never outlive its capability invocation (no survivor, no zombie)."""
+
+        if process.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
+            with contextlib.suppress(Exception):
+                await process.wait()
+
+    @classmethod
+    async def _reap_on_cancel(
+        cls,
+        process: asyncio.subprocess.Process,
+        stdout_task: "asyncio.Task[str]",
+        stderr_task: "asyncio.Task[str]",
+    ) -> None:
+        """Bounded, immediate cleanup on cancellation — must fit inside the runtime's
+        cooperative cancel grace: kill (no terminate grace), reap, settle readers."""
+
+        await cls._ensure_child_reaped(process)
+        for task in (stdout_task, stderr_task):
+            task.cancel()
+        await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
 
     @staticmethod
     async def _write_stdin(process: asyncio.subprocess.Process, data: str) -> None:

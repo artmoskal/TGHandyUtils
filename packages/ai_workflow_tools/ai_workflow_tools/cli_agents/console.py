@@ -11,6 +11,10 @@ import math
 from typing import Any
 
 from ai_workflow_engine.engine.external import ExternalProcessCapability, ExternalProcessRequest
+from ai_workflow_engine.execution_window import (
+    invocation_soft_remaining_s,
+    resolve_invocation_bound,
+)
 from ai_workflow_engine.llm_protocol import ChatMessage, LLMRequest, LLMResponse
 
 from .capability import parse_cli_process_output
@@ -37,6 +41,22 @@ def _has_explicit_tool_flag(argv: Sequence[str]) -> bool:
     return any(
         item == flag or item.startswith(f"{flag}=") for item in argv for flag in _TOOL_FLAGS
     )
+
+
+def _console_effective_timeout_s(explicit_timeout_s: float, *, owner: str) -> float:
+    """One console bound through the engine-owned invocation-window surface: the ambient
+    engine soft-remaining (when this call runs inside a bounded engine invocation) narrowed
+    by the client's explicit timeout — narrowing-only, the explicit value can never widen an
+    engine bound. Standalone calls (no ambient window) keep the explicit bound."""
+
+    bound = resolve_invocation_bound(
+        engine_soft_s=invocation_soft_remaining_s(),
+        explicit_timeout_s=explicit_timeout_s,
+        owner=owner,
+    )
+    if bound.error is not None or bound.timeout_s is None:
+        raise ValueError(bound.error or f"{owner}: no console timeout resolved")
+    return bound.timeout_s
 
 
 class ConsoleCliError(RuntimeError):
@@ -136,12 +156,17 @@ class ConsoleLLMClient:
                     f"{self.flavor.name} does not support cli_max_budget_usd (no CLI budget flag)"
                 )
             invocation = _build_console_invocation(self.flavor, prompt, Path(workspace), extra_argv)
+            # 5R: inside an engine run the ambient invocation window bounds this call — the
+            # client's own timeout_s may only NARROW it; standalone calls keep it as-is.
+            effective_timeout_s = _console_effective_timeout_s(
+                self.timeout_s, owner=f"console_llm[{self.flavor.name}]"
+            )
             external = await self.external_runner(
                 None,
                 ExternalProcessRequest(
                     command=invocation.argv,
                     cwd=workspace,
-                    timeout_s=self.timeout_s,
+                    timeout_s=effective_timeout_s,
                     stdin_data=invocation.stdin_data,
                     result_file=invocation.result_file,
                     kill_grace_s=10.0,
@@ -250,6 +275,12 @@ class ConsoleChatModel:
         import subprocess
 
         prompt = _flatten_langchain_messages(messages)
+        # 5R: inside an engine run the ambient invocation window bounds this call — the
+        # model's own timeout_s may only NARROW it; standalone calls keep it as-is.
+        # (ContextVars propagate into worker threads via copy_context/to_thread.)
+        effective_timeout_s = _console_effective_timeout_s(
+            self.timeout_s, owner=f"console_chat[{self.flavor.name}]"
+        )
         with tempfile.TemporaryDirectory(prefix="ai-workflow-console-") as workspace:
             invocation = _build_console_invocation(
                 self.flavor, prompt, Path(workspace), self.extra_argv
@@ -260,7 +291,7 @@ class ConsoleChatModel:
                     input=invocation.stdin_data,
                     capture_output=True,
                     text=True,
-                    timeout=self.timeout_s,
+                    timeout=effective_timeout_s,
                     cwd=workspace,
                 )
             except FileNotFoundError as exc:
@@ -271,7 +302,7 @@ class ConsoleChatModel:
                 ) from exc
             except subprocess.TimeoutExpired as exc:
                 raise RuntimeError(
-                    f"console CLI timed out after {self.timeout_s:.0f}s ({self.flavor.name})"
+                    f"console CLI timed out after {effective_timeout_s:.0f}s ({self.flavor.name})"
                 ) from exc
             if completed.returncode != 0:
                 raise RuntimeError(

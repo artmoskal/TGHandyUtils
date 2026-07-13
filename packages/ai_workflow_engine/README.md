@@ -5,7 +5,9 @@ declare a workflow, register typed capabilities, and call one engine door. The e
 transitions, retries, fan-out, budgets, waits, trace, usage, and observation bundles; products own
 domain models, provider clients, storage adapters, clocks, and side-effect delivery.
 
-> **`engine-v0.10.0` is the current release.** Pin the immutable tag and build a wheel. Never depend on a
+> **`engine-v0.10.0` is the release candidate — the tag is pending final independent review and does NOT
+> exist yet; do not re-pin until it is cut** (current release: `engine-v0.9.2`). Once tagged: pin the
+> immutable tag and build a wheel. Never depend on a
 > live branch. The binding contract is the repository-level
 > [`executable-workflow-engine-spec.md`](../../docs/executable-workflow-engine-spec.md).
 

@@ -1,7 +1,8 @@
 # Migration guide — `engine-v0.9.2` → `engine-v0.10.0`
 
 For consumers moving their pin from `engine-v0.9.2` to `engine-v0.10.0`.
-**Target tag: `engine-v0.10.0`** (tools `0.4.0`, viewer `0.2.2`). Read this before re-pinning;
+**Target tag: `engine-v0.10.0`** (tools `0.4.0`, viewer `0.2.2`) — **pending: the tag is not cut yet;
+do not re-pin until it exists.** Read this before re-pinning;
 each item is a real contract change verified against the tag, not a style note. Everything else is
 additive. Rebuild wheels from the immutable tag in a clean checkout, record the source commit +
 wheel hashes, then run your adapter/canary tests before deploying.

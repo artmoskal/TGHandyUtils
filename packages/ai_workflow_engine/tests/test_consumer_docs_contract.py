@@ -106,7 +106,17 @@ def test_release_docs_name_the_current_tag_consistently():
     import ai_workflow_engine
 
     current = f"engine-v{ai_workflow_engine.__version__}"
-    assert f"`{current}` is the current release" in README
+    # Two honest states (5R finding 7): after tagging the README names the current release;
+    # BEFORE the tag exists it must say release candidate WITH the do-not-pin-yet caveat —
+    # permanent docs may never claim a release that does not exist.
+    released = f"`{current}` is the current release" in README
+    candidate = (
+        f"`{current}` is the release candidate" in README
+        and "do not re-pin until it is cut" in README
+    )
+    assert released or candidate, (
+        f"README must either declare {current} released or mark it a pending release candidate"
+    )
     assert (
         f"checkout --detach {current}" in README
         or f"@{current}#subdirectory" in README

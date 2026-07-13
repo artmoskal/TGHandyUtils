@@ -12,6 +12,10 @@ from typing import Any, Callable, Protocol
 from urllib.parse import urlparse
 
 from ai_workflow_engine.engine.external import ExternalProcessCapability, ExternalProcessRequest
+from ai_workflow_engine.execution_window import (
+    invocation_soft_remaining_s,
+    resolve_invocation_bound,
+)
 from ai_workflow_engine.models import (
     CapabilityContext,
     CapabilityResult,
@@ -247,48 +251,49 @@ class CliAgentCapability:
     def _resolve_execution_bound(
         self, context: CapabilityContext, request: CliAgentRequest
     ) -> _ExecutionBound:
-        """Intersect the engine's execution window with any explicit request timeout.
-
-        The engine's SOFT window (work deadline = hard minus completion reserve) drives the
-        subprocess. An explicit ``request.timeout_s`` may only NARROW it (``min``); it can never
-        enlarge a bound the engine already set. When neither exists the run is unbounded and
-        that is refused loudly — a missing window must never resurrect a hidden default.
-        """
+        """Resolve the subprocess bound through the ONE engine-owned invocation-window
+        surface (`resolve_invocation_bound`): the engine's SOFT window drives the work; an
+        explicit ``request.timeout_s`` may only NARROW it, never enlarge it; terminate→kill→
+        reap always fits BEFORE the engine hard deadline (the reserve hosts it — with no
+        reserve, represented headroom is carved from work time); a missing bound is refused
+        loudly, never a resurrected hidden default."""
 
         window = context.execution_window
-        bounded = window is not None and window.is_bounded
-        engine_soft = window.soft_timeout_s if bounded else None
-        engine_hard = window.hard_timeout_s if bounded else None
-        reserve = float(window.completion_reserve_s) if bounded else 0.0
-        candidates = [b for b in (engine_soft, request.timeout_s) if b is not None]
-        if not candidates:
-            return _ExecutionBound(
-                error=(
-                    f"cli_agent '{self.spec.name}' has no execution bound: the engine supplied no "
-                    "window and CliAgentRequest.timeout_s was not set — declare an explicit "
-                    "positive timeout (a missing window must never become a hidden default)"
-                )
-            )
-        effective = min(candidates)
-        source = (
-            "engine_window"
-            if engine_soft is not None and effective == engine_soft
-            else "explicit_request"
+        if window is not None and window.is_bounded:
+            engine_soft = window.soft_timeout_s
+            engine_hard = window.hard_timeout_s
+        else:
+            # No resolved window on the context (direct call inside another capability):
+            # the ambient invocation soft-remaining is the engine bound; the ambient
+            # owner's own reserve hosts the cleanup.
+            engine_soft = invocation_soft_remaining_s()
+            engine_hard = None
+        shared = resolve_invocation_bound(
+            engine_soft_s=engine_soft,
+            engine_hard_s=engine_hard,
+            explicit_timeout_s=request.timeout_s,
+            default_kill_grace_s=self._DEFAULT_KILL_GRACE_S,
+            require_bound=True,
+            owner=f"cli_agent '{self.spec.name}'",
         )
-        # terminate→kill→reap must finish INSIDE the reserve so the outer engine hard boundary
-        # (authoritative) never has to reap the child. No reserve → keep the default grace.
-        kill_grace = self._DEFAULT_KILL_GRACE_S
-        if reserve > 0:
-            kill_grace = max(0.0, min(kill_grace, reserve))
-        notice = self._finalization_notice(effective, reserve) if reserve > 0 else None
+        if shared.error is not None:
+            return _ExecutionBound(error=shared.error)
+        # The finalize budget the worker is told about = everything between its work bound
+        # and the engine hard deadline (declared reserve, or the carved headroom).
+        finalize_s = (
+            max(0.0, engine_hard - shared.timeout_s) if engine_hard is not None else 0.0
+        )
+        notice = (
+            self._finalization_notice(shared.timeout_s, finalize_s) if finalize_s > 0 else None
+        )
         return _ExecutionBound(
-            timeout_s=effective,
-            kill_grace_s=kill_grace,
+            timeout_s=shared.timeout_s,
+            kill_grace_s=shared.kill_grace_s,
             notice=notice,
-            source=source,
+            source="engine_window" if shared.source == "engine_window" else "explicit_request",
             soft_s=engine_soft,
             hard_s=engine_hard,
-            reserve_s=reserve,
+            reserve_s=finalize_s,
         )
 
     @staticmethod

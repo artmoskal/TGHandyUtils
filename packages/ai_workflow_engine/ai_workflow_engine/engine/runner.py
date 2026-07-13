@@ -8,7 +8,7 @@ import time
 import uuid
 from typing import Any, Awaitable, Callable, Dict, Optional
 
-from ai_workflow_engine._runtime_state import workflow_run_context_scope
+from ai_workflow_engine._runtime_state import current_run_session, workflow_run_context_scope
 from ai_workflow_engine.models import (
     WorkflowGoal,
     WorkflowResultStatus,
@@ -36,6 +36,27 @@ def derive_workflow_result_status(state: Dict[str, Any]) -> WorkflowResultStatus
     if any(getattr(record, "status", None) == "partial" for record in state.get("node_results", [])):
         return "partial"
     return "completed"
+
+
+def derive_graph_failsafe_timeout_s(
+    run_timeout_s: Optional[float],
+    session: Any,
+    *,
+    margin_s: float,
+) -> Optional[float]:
+    """The graph-level fail-safe budget for ONE graph invocation.
+
+    Derived from the run session's REMAINING active budget — so a resumed run that already
+    consumed most of its budget does NOT receive a fresh full timeout — plus the REPRESENTED
+    scheduling margin (``margin_s``, a named constant surfaced in the failure text) that lets
+    honest per-capability salvage fire first. Falls back to the declared run timeout when no
+    session owns a deadline. ``None`` = unbounded run, no fail-safe."""
+
+    if run_timeout_s is None:
+        return None
+    remaining = session.run_remaining_s() if session is not None else None
+    base = remaining if remaining is not None else run_timeout_s
+    return base + margin_s
 
 
 class WorkflowRunner:
@@ -106,23 +127,36 @@ class WorkflowRunner:
                 usage_sink=self.usage_sink,
             )
             with workflow_run_context_scope(ctx), workflow_usage_scope(usage_context):
+                graph_task: Optional[asyncio.Task] = None
                 try:
                     # v0.10 #6b graph-level fail-safe: a hang OUTSIDE a capability (a node's own
                     # async code, an uninterruptible `none` handler that runs unbounded) is not
-                    # caught by per-capability enforcement. When the run declares a timeout, bound
-                    # the WHOLE active invocation by that budget plus a generous margin, so honest
+                    # caught by per-capability enforcement. Bound the WHOLE active invocation by
+                    # the session's REMAINING active budget (correct after resume — never a fresh
+                    # full timeout) plus the represented scheduling margin, so honest
                     # per-capability salvage always fires first and only a true hang trips this.
                     run_timeout = getattr(limits, "timeout_s", None)
-                    if run_timeout is not None:
-                        result = await asyncio.wait_for(
-                            self._invoke_graph(graph, state, graph_config),
-                            timeout=run_timeout + self._GRAPH_FAILSAFE_MARGIN_S,
+                    failsafe_s = derive_graph_failsafe_timeout_s(
+                        run_timeout,
+                        current_run_session(),
+                        margin_s=self._GRAPH_FAILSAFE_MARGIN_S,
+                    )
+                    if failsafe_s is not None:
+                        graph_task = asyncio.ensure_future(
+                            self._invoke_graph(graph, state, graph_config)
                         )
+                        result = await asyncio.wait_for(graph_task, timeout=failsafe_s)
                     else:
                         result = await self._invoke_graph(graph, state, graph_config)
                     outcome = derive_workflow_result_status(result)
                     fallback_error: Optional[Exception] = None
                 except asyncio.TimeoutError:
+                    # Typed timeout OWNERSHIP: this branch is the fail-safe's ONLY when
+                    # wait_for cancelled OUR graph task. A TimeoutError raised by code INSIDE
+                    # the graph completes the task with that exception — re-raise it as the
+                    # inner error it is, never relabel it as the fail-safe.
+                    if graph_task is None or not graph_task.cancelled():
+                        raise
                     # A hang outside a capability produced nothing salvageable — return a
                     # truthful FAILED result (observable), not a raised exception.
                     result = {
@@ -131,7 +165,8 @@ class WorkflowRunner:
                         "error": (
                             "run exceeded its execution window and did not stop at any "
                             "capability boundary — graph-level fail-safe tripped (a hang "
-                            "outside a capability)"
+                            f"outside a capability) after the remaining active budget plus "
+                            f"the {self._GRAPH_FAILSAFE_MARGIN_S:g}s fail-safe margin"
                         ),
                     }
                     outcome = "failed"

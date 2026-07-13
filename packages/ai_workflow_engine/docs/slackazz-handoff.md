@@ -1,6 +1,7 @@
 # SlackAzzCovered Engine Adoption Guide
 
-Status: **ready for consumer validation against `engine-v0.10.0`**. SlackAzzCovered should pin tag
+Status: **release candidate — the `engine-v0.10.0` tag is pending final review and does not exist
+yet; do not re-pin until it is cut.** Once tagged, SlackAzzCovered should then pin tag
 `engine-v0.10.0`, implement its Redis coordinator, and pass the engine conformance kit plus product
 transaction tests before enabling live effects.
 

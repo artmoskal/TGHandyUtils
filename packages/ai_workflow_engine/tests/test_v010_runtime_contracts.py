@@ -1063,31 +1063,72 @@ async def test_graph_failsafe_stops_a_hang_outside_a_capability_boundary():
     assert "fail-safe" in (result.error or "") or "did not stop" in (result.error or "")
 
 
-async def test_nested_capability_is_clamped_by_parent_soft_remaining():
-    """Phase 2R #6a: a capability invoked WITHIN a parent capability's bounded window sees a
-    window clamped by the parent's remaining soft deadline (nested can only shorten, not extend)."""
+async def test_nested_capability_invocation_receives_a_parent_clamped_window():
+    """Phase 2R #6a / 5R: a REAL nested invocation — a bounded parent capability invoking a
+    child through the runtime — hands the child an ExecutionWindowDecision clamped by the
+    parent's remaining soft deadline (limiting source ``parent_window``, clamp
+    ``parent_soft_remaining``), and concurrent parents with different windows stay isolated
+    (one parent's tight window never leaks into the other's child)."""
 
-    from ai_workflow_engine._runtime_state import current_run_session
+    import asyncio as _a
 
-    observed = {}
+    from ai_workflow_engine.engine.capabilities import CapabilityRegistry, CapabilityRuntime
+    from ai_workflow_engine.execution_window import TaskExecutionRequest
+    from ai_workflow_engine.models import (
+        CapabilityContext,
+        RuntimePlan,
+        SafetyPolicy,
+        WorkflowGoal,
+        WorkflowRunContext,
+    )
 
-    async def parent(ctx, _payload):
-        # parent runs under a ~0.5s window; invoke a nested capability and capture ITS window
-        from ai_workflow_engine.engine.capabilities import _parent_soft_remaining_s
-        observed["parent_soft_at_nested_call"] = _parent_soft_remaining_s()
+    registry = CapabilityRegistry()
+    runtime = CapabilityRuntime(registry)
+    child_windows: dict = {}
+
+    def child(ctx, payload):
+        child_windows[payload["tag"]] = ctx.execution_window
         return {"ok": True}
 
-    engine = (
-        WorkflowEngineBuilder()
-        .with_profile(_profile("parent_clamp", timeout_s=0.5))
-        .register_capability("parent", parent, kind="deterministic")
-        .register_workflow(WorkflowBuilder("parent_clamp").step("parent").build())
-        .build()
+    async def parent(ctx, payload):
+        await _a.sleep(0.05)  # force real overlap between the two concurrent parents
+        # the child must NOT inherit the parent's execution_request — its ONLY bound here
+        # is the ambient parent clamp.
+        child_ctx = ctx.model_copy(update={"execution_request": None})
+        result = await runtime.invoke("child", {"tag": payload["tag"]}, child_ctx)
+        return {"child_status": result.status}
+
+    registry.register(CapabilitySpec(name="child", kind="deterministic"), child)
+    registry.register(CapabilitySpec(name="parent", kind="deterministic"), parent)
+
+    def _ctx(timeout_s: float) -> CapabilityContext:
+        return CapabilityContext(
+            goal=WorkflowGoal(workflow_type="nested_clamp", objective="clamp"),
+            run_context=WorkflowRunContext(workflow_id=f"nested-{timeout_s}", workflow_type="nested_clamp"),
+            plan=RuntimePlan(workflow_type="nested_clamp", safety=SafetyPolicy(allowed_side_effects=[])),
+            execution_request=TaskExecutionRequest(timeout_s=timeout_s),
+        )
+
+    wide, tight = await _a.gather(
+        runtime.invoke("parent", {"tag": "wide"}, _ctx(5.0)),
+        runtime.invoke("parent", {"tag": "tight"}, _ctx(0.8)),
     )
-    await engine.run("parent_clamp", {})
-    # inside the parent handler, the parent-soft deadline is published (>0, <= the parent soft window)
-    assert observed["parent_soft_at_nested_call"] is not None
-    assert 0 < observed["parent_soft_at_nested_call"] <= 0.5
+    assert wide.status == "accepted" and tight.status == "accepted"
+
+    win_wide = child_windows["wide"]
+    win_tight = child_windows["tight"]
+    # the child's window IS the parent clamp — named, not inferred
+    for window in (win_wide, win_tight):
+        assert window is not None and window.is_bounded
+        assert window.limiting_sources == ["parent_window"]
+        assert window.clamps == ["parent_soft_remaining"]
+    # each child is bounded by ITS OWN parent's remaining soft budget (shorten-only) ...
+    assert 0 < win_wide.hard_timeout_s <= 5.0
+    assert 0 < win_tight.hard_timeout_s <= 0.8
+    # ... and the tight parent's window never leaked into the wide parent's child
+    assert win_wide.hard_timeout_s > 1.0, (
+        f"concurrent isolation broken: wide child clamped to {win_wide.hard_timeout_s}"
+    )
 
 
 async def test_bounded_capability_records_its_window_on_the_success_trace_event():
@@ -1130,3 +1171,179 @@ async def test_bounded_capability_records_its_window_on_the_success_trace_event(
         for e in unbounded.trace
         if e.node == "quick"
     ), "an unbounded capability must not record a window"
+
+
+async def test_cancelled_external_process_is_killed_and_reaped(tmp_path):
+    """5R finding 2: cancellation DURING a subprocess run (the outer boundary fired) must
+    kill AND reap the child and settle the reader tasks — the child never outlives the
+    engine's claim that it stopped. A zombie or a survivor fails this test."""
+
+    import os
+    import signal
+    import sys
+    import time as _t
+
+    from ai_workflow_engine.engine.external import (
+        ExternalProcessCapability,
+        ExternalProcessRequest,
+    )
+
+    cap = ExternalProcessCapability()
+    pid_file = tmp_path / "pid.txt"
+    script = (
+        "import os,sys,time,pathlib; "
+        "pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); "
+        "time.sleep(30)"
+    )
+    task = asyncio.ensure_future(
+        cap(
+            None,
+            ExternalProcessRequest(
+                command=[sys.executable, "-c", script, str(pid_file)],
+                timeout_s=30.0,
+            ),
+        )
+    )
+    for _ in range(400):  # wait for the child to be alive and announced
+        if pid_file.exists() and pid_file.read_text().strip():
+            break
+        await asyncio.sleep(0.025)
+    else:
+        task.cancel()
+        raise AssertionError("child never started")
+    pid = int(pid_file.read_text())
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    deadline = _t.monotonic() + 3.0
+    while _t.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)  # raises ProcessLookupError once killed AND reaped
+        except ProcessLookupError:
+            break
+        await asyncio.sleep(0.05)
+    else:
+        os.kill(pid, signal.SIGKILL)  # do not leak the child out of the test
+        raise AssertionError(
+            "cancelled external process left the child running (not killed/reaped)"
+        )
+
+
+def test_external_process_capability_declares_process_enforcement():
+    """5R finding 3: the engine's real subprocess owner publishes an honest process-marked
+    spec — direct registration must never be misclassified as merely 'cooperative'."""
+
+    from ai_workflow_engine.engine.external import ExternalProcessCapability
+
+    cap = ExternalProcessCapability()
+    assert cap.spec.timeout_enforcement == "process"
+    assert cap.spec.resolved_timeout_enforcement(is_async=True) == "process"
+    # honest default ledger for an arbitrary subprocess
+    assert "external_call" in cap.spec.side_effects
+
+
+async def test_external_process_obeys_the_ambient_engine_window(tmp_path):
+    """5R finding 1/2: the ambient invocation window CLAMPS the subprocess bound — a huge
+    explicit request timeout cannot outlive the engine window; the child is stopped and the
+    partial salvage path runs."""
+
+    import sys
+    import time as _t
+
+    from ai_workflow_engine.engine.external import (
+        ExternalProcessCapability,
+        ExternalProcessRequest,
+    )
+    from ai_workflow_engine.execution_window import (
+        publish_invocation_soft_deadline,
+        reset_invocation_soft_deadline,
+    )
+
+    cap = ExternalProcessCapability()
+    token = publish_invocation_soft_deadline(_t.monotonic() + 0.6)
+    try:
+        started = _t.monotonic()
+        result = await cap(
+            None,
+            ExternalProcessRequest(
+                command=[sys.executable, "-c", "import time; time.sleep(30)"],
+                timeout_s=300.0,  # a huge explicit bound must NOT win over the engine window
+                kill_grace_s=0.5,
+            ),
+        )
+        elapsed = _t.monotonic() - started
+    finally:
+        reset_invocation_soft_deadline(token)
+
+    assert result.status == "partial"
+    assert elapsed < 5.0, f"ambient window did not bound the child (took {elapsed:.1f}s)"
+    assert result.metadata["bound_source"] == "engine_window"
+    assert result.metadata["timeout_s"] <= 0.6
+    assert result.metadata["requested_timeout_s"] == 300.0
+
+
+def test_graph_failsafe_budget_follows_the_session_remaining_not_the_full_timeout():
+    """5R finding 4: after resume, the fail-safe must grant the REMAINING active budget —
+    never a fresh full timeout — plus the represented margin."""
+
+    from ai_workflow_engine.engine.runner import derive_graph_failsafe_timeout_s
+    from ai_workflow_engine.models import (
+        CapabilityContext,
+        RuntimePlan,
+        SafetyPolicy,
+        WorkflowGoal,
+        WorkflowRunContext,
+    )
+    from ai_workflow_engine.run_session import WorkflowRunSession
+
+    def _session() -> WorkflowRunSession:
+        return WorkflowRunSession(
+            workflow_id="failsafe",
+            context=CapabilityContext(
+                goal=WorkflowGoal(workflow_type="failsafe", objective="x"),
+                run_context=WorkflowRunContext(workflow_id="fs-1", workflow_type="failsafe"),
+                plan=RuntimePlan(workflow_type="failsafe", safety=SafetyPolicy(allowed_side_effects=[])),
+            ),
+        )
+
+    clock_now = [100.0]
+    fresh = _session()
+    fresh.start_execution_window(run_timeout_s=10.0, clock=lambda: clock_now[0])
+    assert derive_graph_failsafe_timeout_s(10.0, fresh, margin_s=2.0) == pytest.approx(12.0)
+
+    resumed = _session()
+    resumed.start_execution_window(
+        run_timeout_s=10.0, clock=lambda: clock_now[0], prior_active_elapsed_s=9.0
+    )
+    assert derive_graph_failsafe_timeout_s(10.0, resumed, margin_s=2.0) == pytest.approx(3.0), (
+        "a resumed run that already consumed 9 of its 10s must NOT get a fresh full timeout"
+    )
+
+    # no session -> the declared timeout; unbounded -> no fail-safe at all
+    assert derive_graph_failsafe_timeout_s(10.0, None, margin_s=2.0) == pytest.approx(12.0)
+    assert derive_graph_failsafe_timeout_s(None, fresh, margin_s=2.0) is None
+
+
+async def test_inner_timeout_error_is_not_relabeled_as_the_graph_failsafe():
+    """5R finding 4 (typed ownership): a TimeoutError raised by code INSIDE the graph is that
+    code's own error — it must propagate as itself, never be relabeled as the graph-level
+    fail-safe 'hang outside a capability'."""
+
+    from types import SimpleNamespace
+
+    from ai_workflow_engine.engine.runner import WorkflowRunner
+    from ai_workflow_engine.models import RuntimeLimits
+
+    class _InnerTimeoutGraph:
+        async def ainvoke(self, _state, _config=None):
+            raise TimeoutError("inner adapter timed out")
+
+    runner = WorkflowRunner()
+    with pytest.raises(TimeoutError, match="inner adapter timed out"):
+        await runner.run(
+            _InnerTimeoutGraph(),
+            {"engine_context": SimpleNamespace(limits=RuntimeLimits(timeout_s=5.0))},
+            workflow_type="inner_timeout",
+        )

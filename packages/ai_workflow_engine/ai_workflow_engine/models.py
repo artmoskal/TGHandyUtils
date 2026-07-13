@@ -643,8 +643,9 @@ class CapabilitySpec(BaseModel):
         otherwise an async handler is cooperatively cancellable and a synchronous handler is
         uninterruptible (``none``). NOTE: ``kind == "external"`` does NOT imply process-backed —
         a database/write adapter is external but owns no killable subprocess; only a capability
-        that DECLARES ``timeout_enforcement="process"`` (or the real ExternalProcessCapability,
-        wired to the engine window in Phase 3) is process-backed."""
+        whose spec DECLARES ``timeout_enforcement="process"`` is process-backed
+        (``ExternalProcessCapability.spec`` and ``CliAgentCapability.spec`` both do — register
+        them WITH their published spec, e.g. ``register_capability(name, cap, spec=cap.spec)``)."""
 
         if self.timeout_enforcement is not None:
             return self.timeout_enforcement

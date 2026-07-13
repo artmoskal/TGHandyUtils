@@ -539,11 +539,13 @@ async def test_explicit_request_narrows_the_engine_window(capability_context, tm
 
 async def test_explicit_request_can_never_enlarge_the_engine_window(capability_context, tmp_path):
     """The authoritative guard: a larger explicit request must NOT extend a tighter engine
-    window — the engine's bound always wins the ceiling."""
+    window — the engine's bound always wins the ceiling. With no completion reserve
+    (soft == hard), represented cleanup headroom is carved from WORK time so terminate/kill/
+    reap finishes BEFORE the hard deadline instead of racing it (codex 5R finding 2)."""
 
     spy = _SpyRunner()
     cap = _bashless(claude_p, external_runner=spy)
-    context = _windowed(capability_context, hard=5.0)  # soft = 5s
+    context = _windowed(capability_context, hard=5.0)  # soft = 5s, reserve = 0
 
     await cap(
         context,
@@ -552,7 +554,10 @@ async def test_explicit_request_can_never_enlarge_the_engine_window(capability_c
         ),
     )
 
-    assert spy.request.timeout_s == 5.0  # engine 5s wins; the 100s request could not enlarge it
+    # engine wins the ceiling; 1s cleanup headroom carved from the reserveless window:
+    # work 4s + kill grace <= 1s all complete before the 5s hard boundary.
+    assert spy.request.timeout_s == 4.0
+    assert spy.request.timeout_s + spy.request.kill_grace_s <= 5.0
     assert spy.request.metadata["execution_bound_source"] == "engine_window"
 
 
@@ -580,11 +585,14 @@ async def test_both_flavors_share_window_inheritance_semantics(flavor, capabilit
     from ai_workflow_tools.toolsets import BASH_SIDE_EFFECTS
 
     cap = CliAgentCapability(flavor, side_effects=list(BASH_SIDE_EFFECTS), external_runner=spy)
-    context = _windowed(capability_context, hard=12.0)  # soft = 12s
+    context = _windowed(capability_context, hard=12.0)  # soft = 12s, reserve = 0
 
     await cap(context, CliAgentRequest(prompt="q", workspace_dir=str(tmp_path)))
 
-    assert spy.request.timeout_s == 12.0
+    # both flavors share the same algebra: 1s cleanup headroom carved from the reserveless
+    # window → 11s work, reap complete before the 12s hard boundary.
+    assert spy.request.timeout_s == 11.0
+    assert spy.request.timeout_s + spy.request.kill_grace_s <= 12.0
     assert spy.request.metadata["execution_bound_source"] == "engine_window"
 
 
@@ -623,8 +631,9 @@ async def test_engine_window_actually_bounds_a_real_slow_subprocess_and_salvages
     workspace = tmp_path / "workspace"
     _configure_fake_cli(monkeypatch, tmp_path, workspace, mode="sleep", sleep_s="5")
     cap = _bashless(_fake_flavor(claude_p, fake_cli_path))
-    # 0.6s soft window from the engine, no reserve, no explicit request timeout.
-    context = _windowed(capability_context, hard=0.6)
+    # 1.2s reserveless engine window, no explicit request timeout: 0.3s cleanup headroom is
+    # carved (represented) → ~0.9s work for the fake to start + write its PNG under load.
+    context = _windowed(capability_context, hard=1.2)
 
     cap_result = await cap(
         context,

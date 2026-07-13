@@ -1,6 +1,7 @@
 # Voice Brain Engine Integration Guide
 
-Status: **the current engine supports the required execution boundary at `engine-v0.10.0`; voice
+Status: **the engine supports the required execution boundary as of the `engine-v0.10.0` release
+candidate (tag pending final review — do not re-pin until it exists); voice
 integration remains product-owned and must run its own latency/cancellation canary.** This replaces
 the historical June request/reply transcript.
 
