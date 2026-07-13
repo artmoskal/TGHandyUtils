@@ -1,6 +1,8 @@
 # Migration guide — `engine-v0.8.1` → `engine-v0.9.x`
 
-For consumers moving their pin from `engine-v0.8.1` (GoPro, MageQA) to `engine-v0.9.x`. Read this
+For consumers moving their pin from `engine-v0.8.1` (GoPro, MageQA) to `engine-v0.9.x`.
+**Target tag: `engine-v0.9.2`** (viewer `0.2.1`). The `engine-v0.9.0` and `engine-v0.9.1`
+tags are superseded releases — do not newly pin them. Read this
 before re-pinning; each item is a real contract change verified against the tag, not a style note.
 Everything else is additive. Rebuild wheels from the immutable tag in a clean checkout, record the
 source commit + wheel hashes, then run your adapter/canary tests before deploying.
