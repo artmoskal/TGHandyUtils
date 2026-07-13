@@ -1,8 +1,9 @@
 # Voice Brain Engine Integration Guide
 
 Status: **the engine supports the required execution boundary as of the immutable
-`engine-v0.10.1` release candidate (tag pending — do not re-pin); voice
-integration remains product-owned and must run its own latency/cancellation canary.** This replaces
+`engine-v0.10.1` release; voice
+integration remains product-owned and must pin tag `engine-v0.10.1` before running its own
+latency/cancellation canary.** This replaces
 the historical June request/reply transcript.
 
 Read first: [getting started](getting-started.md), [framework concepts](concepts.md), and

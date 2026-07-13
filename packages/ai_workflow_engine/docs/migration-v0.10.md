@@ -107,7 +107,7 @@ wheels must never share `name+version`. Repin all three and rebuild.
 `engine-v0.10.1` (tools `0.4.1`, viewer `0.2.3`) is a corrective release: it bounds the
 external-process **result-settlement** boundary as tightly as the execution window already
 bounds time. `engine-v0.10.0` is superseded for NEW adoption; move directly to the
-`engine-v0.10.1` tag when it is cut.
+immutable `engine-v0.10.1` tag.
 
 ### Behavior changes
 - **Bounded process capture.** `ExternalProcessCapability` (and therefore the CLI-agent and

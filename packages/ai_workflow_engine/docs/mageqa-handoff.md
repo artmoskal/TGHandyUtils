@@ -1,6 +1,7 @@
 # MageQA Engine Adoption Guide
 
-Status: **BLOCKED until the `engine-v0.10.1` tag exists (release candidate — do not re-pin).** The five E0 blockers that
+Status: **ready for consumer validation against immutable tag `engine-v0.10.1`; deployed adoption
+remains blocked until MageQA's own E0 canaries pass.** The five E0 blockers that
 failed MageQA against `engine-v0.9.2` — planned `partial` rewritten to `done` with the error
 cleared, `RuntimeLimits.timeout_s` declared but not enforced, retrace provenance not exposed to the
 retraced capability, the CLI request's hidden 600s default, and the reused `0.3.0` tools wheel
