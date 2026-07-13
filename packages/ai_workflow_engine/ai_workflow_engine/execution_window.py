@@ -16,7 +16,7 @@ from __future__ import annotations
 import math
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator, model_validator
 
 __all__ = [
     "ExecutionWindowBoundSource",
@@ -61,7 +61,9 @@ class TaskExecutionRequest(BaseModel):
 
     timeout_s: Optional[float] = None
     completion_reserve_s: float = 0.0
-    source: str = "planner_task"
+    # bounded STRICT observation label: max 128 chars, non-blank, no control chars — it is
+    # recorded into persisted decisions, never a control value.
+    source: StrictStr = Field(default="planner_task", max_length=128)
 
     @field_validator("timeout_s")
     @classmethod
@@ -70,7 +72,7 @@ class TaskExecutionRequest(BaseModel):
             return None
         if not math.isfinite(value) or value <= 0:
             raise ValueError(f"timeout_s must be a finite positive number, got {value!r}")
-        return value
+        return _finite_non_negative(value, "execution-window duration")
 
     @field_validator("completion_reserve_s")
     @classmethod
@@ -84,6 +86,8 @@ class TaskExecutionRequest(BaseModel):
     def _source_non_blank(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("execution-request source must be a non-blank observation label")
+        if not value.isprintable():
+            raise ValueError("execution-request source must be printable (no control characters)")
         return value
 
 
@@ -131,19 +135,44 @@ class ExecutionWindowDecision(BaseModel):
     def is_bounded(self) -> bool:
         return self.hard_timeout_s is not None
 
+    @field_validator(
+        "requested_timeout_s",
+        "capability_timeout_s",
+        "run_remaining_s",
+        "parent_remaining_s",
+        "soft_timeout_s",
+        "hard_timeout_s",
+        "completion_reserve_s",
+    )
+    @classmethod
+    def _durations_finite_non_negative(cls, value: Optional[float]) -> Optional[float]:
+        # This object is PERSISTED and ENFORCED — every duration must be a finite,
+        # non-negative number even when the model is constructed directly.
+        return _finite_non_negative(value, "execution-window duration")
+
     @model_validator(mode="after")
     def _seal_invariants(self) -> "ExecutionWindowDecision":
         # A decision is internally consistent or it is a bug — seal it so no caller can
-        # construct a lying window (bounded label without a hard limit, soft above hard,
-        # reserve mismatch, or a limiting source that names no real bound).
+        # construct a lying window (soft above hard, negative reserve, reserve eating the
+        # whole window, bounded label without a hard limit, or a source-less bound).
         if self.hard_timeout_s is None:
             if self.soft_timeout_s is not None or self.limiting_sources or self.clamps:
                 raise ValueError("unbounded window must carry no hard/soft limit, sources, or clamps")
             return self
-        if not math.isfinite(self.hard_timeout_s) or self.hard_timeout_s <= 0:
-            raise ValueError(f"hard_timeout_s must be finite and > 0, got {self.hard_timeout_s!r}")
+        if self.hard_timeout_s <= 0:
+            raise ValueError(f"hard_timeout_s must be > 0, got {self.hard_timeout_s!r}")
         if self.soft_timeout_s is None:
             raise ValueError("a bounded window must have a soft_timeout_s")
+        if not (0 <= self.completion_reserve_s < self.hard_timeout_s):
+            raise ValueError(
+                f"completion_reserve_s={self.completion_reserve_s!r} must satisfy "
+                f"0 <= reserve < hard_timeout_s={self.hard_timeout_s!r}"
+            )
+        if not (0 <= self.soft_timeout_s <= self.hard_timeout_s):
+            raise ValueError(
+                f"soft_timeout_s={self.soft_timeout_s!r} must satisfy 0 <= soft <= "
+                f"hard_timeout_s={self.hard_timeout_s!r}"
+            )
         if not math.isclose(self.soft_timeout_s, self.hard_timeout_s - self.completion_reserve_s):
             raise ValueError("soft_timeout_s must equal hard_timeout_s minus completion_reserve_s")
         if not self.limiting_sources:

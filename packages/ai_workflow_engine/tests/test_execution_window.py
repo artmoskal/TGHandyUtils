@@ -154,3 +154,40 @@ def test_decision_model_seals_lying_windows():
         limiting_sources=["run_limit"], clamps=["run_remaining"],
     )
     assert ok.is_bounded
+
+
+def test_directly_constructed_decision_cannot_lie_about_durations_or_ordering():
+    """Codex Phase-2.1 recheck: the persisted/enforced decision seals ALL durations
+    (finite, non-negative) and the full ordering (0 <= reserve < hard, 0 <= soft <= hard),
+    not just soft == hard - reserve."""
+
+    from ai_workflow_engine.execution_window import ExecutionWindowDecision
+
+    # soft > hard via a negative reserve whose arithmetic "matches"
+    with pytest.raises(ValueError):
+        ExecutionWindowDecision(
+            hard_timeout_s=5.0, completion_reserve_s=-1.0, soft_timeout_s=6.0,
+            limiting_sources=["run_limit"],
+        )
+    # a negative source duration
+    with pytest.raises(ValueError):
+        ExecutionWindowDecision(
+            hard_timeout_s=5.0, soft_timeout_s=5.0, limiting_sources=["run_limit"],
+            run_remaining_s=-3.0,
+        )
+    # reserve == hard leaves no work time
+    with pytest.raises(ValueError):
+        ExecutionWindowDecision(
+            hard_timeout_s=5.0, completion_reserve_s=5.0, soft_timeout_s=0.0,
+            limiting_sources=["run_limit"],
+        )
+
+
+def test_request_source_label_is_bounded_strict_and_byte_safe():
+    with pytest.raises(ValueError):
+        TaskExecutionRequest(source="x" * 200)      # over 128
+    with pytest.raises(ValueError):
+        TaskExecutionRequest(source="bad\x00label")  # control char
+    with pytest.raises(ValueError):
+        TaskExecutionRequest(source=123)             # non-str (strict)
+    assert TaskExecutionRequest(source="llm_planner").source == "llm_planner"

@@ -371,15 +371,15 @@ async def test_replan_keeps_terminal_partial_immutable():
         .build()
     )
     result = await engine.run("replan_partial", {})
+    assert gate_calls["n"] == 2, "the evaluator must have rejected once then accepted"
+    assert any(e.node == "qa" and e.decision == "replan" for e in result.trace), (
+        "a replan round must actually have occurred (trace route), or this test proves nothing"
+    )
     assert cut_calls["n"] == 1, "a terminal partial task must not re-run on replan"
 
 
-async def test_retrace_provenance_round_two_and_planner_target_and_denial_isolation():
-    """F2 depth: round increments to 2 across successive retraces; a retrace targeting a
-    NON-step (planner) node still delivers provenance via the generic boundary; exact
-    source/evaluator/target; and a concurrent second run does not leak provenance."""
-
-    import asyncio as _asyncio
+async def test_retrace_provenance_rounds_increment_across_successive_retraces():
+    """F2: successive retraces expose rounds 1 then 2 (retry/replan never increment)."""
 
     from ai_workflow_engine import Retrace
 
@@ -388,7 +388,6 @@ async def test_retrace_provenance_round_two_and_planner_target_and_denial_isolat
     def draft(ctx, _payload):
         prov = getattr(ctx, "retrace_provenance", None)
         rounds_seen.append(prov.round if prov else None)
-        # need TWO rejections to force rounds 1 and 2
         return {"v": len([r for r in rounds_seen if r]) + 1}
 
     def gate(_c, payload):
@@ -408,17 +407,130 @@ async def test_retrace_provenance_round_two_and_planner_target_and_denial_isolat
         )
         .build()
     )
-    # allow up to 2 retraces
-    result = await engine.run("round2", {})
-    # rounds_seen: [None, 1, 2] then accepted (or bounded)
-    non_none = [r for r in rounds_seen if r is not None]
+    await engine.run("round2", {})
     assert rounds_seen[0] is None
-    assert non_none == [1, 2], f"successive retraces must expose rounds 1 then 2, got {rounds_seen}"
+    assert [r for r in rounds_seen if r is not None] == [1, 2], (
+        f"successive retraces must expose rounds 1 then 2, got {rounds_seen}"
+    )
 
-    # concurrent isolation: two runs at once must not share provenance
-    rounds_seen.clear()
-    r1, r2 = await _asyncio.gather(engine.run("round2", {}), engine.run("round2", {}))
-    assert r1.status in ("completed", "failed") and r2.status in ("completed", "failed")
+
+async def test_retrace_targeting_a_planner_node_delivers_provenance_generically():
+    """F2 (codex): the retrace target here is a PLANNER node, not a step — provenance must
+    arrive through the generic node boundary, proving no step-only consumption remains."""
+
+    from ai_workflow_engine import Retrace
+
+    planner_provenance: list = []
+
+    def make_plan(ctx, _payload):
+        planner_provenance.append(getattr(ctx, "retrace_provenance", None))
+        return PlanArtifact(
+            goal="planned draft",
+            tasks=[PlanTask(task_id="t1", description="emit", capability="emit", payload=1)],
+        )
+
+    def emit(_c, payload):
+        return {"quality": payload}
+
+    gate_calls = {"n": 0}
+
+    def gate(_c, _payload):
+        # reject the first plan (forcing exactly one retrace of the PLANNER node), accept next
+        gate_calls["n"] += 1
+        return CapabilityResult(
+            status="accepted" if gate_calls["n"] > 1 else "rejected", error="bad plan"
+        )
+
+    engine = (
+        WorkflowEngineBuilder()
+        .with_profile(_profile("plan_retrace"))
+        .register_capability(
+            "make_plan", make_plan, spec=CapabilitySpec(name="make_plan", kind="llm", is_planner=True)
+        )
+        .register_capability("emit", emit, kind="deterministic")
+        .register_capability("gate", gate, kind="llm")
+        .register_workflow(
+            WorkflowBuilder("plan_retrace")
+            .plan("plan_node", capability="make_plan")
+            .evaluate("qa", target="plan_node", evaluator="gate", on_reject=Retrace("plan_node"))
+            .build()
+        )
+        .build()
+    )
+    result = await engine.run("plan_retrace", {})
+    assert len(planner_provenance) == 2, "planner must run original + retraced invocation"
+    assert planner_provenance[0] is None
+    prov = planner_provenance[1]
+    assert prov is not None, "a PLANNER retrace target must receive typed provenance (generic boundary)"
+    assert prov.round == 1
+    assert prov.evaluator_node == "qa"
+    assert prov.target_node == "plan_node"
+    assert result.status == "completed"
+
+
+async def test_retrace_provenance_never_leaks_across_barrier_interleaved_runs():
+    """F2 (codex): TRUE concurrency isolation — two runs interleave at an asyncio barrier
+    while one is mid-retrace; every provenance observation is associated with ITS run's
+    marker, and the non-retracing run must observe none."""
+
+    import asyncio as _a
+
+    from ai_workflow_engine import Retrace
+
+    retracing_started = _a.Event()
+    clean_run_done = _a.Event()
+    observations: list[tuple[str, object]] = []  # (run_marker, provenance-or-None)
+
+    async def draft(ctx, payload):
+        marker = payload["marker"] if isinstance(payload, dict) else "?"
+        prov = getattr(ctx, "retrace_provenance", None)
+        observations.append((marker, prov))
+        if marker == "retracer" and prov is None:
+            # first invocation of the retracing run: hold until the clean run has fully
+            # finished INSIDE our retrace window, forcing interleaving
+            retracing_started.set()
+            await _a.wait_for(clean_run_done.wait(), timeout=5)
+            return {"quality": "bad", "marker": marker}
+        return {"quality": "good", "marker": marker}
+
+    def gate(_c, payload):
+        return CapabilityResult(
+            status="accepted" if (payload or {}).get("quality") == "good" else "rejected",
+            error="bad",
+        )
+
+    engine = (
+        WorkflowEngineBuilder()
+        .with_profile(_profile("iso"))
+        .register_capability("draft", draft, kind="llm")
+        .register_capability("gate", gate, kind="llm")
+        .register_workflow(
+            WorkflowBuilder("iso")
+            .step("draft")
+            .evaluate("qa", target="draft", evaluator="gate", on_reject=Retrace("draft"))
+            .build()
+        )
+        .build()
+    )
+
+    async def clean_run():
+        await _a.wait_for(retracing_started.wait(), timeout=5)
+        result = await engine.run("iso", {"marker": "clean"})
+        clean_run_done.set()
+        return result
+
+    retracer, clean = await _a.gather(
+        engine.run("iso", {"marker": "retracer"}), clean_run()
+    )
+    assert retracer.status == "completed" and clean.status == "completed"
+    clean_obs = [prov for marker, prov in observations if marker == "clean"]
+    retracer_obs = [prov for marker, prov in observations if marker == "retracer"]
+    assert clean_obs == [None], (
+        f"the clean run executed INSIDE the other run's retrace window and must never see "
+        f"provenance, got {clean_obs}"
+    )
+    assert retracer_obs[0] is None and retracer_obs[1] is not None
+    assert retracer_obs[1].target_node == "draft"
 
 def test_tools_wheel_identity_advanced_for_changed_code():
     """Defect 4: ai_workflow_tools source changed between engine-v0.8.1 and engine-v0.9.2
