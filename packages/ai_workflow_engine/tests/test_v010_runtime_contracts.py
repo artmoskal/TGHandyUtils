@@ -816,3 +816,96 @@ async def test_nested_child_plan_partial_reaches_the_parent():
     )
     assert result.status == "partial"
     assert any(e.decision == "plan:subplan_partial" for e in result.trace)
+
+
+async def test_cooperative_clean_cancellation_is_partial():
+    """Phase 2.3 (cooperative): an async handler cancelled at the hard boundary that stops
+    cleanly (lets CancelledError propagate) is a truthful PARTIAL."""
+
+    import asyncio
+
+    async def slow(_ctx, _payload):
+        await asyncio.sleep(2.0)  # never returns; cancelled at the boundary
+        return {"unreached": True}
+
+    engine = (
+        WorkflowEngineBuilder()
+        .with_profile(_profile("coop_clean", timeout_s=0.3))
+        .register_capability("slow", slow, kind="deterministic")
+        .register_workflow(WorkflowBuilder("coop_clean").step("slow").build())
+        .build()
+    )
+    result = await engine.run("coop_clean", {})
+    assert result.status == "partial"
+    node = next(e for e in result.trace if e.node == "slow" and e.phase == "tool:result")
+    assert node.metadata.get("timeout_reason") == "execution_window_exceeded"
+
+
+async def test_cooperative_cancellation_suppression_is_a_containment_failure():
+    """Phase 2.3: a handler that SWALLOWS cancellation and returns anyway must NOT be reported
+    as a clean partial — it is a containment FAILURE (unstoppable side effects may have run)."""
+
+    import asyncio
+
+    async def sneaky(_ctx, _payload):
+        try:
+            await asyncio.sleep(2.0)
+        except asyncio.CancelledError:
+            return {"pretended_to_stop": True}  # suppress + return
+        return {"finished": True}
+
+    engine = (
+        WorkflowEngineBuilder()
+        .with_profile(_profile("coop_suppress", timeout_s=0.3))
+        .register_capability("sneaky", sneaky, kind="deterministic")
+        .register_workflow(WorkflowBuilder("coop_suppress").step("sneaky").build())
+        .build()
+    )
+    result = await engine.run("coop_suppress", {})
+    assert result.status == "failed", "suppressed cancellation is a failure, not a clean partial"
+    assert "cancellation" in (result.error or "").lower() or "suppress" in (result.error or "").lower()
+
+
+async def test_inline_capability_with_declared_window_is_rejected_before_running():
+    """Phase 2.3 (none): an uninterruptible inline capability that DECLARES a finite window
+    (spec.timeout_s) is refused before the handler runs — the engine never claims a hard stop
+    it cannot perform. A run-limit-only window on inline work stays boundary-only (allowed)."""
+
+    from ai_workflow_engine import CapabilitySpec
+
+    ran = {"n": 0}
+
+    def inline(_ctx, _payload):  # synchronous → enforcement "none"
+        ran["n"] += 1
+        return {"ok": True}
+
+    engine = (
+        WorkflowEngineBuilder()
+        .with_profile(_profile("inline_decl"))
+        .register_capability(
+            "inline", inline, spec=CapabilitySpec(name="inline", kind="deterministic", timeout_s=0.5)
+        )
+        .register_workflow(WorkflowBuilder("inline_decl").step("inline").build())
+        .build()
+    )
+    result = await engine.run("inline_decl", {})
+    assert ran["n"] == 0, "the inline handler with a declared hard window must NOT run"
+    assert result.status in ("failed", "partial")
+    assert "cannot be interrupted" in (result.error or "") or "process-backed" in (result.error or "")
+
+
+async def test_inline_capability_without_declared_window_still_runs():
+    """Phase 2.3 degradation: a simple inline capability with NO finite window is unchanged."""
+
+    def inline(_ctx, _payload):
+        return {"ok": True}
+
+    engine = (
+        WorkflowEngineBuilder()
+        .with_profile(_profile("inline_plain"))  # no run timeout
+        .register_capability("inline", inline, kind="deterministic")
+        .register_workflow(WorkflowBuilder("inline_plain").step("inline").build())
+        .build()
+    )
+    result = await engine.run("inline_plain", {})
+    assert result.status == "completed" and result.output == {"ok": True}

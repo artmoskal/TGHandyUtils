@@ -303,6 +303,12 @@ class _ExecutionTimeout(Exception):
         self.window = window
 
 
+class _CancellationContainmentError(Exception):
+    """A cooperative handler suppressed cancellation at its execution window and finished
+    anyway — the engine cannot claim it stopped. Surfaced as a FAILURE (not a clean partial),
+    because unstoppable side effects may have continued past the boundary."""
+
+
 class CapabilityRuntime:
     """Invoke registered capabilities with validation, timeout, result envelope, and trace."""
 
@@ -405,18 +411,27 @@ class CapabilityRuntime:
                     window=window,
                 )
 
+            # v0.10 interruptibility honesty: decide HOW this window may be enforced BEFORE
+            # the handler runs, so an uninterruptible inline capability with a DECLARED hard
+            # window is refused rather than run-then-falsely-reported-as-stopped.
+            enforcement = spec.resolved_timeout_enforcement(
+                is_async=inspect.iscoroutinefunction(handler)
+            )
+            declared_bound = bool(
+                {"task_request", "capability_limit"} & set(window.limiting_sources)
+            )
+            if enforcement == "none" and hard is not None and hard > 0 and declared_bound:
+                raise _ExecutionTimeout(
+                    f"capability '{name}' declares a finite execution window but cannot be "
+                    f"interrupted (enforcement='none'); place work needing a hard bound behind "
+                    f"a process-backed capability",
+                    window=window,
+                )
+
             result = handler(context, parsed_payload)
             if inspect.isawaitable(result):
-                # Async handlers are cooperatively cancellable: wait_for cancels the coroutine
-                # at the hard boundary (2.3 seals process-mode kill/reap + inline rejection).
-                if hard is not None:
-                    try:
-                        result = await asyncio.wait_for(result, timeout=hard)
-                    except asyncio.TimeoutError as timeout_exc:
-                        raise _ExecutionTimeout(
-                            f"capability '{name}' exceeded its {hard:g}s execution window",
-                            window=window,
-                        ) from timeout_exc
+                if hard is not None and enforcement in ("cooperative", "process"):
+                    result = await self._run_bounded(name, result, hard, window)
                 else:
                     result = await result
             output = self._normalize_result(spec, result)
@@ -504,6 +519,44 @@ class CapabilityRuntime:
                 )
             )
             return CapabilityResult(status="failed", error=error)
+
+    async def _run_bounded(self, name: str, awaitable: Any, hard: float, window: Any) -> Any:
+        """Run an awaitable under a hard window with honest cancellation containment.
+
+        Within the window: return its result. At the boundary: cancel it and give a bounded
+        grace to acknowledge. If it raises CancelledError (clean stop) → PARTIAL timeout. If it
+        SUPPRESSES cancellation and returns anyway → a containment FAILURE (the engine will not
+        claim a stop it did not perform). If it errors while cancelling → timeout/partial."""
+
+        inner = asyncio.ensure_future(awaitable)
+        done, _pending = await asyncio.wait({inner}, timeout=hard)
+        if inner in done:
+            raise _CancellationContainmentError(
+                f"capability '{name}' suppressed cancellation at its execution window and "
+                f"returned anyway"
+            )
+        inner.cancel()
+        try:
+            await asyncio.wait_for(asyncio.shield(inner), timeout=self._CANCEL_GRACE_S)
+        except asyncio.CancelledError:
+            raise _ExecutionTimeout(
+                f"capability '{name}' exceeded its {hard:g}s execution window",
+                window=window,
+            )
+        except asyncio.TimeoutError:
+            raise _CancellationContainmentError(
+                f"capability '{name}' did not acknowledge cancellation within "
+                f"{self._CANCEL_GRACE_S:g}s of its execution window"
+            )
+        except Exception:
+            raise _ExecutionTimeout(
+                f"capability '{name}' exceeded its {hard:g}s execution window",
+                window=window,
+            )
+        else:
+            return inner.result()
+
+    _CANCEL_GRACE_S = 1.0
 
     def _record(self, event: WorkflowTraceEvent) -> None:
         self.trace_sink.record(event)

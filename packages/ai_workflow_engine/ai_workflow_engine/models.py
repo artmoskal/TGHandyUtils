@@ -623,6 +623,13 @@ class CapabilitySpec(BaseModel):
     # fields — not metadata, not handler attributes (R3 unified both halves of the firewall).
     is_flow_author: bool = False
     is_planner: bool = False
+    # v0.10 interruptibility honesty: how the engine may enforce a hard execution window.
+    #   process     — owns a killable child process; a hard stop is real (kill/reap).
+    #   cooperative — an async handler cancelled at the hard boundary; must acknowledge it.
+    #   none        — uninterruptible inline work; a DECLARED finite window (task/spec) is
+    #                 rejected before the handler runs (the engine will not claim a hard stop
+    #                 it cannot perform). None here = inferred at invoke from kind/awaitable.
+    timeout_enforcement: Optional["TimeoutEnforcement"] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
     def model_post_init(self, __context: Any) -> None:
@@ -631,8 +638,19 @@ class CapabilitySpec(BaseModel):
         if self.output_model and not self.output_schema_name:
             self.output_schema_name = self.output_model.__name__
 
+    def resolved_timeout_enforcement(self, *, is_async: bool) -> "TimeoutEnforcement":
+        """The effective enforcement mode for THIS invocation: an explicit declaration wins;
+        otherwise external work is process-backed, an async handler is cooperatively
+        cancellable, and a synchronous handler is uninterruptible (``none``)."""
 
-from ai_workflow_engine.execution_window import ExecutionWindowDecision
+        if self.timeout_enforcement is not None:
+            return self.timeout_enforcement
+        if self.kind == "external":
+            return "process"
+        return "cooperative" if is_async else "none"
+
+
+from ai_workflow_engine.execution_window import ExecutionWindowDecision, TimeoutEnforcement
 
 
 class CapabilityContext(BaseModel):
