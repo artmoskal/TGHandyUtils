@@ -778,6 +778,9 @@ def _node_view(
         metrics.append(f"{len(details)} detail{'s' if len(details) != 1 else ''}")
     if external_counts:
         metrics.append(external_counts)
+    # v0.10: surface the engine's execution window, timeout reason, and retrace round/target
+    # from PERSISTED trace metadata — never inferred; absent records say "not recorded".
+    metrics.extend(_runtime_bound_metrics(events))
     if not metrics:
         metrics.append("no runtime data")
 
@@ -813,6 +816,48 @@ def _node_view(
             ]
         ).lower(),
     }
+
+
+def _runtime_bound_metrics(events: list[ObservationTimelineEntry]) -> list[str]:
+    """Human-readable execution-window / timeout / retrace metrics from a node's recorded
+    events. Reads ONLY persisted engine truth (trace metadata); it never guesses. When a
+    timeout was recorded but the window was not (an older bundle), it says "not recorded"
+    rather than inventing durations."""
+
+    window: dict[str, Any] | None = None
+    timeout_reason: str | None = None
+    retrace: tuple[Any, Any] | None = None
+    for event in events:
+        metadata = event.metadata or {}
+        candidate = metadata.get("execution_window")
+        if isinstance(candidate, dict):
+            window = candidate  # last recorded wins
+        if metadata.get("timeout_reason"):
+            timeout_reason = str(metadata["timeout_reason"])
+        if metadata.get("retrace_target"):
+            retrace = (metadata.get("retrace"), metadata["retrace_target"])
+
+    metrics: list[str] = []
+    if window is not None and window.get("hard_timeout_s") is not None:
+        soft = window.get("soft_timeout_s")
+        hard = window.get("hard_timeout_s")
+        label = f"window: soft {float(soft):g}s / hard {float(hard):g}s"
+        clamps = window.get("clamps") or []
+        if clamps:
+            label += f" (clamped: {', '.join(str(c) for c in clamps)})"
+        enforcement = window.get("enforcement")
+        if enforcement:
+            label += f" [{enforcement}]"
+        metrics.append(label)
+    if timeout_reason is not None:
+        if window is None:
+            metrics.append("window: not recorded")
+        metrics.append(f"timeout: {timeout_reason}")
+    if retrace is not None:
+        round_no, target = retrace
+        prefix = f"retrace round {round_no}" if round_no is not None else "retrace"
+        metrics.append(f"{prefix} → {target}")
+    return metrics
 
 
 def _event_view(event: ObservationTimelineEntry) -> dict[str, Any]:

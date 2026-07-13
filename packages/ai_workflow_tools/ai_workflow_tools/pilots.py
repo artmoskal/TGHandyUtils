@@ -39,6 +39,7 @@ from ai_workflow_engine import (
     WorkflowRunResult,
     format_trace_events,
 )
+from ai_workflow_engine.execution_window import TaskExecutionRequest
 from ai_workflow_engine.models import (
     CapabilityResult,
     CapabilitySpec,
@@ -219,6 +220,13 @@ async def _compose_three_axis_plan(context, payload: Any) -> PlanArtifact:
                 task_id="flexible_axis",
                 description=coordinator_scenario,
                 capability="run_flexible_cli_axis",
+                # v0.10: the planner declares a per-task execution window; the engine resolves
+                # it and the CLI agent inherits the SOFT deadline as its subprocess bound — no
+                # product-side timeout arithmetic, no hidden default. This is the full chain
+                # (PlanTask.execution -> engine window -> CLI subprocess) the pilot exists to prove.
+                execution=TaskExecutionRequest(
+                    timeout_s=30.0, completion_reserve_s=2.0, source="three_axis_pilot"
+                ),
                 payload={
                     "prompt": f"Inspect {request.url} for {coordinator_scenario}",
                     "workspace_dir": str(flexible_workspace),

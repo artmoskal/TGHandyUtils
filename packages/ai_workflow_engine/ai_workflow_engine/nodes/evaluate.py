@@ -62,19 +62,29 @@ def build_evaluate_node(services, definition: WorkflowDefinition, node: Workflow
             update["pending_retrace_provenance"] = effect["pending_retrace_provenance"]
         if effect["status"] == "requires_user_input":
             update["status"] = "requires_user_input"
+        eval_metadata = {
+            "action": decision.action,
+            "retry": counters["retry"],
+            "retrace": counters["retrace"],
+            "replan": counters["replan"],
+            "fallback_reason": effect.get("fallback_reason"),
+        }
+        # v0.10: record the retrace ROUTE's target/source so the viewer projects "retrace
+        # round N -> target" from persisted engine truth (not inference). The criticism text
+        # is deliberately NOT recorded here — it rides the payload, keeping the trace byte-free.
+        retrace_stamp = effect.get("pending_retrace_provenance")
+        if retrace_stamp is not None:
+            provenance = retrace_stamp["provenance"]
+            eval_metadata["retrace_target"] = provenance.target_node
+            eval_metadata["retrace_source"] = provenance.source_node
+            eval_metadata["retrace_evaluator"] = provenance.evaluator_node
         services.runtime.trace_sink.record(
             WorkflowTraceEvent(
                 node=node.id,
                 attempt=attempt,
                 decision=effect["route"],
                 error=effect.get("error"),
-                metadata={
-                    "action": decision.action,
-                    "retry": counters["retry"],
-                    "retrace": counters["retrace"],
-                    "replan": counters["replan"],
-                    "fallback_reason": effect.get("fallback_reason"),
-                },
+                metadata=eval_metadata,
             )
         )
         return update

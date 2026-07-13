@@ -23,7 +23,9 @@ def test_cli_agent_models_include_spec_defaults(tmp_path):
     request = CliAgentRequest(prompt="Inspect this", workspace_dir=str(tmp_path), input_assets=[asset])
     result = CliAgentResult(status="completed")
 
-    assert request.timeout_s == 600.0
+    # v0.10 (defect 5): NO hidden default — the subprocess bound comes from the engine window
+    # or an explicit positive timeout, never a silent 600s ten-minute default.
+    assert request.timeout_s is None
     assert request.input_assets == [asset]
     assert request.salvage_globs == ["*.png", "*.jpg", "*.jpeg", "session*.md", "page-*.yml"]
     assert request.subscription_mode is True

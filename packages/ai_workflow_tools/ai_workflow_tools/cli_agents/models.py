@@ -30,8 +30,14 @@ class CliAgentRequest(BaseModel):
     """Request for one bounded CLI-agent run."""
 
     prompt: str
-    workspace_dir: str
-    timeout_s: float = 600.0
+    # v0.10 (defect 5): NO hidden default. The subprocess bound is the engine's execution
+    # window (soft work deadline); an explicit ``timeout_s`` may only NARROW it, never enlarge
+    # it. When the engine supplies no window, an explicit positive timeout is REQUIRED — a
+    # missing window must never silently become the old 600s ten-minute default nobody declared.
+    timeout_s: Optional[float] = Field(default=None, gt=0, allow_inf_nan=False)
+    # Optional: when omitted the capability mints a private temp workspace for this episode
+    # (artifacts still salvage from it). Callers that need a known location pass one.
+    workspace_dir: Optional[str] = None
     mcp_servers: List[McpServerConfig] = Field(default_factory=list)
     # Tri-state (claude_p): None -> DEFAULT_AGENT_TOOLS; [] -> explicit no-tools
     # (`--tools ""`); non-empty -> EXACT override, never merged with defaults.

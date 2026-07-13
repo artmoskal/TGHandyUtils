@@ -1088,3 +1088,45 @@ async def test_nested_capability_is_clamped_by_parent_soft_remaining():
     # inside the parent handler, the parent-soft deadline is published (>0, <= the parent soft window)
     assert observed["parent_soft_at_nested_call"] is not None
     assert 0 < observed["parent_soft_at_nested_call"] <= 0.5
+
+
+async def test_bounded_capability_records_its_window_on_the_success_trace_event():
+    """v0.10 Phase 3: a bounded capability that SUCCEEDS records its resolved execution window
+    on the result trace event, so the viewer can project soft/hard/enforcement on a normal node
+    — not only on the timeout path. Unbounded runs stay lean (no window metadata)."""
+
+    engine = (
+        WorkflowEngineBuilder()
+        .with_profile(_profile("bounded_ok", timeout_s=5.0))
+        .register_capability("quick", lambda _c, _p: {"ok": True}, kind="deterministic")
+        .register_workflow(WorkflowBuilder("bounded_ok").step("quick").build())
+        .build()
+    )
+    result = await engine.run("bounded_ok", {})
+    assert result.status == "completed"
+
+    windows = [
+        e.metadata["execution_window"]
+        for e in result.trace
+        if e.node == "quick"
+        and e.phase == "tool:result"
+        and (e.metadata or {}).get("execution_window")
+    ]
+    assert windows, "a bounded successful capability must record its window for the viewer"
+    hard = windows[-1]["hard_timeout_s"]
+    assert hard is not None and 0 < hard <= 5.0
+
+    # an UNbounded run records no window metadata — traces stay lean
+    unbounded_engine = (
+        WorkflowEngineBuilder()
+        .with_profile(_profile("unbounded_ok"))
+        .register_capability("quick", lambda _c, _p: {"ok": True}, kind="deterministic")
+        .register_workflow(WorkflowBuilder("unbounded_ok").step("quick").build())
+        .build()
+    )
+    unbounded = await unbounded_engine.run("unbounded_ok", {})
+    assert not any(
+        (e.metadata or {}).get("execution_window")
+        for e in unbounded.trace
+        if e.node == "quick"
+    ), "an unbounded capability must not record a window"

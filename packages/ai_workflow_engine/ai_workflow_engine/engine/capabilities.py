@@ -474,6 +474,13 @@ class CapabilityRuntime:
             output = self._normalize_result(spec, result)
             elapsed_ms = int((time.monotonic() - start) * 1000)
             result_event_id = str(uuid.uuid4())
+            # v0.10: record the resolved window on the result event of a BOUNDED call so the
+            # viewer/audit can project the effective soft/hard window + clamps + enforcement on
+            # a node that finished normally too — not only on the timeout path. Byte-free
+            # (durations + closed vocab), and only when bounded so unbounded traces stay lean.
+            result_metadata = (
+                {"execution_window": window.model_dump()} if window.is_bounded else {}
+            )
             self._record(
                 WorkflowTraceEvent(
                     node=name,
@@ -484,6 +491,7 @@ class CapabilityRuntime:
                     phase="tool:result",
                     severity="error" if output.status in {"failed", "rejected"} or output.error else "info",
                     event_id=result_event_id,
+                    metadata=result_metadata,
                     detail_refs=[
                         *self._record_tool_result(
                             spec,

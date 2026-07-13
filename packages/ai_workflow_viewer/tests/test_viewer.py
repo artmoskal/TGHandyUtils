@@ -1278,3 +1278,68 @@ def test_artifact_response_lets_group_corruption_propagate(tmp_path):
             raise FileNotFoundError(run_id)
 
     assert _artifact_response(_AbsentViewer(), "/artifact/r/seg/artifacts/a.png") is None
+
+
+def test_execution_window_timeout_and_retrace_project_from_persisted_truth(tmp_path):
+    """v0.10 Phase 3: the generic viewer surfaces the engine's execution window (soft/hard/
+    clamps/enforcement), the timeout reason, and the retrace round/target at the relevant node
+    — ALL from persisted trace metadata, never inferred. A timeout recorded WITHOUT a window
+    says 'not recorded' instead of guessing durations."""
+
+    from ai_workflow_engine import WorkflowBuilder
+    from ai_workflow_viewer.observability import (
+        _observation_view_data,
+        build_observation_graph,
+        observation_graph_to_html,
+    )
+
+    definition = (
+        WorkflowBuilder("bounded-run").step("worker").step("slow").step("gate").step("legacy").build()
+    )
+    window = {
+        "requested_timeout_s": 10.0,
+        "capability_timeout_s": None,
+        "run_remaining_s": 10.0,
+        "soft_timeout_s": 8.0,
+        "hard_timeout_s": 10.0,
+        "completion_reserve_s": 2.0,
+        "request_source": "planner_task",
+        "limiting_sources": ["run_limit"],
+        "clamps": ["run_remaining"],
+        "enforcement": "process",
+    }
+
+    def ev(**k):
+        return WorkflowTraceEvent(run_id="r", phase="tool:result", **k)
+
+    events = [
+        # bounded SUCCESS -> full window projected (not only the timeout path)
+        ev(node="worker", decision="accepted", sequence=1, event_id="1",
+           metadata={"execution_window": window}),
+        # timeout WITH a window -> window + timeout reason
+        ev(node="slow", decision="partial", severity="error", sequence=2, event_id="2",
+           metadata={"timeout_reason": "execution_window_exceeded", "execution_window": window}),
+        # retrace route recorded at the evaluator node
+        ev(node="gate", decision="retrace", sequence=3, event_id="3",
+           metadata={"retrace": 1, "retrace_target": "worker", "action": "retrace_to"}),
+        # timeout WITHOUT a recorded window (older bundle) -> "not recorded", never guessed
+        ev(node="legacy", decision="partial", severity="error", sequence=4, event_id="4",
+           metadata={"timeout_reason": "execution_window_exceeded"}),
+    ]
+
+    graph = build_observation_graph(definition, events, [], [])
+    metrics = {n["id"]: n["metrics"] for n in _observation_view_data(definition, graph)["nodes"]}
+
+    assert "window: soft 8s / hard 10s (clamped: run_remaining) [process]" in metrics["worker"]
+    assert any(m.startswith("window: soft 8s / hard 10s") for m in metrics["slow"])
+    assert "timeout: execution_window_exceeded" in metrics["slow"]
+    assert "retrace round 1 → worker" in metrics["gate"]
+    # the honest "not recorded" — a timeout with no persisted window is never back-filled
+    assert "window: not recorded" in metrics["legacy"]
+    assert "timeout: execution_window_exceeded" in metrics["legacy"]
+    assert not any("soft" in m for m in metrics["legacy"]), "must not invent a window"
+
+    page = observation_graph_to_html(definition, graph)
+    assert "window: soft 8s / hard 10s" in page
+    assert "retrace round 1" in page
+    assert "window: not recorded" in page

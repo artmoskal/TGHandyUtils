@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 import mimetypes
+import tempfile
 from pathlib import Path
 from typing import Any, Callable, Protocol
 from urllib.parse import urlparse
@@ -48,6 +49,28 @@ class _ParsedCliOutput:
     notional_cost_usd: float | None = None
 
 
+@dataclass(frozen=True)
+class _ExecutionBound:
+    """The subprocess bound resolved from the engine window + the explicit request timeout.
+
+    ``timeout_s`` drives the subprocess work deadline; ``kill_grace_s`` (terminate→kill→reap)
+    is sized to fit inside the completion reserve so the outer engine hard boundary — which
+    remains authoritative — is never the thing that reaps the child. ``notice`` is the optional
+    provider-neutral finalization notice appended to the prompt when a reserve is active.
+    ``error`` is non-None only when no bound could be resolved (missing window AND no explicit
+    timeout): the capability fails loudly rather than run unbounded or invent a default.
+    """
+
+    timeout_s: float | None = None
+    kill_grace_s: float = 10.0
+    notice: str | None = None
+    source: str | None = None
+    soft_s: float | None = None
+    hard_s: float | None = None
+    reserve_s: float = 0.0
+    error: str | None = None
+
+
 class CliAgentCapability:
     """Run one CLI-backed agent episode as an engine capability."""
 
@@ -55,6 +78,7 @@ class CliAgentCapability:
         "Bounded CLI-agent episode (claude -p / codex exec): tri-state tool allow-list, "
         "MCP servers, staged input assets, artifact salvage, subscription-honest usage."
     )
+    _DEFAULT_KILL_GRACE_S = 10.0
 
     def __init__(
         self,
@@ -87,6 +111,10 @@ class CliAgentCapability:
             side_effects=list(side_effects),
             metered=False,
             timeout_s=None,
+            # v0.10: an honest declaration — this capability owns a killable subprocess and can
+            # truly hard-stop its work, unlike a generic async handler. ``external``/``agent``
+            # kind alone no longer implies process-backed (Phase 2R #5), so we declare it.
+            timeout_enforcement="process",
         )
 
     async def __call__(
@@ -122,22 +150,38 @@ class CliAgentCapability:
                     metadata={"flavor": self.flavor.name, "pre_spawn_denial": True},
                 )
 
-        workspace = Path(request.workspace_dir)
+        # v0.10 Phase 3: the engine's execution window drives the subprocess. Resolve the
+        # effective bound (engine soft window, narrowed — never enlarged — by any explicit
+        # request timeout) BEFORE spawning; a missing bound fails loudly, never runs unbounded.
+        bound = self._resolve_execution_bound(context, request)
+        if bound.error is not None:
+            return CapabilityResult(
+                status="failed",
+                error=bound.error,
+                metadata={"flavor": self.flavor.name, "no_execution_bound": True},
+            )
+
+        workspace_dir = request.workspace_dir or tempfile.mkdtemp(prefix="cli_agent_ws_")
+        workspace = Path(workspace_dir)
         workspace.mkdir(parents=True, exist_ok=True)
-        input_fingerprints = self._stage_input_assets(workspace, request)
-        snapshot = self._snapshot_salvage(workspace, request.salvage_globs)
-        invocation = build_cli_agent_invocation(self.flavor, request)
+        prompt = request.prompt if bound.notice is None else f"{request.prompt}{bound.notice}"
+        effective_request = request.model_copy(
+            update={"workspace_dir": str(workspace), "prompt": prompt, "timeout_s": bound.timeout_s}
+        )
+        input_fingerprints = self._stage_input_assets(workspace, effective_request)
+        snapshot = self._snapshot_salvage(workspace, effective_request.salvage_globs)
+        invocation = build_cli_agent_invocation(self.flavor, effective_request)
 
         external = await self.external_runner(
             context,
             ExternalProcessRequest(
                 command=invocation.argv,
                 cwd=str(workspace),
-                timeout_s=request.timeout_s,
+                timeout_s=bound.timeout_s,
                 stdin_data=invocation.stdin_data,
                 result_file=invocation.result_file,
-                kill_grace_s=10.0,
-                metadata={"flavor": self.flavor.name},
+                kill_grace_s=bound.kill_grace_s,
+                metadata={"flavor": self.flavor.name, "execution_bound_source": bound.source},
             ),
         )
 
@@ -195,7 +239,68 @@ class CliAgentCapability:
                 "new_artifact_count": result.new_artifact_count,
                 "input_fingerprints": result.input_fingerprints,
                 "cost_known": result.notional_cost_usd is not None,
+                "execution_bound_s": bound.timeout_s,
+                "execution_bound_source": bound.source,
             },
+        )
+
+    def _resolve_execution_bound(
+        self, context: CapabilityContext, request: CliAgentRequest
+    ) -> _ExecutionBound:
+        """Intersect the engine's execution window with any explicit request timeout.
+
+        The engine's SOFT window (work deadline = hard minus completion reserve) drives the
+        subprocess. An explicit ``request.timeout_s`` may only NARROW it (``min``); it can never
+        enlarge a bound the engine already set. When neither exists the run is unbounded and
+        that is refused loudly — a missing window must never resurrect a hidden default.
+        """
+
+        window = context.execution_window
+        bounded = window is not None and window.is_bounded
+        engine_soft = window.soft_timeout_s if bounded else None
+        engine_hard = window.hard_timeout_s if bounded else None
+        reserve = float(window.completion_reserve_s) if bounded else 0.0
+        candidates = [b for b in (engine_soft, request.timeout_s) if b is not None]
+        if not candidates:
+            return _ExecutionBound(
+                error=(
+                    f"cli_agent '{self.spec.name}' has no execution bound: the engine supplied no "
+                    "window and CliAgentRequest.timeout_s was not set — declare an explicit "
+                    "positive timeout (a missing window must never become a hidden default)"
+                )
+            )
+        effective = min(candidates)
+        source = (
+            "engine_window"
+            if engine_soft is not None and effective == engine_soft
+            else "explicit_request"
+        )
+        # terminate→kill→reap must finish INSIDE the reserve so the outer engine hard boundary
+        # (authoritative) never has to reap the child. No reserve → keep the default grace.
+        kill_grace = self._DEFAULT_KILL_GRACE_S
+        if reserve > 0:
+            kill_grace = max(0.0, min(kill_grace, reserve))
+        notice = self._finalization_notice(effective, reserve) if reserve > 0 else None
+        return _ExecutionBound(
+            timeout_s=effective,
+            kill_grace_s=kill_grace,
+            notice=notice,
+            source=source,
+            soft_s=engine_soft,
+            hard_s=engine_hard,
+            reserve_s=reserve,
+        )
+
+    @staticmethod
+    def _finalization_notice(work_s: float, reserve_s: float) -> str:
+        """Provider-neutral finalization notice. Contains NO host paths and NO secrets — only
+        the two durations the worker needs to wrap up before the authoritative cutoff."""
+
+        return (
+            "\n\n---\n"
+            f"Execution window: about {work_s:.0f}s of working time remain before this session "
+            f"is stopped, then ~{reserve_s:.0f}s to finalize. Save your result and any artifacts "
+            "to the workspace before the working time ends — unsaved work is lost at the deadline."
         )
 
     def _stage_input_assets(self, workspace: Path, request: CliAgentRequest) -> list[dict[str, Any]]:

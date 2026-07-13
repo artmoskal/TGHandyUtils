@@ -6,7 +6,12 @@ from pathlib import Path
 
 import pytest
 from ai_workflow_engine.engine.capabilities import CapabilityRegistry, CapabilityRuntime, InMemoryTraceSink
-from ai_workflow_engine.models import EvidenceRef, WorkflowUsageSummary
+from ai_workflow_engine.execution_window import (
+    ExecutionWindowInputs,
+    TaskExecutionRequest,
+    resolve_execution_window,
+)
+from ai_workflow_engine.models import CapabilityResult, EvidenceRef, WorkflowUsageSummary
 from ai_workflow_engine.usage import WorkflowBudget, WorkflowUsageContext, workflow_usage_scope
 
 from ai_workflow_tools.cli_agents import (
@@ -56,6 +61,7 @@ async def test_claude_flavor_happy_path_maps_envelope_usage_and_subscription_cos
         workspace_dir=str(workspace),
         mcp_servers=[McpServerConfig(name="browser", command="npx", args=["@playwright/mcp"])],
         allowed_tools=["mcp__browser__click"],
+        timeout_s=30,
     )
     summary = WorkflowUsageSummary()
     usage_context = WorkflowUsageContext(
@@ -119,6 +125,7 @@ async def test_mcp_startup_failure_is_a_loud_diagnosable_episode(
         prompt="Open the dashboard",
         workspace_dir=str(workspace),
         mcp_servers=[McpServerConfig(name="browser", command="definitely-not-installed")],
+        timeout_s=30,
     )
     summary = WorkflowUsageSummary()
     usage_context = WorkflowUsageContext(
@@ -156,7 +163,9 @@ async def test_codex_flavor_reads_result_file_and_records_honest_unknown_cost(
         result='Done: {"ok": true}',
     )
     cap = CliAgentCapability(_fake_flavor(codex_exec, fake_cli_path), name="codex_agent")
-    request = CliAgentRequest(prompt="Inspect", workspace_dir=str(workspace), model="gpt-5.4-codex")
+    request = CliAgentRequest(
+        prompt="Inspect", workspace_dir=str(workspace), model="gpt-5.4-codex", timeout_s=30
+    )
     summary = WorkflowUsageSummary()
 
     with workflow_usage_scope(WorkflowUsageContext(capability_context.run_context, summary, WorkflowBudget())):
@@ -212,7 +221,7 @@ async def test_lenient_json_parses_chatter_and_preserves_garbage(
 ):
     workspace = tmp_path / "workspace"
     cap = CliAgentCapability(_fake_flavor(claude_p, fake_cli_path), name="browser_agent")
-    request = CliAgentRequest(prompt="Inspect", workspace_dir=str(workspace))
+    request = CliAgentRequest(prompt="Inspect", workspace_dir=str(workspace), timeout_s=30)
     _configure_fake_cli(
         monkeypatch,
         tmp_path,
@@ -272,7 +281,10 @@ async def test_workspace_snapshot_excludes_pre_existing_artifacts_from_new_count
     _configure_fake_cli(monkeypatch, tmp_path, workspace, mode="artifacts")
     cap = CliAgentCapability(_fake_flavor(claude_p, fake_cli_path), name="browser_agent")
 
-    cap_result = await cap(capability_context, CliAgentRequest(prompt="Collect", workspace_dir=str(workspace)))
+    cap_result = await cap(
+        capability_context,
+        CliAgentRequest(prompt="Collect", workspace_dir=str(workspace), timeout_s=30),
+    )
 
     result = cap_result.output
     assert result.new_artifact_count == 2
@@ -308,6 +320,7 @@ async def test_input_assets_are_staged_with_fingerprint_trace_and_not_counted_as
             EvidenceRef(role="image", uri="file:///source/input.png", media_type="image/png"),
             EvidenceRef(role="note", uri="file:///source/note.txt", media_type="text/plain"),
         ],
+        timeout_s=30,
     )
 
     cap_result = await cap(capability_context, request)
@@ -356,6 +369,7 @@ async def test_input_assets_without_loader_fail_before_spawn(
         prompt="Use inputs",
         workspace_dir=str(workspace),
         input_assets=[EvidenceRef(role="image", uri="file:///source/input.png", media_type="image/png")],
+        timeout_s=30,
     )
 
     with pytest.raises(ValueError, match="asset_loader"):
@@ -438,7 +452,188 @@ async def test_capability_narrowed_spec_allows_bashless_requests(
             prompt="read only",
             workspace_dir=str(workspace),
             allowed_tools=["Read", "Grep"],
+            timeout_s=30,
         ),
     )
 
     assert result.status == "accepted"
+
+
+# --------------------------------------------------------------------------------------
+# v0.10 Phase 3: CLI agents inherit the engine execution window (soft deadline drives the
+# subprocess; an explicit request may narrow but NEVER enlarge it; a missing window with no
+# explicit timeout fails loudly instead of resurrecting a hidden 600s default).
+# --------------------------------------------------------------------------------------
+
+
+class _SpyRunner:
+    """Captures the ExternalProcessRequest without spawning; returns a canned success."""
+
+    def __init__(self) -> None:
+        self.request = None
+        self.calls = 0
+
+    async def __call__(self, _context, request):
+        self.calls += 1
+        self.request = request
+        return CapabilityResult(
+            status="accepted",
+            output={"returncode": 0, "stdout": '{"ok": true}', "stderr": "", "result": '{"ok": true}'},
+        )
+
+
+def _windowed(context, *, hard, reserve=0.0, enforcement="process"):
+    window = resolve_execution_window(
+        ExecutionWindowInputs(
+            request=TaskExecutionRequest(timeout_s=hard, completion_reserve_s=reserve)
+        ),
+        enforcement=enforcement,
+    )
+    return context.model_copy(update={"execution_window": window})
+
+
+def _bashless(flavor, **kwargs):
+    return CliAgentCapability(flavor, side_effects=[], **kwargs)
+
+
+def test_cli_agent_declares_process_enforcement_truthfully():
+    # It owns a killable subprocess, so it declares process — kind alone no longer implies it.
+    assert CliAgentCapability(claude_p).spec.timeout_enforcement == "process"
+
+
+async def test_engine_soft_window_drives_subprocess_bound_and_finalization_notice(
+    capability_context, tmp_path
+):
+    spy = _SpyRunner()
+    cap = _bashless(claude_p, external_runner=spy)
+    context = _windowed(capability_context, hard=10.0, reserve=2.0)  # soft work = 8s
+
+    await cap(
+        context,
+        CliAgentRequest(prompt="Investigate", workspace_dir=str(tmp_path), allowed_tools=["Read"]),
+    )
+
+    assert spy.request.timeout_s == 8.0  # inherited the SOFT window, no explicit request timeout
+    assert spy.request.kill_grace_s <= 2.0  # terminate/kill/reap fits inside the reserve
+    # finalization notice rides in the prompt (stdin for claude_p) — no host paths / secrets
+    assert "Execution window" in spy.request.stdin_data
+    assert str(tmp_path) not in spy.request.stdin_data
+    assert spy.request.metadata["execution_bound_source"] == "engine_window"
+
+
+async def test_explicit_request_narrows_the_engine_window(capability_context, tmp_path):
+    spy = _SpyRunner()
+    cap = _bashless(claude_p, external_runner=spy)
+    context = _windowed(capability_context, hard=100.0)  # soft = 100s
+
+    await cap(
+        context,
+        CliAgentRequest(
+            prompt="q", workspace_dir=str(tmp_path), allowed_tools=["Read"], timeout_s=5.0
+        ),
+    )
+
+    assert spy.request.timeout_s == 5.0  # explicit 5s narrowed the 100s window
+    assert spy.request.metadata["execution_bound_source"] == "explicit_request"
+
+
+async def test_explicit_request_can_never_enlarge_the_engine_window(capability_context, tmp_path):
+    """The authoritative guard: a larger explicit request must NOT extend a tighter engine
+    window — the engine's bound always wins the ceiling."""
+
+    spy = _SpyRunner()
+    cap = _bashless(claude_p, external_runner=spy)
+    context = _windowed(capability_context, hard=5.0)  # soft = 5s
+
+    await cap(
+        context,
+        CliAgentRequest(
+            prompt="q", workspace_dir=str(tmp_path), allowed_tools=["Read"], timeout_s=100.0
+        ),
+    )
+
+    assert spy.request.timeout_s == 5.0  # engine 5s wins; the 100s request could not enlarge it
+    assert spy.request.metadata["execution_bound_source"] == "engine_window"
+
+
+async def test_missing_window_and_no_explicit_timeout_fails_loudly_without_spawning(
+    capability_context, tmp_path
+):
+    spy = _SpyRunner()
+    cap = _bashless(claude_p, external_runner=spy)
+
+    result = await cap(
+        capability_context,  # no execution_window
+        CliAgentRequest(prompt="q", workspace_dir=str(tmp_path), allowed_tools=["Read"]),
+    )
+
+    assert result.status == "failed"
+    assert "no execution bound" in result.error
+    assert result.metadata["no_execution_bound"] is True
+    assert spy.calls == 0  # never spawned — a missing window is not a hidden default
+
+
+@pytest.mark.parametrize("flavor", [claude_p, codex_exec], ids=["claude_p", "codex_exec"])
+async def test_both_flavors_share_window_inheritance_semantics(flavor, capability_context, tmp_path):
+    spy = _SpyRunner()
+    # codex_exec requires workspace_write; declare it so we exercise inheritance, not denial.
+    from ai_workflow_tools.toolsets import BASH_SIDE_EFFECTS
+
+    cap = CliAgentCapability(flavor, side_effects=list(BASH_SIDE_EFFECTS), external_runner=spy)
+    context = _windowed(capability_context, hard=12.0)  # soft = 12s
+
+    await cap(context, CliAgentRequest(prompt="q", workspace_dir=str(tmp_path)))
+
+    assert spy.request.timeout_s == 12.0
+    assert spy.request.metadata["execution_bound_source"] == "engine_window"
+
+
+async def test_engine_invoke_resolves_the_window_the_cli_agent_then_inherits(
+    capability_context, tmp_path
+):
+    """End-to-end through the real CapabilityRuntime: a per-task execution request becomes an
+    engine window that the CLI capability inherits as its subprocess bound — no product
+    timeout arithmetic anywhere in between."""
+
+    spy = _SpyRunner()
+    cap = _bashless(claude_p, name="browser_agent", external_runner=spy)
+    registry = CapabilityRegistry()
+    registry.register(cap.spec, cap)
+    runtime = CapabilityRuntime(registry)
+    context = capability_context.model_copy(
+        update={"execution_request": TaskExecutionRequest(timeout_s=8.0, completion_reserve_s=1.0)}
+    )
+
+    result = await runtime.invoke(
+        "browser_agent",
+        CliAgentRequest(prompt="q", workspace_dir=str(tmp_path), allowed_tools=["Read"]),
+        context,
+    )
+
+    assert result.status == "accepted"
+    assert spy.request.timeout_s == 7.0  # hard 8 − reserve 1 = soft 7, inherited by the subprocess
+
+
+async def test_engine_window_actually_bounds_a_real_slow_subprocess_and_salvages(
+    capability_context, fake_cli_path, monkeypatch, tmp_path
+):
+    """Real subprocess, engine-window-driven (NO explicit request timeout): the soft window
+    stops a 5s worker, the PNG it wrote survives as a partial, and the child is reaped."""
+
+    workspace = tmp_path / "workspace"
+    _configure_fake_cli(monkeypatch, tmp_path, workspace, mode="sleep", sleep_s="5")
+    cap = _bashless(_fake_flavor(claude_p, fake_cli_path))
+    # 0.6s soft window from the engine, no reserve, no explicit request timeout.
+    context = _windowed(capability_context, hard=0.6)
+
+    cap_result = await cap(
+        context,
+        CliAgentRequest(prompt="Capture", workspace_dir=str(workspace), allowed_tools=["Read"]),
+    )
+
+    result = cap_result.output
+    assert cap_result.status == "partial"
+    assert result.status == "truncated"
+    assert result.new_artifact_count == 1
+    assert [artifact.role for artifact in result.artifacts] == ["screenshot"]
+    assert cap_result.metadata["execution_bound_source"] == "engine_window"
