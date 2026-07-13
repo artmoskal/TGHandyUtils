@@ -421,6 +421,7 @@ async def test_retrace_targeting_a_planner_node_delivers_provenance_generically(
     from ai_workflow_engine import Retrace
 
     planner_provenance: list = []
+    downstream_provenance: list = []
 
     def make_plan(ctx, _payload):
         planner_provenance.append(getattr(ctx, "retrace_provenance", None))
@@ -431,6 +432,10 @@ async def test_retrace_targeting_a_planner_node_delivers_provenance_generically(
 
     def emit(_c, payload):
         return {"quality": payload}
+
+    def after(ctx, payload):
+        downstream_provenance.append(getattr(ctx, "retrace_provenance", None))
+        return payload
 
     gate_calls = {"n": 0}
 
@@ -449,10 +454,12 @@ async def test_retrace_targeting_a_planner_node_delivers_provenance_generically(
         )
         .register_capability("emit", emit, kind="deterministic")
         .register_capability("gate", gate, kind="llm")
+        .register_capability("after", after, kind="deterministic")
         .register_workflow(
             WorkflowBuilder("plan_retrace")
             .plan("plan_node", capability="make_plan")
             .evaluate("qa", target="plan_node", evaluator="gate", on_reject=Retrace("plan_node"))
+            .step("after")
             .build()
         )
         .build()
@@ -465,6 +472,10 @@ async def test_retrace_targeting_a_planner_node_delivers_provenance_generically(
     assert prov.round == 1
     assert prov.evaluator_node == "qa"
     assert prov.target_node == "plan_node"
+    assert downstream_provenance == [None], (
+        "retrace provenance belongs to the target node invocation only and must be cleared "
+        "before the next node"
+    )
     assert result.status == "completed"
 
 
@@ -477,7 +488,7 @@ async def test_retrace_provenance_never_leaks_across_barrier_interleaved_runs():
 
     from ai_workflow_engine import Retrace
 
-    retracing_started = _a.Event()
+    retrace_window_open = _a.Event()
     clean_run_done = _a.Event()
     observations: list[tuple[str, object]] = []  # (run_marker, provenance-or-None)
 
@@ -486,11 +497,12 @@ async def test_retrace_provenance_never_leaks_across_barrier_interleaved_runs():
         prov = getattr(ctx, "retrace_provenance", None)
         observations.append((marker, prov))
         if marker == "retracer" and prov is None:
-            # first invocation of the retracing run: hold until the clean run has fully
-            # finished INSIDE our retrace window, forcing interleaving
-            retracing_started.set()
-            await _a.wait_for(clean_run_done.wait(), timeout=5)
             return {"quality": "bad", "marker": marker}
+        if marker == "retracer" and prov is not None:
+            # Hold the SECOND invocation, while the retrace provenance scope is genuinely
+            # active. The clean run must complete inside this interval.
+            retrace_window_open.set()
+            await _a.wait_for(clean_run_done.wait(), timeout=5)
         return {"quality": "good", "marker": marker}
 
     def gate(_c, payload):
@@ -514,10 +526,11 @@ async def test_retrace_provenance_never_leaks_across_barrier_interleaved_runs():
     )
 
     async def clean_run():
-        await _a.wait_for(retracing_started.wait(), timeout=5)
-        result = await engine.run("iso", {"marker": "clean"})
-        clean_run_done.set()
-        return result
+        await _a.wait_for(retrace_window_open.wait(), timeout=5)
+        try:
+            return await engine.run("iso", {"marker": "clean"})
+        finally:
+            clean_run_done.set()
 
     retracer, clean = await _a.gather(
         engine.run("iso", {"marker": "retracer"}), clean_run()
@@ -531,6 +544,51 @@ async def test_retrace_provenance_never_leaks_across_barrier_interleaved_runs():
     )
     assert retracer_obs[0] is None and retracer_obs[1] is not None
     assert retracer_obs[1].target_node == "draft"
+
+
+async def test_retrace_targeting_fanout_delivers_provenance_to_item_invocations():
+    """The generic retrace boundary includes fanout, whose item calls bypass invoke_bound."""
+
+    from ai_workflow_engine import Retrace
+
+    observations: list[tuple[int, object]] = []
+
+    def items(_ctx, _payload):
+        return [1, 2]
+
+    def worker(ctx, item):
+        provenance = getattr(ctx, "retrace_provenance", None)
+        observations.append((item, provenance))
+        return {"item": item, "quality": "good" if provenance is not None else "bad"}
+
+    def gate(_ctx, payload):
+        accepted = bool(payload) and all(row.get("quality") == "good" for row in payload)
+        return CapabilityResult(status="accepted" if accepted else "rejected", error="retry fanout")
+
+    engine = (
+        WorkflowEngineBuilder()
+        .with_profile(_profile("fanout_retrace"))
+        .register_capability("items", items, kind="deterministic")
+        .register_capability("worker", worker, kind="deterministic")
+        .register_capability("gate", gate, kind="llm")
+        .register_workflow(
+            WorkflowBuilder("fanout_retrace")
+            .step("items")
+            .fanout("fan", capability="worker", items_key="items", max_parallel=2)
+            .evaluate("qa", target="fan", evaluator="gate", on_reject=Retrace("fan"))
+            .build()
+        )
+        .build()
+    )
+
+    result = await engine.run("fanout_retrace", {})
+    assert result.status == "completed"
+    assert len(observations) == 4
+    assert all(provenance is None for _, provenance in observations[:2])
+    for _, provenance in observations[2:]:
+        assert provenance is not None
+        assert provenance.round == 1
+        assert provenance.target_node == "fan"
 
 def test_tools_wheel_identity_advanced_for_changed_code():
     """Defect 4: ai_workflow_tools source changed between engine-v0.8.1 and engine-v0.9.2

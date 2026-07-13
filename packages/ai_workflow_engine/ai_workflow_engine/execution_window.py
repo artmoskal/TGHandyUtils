@@ -41,6 +41,18 @@ ExecutionWindowClamp = Literal["capability", "run_remaining", "parent_soft_remai
 #   none        — inline synchronous work; boundary checks only, a finite hard window is REJECTED.
 TimeoutEnforcement = Literal["process", "cooperative", "none"]
 
+_BOUND_ORDER: tuple[ExecutionWindowBoundSource, ...] = (
+    "task_request",
+    "capability_limit",
+    "run_limit",
+    "parent_window",
+)
+_CLAMP_BY_SOURCE: dict[ExecutionWindowBoundSource, ExecutionWindowClamp] = {
+    "capability_limit": "capability",
+    "run_limit": "run_remaining",
+    "parent_window": "parent_soft_remaining",
+}
+
 
 def _finite_non_negative(value: Optional[float], label: str) -> Optional[float]:
     if value is None:
@@ -48,6 +60,58 @@ def _finite_non_negative(value: Optional[float], label: str) -> Optional[float]:
     if not math.isfinite(value) or value < 0:
         raise ValueError(f"{label} must be a finite non-negative number, got {value!r}")
     return value
+
+
+def _validated_source_label(value: str, *, label: str) -> str:
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError(f"{label} must be a non-blank observation label")
+    if not normalized.isprintable():
+        raise ValueError(f"{label} must be printable (no control characters)")
+    return normalized
+
+
+def _derive_resolution(
+    *,
+    requested_timeout_s: Optional[float],
+    capability_timeout_s: Optional[float],
+    run_remaining_s: Optional[float],
+    parent_remaining_s: Optional[float],
+) -> tuple[
+    Optional[float],
+    list[ExecutionWindowBoundSource],
+    list[ExecutionWindowClamp],
+]:
+    """Derive canonical hard/source/clamp truth from the four proposed bounds."""
+
+    by_source: dict[ExecutionWindowBoundSource, float] = {
+        source: value
+        for source, value in (
+            ("task_request", requested_timeout_s),
+            ("capability_limit", capability_timeout_s),
+            ("run_limit", run_remaining_s),
+            ("parent_window", parent_remaining_s),
+        )
+        if value is not None
+    }
+    if not by_source:
+        return None, [], []
+
+    hard = min(by_source.values())
+    limiting_sources = [
+        source for source in _BOUND_ORDER if by_source.get(source) == hard
+    ]
+    ceiling = math.inf
+    clamps: list[ExecutionWindowClamp] = []
+    for source in _BOUND_ORDER:
+        value = by_source.get(source)
+        if value is None or value >= ceiling:
+            continue
+        clamp = _CLAMP_BY_SOURCE.get(source)
+        if clamp is not None:
+            clamps.append(clamp)
+        ceiling = value
+    return hard, limiting_sources, clamps
 
 
 class TaskExecutionRequest(BaseModel):
@@ -84,11 +148,7 @@ class TaskExecutionRequest(BaseModel):
     @field_validator("source")
     @classmethod
     def _source_non_blank(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("execution-request source must be a non-blank observation label")
-        if not value.isprintable():
-            raise ValueError("execution-request source must be printable (no control characters)")
-        return value
+        return _validated_source_label(value, label="execution-request source")
 
 
 class ExecutionWindowInputs(BaseModel):
@@ -126,7 +186,7 @@ class ExecutionWindowDecision(BaseModel):
     soft_timeout_s: Optional[float] = None
     hard_timeout_s: Optional[float] = None
     completion_reserve_s: float = 0.0
-    request_source: Optional[str] = None
+    request_source: Optional[StrictStr] = Field(default=None, max_length=128)
     limiting_sources: List[ExecutionWindowBoundSource] = Field(default_factory=list)
     clamps: List[ExecutionWindowClamp] = Field(default_factory=list)
     enforcement: TimeoutEnforcement = "none"
@@ -150,15 +210,43 @@ class ExecutionWindowDecision(BaseModel):
         # non-negative number even when the model is constructed directly.
         return _finite_non_negative(value, "execution-window duration")
 
+    @field_validator("request_source")
+    @classmethod
+    def _request_source_safe(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        return _validated_source_label(value, label="execution-window request_source")
+
     @model_validator(mode="after")
     def _seal_invariants(self) -> "ExecutionWindowDecision":
         # A decision is internally consistent or it is a bug — seal it so no caller can
         # construct a lying window (soft above hard, negative reserve, reserve eating the
         # whole window, bounded label without a hard limit, or a source-less bound).
-        if self.hard_timeout_s is None:
-            if self.soft_timeout_s is not None or self.limiting_sources or self.clamps:
-                raise ValueError("unbounded window must carry no hard/soft limit, sources, or clamps")
+        expected_hard, expected_sources, expected_clamps = _derive_resolution(
+            requested_timeout_s=self.requested_timeout_s,
+            capability_timeout_s=self.capability_timeout_s,
+            run_remaining_s=self.run_remaining_s,
+            parent_remaining_s=self.parent_remaining_s,
+        )
+        if expected_hard is None:
+            if (
+                self.hard_timeout_s is not None
+                or self.soft_timeout_s is not None
+                or self.completion_reserve_s != 0
+                or self.limiting_sources
+                or self.clamps
+            ):
+                raise ValueError(
+                    "unbounded window must carry no hard/soft limit, reserve, sources, or clamps"
+                )
             return self
+        if self.hard_timeout_s is None:
+            raise ValueError("a proposed execution bound requires a hard_timeout_s")
+        if self.hard_timeout_s != expected_hard:
+            raise ValueError(
+                f"hard_timeout_s={self.hard_timeout_s!r} must equal the minimum proposed "
+                f"bound {expected_hard!r}"
+            )
         if self.hard_timeout_s <= 0:
             raise ValueError(f"hard_timeout_s must be > 0, got {self.hard_timeout_s!r}")
         if self.soft_timeout_s is None:
@@ -175,8 +263,14 @@ class ExecutionWindowDecision(BaseModel):
             )
         if not math.isclose(self.soft_timeout_s, self.hard_timeout_s - self.completion_reserve_s):
             raise ValueError("soft_timeout_s must equal hard_timeout_s minus completion_reserve_s")
-        if not self.limiting_sources:
-            raise ValueError("a bounded window must name at least one limiting source")
+        if self.limiting_sources != expected_sources:
+            raise ValueError(
+                f"limiting_sources must exactly match the winning bounds: {expected_sources!r}"
+            )
+        if self.clamps != expected_clamps:
+            raise ValueError(
+                f"clamps must exactly match the applied bound reductions: {expected_clamps!r}"
+            )
         return self
 
 
@@ -197,17 +291,6 @@ def resolve_execution_window(
     requested = request.timeout_s if request else None
     reserve = request.completion_reserve_s if request else 0.0
 
-    # candidate hard bounds keyed by their typed source
-    candidates: list[tuple[float, ExecutionWindowBoundSource]] = []
-    if requested is not None:
-        candidates.append((requested, "task_request"))
-    if inputs.capability_timeout_s is not None:
-        candidates.append((inputs.capability_timeout_s, "capability_limit"))
-    if inputs.run_remaining_s is not None:
-        candidates.append((inputs.run_remaining_s, "run_limit"))
-    if inputs.parent_soft_remaining_s is not None:
-        candidates.append((inputs.parent_soft_remaining_s, "parent_window"))
-
     common = dict(
         requested_timeout_s=requested,
         capability_timeout_s=inputs.capability_timeout_s,
@@ -218,7 +301,14 @@ def resolve_execution_window(
         enforcement=enforcement,
     )
 
-    if not candidates:
+    hard, limiting_sources, clamps = _derive_resolution(
+        requested_timeout_s=requested,
+        capability_timeout_s=inputs.capability_timeout_s,
+        run_remaining_s=inputs.run_remaining_s,
+        parent_remaining_s=inputs.parent_soft_remaining_s,
+    )
+
+    if hard is None:
         # unbounded: no source proposed a hard limit
         if reserve:
             raise ValueError(
@@ -227,35 +317,11 @@ def resolve_execution_window(
             )
         return ExecutionWindowDecision(**common)
 
-    hard = min(value for value, _ in candidates)
     if reserve >= hard:
         raise ValueError(
             f"impossible execution window: completion_reserve_s={reserve} leaves no work time "
             f"under hard_timeout_s={hard} — reserve must be strictly less than the hard window"
         )
-
-    # every source at the winning minimum is a limiting source (ties are all named)
-    limiting_sources = [source for value, source in candidates if value == hard]
-    # A clamp names each non-request bound that ACTUALLY reduced the effective ceiling as
-    # bounds are applied in precedence order (task -> capability -> run -> parent). A bound
-    # looser than the ceiling already reached clamps nothing and is not named — the running
-    # ceiling prevents a false "capability clamped" when run was tighter.
-    clamp_of: dict[ExecutionWindowBoundSource, ExecutionWindowClamp] = {
-        "capability_limit": "capability",
-        "run_limit": "run_remaining",
-        "parent_window": "parent_soft_remaining",
-    }
-    by_source = {source: value for value, source in candidates}
-    ceiling = math.inf
-    clamps: list[ExecutionWindowClamp] = []
-    for source in ("task_request", "capability_limit", "run_limit", "parent_window"):
-        if source not in by_source:
-            continue
-        value = by_source[source]
-        if value < ceiling:
-            if source in clamp_of:
-                clamps.append(clamp_of[source])
-            ceiling = value
 
     # Build the final decision ONCE so the model_validator seals the complete object.
     return ExecutionWindowDecision(

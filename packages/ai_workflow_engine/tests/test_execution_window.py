@@ -142,15 +142,21 @@ def test_decision_model_seals_lying_windows():
 
     from ai_workflow_engine.execution_window import ExecutionWindowDecision
 
-    with pytest.raises(ValueError, match="at least one limiting source"):
-        ExecutionWindowDecision(hard_timeout_s=5.0, soft_timeout_s=5.0)
+    with pytest.raises(ValueError, match="limiting_sources must exactly"):
+        ExecutionWindowDecision(run_remaining_s=5.0, hard_timeout_s=5.0, soft_timeout_s=5.0)
     with pytest.raises(ValueError, match="soft_timeout_s must equal"):
-        ExecutionWindowDecision(hard_timeout_s=5.0, soft_timeout_s=1.0, limiting_sources=["run_limit"])
+        ExecutionWindowDecision(
+            run_remaining_s=5.0,
+            hard_timeout_s=5.0,
+            soft_timeout_s=1.0,
+            limiting_sources=["run_limit"],
+            clamps=["run_remaining"],
+        )
     with pytest.raises(ValueError, match="unbounded window must carry no"):
         ExecutionWindowDecision(soft_timeout_s=3.0)
     # a truthful bounded decision constructs fine
     ok = ExecutionWindowDecision(
-        hard_timeout_s=5.0, soft_timeout_s=4.0, completion_reserve_s=1.0,
+        run_remaining_s=5.0, hard_timeout_s=5.0, soft_timeout_s=4.0, completion_reserve_s=1.0,
         limiting_sources=["run_limit"], clamps=["run_remaining"],
     )
     assert ok.is_bounded
@@ -166,8 +172,9 @@ def test_directly_constructed_decision_cannot_lie_about_durations_or_ordering():
     # soft > hard via a negative reserve whose arithmetic "matches"
     with pytest.raises(ValueError):
         ExecutionWindowDecision(
-            hard_timeout_s=5.0, completion_reserve_s=-1.0, soft_timeout_s=6.0,
-            limiting_sources=["run_limit"],
+            run_remaining_s=5.0, hard_timeout_s=5.0,
+            completion_reserve_s=-1.0, soft_timeout_s=6.0,
+            limiting_sources=["run_limit"], clamps=["run_remaining"],
         )
     # a negative source duration
     with pytest.raises(ValueError):
@@ -178,8 +185,35 @@ def test_directly_constructed_decision_cannot_lie_about_durations_or_ordering():
     # reserve == hard leaves no work time
     with pytest.raises(ValueError):
         ExecutionWindowDecision(
-            hard_timeout_s=5.0, completion_reserve_s=5.0, soft_timeout_s=0.0,
-            limiting_sources=["run_limit"],
+            run_remaining_s=5.0, hard_timeout_s=5.0,
+            completion_reserve_s=5.0, soft_timeout_s=0.0,
+            limiting_sources=["run_limit"], clamps=["run_remaining"],
+        )
+
+
+def test_decision_recomputes_bound_provenance_instead_of_trusting_claims():
+    from ai_workflow_engine.execution_window import ExecutionWindowDecision
+
+    with pytest.raises(ValueError, match="proposed execution bound requires"):
+        ExecutionWindowDecision(requested_timeout_s=5.0)
+    with pytest.raises(ValueError, match="unbounded window must carry no"):
+        ExecutionWindowDecision(completion_reserve_s=1.0)
+    with pytest.raises(ValueError, match="limiting_sources must exactly"):
+        ExecutionWindowDecision(
+            run_remaining_s=5.0,
+            hard_timeout_s=5.0,
+            soft_timeout_s=5.0,
+            limiting_sources=["capability_limit"],
+            clamps=["run_remaining"],
+        )
+    with pytest.raises(ValueError, match="clamps must exactly"):
+        ExecutionWindowDecision(
+            requested_timeout_s=10.0,
+            capability_timeout_s=5.0,
+            hard_timeout_s=5.0,
+            soft_timeout_s=5.0,
+            limiting_sources=["capability_limit"],
+            clamps=[],
         )
 
 
@@ -190,4 +224,13 @@ def test_request_source_label_is_bounded_strict_and_byte_safe():
         TaskExecutionRequest(source="bad\x00label")  # control char
     with pytest.raises(ValueError):
         TaskExecutionRequest(source=123)             # non-str (strict)
-    assert TaskExecutionRequest(source="llm_planner").source == "llm_planner"
+    assert TaskExecutionRequest(source="  llm_planner  ").source == "llm_planner"
+
+    from ai_workflow_engine.execution_window import ExecutionWindowDecision
+
+    with pytest.raises(ValueError):
+        ExecutionWindowDecision(request_source="bad\x00label")
+    with pytest.raises(ValueError):
+        ExecutionWindowDecision(request_source="x" * 129)
+    with pytest.raises(ValueError):
+        ExecutionWindowDecision(request_source=b"planner")

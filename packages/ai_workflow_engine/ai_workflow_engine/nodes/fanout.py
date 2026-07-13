@@ -18,6 +18,12 @@ def build_fanout_node(services, definition: WorkflowDefinition, node: WorkflowNo
 
     async def fanout_fn(state: Dict[str, Any]) -> Dict[str, Any]:
         context: CapabilityContext = state[CONTEXT]
+        # Fanout invokes the runtime directly for each item, so it must cross the same generic
+        # node-context boundary as step/branch/planner nodes. This carries retrace provenance
+        # and declared plan/machine injection without a fanout-specific approximation.
+        context = services.context_for_node(
+            node, context, state, definition=definition
+        )
         items = _resolve_items(state, node)
         if not isinstance(items, list):
             failed = CapabilityResult(
