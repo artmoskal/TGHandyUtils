@@ -10,7 +10,6 @@ import time
 import uuid
 from typing import Any, Callable, Iterable, NamedTuple, Optional, Protocol
 
-from pydantic import ValidationError
 
 from ai_workflow_engine.models import (
     CapabilityContext,
@@ -33,6 +32,12 @@ from ai_workflow_engine.execution_window import (
     publish_invocation_window,
     reset_invocation_window,
     resolve_execution_window,
+)
+from ai_workflow_engine.engine.capability_contract import (
+    denied_side_effects,
+    handler_is_async,
+    normalize_result,
+    validate_payload,
 )
 from ai_workflow_engine.engine.capability_observation import CapabilityObservationProjector
 from ai_workflow_engine.observability_capture import ObservationCapture
@@ -298,15 +303,6 @@ class RuntimePlanCompiler:
         )
 
 
-# v0.10 #4: an object with an async ``__call__`` is an async handler too — a bare
-# iscoroutinefunction(handler) misses HumanClarificationCapability / agent capability objects.
-def _handler_is_async(handler: Any) -> bool:
-    if inspect.iscoroutinefunction(handler):
-        return True
-    call = getattr(handler, "__call__", None)
-    return bool(call is not None and inspect.iscoroutinefunction(call))
-
-
 # The active invocation's complete soft/hard window lives on the context-local surface in
 # execution_window.py. Nested invocations inherit the remaining soft budget; process-backed doors
 # use both deadlines so cleanup fits before the hard cutoff.
@@ -369,9 +365,9 @@ class CapabilityRuntime:
         spec, handler = self.registry.get(name)
         start = time.monotonic()
         try:
-            parsed_payload = self._validate_payload(spec, payload)
+            parsed_payload = validate_payload(spec, payload)
             self._projector.start(name=name, attempt=attempt, spec=spec, payload=parsed_payload)
-            denied = self._denied_side_effects(spec, context)
+            denied = denied_side_effects(spec, context)
             if denied:
                 elapsed_ms = int((time.monotonic() - start) * 1000)
                 error = f"Capability side effects denied by safety policy: {', '.join(denied)}"
@@ -393,7 +389,7 @@ class CapabilityRuntime:
             # truthful enforcement (#2). Intersect the capability limit + run-remaining + any
             # per-task request the planner attached (#3).
             session = current_run_session()
-            is_async = _handler_is_async(handler)
+            is_async = handler_is_async(handler)
             enforcement = spec.resolved_timeout_enforcement(is_async=is_async)
             window = resolve_execution_window(
                 ExecutionWindowInputs(
@@ -464,7 +460,7 @@ class CapabilityRuntime:
             finally:
                 if parent_token is not None:
                     reset_invocation_window(parent_token)
-            output = self._normalize_result(spec, result)
+            output = normalize_result(spec, result)
             elapsed_ms = int((time.monotonic() - start) * 1000)
             # v0.10: record the resolved window on the result event of a BOUNDED call so the
             # viewer/audit can project the effective soft/hard window + clamps + enforcement on
@@ -622,39 +618,6 @@ class CapabilityRuntime:
                 logger.exception("detached capability task failed after cancellation")
 
         inner.add_done_callback(_consume)
-
-    @staticmethod
-    def _validate_payload(spec: CapabilitySpec, payload: Any) -> Any:
-        if not spec.input_model:
-            return payload
-        if isinstance(payload, spec.input_model):
-            return payload
-        try:
-            return spec.input_model.model_validate(payload)
-        except ValidationError as exc:
-            raise ValueError(f"{spec.name} input validation failed: {exc}") from exc
-
-    @staticmethod
-    def _normalize_result(spec: CapabilitySpec, result: Any) -> CapabilityResult:
-        if isinstance(result, CapabilityResult):
-            output = result
-        else:
-            output_value = result
-            if spec.output_model:
-                if not isinstance(result, spec.output_model):
-                    try:
-                        output_value = spec.output_model.model_validate(result)
-                    except ValidationError as exc:
-                        raise ValueError(f"{spec.name} output validation failed: {exc}") from exc
-            output = CapabilityResult(status="accepted", output=output_value)
-        return output
-
-    @staticmethod
-    def _denied_side_effects(spec: CapabilitySpec, context: CapabilityContext) -> list[str]:
-        if not spec.side_effects or context.plan is None:
-            return []
-        allowed = set(context.plan.safety.allowed_side_effects)
-        return [side_effect for side_effect in spec.side_effects if side_effect not in allowed]
 
 
 def _enrich_trace_event(event: WorkflowTraceEvent) -> WorkflowTraceEvent:
