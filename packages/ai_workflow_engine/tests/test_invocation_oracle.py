@@ -2,31 +2,42 @@
 
 The fast in-process gate: run the deterministic corpus through the public door and compare it,
 path-by-path, against the SEALED v0.10.1 canonical baseline fixture. Any structural difference is
-a behavior delta and fails. The live baseline-wheel-vs-candidate-wheel differential (proving the
-fixture was not hand-edited) is a separate gate script run at each phase boundary.
+a behavior delta and fails. A MISSING fixture is a hard failure, never a silent regeneration: the
+only sanctioned (re)generation path is the explicit host sealer
+(``invocation_differential.py --seal``), which builds the pinned v0.10.1 wheel from the immutable
+tag, requires wheel-vs-candidate equality, and seals fixtures + provenance from the BASELINE
+wheel's own output. The hermetic in-container live differential + provenance verification live in
+``test_invocation_differential_gate.py``.
 
-Also here: the behavior-inventory completeness guard, and the comparator/canonicalizer self-tests
-(the oracle is load-bearing code — it must FAIL on real drift). Regenerate the sealed baseline —
-ONLY from the immutable v0.10.1 production code — with ORACLE_REGEN=1.
+Also here: the behavior-inventory completeness guard and the comparator/canonicalizer self-tests
+(the oracle is load-bearing code — it must FAIL on real drift and must NOT normalize anything
+beyond the single reviewed exact-path volatile fact).
 """
 
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import pytest
 
 from invocation_oracle import (
+    _EXACT_PATH_NORMALIZERS,
+    _canon,
     compare_records,
     missing_behavior_rows,
+    public_surface_snapshot,
     run_corpus,
 )
 
 pytestmark = [pytest.mark.unit]  # async tests are marked individually — do not mark sync tests async
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "invocation_baseline_v0_10_1.json"
+
+_RESEAL_HINT = (
+    "sealed baseline missing — regeneration is EXPLICIT-ONLY via the host sealer:\n"
+    "  python3 packages/ai_workflow_engine/tests/invocation_differential.py --seal"
+)
 
 
 def test_behavior_inventory_is_complete():
@@ -36,11 +47,9 @@ def test_behavior_inventory_is_complete():
 
 @pytest.mark.asyncio
 async def test_corpus_matches_sealed_v0_10_1_baseline():
+    if not _FIXTURE.exists():
+        pytest.fail(_RESEAL_HINT)
     records = await run_corpus()
-    if os.environ.get("ORACLE_REGEN") == "1" or not _FIXTURE.exists():
-        _FIXTURE.parent.mkdir(parents=True, exist_ok=True)
-        _FIXTURE.write_text(json.dumps(records, indent=2, sort_keys=True), encoding="utf-8")
-        pytest.skip(f"regenerated sealed baseline at {_FIXTURE}")
     baseline = json.loads(_FIXTURE.read_text(encoding="utf-8"))
     mismatches = compare_records(baseline, records)
     assert not mismatches, "candidate diverged from the sealed v0.10.1 baseline:\n" + "\n".join(mismatches)
@@ -140,55 +149,57 @@ async def test_canonicalizer_strips_only_approved_volatile_facts():
 
 
 # --------------------------------------------------------------------------------------
-# Public-surface + simple-tier import-gradient locks (Phase I1.0 task 4). A behavior-preserving
-# refactor must not drift the public API, signatures, or Pydantic schemas, and must not pull
-# advanced modules into the simple one-step tier.
+# Canonicalization strictness (Phase I1.R3). The oracle must not hide real facts: no key erasure,
+# no global decimal rounding — only the single reviewed exact-path normalizer may exist.
 # --------------------------------------------------------------------------------------
 
-import inspect  # noqa: E402
+
+def test_canonicalizer_does_not_erase_timeout_bounds():
+    """A supervision bound changing 1s -> 99s MUST be a mismatch. The old canonicalizer erased
+    every timeout_s/requested_timeout_s/kill_grace_s key to '<volatile>' path-blind, which let a
+    99x bound change compare EQUAL — fatal for Iteration 2, whose whole point is moving the
+    supervision machinery under this oracle's protection."""
+
+    a = {"s": {"metadata": {"timeout_s": 1.0, "requested_timeout_s": 1.0, "kill_grace_s": 0.5}}}
+    b = {"s": {"metadata": {"timeout_s": 99.0, "requested_timeout_s": 99.0, "kill_grace_s": 50.0}}}
+    mismatches = compare_records({"s": _canon(a["s"])}, {"s": _canon(b["s"])})
+    assert len(mismatches) == 3, f"timeout bounds must all mismatch, got: {mismatches}"
+
+
+def test_canonicalizer_does_not_round_arbitrary_strings():
+    """Decimals inside ordinary strings are FACTS: '3.141' vs '3.144' must mismatch. The old
+    global _round_decimals_in_string collapsed them."""
+
+    assert compare_records({"s": _canon("v=3.141")}, {"s": _canon("v=3.144")}), (
+        "decimal drift inside an arbitrary string was silently hidden"
+    )
+
+
+def test_exact_path_normalizer_table_is_reviewed_and_minimal():
+    """The normalizer table is a REVIEWED allow-list, not a blanket rule. Exactly one entry is
+    approved: the cooperative-deadline wall-jitter rounding. Any widening must fail here and be
+    consciously re-reviewed."""
+
+    assert set(_EXACT_PATH_NORMALIZERS) == {"cooperative_deadline"}, (
+        f"unapproved normalized paths: {sorted(set(_EXACT_PATH_NORMALIZERS) - {'cooperative_deadline'})}"
+    )
+
+
+# --------------------------------------------------------------------------------------
+# Public-surface + simple-tier import-gradient locks (Phase I1.0 task 4, hardened in I1.R3). A
+# behavior-preserving refactor must not drift the public API, signatures, or full Pydantic schemas
+# (defaults/constraints included), and must not pull advanced modules into the simple tier. The
+# snapshot logic is the oracle's version-agnostic public_surface_snapshot — the same code the
+# sealer runs against the v0.10.1 wheel, so fixture and candidate are measured identically.
+# --------------------------------------------------------------------------------------
 
 _PUBLIC_FIXTURE = Path(__file__).parent / "fixtures" / "public_surface_v0_10_1.json"
 
 
-def _public_surface_snapshot() -> dict:
-    import ai_workflow_engine as pkg
-    from ai_workflow_engine.engine.capabilities import CapabilityRuntime
-    from ai_workflow_engine.models import (
-        CapabilityContext,
-        CapabilityResult,
-        CapabilitySpec,
-        WorkflowArtifact,
-    )
-
-    def _sig(obj) -> str:
-        try:
-            return str(inspect.signature(obj))
-        except (TypeError, ValueError):
-            return "<no-signature>"
-
-    # Full normalized JSON schemas — not just property names — so a changed type, default,
-    # constraint, enum, or required-set is a path mismatch. compare_records walks the nested schema.
-    return {
-        "exports": sorted(getattr(pkg, "__all__", []) or [n for n in dir(pkg) if not n.startswith("_")]),
-        "signatures": {
-            "CapabilityRuntime.__init__": _sig(CapabilityRuntime.__init__),
-            "CapabilityRuntime.invoke": _sig(CapabilityRuntime.invoke),
-        },
-        "schemas": {
-            "CapabilitySpec": CapabilitySpec.model_json_schema(),
-            "CapabilityResult": CapabilityResult.model_json_schema(),
-            "CapabilityContext": CapabilityContext.model_json_schema(),
-            "WorkflowArtifact": WorkflowArtifact.model_json_schema(),
-        },
-    }
-
-
 def test_public_surface_is_locked_against_v0_10_1():
-    snapshot = _public_surface_snapshot()
     if not _PUBLIC_FIXTURE.exists():
-        _PUBLIC_FIXTURE.parent.mkdir(parents=True, exist_ok=True)
-        _PUBLIC_FIXTURE.write_text(json.dumps(snapshot, indent=2, sort_keys=True), encoding="utf-8")
-        pytest.skip(f"sealed public surface at {_PUBLIC_FIXTURE}")
+        pytest.fail(_RESEAL_HINT)
+    snapshot = public_surface_snapshot()
     sealed = json.loads(_PUBLIC_FIXTURE.read_text(encoding="utf-8"))
     mismatches = compare_records({"public": sealed}, {"public": snapshot})
     assert not mismatches, "public surface drifted from v0.10.1:\n" + "\n".join(mismatches)

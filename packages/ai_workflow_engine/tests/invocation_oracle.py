@@ -21,15 +21,45 @@ import json
 import re
 from typing import Any, Callable
 
-# REVIEWED volatile normalization: a cooperative-timeout error embeds the REMAINING soft budget
-# at the moment of cancellation (a monotonic-clock wall value with microsecond jitter, e.g.
-# "0.249991s"). Round decimals inside strings to 2 places — this collapses sub-0.01 clock jitter
-# while any real change >= 0.01 still differs. It is the ONLY string normalization.
+# REVIEWED volatile normalization (the ONLY one). The single genuinely-volatile fact in the whole
+# corpus — proven by running run_corpus() twice — is the cooperative-timeout error string, which
+# embeds the REMAINING soft budget at cancellation (a monotonic-clock wall value with sub-millisecond
+# jitter, e.g. "0.249988s" vs "0.249981s"). It is normalized ONLY at its exact paths (the "error"
+# fields of the cooperative_deadline scenario), NOT globally: 1s vs 99s and 3.141 vs 3.144 now
+# compare UNEQUAL. Rounding to 2 decimals (10ms resolution) collapses the jitter while PRESERVING
+# magnitude, so the bound cannot silently disappear — any real change >= 0.01s still differs.
 _DECIMAL_IN_STRING = re.compile(r"\d+\.\d+")
 
 
 def _round_decimals_in_string(text: str) -> str:
     return _DECIMAL_IN_STRING.sub(lambda m: f"{float(m.group()):.2f}", text)
+
+
+def _round_error_decimals(value: Any) -> Any:
+    """Round decimals in any string at an 'error' key (recursively). The cooperative-timeout wall
+    jitter lives at result.error and trace[*].error; 2-decimal rounding preserves the magnitude."""
+
+    if isinstance(value, dict):
+        return {
+            k: (_round_decimals_in_string(v) if k == "error" and isinstance(v, str)
+                else _round_error_decimals(v))
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [_round_error_decimals(v) for v in value]
+    return value
+
+
+# Exact-path volatile normalizers, keyed by scenario. Empty for every scenario except the one with
+# proven wall jitter. A new entry is a REVIEWED decision, not a blanket rule.
+_EXACT_PATH_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
+    "cooperative_deadline": _round_error_decimals,
+}
+
+
+def _normalize_record(name: str, record: Any) -> Any:
+    fn = _EXACT_PATH_NORMALIZERS.get(name)
+    return fn(record) if fn else record
 
 # Stable public surface only.
 from ai_workflow_engine import (
@@ -79,11 +109,6 @@ BEHAVIOR_ROWS = (
     "concurrent_invocations",
 )
 
-_VOLATILE_METADATA_KEYS = frozenset({
-    "timeout_s", "requested_timeout_s", "kill_grace_s",  # process bound wall values vary by host
-})
-
-
 def _fixed_context(*, allowed_side_effects=None, execution_request=None) -> CapabilityContext:
     """A deterministic context: fixed run id, injected safety policy, optional task window."""
 
@@ -131,22 +156,18 @@ def _apply_aliases(text: str, amap: dict[str, str]) -> str:
 
 
 def _canon(value: Any, amap: dict[str, str] | None = None) -> Any:
-    """Canonicalize a value for cross-version comparison: sort dict keys, drop intrinsically
-    volatile metadata leaves, alias generated ids, and stringify opaque objects deterministically."""
+    """Canonicalize a value for cross-version comparison: sort dict keys, alias generated ids, and
+    stringify opaque objects deterministically. It does NOT erase keys or round decimals — that
+    over-broad normalization (which made 1s and 99s, and 3.141 and 3.144, compare equal) is gone.
+    The ONLY volatile-fact normalization now happens at reviewed EXACT PATHS in _normalize_paths."""
 
     amap = amap or {}
     if isinstance(value, dict):
-        out = {}
-        for k in sorted(value.keys(), key=str):
-            if k in _VOLATILE_METADATA_KEYS:
-                out[k] = "<volatile>"
-            else:
-                out[k] = _canon(value[k], amap)
-        return out
+        return {k: _canon(value[k], amap) for k in sorted(value.keys(), key=str)}
     if isinstance(value, (list, tuple)):
         return [_canon(v, amap) for v in value]
     if isinstance(value, str):
-        return _round_decimals_in_string(_apply_aliases(value, amap))
+        return _apply_aliases(value, amap)
     if isinstance(value, (int, float, bool)) or value is None:
         return value
     # opaque object (pydantic model, etc.): dump structurally when possible
@@ -342,8 +363,7 @@ async def capture_invocation(
     return {
         "result": _canon_result(result_obj, amap) if result_obj is not None else None,
         "exception": (
-            {"type": type(raw_exc).__name__,
-             "message": _round_decimals_in_string(_apply_aliases(str(raw_exc), amap))}
+            {"type": type(raw_exc).__name__, "message": _apply_aliases(str(raw_exc), amap)}
             if raw_exc is not None else None
         ),
         "handler_calls": calls["n"],
@@ -669,11 +689,42 @@ def missing_behavior_rows() -> list[str]:
     return [row for row in BEHAVIOR_ROWS if row not in SCENARIOS]
 
 
+def public_surface_snapshot() -> dict[str, Any]:
+    """Version-agnostic snapshot of the stable public surface: package exports, the
+    CapabilityRuntime constructor/invoke signatures, and the FULL normalized JSON schemas
+    (defaults/constraints/types/enums/required) of the public models. Runs identically against the
+    baseline and candidate wheels, so the sealed surface is captured from v0.10.1, not the candidate."""
+
+    import inspect
+    import ai_workflow_engine as pkg
+
+    def _sig(obj) -> str:
+        try:
+            return str(inspect.signature(obj))
+        except (TypeError, ValueError):
+            return "<no-signature>"
+
+    return {
+        "exports": sorted(getattr(pkg, "__all__", []) or [n for n in dir(pkg) if not n.startswith("_")]),
+        "signatures": {
+            "CapabilityRuntime.__init__": _sig(CapabilityRuntime.__init__),
+            "CapabilityRuntime.invoke": _sig(CapabilityRuntime.invoke),
+        },
+        "schemas": {
+            "CapabilitySpec": CapabilitySpec.model_json_schema(),
+            "CapabilityResult": CapabilityResult.model_json_schema(),
+            "CapabilityContext": CapabilityContext.model_json_schema(),
+            "WorkflowArtifact": WorkflowArtifact.model_json_schema(),
+        },
+    }
+
+
 async def run_corpus() -> dict[str, Any]:
-    """Run every scenario and return {name: canonical record}. Deterministic + serial."""
+    """Run every scenario and return {name: canonical record}. Deterministic + serial. Exact-path
+    volatile normalization (only the cooperative-deadline wall jitter) is applied per scenario."""
     out: dict[str, Any] = {}
     for name in sorted(SCENARIOS):
-        out[name] = await SCENARIOS[name]()
+        out[name] = _normalize_record(name, await SCENARIOS[name]())
     return out
 
 
