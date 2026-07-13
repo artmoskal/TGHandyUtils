@@ -172,6 +172,187 @@
     ],
     "usage": null
   },
+  "authored_fanout_flow": {
+    "authored_provenance": true,
+    "capability_door_trace": [
+      {
+        "artifacts": [],
+        "attempt": 1,
+        "decision": "start",
+        "detail_refs": [],
+        "error": null,
+        "event": "E1",
+        "metadata": {},
+        "node": "seed",
+        "phase": "tool:request",
+        "severity": "info"
+      },
+      {
+        "artifacts": [],
+        "attempt": 1,
+        "decision": "accepted",
+        "detail_refs": [],
+        "error": null,
+        "event": "E2",
+        "metadata": {},
+        "node": "seed",
+        "phase": "tool:result",
+        "severity": "info"
+      },
+      {
+        "artifacts": [],
+        "attempt": 1,
+        "decision": null,
+        "detail_refs": [],
+        "error": null,
+        "event": "E3",
+        "metadata": {
+          "kind": "step"
+        },
+        "node": "seed",
+        "phase": "node:result",
+        "severity": "info"
+      },
+      {
+        "artifacts": [],
+        "attempt": 1,
+        "decision": "start",
+        "detail_refs": [],
+        "error": null,
+        "event": "E4",
+        "metadata": {},
+        "node": "shout",
+        "phase": "tool:request",
+        "severity": "info"
+      },
+      {
+        "artifacts": [],
+        "attempt": 1,
+        "decision": "accepted",
+        "detail_refs": [],
+        "error": null,
+        "event": "E5",
+        "metadata": {},
+        "node": "shout",
+        "phase": "tool:result",
+        "severity": "info"
+      },
+      {
+        "artifacts": [],
+        "attempt": 1,
+        "decision": "start",
+        "detail_refs": [],
+        "error": null,
+        "event": "E6",
+        "metadata": {},
+        "node": "shout",
+        "phase": "tool:request",
+        "severity": "info"
+      },
+      {
+        "artifacts": [],
+        "attempt": 1,
+        "decision": "failed",
+        "detail_refs": [],
+        "error": "cannot shout 'bad'",
+        "event": "E7",
+        "metadata": {},
+        "node": "shout",
+        "phase": "tool:result",
+        "severity": "error"
+      },
+      {
+        "artifacts": [],
+        "attempt": 1,
+        "decision": "start",
+        "detail_refs": [],
+        "error": null,
+        "event": "E8",
+        "metadata": {},
+        "node": "shout",
+        "phase": "tool:request",
+        "severity": "info"
+      },
+      {
+        "artifacts": [],
+        "attempt": 1,
+        "decision": "accepted",
+        "detail_refs": [],
+        "error": null,
+        "event": "E9",
+        "metadata": {},
+        "node": "shout",
+        "phase": "tool:result",
+        "severity": "info"
+      },
+      {
+        "artifacts": [],
+        "attempt": 1,
+        "decision": null,
+        "detail_refs": [],
+        "error": "cannot shout 'bad'",
+        "event": "E10",
+        "metadata": {
+          "kind": "fanout"
+        },
+        "node": "shout",
+        "phase": "node:result",
+        "severity": "error"
+      },
+      {
+        "artifacts": [],
+        "attempt": 1,
+        "decision": "fanout",
+        "detail_refs": [],
+        "error": null,
+        "event": "E11",
+        "metadata": {
+          "failed": 1,
+          "max_parallel": 1,
+          "partial": 0,
+          "succeeded": 2,
+          "total": 3
+        },
+        "node": "shout",
+        "phase": "node:decision",
+        "severity": "info"
+      }
+    ],
+    "exception": null,
+    "node_results": [
+      [
+        "seed",
+        "accepted"
+      ],
+      [
+        "shout",
+        "partial"
+      ]
+    ],
+    "result": {
+      "error": "cannot shout 'bad'",
+      "kind": "result",
+      "output": [
+        {
+          "up": "ALPHA"
+        },
+        {
+          "up": "GAMMA"
+        }
+      ],
+      "status": "partial"
+    },
+    "usage": {
+      "events": [],
+      "image_call_count": 0,
+      "metered_usd": null,
+      "notional_usd": null,
+      "text_call_count": 0,
+      "tool_call_count": 0,
+      "total_tokens": 0,
+      "worker_call_count": 0
+    }
+  },
   "budget_denied": {
     "details": [],
     "exception": null,
@@ -374,11 +555,13 @@
     "usage": null
   },
   "concurrent_invocations": {
-    "isolation_ok": false,
-    "tight_status": "partial",
-    "tight_window_ok": false,
-    "wide_status": "partial",
-    "wide_window_ok": false
+    "ambient_isolation_ok": true,
+    "interleaved": true,
+    "tight_status": "accepted",
+    "tight_window_ok": true,
+    "wide_status": "accepted",
+    "wide_window_ok": true,
+    "window_isolation_ok": true
   },
   "cooperative_deadline": {
     "details": [],
@@ -464,6 +647,50 @@
     "result": null,
     "trace": [],
     "usage": null
+  },
+  "durable_suspend_resume": {
+    "delivery": {
+      "answer": "approved",
+      "final_status": "completed",
+      "idempotency_contract_held": true,
+      "kind": "executed"
+    },
+    "exception": null,
+    "first_status": "requires_user_input",
+    "node_results": [
+      [
+        "gate",
+        "requires_user_input"
+      ],
+      [
+        "gate",
+        "accepted"
+      ],
+      [
+        "finish",
+        "accepted"
+      ]
+    ],
+    "suspension_door": {
+      "has_local_snapshot": false,
+      "has_wait_handle": true,
+      "suspended_node": "gate",
+      "workflow_id": "dur_flow"
+    },
+    "usage": {
+      "events": [],
+      "image_call_count": 0,
+      "metered_usd": null,
+      "notional_usd": null,
+      "text_call_count": 0,
+      "tool_call_count": 0,
+      "total_tokens": 0,
+      "worker_call_count": 0
+    },
+    "wait_terminal": {
+      "resolution_kind": "signal",
+      "status": "completed"
+    }
   },
   "explicit_partial": {
     "details": [],
@@ -658,20 +885,29 @@
     "usage": null
   },
   "nested_invocation": {
+    "ambient_scope": {
+      "bounded_child_saw_own_window": false,
+      "parent_before_is_parent_sized": true,
+      "parent_restored_after_children": true
+    },
     "child_window": {
       "clamps": null,
       "hard_positive_and_bounded": false,
       "sources": null
     },
     "exception": null,
-    "handler_calls": 2,
+    "handler_calls": 3,
     "result": {
-      "child_status": "partial",
+      "child_statuses": [
+        "partial",
+        "partial"
+      ],
       "kind": "result",
       "status": "accepted"
     },
     "trace_node_set": [
-      "child",
+      "bounded_child",
+      "inherit_child",
       "parent"
     ]
   },

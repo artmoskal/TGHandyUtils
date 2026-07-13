@@ -107,6 +107,9 @@ BEHAVIOR_ROWS = (
     "detail_sink_failure",
     "nested_invocation",
     "concurrent_invocations",
+    "worker_call_accounting",
+    "authored_fanout_flow",
+    "durable_suspend_resume",
 )
 
 def _fixed_context(*, allowed_side_effects=None, execution_request=None) -> CapabilityContext:
@@ -281,7 +284,12 @@ def _canon_usage(context: Any) -> dict[str, Any] | None:
 
     if context is None:
         return None
-    summary = getattr(context, "summary", None)
+    return _canon_usage_summary(getattr(context, "summary", None))
+
+
+def _canon_usage_summary(summary: Any) -> dict[str, Any] | None:
+    """Canonical form of a WorkflowUsageSummary (engine-run envelopes carry one directly)."""
+
     if summary is None:
         return None
     events = getattr(summary, "events", None) or []
@@ -598,63 +606,252 @@ async def _sc_process_timeout():
 
 
 async def _sc_nested_invocation():
-    from ai_workflow_engine.execution_window import TaskExecutionRequest
-    child_windows: dict[str, Any] = {}
+    """Nested public-door invocation: the inheriting child sees the parent-soft clamp, a child
+    with its OWN small window sees that bound while inside it, and — the I1.R4 restoration proof —
+    the parent's AMBIENT window is back after each child returns (the child's published scope was
+    reset, not leaked). All facts are booleans/structures stable across wall-clock jitter."""
 
-    def child(ctx, _p):
+    from ai_workflow_engine.execution_window import TaskExecutionRequest, invocation_window_remaining_s
+
+    child_windows: dict[str, Any] = {}
+    ambient: dict[str, Any] = {}
+
+    def inheriting_child(ctx, _p):
         win = ctx.execution_window
-        child_windows["hard"] = win.hard_timeout_s if win is not None else None
         child_windows["sources"] = list(win.limiting_sources) if win is not None else None
         child_windows["clamps"] = list(win.clamps) if win is not None else None
+        child_windows["hard"] = win.hard_timeout_s if win is not None else None
         return {"child": 1}
 
+    def bounded_child(_ctx, _p):
+        rem = invocation_window_remaining_s()
+        ambient["inside_bounded_child_hard_s"] = rem.hard_s if rem is not None else None
+        return {"child": 2}
+
     registry = CapabilityRegistry()
-    registry.register(_spec("child"), child)
+    registry.register(_spec("inherit_child"), inheriting_child)
+    registry.register(_spec("bounded_child"), bounded_child)
 
     async def parent(ctx, _p):
-        child_ctx = ctx.model_copy(update={"execution_request": None})
-        r = await runtime.invoke("child", {}, child_ctx)
-        return {"child_status": r.status}
+        before = invocation_window_remaining_s()
+        ambient["parent_before"] = before.hard_s if before is not None else None
+        r1 = await runtime.invoke("inherit_child", {}, ctx.model_copy(update={"execution_request": None}))
+        r2 = await runtime.invoke(
+            "bounded_child", {},
+            ctx.model_copy(update={"execution_request": TaskExecutionRequest(timeout_s=0.5)}),
+        )
+        after = invocation_window_remaining_s()
+        ambient["parent_after"] = after.hard_s if after is not None else None
+        return {"child_statuses": [r1.status, r2.status]}
 
     registry.register(_spec("parent"), parent)
     trace = InMemoryTraceSink()
     runtime = CapabilityRuntime(registry, trace)
     result = await runtime.invoke("parent", {}, _windowed_ctx(5.0))
+    par_before = ambient.get("parent_before")
+    par_after = ambient.get("parent_after")
+    inside_bounded = ambient.get("inside_bounded_child_hard_s")
     return {
         "result": {"kind": "result", "status": result.status,
-                   "child_status": (result.output or {}).get("child_status") if isinstance(result.output, dict) else None},
+                   "child_statuses": (result.output or {}).get("child_statuses") if isinstance(result.output, dict) else None},
         "child_window": {"sources": child_windows.get("sources"), "clamps": child_windows.get("clamps"),
                          "hard_positive_and_bounded": bool(child_windows.get("hard") and 0 < child_windows["hard"] <= 5.0)},
+        "ambient_scope": {
+            # parent ambient present and parent-sized before children
+            "parent_before_is_parent_sized": bool(par_before and 1.0 < par_before <= 5.0),
+            # the bounded child saw ITS OWN 0.5s window while inside it
+            "bounded_child_saw_own_window": bool(inside_bounded is not None and inside_bounded <= 0.5),
+            # RESTORE: after both children the ambient window is the parent's again — a leaked
+            # child scope would leave <= 0.5s here
+            "parent_restored_after_children": bool(par_after and 1.0 < par_after <= 5.0),
+        },
         "exception": None,
-        "handler_calls": 2,
+        "handler_calls": 3,
         "trace_node_set": sorted({e.node for e in trace.events}),
     }
 
 
 async def _sc_concurrent_invocations():
-    from ai_workflow_engine.execution_window import TaskExecutionRequest
+    """Concurrent public-door invocations with a BARRIER, not a sleep: each handler waits for the
+    OTHER to have started before reading its window, so both are provably mid-flight together —
+    completion itself certifies real interleaving (a serialized runtime would deadlock the barrier
+    and fail loudly via wait_for). Frozen facts: per-invocation window isolation AND ambient
+    ContextVar isolation (each task's published scope shows its own bound while both are alive)."""
+
+    from ai_workflow_engine.execution_window import TaskExecutionRequest, invocation_window_remaining_s
+
+    wide_started, tight_started = asyncio.Event(), asyncio.Event()
     seen: dict[str, Any] = {}
 
-    def cap(ctx, p):
+    async def cap(ctx, p):
+        tag = p["tag"]
+        if tag == "wide":
+            wide_started.set()
+            await asyncio.wait_for(tight_started.wait(), timeout=5.0)
+        else:
+            tight_started.set()
+            await asyncio.wait_for(wide_started.wait(), timeout=5.0)
+        # both invocations are in flight PAST this line
+        rem = invocation_window_remaining_s()
         win = ctx.execution_window
-        seen[p["tag"]] = win.hard_timeout_s if win is not None else None
-        return {"tag": p["tag"]}
+        seen[tag] = {
+            "window_hard": win.hard_timeout_s if win is not None else None,
+            "ambient_hard_s": rem.hard_s if rem is not None else None,
+        }
+        return {"tag": tag}
 
     registry = CapabilityRegistry()
     registry.register(_spec("c"), cap)
     runtime = CapabilityRuntime(registry, InMemoryTraceSink())
 
     async def one(tag, timeout_s):
-        await asyncio.sleep(0.02)
         ctx = _fixed_context(execution_request=TaskExecutionRequest(timeout_s=timeout_s))
         return await runtime.invoke("c", {"tag": tag}, ctx)
 
     wide, tight = await asyncio.gather(one("wide", 5.0), one("tight", 0.8))
+    wide_seen, tight_seen = seen.get("wide") or {}, seen.get("tight") or {}
     return {
         "wide_status": wide.status, "tight_status": tight.status,
-        "wide_window_ok": bool(seen.get("wide") and 1.0 < seen["wide"] <= 5.0),
-        "tight_window_ok": bool(seen.get("tight") and 0 < seen["tight"] <= 0.8),
-        "isolation_ok": seen.get("wide") != seen.get("tight"),
+        "interleaved": bool(wide_started.is_set() and tight_started.is_set()),
+        "wide_window_ok": bool(wide_seen.get("window_hard") and 1.0 < wide_seen["window_hard"] <= 5.0),
+        "tight_window_ok": bool(tight_seen.get("window_hard") and 0 < tight_seen["window_hard"] <= 0.8),
+        "window_isolation_ok": wide_seen.get("window_hard") != tight_seen.get("window_hard"),
+        # ContextVar isolation while BOTH are alive: each task's ambient scope carries its own
+        # bound; cross-contamination would show the other invocation's remaining time.
+        "ambient_isolation_ok": bool(
+            wide_seen.get("ambient_hard_s") is not None
+            and tight_seen.get("ambient_hard_s") is not None
+            and wide_seen["ambient_hard_s"] > 1.0
+            and tight_seen["ambient_hard_s"] <= 0.8
+        ),
+    }
+
+
+async def _sc_authored_fanout_flow():
+    """Behavior row 'authored flow/fanout' through the public door: an AI-authored FlowArtifact
+    containing a bounded fanout node is validated + compiled + run by run_authored_flow. Frozen
+    facts: parent/child statuses, per-child outcomes (one child fails → partial-failure isolation),
+    ordered capability-door trace for the fanout children, and the flow:authored provenance mark."""
+
+    from ai_workflow_engine import WorkflowEngineBuilder
+
+    builder = WorkflowEngineBuilder()
+    builder.register_capability("seed", lambda ctx, p: {"items": ["alpha", "bad", "gamma"]})
+
+    def shout(_ctx, item):
+        if item == "bad":
+            raise ValueError("cannot shout 'bad'")
+        return {"up": str(item).upper()}
+
+    builder.register_capability("shout", shout)
+    engine = builder.build()
+
+    artifact = {
+        "flow_id": "fan_flow",
+        "goal": "seed then shout each item",
+        "nodes": [
+            {"kind": "step", "id": "seed"},
+            {"kind": "fanout", "id": "shout", "items_key": "seed.items",
+             "max_parallel": 1, "max_items": 8, "output_key": "ups"},
+        ],
+    }
+    result = await engine.run_authored_flow(artifact, {"text": "hi"})
+
+    trace = list(result.trace)
+    amap = _build_alias_map(trace, [], list(result.artifacts))
+    door_events = [_canon_event(e, amap) for e in trace if e.node in ("seed", "shout")]
+    return {
+        "result": {
+            "kind": "result",
+            "status": result.status,
+            "output": _canon(result.output, amap),
+            "error": _canon(result.error, amap) if result.error else result.error,
+        },
+        "node_results": [[n.node_id, n.status] for n in result.node_results],
+        "authored_provenance": any(e.decision == "flow:authored" for e in trace),
+        "capability_door_trace": door_events,
+        "usage": _canon_usage_summary(result.usage),
+        "exception": None,
+    }
+
+
+async def _sc_durable_suspend_resume():
+    """Behavior row 'durable suspend/resume' through the public door: a DurableWaitPolicy human
+    gate suspends the run (wait_handle, NO local snapshot), deliver_wait_event resumes it with the
+    claimed signal, and the grouped lifecycle completes. Frozen facts: both segment statuses, the
+    wait identity (workflow/node), the delivery outcome kind, the post-wait idempotency contract
+    (wait_id:event_id visible to post-wait capabilities), node results across BOTH segments, the
+    coordinator's terminal wait status/resolution, and the cumulative usage summary."""
+
+    from ai_workflow_engine import (
+        DurableWaitPolicy,
+        InMemoryWaitCoordinator,
+        WorkflowBuilder,
+        WorkflowEngineBuilder,
+    )
+    from pydantic import BaseModel as _GateBM
+
+    class Gate(_GateBM):
+        status: str
+        value: str = ""
+
+    def gate(ctx, _p):
+        event = ctx.metadata.get("resume_event")
+        if event is None:
+            return Gate(status="pending")
+        return Gate(status="answered", value=str(event))
+
+    def finish(ctx, p):
+        return {"answer": p.value, "wait_idempotency": ctx.metadata.get("wait_idempotency")}
+
+    import datetime as _dt
+
+    def _frozen_clock() -> _dt.datetime:
+        # deterministic time source: every wait stamp/deadline is identical across runs AND wheels
+        return _dt.datetime(2026, 1, 1, tzinfo=_dt.timezone.utc)
+
+    coordinator = InMemoryWaitCoordinator(clock=_frozen_clock)
+    builder = WorkflowEngineBuilder().with_wait_coordinator(coordinator, clock=_frozen_clock)
+    builder.register_capability("gate", gate)
+    builder.register_capability("finish", finish)
+    builder.register_capability("escalate", lambda ctx, p: {"escalated": True})
+    builder.register_workflow(
+        WorkflowBuilder("dur_flow")
+        .human("gate", wait_policy=DurableWaitPolicy(timeout_s=60), timeout_to="escalate")
+        .step("finish")
+        .step("escalate")
+        .build()
+    )
+    engine = builder.build()
+
+    first = await engine.run("dur_flow", {})
+    handle = first.wait_handle
+    outcome = await engine.deliver_wait_event(
+        handle.wait_id, {"kind": "signal", "event_id": "evt-1", "payload": "approved"}
+    )
+    stored = await coordinator.get(handle.wait_id)
+    final = outcome.run_result
+    return {
+        "first_status": first.status,
+        "suspension_door": {
+            "has_wait_handle": handle is not None,
+            "has_local_snapshot": first.snapshot is not None,
+            "workflow_id": handle.workflow_id,
+            "suspended_node": handle.suspended_node,
+        },
+        "delivery": {
+            "kind": outcome.kind,
+            "final_status": final.status,
+            "answer": (final.output or {}).get("answer") if isinstance(final.output, dict) else None,
+            "idempotency_contract_held": (
+                isinstance(final.output, dict)
+                and final.output.get("wait_idempotency") == f"{handle.wait_id}:evt-1"
+            ),
+        },
+        "node_results": [[n.node_id, n.status] for n in final.node_results],
+        "wait_terminal": {"status": stored.status, "resolution_kind": stored.resolution_kind},
+        "usage": _canon_usage_summary(final.usage),
+        "exception": None,
     }
 
 
@@ -681,6 +878,8 @@ SCENARIOS: dict[str, Callable] = {
     "detail_sink_failure": _sc_detail_sink_failure,
     "nested_invocation": _sc_nested_invocation,
     "concurrent_invocations": _sc_concurrent_invocations,
+    "authored_fanout_flow": _sc_authored_fanout_flow,
+    "durable_suspend_resume": _sc_durable_suspend_resume,
 }
 
 

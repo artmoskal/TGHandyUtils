@@ -40,9 +40,62 @@ _RESEAL_HINT = (
 )
 
 
+# The ACCEPTED plan inventory (plan §"Behavior Inventory To Freeze"), transcribed here
+# INDEPENDENTLY of the oracle so the completeness check can never validate the implementation's
+# own list against itself (codex I1 finding 4). Every plan row maps to the named scenario key(s);
+# removing a scenario fails BY PLAN ROW NAME.
+_ACCEPTED_PLAN_INVENTORY: dict[str, list[str]] = {
+    "unknown capability": ["unknown_capability"],
+    "invalid input": ["invalid_input"],
+    "side effect denied": ["side_effect_denied"],
+    "budget denied": ["budget_denied", "worker_call_accounting"],
+    "sync success": ["sync_success"],
+    "async success": ["async_success"],
+    "explicit partial result": ["explicit_partial"],
+    "invalid output": ["invalid_output"],
+    "handler exception": ["handler_exception"],
+    "handler-owned TimeoutError": ["handler_owned_timeout"],
+    "cooperative deadline": ["cooperative_deadline"],
+    "caller cancellation": ["caller_cancellation"],
+    "swallowed cancellation": ["swallowed_cancellation"],
+    "process timeout": ["process_timeout"],
+    "artifact result": ["artifact_result"],
+    "capture off": ["capture_off"],
+    "capture full": ["capture_full"],
+    "trace sink failure": ["trace_sink_failure"],
+    "detail sink failure": ["detail_sink_failure"],
+    "nested invocation": ["nested_invocation"],
+    "concurrent invocations": ["concurrent_invocations"],
+    "authored flow/fanout": ["authored_fanout_flow"],
+    "durable suspend/resume": ["durable_suspend_resume"],
+}
+
+
 def test_behavior_inventory_is_complete():
-    missing = missing_behavior_rows()
-    assert missing == [], f"behavior-inventory rows without a scenario: {missing}"
+    """Bijection against the ACCEPTED plan inventory: every plan row has its scenario(s), every
+    scenario belongs to a plan row, and the oracle's own row list agrees — three-way, so neither
+    the oracle nor this test can drift alone."""
+
+    from invocation_oracle import BEHAVIOR_ROWS, SCENARIOS
+
+    rows_missing_scenarios = {
+        row: [key for key in keys if key not in SCENARIOS]
+        for row, keys in _ACCEPTED_PLAN_INVENTORY.items()
+        if any(key not in SCENARIOS for key in keys)
+    }
+    assert not rows_missing_scenarios, (
+        f"accepted plan rows without their scenario(s): {rows_missing_scenarios}"
+    )
+
+    mapped = {key for keys in _ACCEPTED_PLAN_INVENTORY.values() for key in keys}
+    unmapped = set(SCENARIOS) - mapped
+    assert not unmapped, f"scenarios not mapped to any accepted plan row: {sorted(unmapped)}"
+
+    assert set(BEHAVIOR_ROWS) == set(SCENARIOS), (
+        "oracle BEHAVIOR_ROWS drifted from its scenario set: "
+        f"{sorted(set(BEHAVIOR_ROWS) ^ set(SCENARIOS))}"
+    )
+    assert missing_behavior_rows() == []
 
 
 @pytest.mark.asyncio
