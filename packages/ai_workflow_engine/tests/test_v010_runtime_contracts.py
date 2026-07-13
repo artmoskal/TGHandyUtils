@@ -158,7 +158,7 @@ async def test_run_timeout_actually_bounds_slow_async_work(caplog):
     assert '"outcome": "partial"' in caplog.text
 
 
-async def test_exhausted_run_refuses_downstream_work_as_typed_partial():
+async def test_remaining_finite_run_refuses_uninterruptible_downstream_work_as_typed_partial():
     calls = {"after": 0}
 
     async def consume(_ctx, _payload):
@@ -171,7 +171,7 @@ async def test_exhausted_run_refuses_downstream_work_as_typed_partial():
 
     engine = (
         WorkflowEngineBuilder()
-        .with_profile(_profile("exhausted", timeout_s=0.05))
+        .with_profile(_profile("exhausted", timeout_s=0.2))
         .register_capability("consume", consume, kind="deterministic")
         .register_capability("after", after, kind="deterministic")
         .register_workflow(WorkflowBuilder("exhausted").step("consume").step("after").build())
@@ -190,7 +190,9 @@ async def test_exhausted_run_refuses_downstream_work_as_typed_partial():
         if event.node == "after" and event.decision == "partial"
     )
     assert terminal.metadata["timeout_reason"] == "execution_window_exceeded"
-    assert terminal.metadata["execution_window"]["hard_timeout_s"] == 0
+    remaining_hard = terminal.metadata["execution_window"]["hard_timeout_s"]
+    assert 0 <= remaining_hard < 0.06
+    assert "run_limit" in terminal.metadata["execution_window"]["limiting_sources"]
 
 
 async def test_snapshot_active_elapsed_duration_is_strict_finite_and_non_negative():
@@ -864,12 +866,15 @@ async def test_cooperative_cancellation_suppression_is_a_containment_failure():
     result = await engine.run("coop_suppress", {})
     assert result.status == "failed", "suppressed cancellation is a failure, not a clean partial"
     assert "cancellation" in (result.error or "").lower() or "suppress" in (result.error or "").lower()
+    node = next(e for e in result.trace if e.node == "sneaky" and e.phase == "tool:result")
+    assert node.metadata["timeout_reason"] == "cancellation_containment_failed"
+    assert node.metadata["execution_window"]["enforcement"] == "cooperative"
 
 
 async def test_inline_capability_with_declared_window_is_rejected_before_running():
     """Phase 2.3 (none): an uninterruptible inline capability that DECLARES a finite window
-    (spec.timeout_s) is refused before the handler runs — the engine never claims a hard stop
-    it cannot perform. A run-limit-only window on inline work stays boundary-only (allowed)."""
+    (task/spec/run) is refused before the handler runs — the engine never claims a hard stop
+    it cannot perform."""
 
     from ai_workflow_engine import CapabilitySpec
 
@@ -892,6 +897,17 @@ async def test_inline_capability_with_declared_window_is_rejected_before_running
     assert ran["n"] == 0, "the inline handler with a declared hard window must NOT run"
     assert result.status in ("failed", "partial")
     assert "cannot be interrupted" in (result.error or "") or "process-backed" in (result.error or "")
+
+    run_bounded = (
+        WorkflowEngineBuilder()
+        .with_profile(_profile("inline_run_bound", timeout_s=2.0))
+        .register_capability("inline", inline, kind="deterministic")
+        .register_workflow(WorkflowBuilder("inline_run_bound").step("inline").build())
+        .build()
+    )
+    second = await run_bounded.run("inline_run_bound", {})
+    assert ran["n"] == 0, "a run-level hard window cannot make inline Python interruptible"
+    assert second.status in ("failed", "partial")
 
 
 async def test_inline_capability_without_declared_window_still_runs():
@@ -1035,32 +1051,65 @@ async def test_resolved_window_enforcement_is_truthful_on_the_context():
 
 
 async def test_graph_failsafe_stops_a_hang_outside_a_capability_boundary():
-    """Phase 2R #6b: a `none`-enforcement async handler that runs unbounded (bypassing
-    per-capability cancellation) must still be stopped by the graph-level fail-safe — the run
-    fails loudly rather than hanging forever."""
+    """Graph code outside capability enforcement gets a bounded cancellation allowance.
 
-    from ai_workflow_engine import CapabilitySpec
+    A graph that suppresses the first cancellation cannot hang the caller indefinitely; the
+    returned failure and trace both say containment failed instead of claiming a clean stop.
+    """
 
-    async def unbounded(_ctx, _payload):
-        import asyncio
-        await asyncio.sleep(30.0)  # would hang far past the run window
-        return {"unreached": True}
+    import time as _t
+    from types import SimpleNamespace
 
-    engine = (
-        WorkflowEngineBuilder()
-        .with_profile(_profile("hang", timeout_s=0.2))
-        # explicit none + no declared window (run-limit only) → not rejected, not cooperatively
-        # bounded → only the graph fail-safe can stop it.
-        .register_capability(
-            "unbounded", unbounded,
-            spec=CapabilitySpec(name="unbounded", kind="deterministic", timeout_enforcement="none"),
-        )
-        .register_workflow(WorkflowBuilder("hang").step("unbounded").build())
-        .build()
+    from ai_workflow_engine.engine.capabilities import InMemoryTraceSink
+    from ai_workflow_engine.engine.runner import WorkflowRunner
+    from ai_workflow_engine.models import RuntimeLimits
+
+    class _SuppressingGraph:
+        async def ainvoke(self, _state, _config=None):
+            try:
+                await asyncio.sleep(30.0)
+            except asyncio.CancelledError:
+                await asyncio.sleep(30.0)  # second cancellation after grace stops this
+            return {"status": "completed"}
+
+    sink = InMemoryTraceSink()
+    runner = WorkflowRunner(trace_sink=sink)
+    runner._GRAPH_CANCELLATION_GRACE_S = 0.03
+    started = _t.monotonic()
+    result = await runner.run(
+        _SuppressingGraph(),
+        {"engine_context": SimpleNamespace(limits=RuntimeLimits(timeout_s=0.03))},
+        workflow_type="hang",
     )
-    result = await engine.run("hang", {})
-    assert result.status == "failed"
-    assert "fail-safe" in (result.error or "") or "did not stop" in (result.error or "")
+    elapsed = _t.monotonic() - started
+
+    assert elapsed < 0.3, "cancellation suppression must not hang engine.run"
+    assert result["status"] == "failed"
+    assert result["graph_failsafe"]["containment_failed"] is True
+    event = next(e for e in sink.events if e.phase == "run:failsafe")
+    assert event.metadata["graph_failsafe"] == result["graph_failsafe"]
+
+
+async def test_exhausted_graph_failsafe_never_starts_graph_code():
+    from ai_workflow_engine.engine.runner import (
+        GraphFailsafeWindow,
+        _GraphFailsafeExpired,
+        _invoke_graph_with_failsafe,
+    )
+
+    calls = 0
+
+    async def graph_work():
+        nonlocal calls
+        calls += 1
+        return {"status": "completed"}
+
+    with pytest.raises(_GraphFailsafeExpired):
+        await _invoke_graph_with_failsafe(
+            graph_work(),
+            GraphFailsafeWindow(work_timeout_s=0.0, cancellation_grace_s=0.1),
+        )
+    assert calls == 0
 
 
 async def test_nested_capability_invocation_receives_a_parent_clamped_window():
@@ -1086,7 +1135,7 @@ async def test_nested_capability_invocation_receives_a_parent_clamped_window():
     runtime = CapabilityRuntime(registry)
     child_windows: dict = {}
 
-    def child(ctx, payload):
+    async def child(ctx, payload):
         child_windows[payload["tag"]] = ctx.execution_window
         return {"ok": True}
 
@@ -1136,10 +1185,13 @@ async def test_bounded_capability_records_its_window_on_the_success_trace_event(
     on the result trace event, so the viewer can project soft/hard/enforcement on a normal node
     — not only on the timeout path. Unbounded runs stay lean (no window metadata)."""
 
+    async def quick(_context, _payload):
+        return {"ok": True}
+
     engine = (
         WorkflowEngineBuilder()
         .with_profile(_profile("bounded_ok", timeout_s=5.0))
-        .register_capability("quick", lambda _c, _p: {"ok": True}, kind="deterministic")
+        .register_capability("quick", quick, kind="deterministic")
         .register_workflow(WorkflowBuilder("bounded_ok").step("quick").build())
         .build()
     )
@@ -1244,6 +1296,29 @@ def test_external_process_capability_declares_process_enforcement():
     assert "external_call" in cap.spec.side_effects
 
 
+def test_published_capability_spec_cannot_silently_discard_registration_policy():
+    """A handler-owned spec is the contract. Duplicate registration policy must fail loudly
+    instead of silently dropping a stronger side-effect ledger."""
+
+    from ai_workflow_engine.engine.external import ExternalProcessCapability
+
+    cap = ExternalProcessCapability(name="run_process", side_effects=["external_call"])
+    with pytest.raises(ValueError, match="would be ignored.*side_effects"):
+        WorkflowEngineBuilder().register_capability(
+            "run_process",
+            cap,
+            side_effects=["workspace_write", "external_call"],
+        )
+
+    configured = ExternalProcessCapability(
+        name="run_process",
+        side_effects=["workspace_write", "external_call"],
+    )
+    engine = WorkflowEngineBuilder().register_capability("run_process", configured).build()
+    spec, _handler = engine.registry.get("run_process")
+    assert spec.side_effects == ["workspace_write", "external_call"]
+
+
 async def test_external_process_obeys_the_ambient_engine_window(tmp_path):
     """5R finding 1/2: the ambient invocation window CLAMPS the subprocess bound — a huge
     explicit request timeout cannot outlive the engine window; the child is stopped and the
@@ -1257,38 +1332,61 @@ async def test_external_process_obeys_the_ambient_engine_window(tmp_path):
         ExternalProcessRequest,
     )
     from ai_workflow_engine.execution_window import (
-        publish_invocation_soft_deadline,
-        reset_invocation_soft_deadline,
+        publish_invocation_window,
+        reset_invocation_window,
     )
 
     cap = ExternalProcessCapability()
-    token = publish_invocation_soft_deadline(_t.monotonic() + 0.6)
+    now = _t.monotonic()
+    token = publish_invocation_window(
+        soft_deadline_monotonic=now + 0.6,
+        hard_deadline_monotonic=now + 1.1,
+    )
     try:
         started = _t.monotonic()
         result = await cap(
             None,
             ExternalProcessRequest(
-                command=[sys.executable, "-c", "import time; time.sleep(30)"],
+                command=[
+                    sys.executable,
+                    "-c",
+                    (
+                        "import signal,time; "
+                        "signal.signal(signal.SIGTERM, lambda *_: None); "
+                        "print('ready', flush=True); time.sleep(30)"
+                    ),
+                ],
                 timeout_s=300.0,  # a huge explicit bound must NOT win over the engine window
                 kill_grace_s=0.5,
             ),
         )
         elapsed = _t.monotonic() - started
     finally:
-        reset_invocation_soft_deadline(token)
+        reset_invocation_window(token)
 
     assert result.status == "partial"
-    assert elapsed < 5.0, f"ambient window did not bound the child (took {elapsed:.1f}s)"
+    assert elapsed < 1.1, f"cleanup did not settle before the hard window (took {elapsed:.2f}s)"
+    assert result.metadata["killed_after_grace"] is True
+    assert "ready" in result.output["stdout"]
     assert result.metadata["bound_source"] == "engine_window"
     assert result.metadata["timeout_s"] <= 0.6
     assert result.metadata["requested_timeout_s"] == 300.0
+    bound = result.metadata["process_execution_bound"]
+    assert bound["engine_hard_s"] <= 1.1
+    assert bound["settle_reserve_s"] > 0
+    assert (
+        bound["work_timeout_s"]
+        + bound["kill_grace_s"]
+        + bound["settle_reserve_s"]
+        <= bound["engine_hard_s"]
+    )
 
 
 def test_graph_failsafe_budget_follows_the_session_remaining_not_the_full_timeout():
     """5R finding 4: after resume, the fail-safe must grant the REMAINING active budget —
-    never a fresh full timeout — plus the represented margin."""
+    never a fresh full timeout — with cancellation grace represented separately."""
 
-    from ai_workflow_engine.engine.runner import derive_graph_failsafe_timeout_s
+    from ai_workflow_engine.engine.runner import derive_graph_failsafe_window
     from ai_workflow_engine.models import (
         CapabilityContext,
         RuntimePlan,
@@ -1311,19 +1409,30 @@ def test_graph_failsafe_budget_follows_the_session_remaining_not_the_full_timeou
     clock_now = [100.0]
     fresh = _session()
     fresh.start_execution_window(run_timeout_s=10.0, clock=lambda: clock_now[0])
-    assert derive_graph_failsafe_timeout_s(10.0, fresh, margin_s=2.0) == pytest.approx(12.0)
+    fresh_window = derive_graph_failsafe_window(
+        10.0, fresh, cancellation_grace_s=2.0
+    )
+    assert fresh_window.work_timeout_s == pytest.approx(10.0)
+    assert fresh_window.cancellation_grace_s == pytest.approx(2.0)
 
     resumed = _session()
     resumed.start_execution_window(
         run_timeout_s=10.0, clock=lambda: clock_now[0], prior_active_elapsed_s=9.0
     )
-    assert derive_graph_failsafe_timeout_s(10.0, resumed, margin_s=2.0) == pytest.approx(3.0), (
+    resumed_window = derive_graph_failsafe_window(
+        10.0, resumed, cancellation_grace_s=2.0
+    )
+    assert resumed_window.work_timeout_s == pytest.approx(1.0), (
         "a resumed run that already consumed 9 of its 10s must NOT get a fresh full timeout"
     )
+    assert resumed_window.cancellation_grace_s == pytest.approx(2.0)
 
     # no session -> the declared timeout; unbounded -> no fail-safe at all
-    assert derive_graph_failsafe_timeout_s(10.0, None, margin_s=2.0) == pytest.approx(12.0)
-    assert derive_graph_failsafe_timeout_s(None, fresh, margin_s=2.0) is None
+    no_session = derive_graph_failsafe_window(10.0, None, cancellation_grace_s=2.0)
+    assert no_session.work_timeout_s == pytest.approx(10.0)
+    assert derive_graph_failsafe_window(None, fresh, cancellation_grace_s=2.0) is None
+    with pytest.raises(ValueError, match="finite non-negative"):
+        derive_graph_failsafe_window(10.0, fresh, cancellation_grace_s=float("inf"))
 
 
 async def test_inner_timeout_error_is_not_relabeled_as_the_graph_failsafe():

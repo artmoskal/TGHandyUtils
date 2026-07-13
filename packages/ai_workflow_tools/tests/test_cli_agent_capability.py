@@ -619,7 +619,7 @@ async def test_engine_invoke_resolves_the_window_the_cli_agent_then_inherits(
     )
 
     assert result.status == "accepted"
-    assert spy.request.timeout_s == 7.0  # hard 8 − reserve 1 = soft 7, inherited by the subprocess
+    assert spy.request.timeout_s == pytest.approx(7.0, abs=0.01)
 
 
 async def test_engine_window_actually_bounds_a_real_slow_subprocess_and_salvages(

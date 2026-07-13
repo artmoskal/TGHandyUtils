@@ -1,7 +1,7 @@
 # Voice Brain Engine Integration Guide
 
-Status: **the engine supports the required execution boundary as of the `engine-v0.10.0` release
-candidate (tag pending final review — do not re-pin until it exists); voice
+Status: **the engine supports the required execution boundary as of the immutable
+`engine-v0.10.0` release; voice
 integration remains product-owned and must run its own latency/cancellation canary.** This replaces
 the historical June request/reply transcript.
 
@@ -54,6 +54,8 @@ clients.
 - Barge-in cancels the task/future running the current workflow.
 - A different thread marshals with `asyncio.run_coroutine_threadsafe` and cancels the returned future.
 - Provider clients and tools must propagate `CancelledError` and release resources in `finally`.
+- A finite profile rejects synchronous inline handlers because Python cannot stop them. Use async
+  cooperative clients for the voice hot path and process-backed capabilities for hard-bounded tools.
 - Read-only/idempotent tools are preferred. Cancellation cannot roll back a partial external effect;
   such effects require product idempotency and explicit policy.
 

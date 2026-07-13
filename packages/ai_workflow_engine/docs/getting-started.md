@@ -9,16 +9,17 @@ Always install `ai-workflow-engine`. Add `ai-workflow-tools` only for reusable C
 `ai-workflow-viewer` only where bundles are rendered. Keeping optional packages out of simple runtime
 images preserves the complexity gradient.
 
-Build from `engine-v0.9.2` and record:
+Build from `engine-v0.10.0` and record:
 
 ```text
-engine_tag=engine-v0.9.2
-engine_source_commit=<git rev-parse engine-v0.9.2^{}>
+engine_tag=engine-v0.10.0
+engine_source_commit=<git rev-parse engine-v0.10.0^{}>
 engine_wheel_sha256=<sha256 of vendored wheel>
 ```
 
-Never vendor engine source or install a live branch. Moving from `engine-v0.8.1`? Read
-[`migration-v0.9.md`](migration-v0.9.md) FIRST — it lists every breaking change.
+Never vendor engine source or install a live branch. Moving from `engine-v0.9.2`? Read
+[`migration-v0.10.md`](migration-v0.10.md) FIRST. Moving from `engine-v0.8.1` or older also requires
+[`migration-v0.9.md`](migration-v0.9.md); both list real contract changes.
 
 ## 2. Declare, Register, Run
 

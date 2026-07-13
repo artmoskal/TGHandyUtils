@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 
 from ai_workflow_engine.engine.external import ExternalProcessCapability, ExternalProcessRequest
 from ai_workflow_engine.execution_window import (
-    invocation_soft_remaining_s,
+    invocation_window_remaining_s,
     resolve_invocation_bound,
 )
 from ai_workflow_engine.models import (
@@ -72,7 +72,20 @@ class _ExecutionBound:
     soft_s: float | None = None
     hard_s: float | None = None
     reserve_s: float = 0.0
+    headroom_s: float = 0.0
+    settle_reserve_s: float = 0.0
     error: str | None = None
+
+    def metadata(self) -> dict[str, Any]:
+        return {
+            "work_timeout_s": self.timeout_s,
+            "kill_grace_s": self.kill_grace_s,
+            "source": self.source,
+            "engine_soft_s": self.soft_s,
+            "engine_hard_s": self.hard_s,
+            "cleanup_headroom_s": self.headroom_s,
+            "settle_reserve_s": self.settle_reserve_s,
+        }
 
 
 class CliAgentCapability:
@@ -185,7 +198,11 @@ class CliAgentCapability:
                 stdin_data=invocation.stdin_data,
                 result_file=invocation.result_file,
                 kill_grace_s=bound.kill_grace_s,
-                metadata={"flavor": self.flavor.name, "execution_bound_source": bound.source},
+                metadata={
+                    "flavor": self.flavor.name,
+                    "execution_bound_source": bound.source,
+                    "process_execution_bound": bound.metadata(),
+                },
             ),
         )
 
@@ -245,6 +262,7 @@ class CliAgentCapability:
                 "cost_known": result.notional_cost_usd is not None,
                 "execution_bound_s": bound.timeout_s,
                 "execution_bound_source": bound.source,
+                "process_execution_bound": bound.metadata(),
             },
         )
 
@@ -259,14 +277,16 @@ class CliAgentCapability:
         loudly, never a resurrected hidden default."""
 
         window = context.execution_window
-        if window is not None and window.is_bounded:
+        ambient = invocation_window_remaining_s()
+        if ambient is not None:
+            engine_soft = ambient.soft_s
+            engine_hard = ambient.hard_s
+        elif window is not None and window.is_bounded:
             engine_soft = window.soft_timeout_s
             engine_hard = window.hard_timeout_s
         else:
-            # No resolved window on the context (direct call inside another capability):
-            # the ambient invocation soft-remaining is the engine bound; the ambient
-            # owner's own reserve hosts the cleanup.
-            engine_soft = invocation_soft_remaining_s()
+            # Standalone/direct calls may still provide an explicit request timeout.
+            engine_soft = None
             engine_hard = None
         shared = resolve_invocation_bound(
             engine_soft_s=engine_soft,
@@ -294,6 +314,8 @@ class CliAgentCapability:
             soft_s=engine_soft,
             hard_s=engine_hard,
             reserve_s=finalize_s,
+            headroom_s=shared.headroom_s,
+            settle_reserve_s=shared.settle_reserve_s,
         )
 
     @staticmethod

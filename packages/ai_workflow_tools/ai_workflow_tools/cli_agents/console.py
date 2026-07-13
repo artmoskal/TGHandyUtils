@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextvars
 import tempfile
+import threading
 from pathlib import Path
 from typing import Sequence
 
@@ -12,7 +15,8 @@ from typing import Any
 
 from ai_workflow_engine.engine.external import ExternalProcessCapability, ExternalProcessRequest
 from ai_workflow_engine.execution_window import (
-    invocation_soft_remaining_s,
+    InvocationBound,
+    invocation_window_remaining_s,
     resolve_invocation_bound,
 )
 from ai_workflow_engine.llm_protocol import ChatMessage, LLMRequest, LLMResponse
@@ -43,20 +47,60 @@ def _has_explicit_tool_flag(argv: Sequence[str]) -> bool:
     )
 
 
-def _console_effective_timeout_s(explicit_timeout_s: float, *, owner: str) -> float:
+def _console_effective_bound(explicit_timeout_s: float, *, owner: str) -> InvocationBound:
     """One console bound through the engine-owned invocation-window surface: the ambient
     engine soft-remaining (when this call runs inside a bounded engine invocation) narrowed
     by the client's explicit timeout — narrowing-only, the explicit value can never widen an
     engine bound. Standalone calls (no ambient window) keep the explicit bound."""
 
+    ambient = invocation_window_remaining_s()
     bound = resolve_invocation_bound(
-        engine_soft_s=invocation_soft_remaining_s(),
+        engine_soft_s=ambient.soft_s if ambient is not None else None,
+        engine_hard_s=ambient.hard_s if ambient is not None else None,
         explicit_timeout_s=explicit_timeout_s,
         owner=owner,
     )
     if bound.error is not None or bound.timeout_s is None:
         raise ValueError(bound.error or f"{owner}: no console timeout resolved")
-    return bound.timeout_s
+    return bound
+
+
+def _run_external_process_sync(
+    runner: ExternalProcessCapability,
+    request: ExternalProcessRequest,
+) -> Any:
+    """Use the engine's process owner from a synchronous chat-model interface.
+
+    LangChain's sync ``invoke`` may run on a plain worker thread (the normal engine path) or
+    directly on an event-loop thread. ``asyncio.run`` handles the former; the latter needs a
+    short bridge thread so we do not create a nested event loop. The current ContextVar state is
+    copied so the process owner still sees the engine's invocation window.
+    """
+
+    async def invoke() -> Any:
+        return await runner(None, request)
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(invoke())
+
+    context = contextvars.copy_context()
+    result: list[Any] = []
+    error: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            result.append(context.run(asyncio.run, invoke()))
+        except BaseException as exc:
+            error.append(exc)
+
+    thread = threading.Thread(target=run, name="ai-workflow-console-process", daemon=False)
+    thread.start()
+    thread.join()
+    if error:
+        raise error[0]
+    return result[0]
 
 
 class ConsoleCliError(RuntimeError):
@@ -73,6 +117,7 @@ class ConsoleCliError(RuntimeError):
         num_turns: "int | None" = None,
         failure_kind: str = "",
         worker_calls: int = 1,
+        process_execution_bound: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         # QRF.4: the classification vocabulary is CLOSED — a typo ("timeuot") is a loud
@@ -91,6 +136,7 @@ class ConsoleCliError(RuntimeError):
         self.num_turns = num_turns
         self.failure_kind = failure_kind
         self.worker_calls = worker_calls
+        self.process_execution_bound = dict(process_execution_bound or {})
 
 
 class ConsoleLLMClient:
@@ -158,7 +204,7 @@ class ConsoleLLMClient:
             invocation = _build_console_invocation(self.flavor, prompt, Path(workspace), extra_argv)
             # 5R: inside an engine run the ambient invocation window bounds this call — the
             # client's own timeout_s may only NARROW it; standalone calls keep it as-is.
-            effective_timeout_s = _console_effective_timeout_s(
+            process_bound = _console_effective_bound(
                 self.timeout_s, owner=f"console_llm[{self.flavor.name}]"
             )
             external = await self.external_runner(
@@ -166,11 +212,15 @@ class ConsoleLLMClient:
                 ExternalProcessRequest(
                     command=invocation.argv,
                     cwd=workspace,
-                    timeout_s=effective_timeout_s,
+                    timeout_s=process_bound.timeout_s,
                     stdin_data=invocation.stdin_data,
                     result_file=invocation.result_file,
-                    kill_grace_s=10.0,
-                    metadata={"flavor": self.flavor.name, "console_llm": True},
+                    kill_grace_s=process_bound.kill_grace_s,
+                    metadata={
+                        "flavor": self.flavor.name,
+                        "console_llm": True,
+                        "process_execution_bound": process_bound.metadata(),
+                    },
                 ),
             )
             output = external.output if isinstance(external.output, dict) else {}
@@ -201,6 +251,11 @@ class ConsoleLLMClient:
                 cost_class="subscription_notional" if self.subscription_mode else "metered",
                 notional_usd=notional_usd,
                 raw=output,
+                metadata={
+                    "process_execution_bound": external.metadata.get(
+                        "process_execution_bound", process_bound.metadata()
+                    )
+                },
             )
 
     @staticmethod
@@ -254,8 +309,9 @@ class ConsoleChatModel:
 
     Mirrors ``ChatGptBrowserChatModel``: product paths that meter LangChain chat calls
     (``invoke_metered_chat``) only need ``.invoke(messages) -> something-with-.content``.
-    Runs the CLI with ``subprocess.run`` (no event loop required — safe from sync call
-    sites). Text-only: multimodal message parts are rejected loudly. The caller passes
+    Bridges the sync interface to the engine's shared async process owner (bounded stdin,
+    process-tree termination, and reap). Text-only: multimodal message parts are rejected loudly.
+    The caller passes
     ``cost_class="subscription_notional"`` to its metering wrapper (via the backend
     registry) — CLI subscriptions report notional cost, never phantom metered USD.
     """
@@ -266,19 +322,21 @@ class ConsoleChatModel:
         *,
         timeout_s: float = 240.0,
         extra_argv: Sequence[str] = (),
+        external_runner: ExternalProcessCapability | None = None,
     ) -> None:
         self.flavor = flavor
         self.timeout_s = float(timeout_s)
         self.extra_argv = list(extra_argv)
+        self.external_runner = external_runner or ExternalProcessCapability(
+            name=f"console_chat_{flavor.name}"
+        )
 
     def invoke(self, messages: Any) -> Any:
-        import subprocess
-
         prompt = _flatten_langchain_messages(messages)
         # 5R: inside an engine run the ambient invocation window bounds this call — the
         # model's own timeout_s may only NARROW it; standalone calls keep it as-is.
         # (ContextVars propagate into worker threads via copy_context/to_thread.)
-        effective_timeout_s = _console_effective_timeout_s(
+        process_bound = _console_effective_bound(
             self.timeout_s, owner=f"console_chat[{self.flavor.name}]"
         )
         with tempfile.TemporaryDirectory(prefix="ai-workflow-console-") as workspace:
@@ -286,13 +344,21 @@ class ConsoleChatModel:
                 self.flavor, prompt, Path(workspace), self.extra_argv
             )
             try:
-                completed = subprocess.run(
-                    invocation.argv,
-                    input=invocation.stdin_data,
-                    capture_output=True,
-                    text=True,
-                    timeout=effective_timeout_s,
-                    cwd=workspace,
+                external = _run_external_process_sync(
+                    self.external_runner,
+                    ExternalProcessRequest(
+                        command=invocation.argv,
+                        cwd=workspace,
+                        timeout_s=process_bound.timeout_s,
+                        stdin_data=invocation.stdin_data,
+                        result_file=invocation.result_file,
+                        kill_grace_s=process_bound.kill_grace_s,
+                        metadata={
+                            "flavor": self.flavor.name,
+                            "console_chat": True,
+                            "process_execution_bound": process_bound.metadata(),
+                        },
+                    ),
                 )
             except FileNotFoundError as exc:
                 raise RuntimeError(
@@ -300,23 +366,16 @@ class ConsoleChatModel:
                     f"({invocation.argv[0]!r}) — install/authenticate it in this runtime "
                     "or route the role back to an API model"
                 ) from exc
-            except subprocess.TimeoutExpired as exc:
+            output = external.output if isinstance(external.output, dict) else {}
+            if external.status == "partial":
                 raise RuntimeError(
-                    f"console CLI timed out after {effective_timeout_s:.0f}s ({self.flavor.name})"
-                ) from exc
-            if completed.returncode != 0:
-                raise RuntimeError(
-                    f"console CLI exited {completed.returncode}: {completed.stderr[-800:]}"
+                    f"console CLI timed out after {process_bound.timeout_s:.0f}s ({self.flavor.name})"
                 )
-            output: dict[str, Any] = {
-                "stdout": completed.stdout,
-                "stderr": completed.stderr,
-                "returncode": completed.returncode,
-            }
-            if invocation.result_file:
-                result_path = Path(invocation.result_file)
-                if result_path.exists():
-                    output["result"] = result_path.read_text(encoding="utf-8")
+            if external.status != "accepted" or output.get("returncode") != 0:
+                raise RuntimeError(
+                    f"console CLI exited {output.get('returncode')}: "
+                    f"{str(output.get('stderr') or '')[-800:]}"
+                )
             parsed = parse_cli_process_output(self.flavor, output)
             logger.info(
                 "console_chat_call flavor=%s tokens_in=%s tokens_out=%s cost_usd=%s duration_ms=%s",
@@ -328,17 +387,30 @@ class ConsoleChatModel:
             )
             if not parsed.text.strip():
                 raise RuntimeError(f"console CLI returned no text ({self.flavor.name})")
-            return _ConsoleChatReply(content=parsed.text, raw=output)
+            return _ConsoleChatReply(
+                content=parsed.text,
+                raw=output,
+                response_metadata={
+                    "process_execution_bound": external.metadata.get(
+                        "process_execution_bound", process_bound.metadata()
+                    )
+                },
+            )
 
 
 class _ConsoleChatReply:
-    """Minimal chat-response shape: ``.content`` plus empty usage metadata attributes."""
+    """Minimal chat-response shape with optional transport metadata."""
 
-    def __init__(self, content: str, raw: dict[str, Any]):
+    def __init__(
+        self,
+        content: str,
+        raw: dict[str, Any],
+        response_metadata: dict[str, Any] | None = None,
+    ):
         self.content = content
         self.raw = raw
+        self.response_metadata = dict(response_metadata or {})
         self.usage_metadata = None
-        self.response_metadata: dict[str, Any] = {}
 
 
 def _flatten_langchain_messages(messages: Any) -> str:
@@ -456,6 +528,9 @@ def _console_failure(flavor: CliFlavor, external: Any, output: dict) -> "Console
         returncode=returncode if isinstance(returncode, int) else None,
         num_turns=aborted.num_turns,
         failure_kind=failure_kind,
+        process_execution_bound=getattr(external, "metadata", {}).get(
+            "process_execution_bound", {}
+        ),
     )
 
 

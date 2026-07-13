@@ -1250,6 +1250,56 @@ async def test_external_process_capability_terminates_then_grace_kills_stubborn_
     assert "ready" in result.output["stdout"]
 
 
+@pytest.mark.skipif(os.name != "posix", reason="process-group ownership is POSIX-specific")
+async def test_external_process_timeout_stops_the_owned_descendant_tree(tmp_path):
+    marker = tmp_path / "descendant-survived.txt"
+    child = (
+        "import sys,time; from pathlib import Path; "
+        "time.sleep(0.5); Path(sys.argv[1]).write_text('survived')"
+    )
+    parent = (
+        "import subprocess,sys,time; "
+        "subprocess.Popen([sys.executable, '-c', sys.argv[1], sys.argv[2]]); "
+        "print('spawned', flush=True); time.sleep(30)"
+    )
+
+    result = await ExternalProcessCapability()(
+        capability_context_for_goal(
+            WorkflowGoal(workflow_type="external", objective="own process tree")
+        ),
+        ExternalProcessRequest(
+            command=[sys.executable, "-c", parent, child, str(marker)],
+            timeout_s=0.1,
+            kill_grace_s=0.05,
+        ),
+    )
+    await asyncio.sleep(0.6)
+
+    assert result.status == "partial"
+    assert "spawned" in result.output["stdout"]
+    assert not marker.exists(), "a descendant escaped the process-backed execution window"
+
+
+async def test_external_process_timeout_also_bounds_stdin_delivery():
+    """A child that never reads stdin must not strand the process owner in pipe drain."""
+
+    operation = ExternalProcessCapability()(
+        capability_context_for_goal(
+            WorkflowGoal(workflow_type="external", objective="bound stdin")
+        ),
+        ExternalProcessRequest(
+            command=[sys.executable, "-c", "import time; time.sleep(30)"],
+            stdin_data="x" * 2_000_000,
+            timeout_s=0.1,
+            kill_grace_s=0.05,
+        ),
+    )
+    result = await asyncio.wait_for(operation, timeout=1.0)
+
+    assert result.status == "partial"
+    assert "timed out" in result.error
+
+
 async def test_external_process_capability_handles_long_single_line_stdout_and_stderr():
     # Regression (G-0.1): readline() raised LimitOverrunError -> ValueError on any single
     # line beyond asyncio's 64KiB stream limit — CLI workers emit huge one-line JSON.
@@ -3288,7 +3338,10 @@ async def test_executor_runs_external_process_step():
 
     engine = (
         WorkflowEngineBuilder()
-        .register_capability("run_process", ExternalProcessCapability(), kind="external", side_effects=["external_call"])
+        .register_capability(
+            "run_process",
+            ExternalProcessCapability(name="run_process", side_effects=["external_call"]),
+        )
         .register_workflow(
             WorkflowBuilder("proc_demo").step("run_process").build(),
             profile=WorkflowProfile(
@@ -3314,7 +3367,10 @@ async def test_executor_external_process_step_denied_without_side_effect_allowan
 
     engine = (
         WorkflowEngineBuilder()
-        .register_capability("run_process", ExternalProcessCapability(), kind="external", side_effects=["external_call"])
+        .register_capability(
+            "run_process",
+            ExternalProcessCapability(name="run_process", side_effects=["external_call"]),
+        )
         .register_workflow(WorkflowBuilder("proc_denied").step("run_process").build())  # default profile forbids it
         .build()
     )

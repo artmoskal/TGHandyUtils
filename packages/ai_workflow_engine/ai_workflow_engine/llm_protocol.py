@@ -94,6 +94,7 @@ class LLMResponse(BaseModel):
     estimated_usd: Optional[float] = None
     cost_class: Literal["metered", "subscription_notional"] = "metered"
     notional_usd: Optional[float] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
     raw: Any = None
 
 

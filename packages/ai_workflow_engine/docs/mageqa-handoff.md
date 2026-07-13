@@ -1,12 +1,12 @@
 # MageQA Engine Adoption Guide
 
-Status: **BLOCKED for MageQA adoption until the immutable tag exists.** The five E0 blockers that
+Status: **ready for MageQA consumer validation against the immutable `engine-v0.10.0` tag.** The five E0 blockers that
 failed MageQA against `engine-v0.9.2` — planned `partial` rewritten to `done` with the error
 cleared, `RuntimeLimits.timeout_s` declared but not enforced, retrace provenance not exposed to the
 retraced capability, the CLI request's hidden 600s default, and the reused `0.3.0` tools wheel
 identity — are all **addressed in `engine-v0.10.0`** (tools `0.4.0`, viewer `0.2.2`). MageQA must
-still pin tag `engine-v0.10.0` from a clean checkout, rebuild wheels, and pass its E0 canaries before
-migrating; it stays pinned to `engine-v0.8.1` until that immutable tag exists and those canaries pass.
+pin tag `engine-v0.10.0` from a clean checkout, rebuild wheels, and pass its E0 canaries before
+migrating; it stays on its existing pin until those canaries pass.
 Do not infer the actual MageQA pin from this document; the consumer repository's pin file is
 authoritative for deployed state.
 
@@ -166,6 +166,9 @@ MageQA adoption is complete when its repository proves:
     blockers, findings, and report without a duplicate runtime.
 11. **Report order:** pitch/media inputs derive only from the completed verified report.
 12. **Replay:** a known-flow fixture runs without LLM calls and produces a meaningful diff.
+13. **Runtime truth:** a slow browser/CLI subprocess is stopped and reaped inside the engine window,
+    retains partial evidence, and renders work/cleanup/settlement; a sync handler under the same
+    finite profile is refused before invocation rather than pretending to be bounded.
 
 Engine-side examples: `ai_workflow_engine.examples.run_toy_site_audit_pilot` and the paid
 qualification's MageQA authored-flow scenario.
@@ -178,6 +181,8 @@ qualification's MageQA authored-flow scenario.
 - Token-level streaming is a client concern, not an engine-core event stream.
 - Parent edges for out-of-definition fan-out/provenance activity are a viewer follow-up; current UI
   labels the activity without inventing wiring.
+- Python cannot kill cancellation-resistant in-process code. MageQA browser/CLI episodes that need
+  a hard stop must use `CliAgentCapability`/`ExternalProcessCapability`, not a synchronous wrapper.
 
 If one of these blocks a concrete workflow, use [the framework request lifecycle](extension-lifecycle.md)
 with a scenario and acceptance proof. Upgrade via [`operations.md`](operations.md#upgrade-lifecycle).

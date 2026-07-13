@@ -5,9 +5,8 @@ declare a workflow, register typed capabilities, and call one engine door. The e
 transitions, retries, fan-out, budgets, waits, trace, usage, and observation bundles; products own
 domain models, provider clients, storage adapters, clocks, and side-effect delivery.
 
-> **`engine-v0.10.0` is the release candidate — the tag is pending final independent review and does NOT
-> exist yet; do not re-pin until it is cut** (current release: `engine-v0.9.2`). Once tagged: pin the
-> immutable tag and build a wheel. Never depend on a
+> **`engine-v0.10.0` is the current release.** Pin the immutable tag and build a wheel; consumer
+> canaries still decide whether each product changes its deployed pin. Never depend on a
 > live branch. The binding contract is the repository-level
 > [`executable-workflow-engine-spec.md`](../../docs/executable-workflow-engine-spec.md).
 
@@ -122,7 +121,9 @@ minimal profile.
 - truthful terminal **`partial`** planner tasks (error/output/artifacts preserved, never rewritten to
   `done`), propagated through fan-out, nested plans, resume, trace, bundles, and workflow status;
 - declared interruptibility (`process` / `cooperative` / `none`) so the engine never claims to
-  hard-stop an uninterruptible inline handler; CLI agents inherit the engine window (no hidden 600s);
+  hard-stop an uninterruptible inline handler; CLI/console/external-process doors inherit the same
+  soft/hard window and record work, terminate, and reap/result-settlement time (no hidden 600s); the
+  shared process owner bounds stdin delivery and terminates the complete spawned process tree;
 - typed retrace provenance delivered to the retraced capability and projected — with the execution
   window and timeout reason — at the node in the generic viewer;
 

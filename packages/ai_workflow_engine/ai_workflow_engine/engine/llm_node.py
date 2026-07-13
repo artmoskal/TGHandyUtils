@@ -589,6 +589,12 @@ class StructuredLLMNode:
         capture = current_observation_capture()
         if capture is None:
             return
+        response_metadata = getattr(response, "metadata", {})
+        process_bound = (
+            response_metadata.get("process_execution_bound")
+            if isinstance(response_metadata, dict)
+            else None
+        )
         capture.record(
             node=self.name,
             attempt=attempt,
@@ -601,6 +607,11 @@ class StructuredLLMNode:
                 "model": getattr(response, "model", ""),
                 "tool_call_count": len(getattr(response, "tool_calls", [])),
                 "total_tokens": getattr(response, "total_tokens", 0),
+                **(
+                    {"process_execution_bound": process_bound}
+                    if isinstance(process_bound, dict)
+                    else {}
+                ),
             },
             digest_metadata_key="response_digest",
         )
@@ -624,6 +635,12 @@ class StructuredLLMNode:
         capture = current_observation_capture()
         if capture is None:
             return
+        response_metadata = getattr(output, "response_metadata", {})
+        process_bound = (
+            response_metadata.get("process_execution_bound")
+            if isinstance(response_metadata, dict)
+            else None
+        )
         capture.record(
             node=self.name,
             attempt=attempt,
@@ -631,7 +648,14 @@ class StructuredLLMNode:
             phase="llm:response",
             kind="llm_response",
             payload=langchain_response_payload(output, text=raw_text),
-            metadata=self._observation_metadata(profile, transport="langchain"),
+            metadata={
+                **self._observation_metadata(profile, transport="langchain"),
+                **(
+                    {"process_execution_bound": process_bound}
+                    if isinstance(process_bound, dict)
+                    else {}
+                ),
+            },
             digest_metadata_key="response_digest",
         )
 
@@ -652,6 +676,11 @@ class StructuredLLMNode:
             metadata={
                 **self._observation_metadata(profile, transport=transport),
                 "error_type": exc.__class__.__name__,
+                **(
+                    {"process_execution_bound": getattr(exc, "process_execution_bound")}
+                    if isinstance(getattr(exc, "process_execution_bound", None), dict)
+                    else {}
+                ),
             },
             digest_metadata_key="response_digest",
         )

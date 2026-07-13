@@ -38,6 +38,22 @@ Every retry, retrace, fallback, fan-out, planner episode, and wait recovery path
 bound. Never use provider retries as business retries or `max_resume_attempts` as the product's
 classification-attempt budget.
 
+### Pretending inline work is interruptible
+
+A finite engine window is enforceable only for cooperative async or process-backed work. Do not mark
+arbitrary inline code as `process`, swallow `CancelledError`, or put network/subprocess work inside a
+sync wrapper. The engine rejects synchronous handlers under finite windows; use the declared process
+door when a hard stop matters. A graph containment failure means the caller was released, not that
+Python killed cancellation-resistant code; recycle the worker before trusting it with more work.
+
+Do not call `subprocess.run`/`Popen` behind a capability and label it process-enforced. The shared
+process owner is what bounds stdin, records cleanup, and stops spawned descendants. A private
+subprocess side door can outlive the run while its trace falsely claims containment.
+
+When a capability object publishes `handler.spec`, that spec owns schemas, effects, metering, and
+timeout enforcement. Configure it at construction; duplicate registration kwargs are rejected so a
+safety policy cannot disappear silently.
+
 ### Side effects inside undeclared code
 
 Declare all effects on the capability. The engine can deny a declared external write before spawn;

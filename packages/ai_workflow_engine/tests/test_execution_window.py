@@ -274,18 +274,20 @@ def test_invocation_bound_narrows_only_and_carves_represented_cleanup_headroom()
     # explicit can NEVER widen: engine window wins; the reserve hosts the kill grace
     b = resolve_invocation_bound(engine_soft_s=8.0, engine_hard_s=10.0, explicit_timeout_s=100.0)
     assert b.timeout_s == 8.0 and b.source == "engine_window"
-    assert b.timeout_s + b.kill_grace_s <= 10.0
+    assert b.settle_reserve_s > 0
+    assert b.timeout_s + b.kill_grace_s + b.settle_reserve_s <= 10.0
 
     # reserveless window (soft == hard): represented headroom carved from work
     b = resolve_invocation_bound(engine_soft_s=5.0, engine_hard_s=5.0)
     assert b.timeout_s == pytest.approx(5.0 - PROCESS_MIN_CLEANUP_HEADROOM_S)
     assert b.headroom_s == PROCESS_MIN_CLEANUP_HEADROOM_S
-    assert b.timeout_s + b.kill_grace_s <= 5.0
+    assert b.settle_reserve_s > 0
+    assert b.timeout_s + b.kill_grace_s + b.settle_reserve_s <= 5.0
 
     # tiny windows stay usable: headroom scales to a quarter of the hard bound
     b = resolve_invocation_bound(engine_soft_s=1.2, engine_hard_s=1.2)
     assert b.headroom_s == pytest.approx(0.3) and b.timeout_s == pytest.approx(0.9)
-    assert b.timeout_s + b.kill_grace_s <= 1.2
+    assert b.timeout_s + b.kill_grace_s + b.settle_reserve_s <= 1.2
 
     # ambient-only (no hard in sight): the owner's reserve hosts cleanup; no carve
     b = resolve_invocation_bound(engine_soft_s=7.0, explicit_timeout_s=240.0)
@@ -299,3 +301,50 @@ def test_invocation_bound_narrows_only_and_carves_represented_cleanup_headroom()
     # non-finite inputs are rejected, never silently trusted
     assert resolve_invocation_bound(engine_soft_s=math.inf).error is not None
     assert resolve_invocation_bound(engine_soft_s=5.0, explicit_timeout_s=-1.0).error is not None
+    assert resolve_invocation_bound(
+        engine_soft_s=None,
+        explicit_timeout_s=1.0,
+        default_kill_grace_s=math.inf,
+    ).error is not None
+    assert resolve_invocation_bound(
+        engine_soft_s=None,
+        explicit_timeout_s=1.0,
+        default_kill_grace_s=-1.0,
+    ).error is not None
+    assert resolve_invocation_bound(
+        engine_soft_s=6.0,
+        engine_hard_s=5.0,
+        explicit_timeout_s=100.0,
+    ).error is not None
+    assert resolve_invocation_bound(
+        engine_soft_s=None,
+        explicit_timeout_s=0.0,
+    ).error is not None
+
+
+def test_invocation_window_publishes_soft_and_hard_as_one_validated_value():
+    import time
+
+    from ai_workflow_engine.execution_window import (
+        invocation_window_remaining_s,
+        publish_invocation_window,
+        reset_invocation_window,
+    )
+
+    now = time.monotonic()
+    token = publish_invocation_window(
+        soft_deadline_monotonic=now + 3.0,
+        hard_deadline_monotonic=now + 5.0,
+    )
+    try:
+        remaining = invocation_window_remaining_s(clock=lambda: now + 1.0)
+    finally:
+        reset_invocation_window(token)
+    assert remaining.soft_s == pytest.approx(2.0)
+    assert remaining.hard_s == pytest.approx(4.0)
+
+    with pytest.raises(ValueError, match="soft deadline"):
+        publish_invocation_window(
+            soft_deadline_monotonic=now + 2.0,
+            hard_deadline_monotonic=now + 1.0,
+        )

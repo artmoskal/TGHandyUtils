@@ -825,6 +825,7 @@ def _runtime_bound_metrics(events: list[ObservationTimelineEntry]) -> list[str]:
     rather than inventing durations."""
 
     window: dict[str, Any] | None = None
+    process_bound: dict[str, Any] | None = None
     timeout_reason: str | None = None
     retrace: tuple[Any, Any] | None = None
     for event in events:
@@ -832,6 +833,9 @@ def _runtime_bound_metrics(events: list[ObservationTimelineEntry]) -> list[str]:
         candidate = metadata.get("execution_window")
         if isinstance(candidate, dict):
             window = candidate  # last recorded wins
+        process_candidate = metadata.get("process_execution_bound")
+        if isinstance(process_candidate, dict):
+            process_bound = process_candidate
         if metadata.get("timeout_reason"):
             timeout_reason = str(metadata["timeout_reason"])
         if metadata.get("retrace_target"):
@@ -848,6 +852,20 @@ def _runtime_bound_metrics(events: list[ObservationTimelineEntry]) -> list[str]:
         enforcement = window.get("enforcement")
         if enforcement:
             label += f" [{enforcement}]"
+        metrics.append(label)
+    if process_bound is not None and process_bound.get("work_timeout_s") is not None:
+        work = float(process_bound["work_timeout_s"])
+        grace = float(process_bound.get("kill_grace_s") or 0.0)
+        label = f"process: work {work:g}s / cleanup {grace:g}s"
+        settle = float(process_bound.get("settle_reserve_s") or 0.0)
+        if settle:
+            label += f" / settle {settle:g}s"
+        headroom = float(process_bound.get("cleanup_headroom_s") or 0.0)
+        if headroom:
+            label += f" (reserved: {headroom:g}s)"
+        source = process_bound.get("source")
+        if source:
+            label += f" [{source}]"
         metrics.append(label)
     if timeout_reason is not None:
         if window is None:

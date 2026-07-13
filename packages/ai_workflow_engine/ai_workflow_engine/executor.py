@@ -226,7 +226,7 @@ class WorkflowExecutor:
     ) -> None:
         self.runtime = runtime
         self.subworkflows = subworkflows or {}
-        self.runner = WorkflowRunner(config)
+        self.runner = WorkflowRunner(config, trace_sink=runtime.trace_sink)
         # Shared across all runs on this executor so concurrent runs contend for the same backend
         # slots (single-flight / backpressure are engine-owned, not per-run policy state).
         self.scheduler = WorkflowScheduler()

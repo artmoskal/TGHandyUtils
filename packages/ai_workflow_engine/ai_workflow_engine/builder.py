@@ -104,10 +104,35 @@ def _coerce_spec(
     metered: bool,
     timeout_s: Optional[float],
 ) -> CapabilitySpec:
+    overrides: list[str] = []
+    if kind != "tool":
+        overrides.append("kind")
+    if side_effects is not None:
+        overrides.append("side_effects")
+    if input_model is not None:
+        overrides.append("input_model")
+    if output_model is not None:
+        overrides.append("output_model")
+    if metered:
+        overrides.append("metered")
+    if timeout_s is not None:
+        overrides.append("timeout_s")
     if spec is not None:
+        if overrides:
+            raise ValueError(
+                "register_capability received spec= together with policy/schema arguments that "
+                f"would be ignored: {', '.join(overrides)}; put the complete contract in spec "
+                "or pass registration arguments without spec"
+            )
         return spec
     existing = getattr(handler, "spec", None)
     if isinstance(existing, CapabilitySpec):
+        if overrides:
+            raise ValueError(
+                f"capability {name!r} publishes handler.spec, so registration arguments would be "
+                f"ignored: {', '.join(overrides)}; configure the handler/spec itself or remove "
+                "the duplicate arguments"
+            )
         return existing
     return CapabilitySpec(
         name=name,

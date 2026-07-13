@@ -1,8 +1,7 @@
 # SlackAzzCovered Engine Adoption Guide
 
-Status: **release candidate — the `engine-v0.10.0` tag is pending final review and does not exist
-yet; do not re-pin until it is cut.** Once tagged, SlackAzzCovered should then pin tag
-`engine-v0.10.0`, implement its Redis coordinator, and pass the engine conformance kit plus product
+Status: **ready for SlackAzzCovered consumer validation against the immutable `engine-v0.10.0`
+tag.** SlackAzzCovered should pin tag `engine-v0.10.0`, implement its Redis coordinator, and pass the engine conformance kit plus product
 transaction tests before enabling live effects.
 
 This answers the consumer request in
@@ -224,6 +223,8 @@ and reconnect after process loss. The generic kit cannot inspect Redis `MULTI/EX
 11. **Health:** pending/overdue/claimed/stalled/failed and scheduler heartbeat are observable.
 12. **Safety:** external Slack action is denied before spawn in shadow/read-only mode.
 13. **Observation:** suspension and resume render as one logical run with honest costs.
+14. **Execution window:** provider/CLI work inherits the engine bound; cancellation suppression is a
+    visible failure, and synchronous handlers are not registered under finite profiles.
 
 Follow [`operations.md`](operations.md) for production recovery. File missing mechanics through
 [`extension-lifecycle.md`](extension-lifecycle.md), keeping Slack policy in product capabilities.

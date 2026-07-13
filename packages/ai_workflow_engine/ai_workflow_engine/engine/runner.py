@@ -1,9 +1,11 @@
 """Reusable workflow runner for graph-based AI processing."""
 
 import asyncio
+from dataclasses import dataclass
 import inspect
 import json
 import logging
+import math
 import time
 import uuid
 from typing import Any, Awaitable, Callable, Dict, Optional
@@ -13,6 +15,7 @@ from ai_workflow_engine.models import (
     WorkflowGoal,
     WorkflowResultStatus,
     WorkflowRunContext,
+    WorkflowTraceEvent,
     WorkflowUsageSummary,
 )
 from ai_workflow_engine.usage import (
@@ -38,35 +41,152 @@ def derive_workflow_result_status(state: Dict[str, Any]) -> WorkflowResultStatus
     return "completed"
 
 
-def derive_graph_failsafe_timeout_s(
+@dataclass(frozen=True)
+class GraphFailsafeWindow:
+    """Bound the graph work separately from cancellation containment."""
+
+    work_timeout_s: float
+    cancellation_grace_s: float
+
+    def metadata(self, *, containment_failed: bool) -> Dict[str, Any]:
+        return {
+            "work_timeout_s": self.work_timeout_s,
+            "cancellation_grace_s": self.cancellation_grace_s,
+            "containment_failed": containment_failed,
+        }
+
+
+class _GraphFailsafeExpired(Exception):
+    def __init__(self, window: GraphFailsafeWindow, *, containment_failed: bool) -> None:
+        self.window = window
+        self.containment_failed = containment_failed
+        super().__init__("graph-level execution window expired")
+
+
+def derive_graph_failsafe_window(
     run_timeout_s: Optional[float],
     session: Any,
     *,
-    margin_s: float,
-) -> Optional[float]:
-    """The graph-level fail-safe budget for ONE graph invocation.
+    cancellation_grace_s: float,
+) -> Optional[GraphFailsafeWindow]:
+    """Resolve one graph invocation's remaining work and cleanup allowance.
 
     Derived from the run session's REMAINING active budget — so a resumed run that already
-    consumed most of its budget does NOT receive a fresh full timeout — plus the REPRESENTED
-    scheduling margin (``margin_s``, a named constant surfaced in the failure text) that lets
-    honest per-capability salvage fire first. Falls back to the declared run timeout when no
-    session owns a deadline. ``None`` = unbounded run, no fail-safe."""
+    consumed most of its budget does NOT receive a fresh full timeout. Cancellation grace is
+    represented separately: it may contain cooperative cleanup after work expires, but it can
+    never silently extend the work budget. ``None`` = unbounded run, no fail-safe."""
 
     if run_timeout_s is None:
         return None
+    if not math.isfinite(run_timeout_s) or run_timeout_s < 0:
+        raise ValueError(
+            f"run timeout must be a finite non-negative number, got {run_timeout_s!r}"
+        )
+    if not math.isfinite(cancellation_grace_s) or cancellation_grace_s < 0:
+        raise ValueError(
+            "graph cancellation_grace_s must be a finite non-negative number, "
+            f"got {cancellation_grace_s!r}"
+        )
     remaining = session.run_remaining_s() if session is not None else None
-    base = remaining if remaining is not None else run_timeout_s
-    return base + margin_s
+    work_timeout_s = remaining if remaining is not None else run_timeout_s
+    return GraphFailsafeWindow(
+        work_timeout_s=max(0.0, work_timeout_s),
+        cancellation_grace_s=cancellation_grace_s,
+    )
+
+
+def _consume_background_task(task: asyncio.Task[Any]) -> None:
+    """Retrieve a detached task's terminal exception after containment failed."""
+
+    if task.cancelled():
+        return
+    try:
+        task.exception()
+    except BaseException:
+        logger.exception("detached graph task failed after cancellation containment")
+
+
+async def _invoke_graph_with_failsafe(
+    invocation: Awaitable[Dict[str, Any]],
+    window: GraphFailsafeWindow,
+) -> Dict[str, Any]:
+    """Run graph work, then contain cancellation for a bounded, observable grace period."""
+
+    if window.work_timeout_s <= 0:
+        # Do not schedule even one event-loop turn after an already-exhausted deadline. Runner
+        # callers pass a coroutine; close it so refusal also produces no un-awaited warning.
+        if inspect.iscoroutine(invocation):
+            invocation.close()
+        elif isinstance(invocation, asyncio.Future):
+            invocation.cancel()
+        raise _GraphFailsafeExpired(window, containment_failed=False)
+
+    task = asyncio.ensure_future(invocation)
+    try:
+        done, _ = await asyncio.wait({task}, timeout=window.work_timeout_s)
+    except asyncio.CancelledError:
+        task.cancel()
+        try:
+            if window.cancellation_grace_s > 0:
+                await asyncio.wait_for(
+                    asyncio.shield(task), timeout=window.cancellation_grace_s
+                )
+            else:
+                await asyncio.sleep(0)
+        except BaseException:
+            logger.debug("graph task stopped while caller cancellation was propagating")
+        if not task.done():
+            task.cancel()
+            task.add_done_callback(_consume_background_task)
+        raise
+    if task in done:
+        return task.result()
+
+    task.cancel()
+    try:
+        if window.cancellation_grace_s == 0:
+            await asyncio.sleep(0)
+            if not task.done():
+                raise asyncio.TimeoutError
+            await task
+        else:
+            await asyncio.wait_for(
+                asyncio.shield(task), timeout=window.cancellation_grace_s
+            )
+    except asyncio.CancelledError:
+        if asyncio.current_task() is not None and asyncio.current_task().cancelling():
+            task.cancel()
+            task.add_done_callback(_consume_background_task)
+            raise
+        raise _GraphFailsafeExpired(window, containment_failed=False) from None
+    except asyncio.TimeoutError:
+        task.cancel()
+        task.add_done_callback(_consume_background_task)
+        raise _GraphFailsafeExpired(window, containment_failed=True) from None
+    except BaseException:
+        # Work expired first. An exception while acknowledging cancellation is cleanup
+        # evidence, not permission to relabel the timeout as an unrelated graph failure.
+        raise _GraphFailsafeExpired(window, containment_failed=False) from None
+    else:
+        # Returning after cancellation means the graph swallowed the stop request. The work
+        # cannot be trusted as a successful completion, even if it happened inside grace.
+        raise _GraphFailsafeExpired(window, containment_failed=True) from None
 
 
 class WorkflowRunner:
     """Execute a compiled workflow graph with consistent logging and IDs."""
 
-    def __init__(self, config: Any = None, usage_sink: UsageSink | None = None):
+    def __init__(
+        self,
+        config: Any = None,
+        usage_sink: UsageSink | None = None,
+        trace_sink: Any = None,
+    ):
         self.config = config
         self.usage_sink = usage_sink
+        self.trace_sink = trace_sink
 
-    _GRAPH_FAILSAFE_MARGIN_S = 2.0
+    _GRAPH_CANCELLATION_GRACE_S = 2.0
 
     async def run(
         self,
@@ -127,48 +247,59 @@ class WorkflowRunner:
                 usage_sink=self.usage_sink,
             )
             with workflow_run_context_scope(ctx), workflow_usage_scope(usage_context):
-                graph_task: Optional[asyncio.Task] = None
                 try:
                     # v0.10 #6b graph-level fail-safe: a hang OUTSIDE a capability (a node's own
                     # async code, an uninterruptible `none` handler that runs unbounded) is not
                     # caught by per-capability enforcement. Bound the WHOLE active invocation by
                     # the session's REMAINING active budget (correct after resume — never a fresh
-                    # full timeout) plus the represented scheduling margin, so honest
-                    # per-capability salvage always fires first and only a true hang trips this.
+                    # full timeout). Cancellation/reap gets a separate represented allowance;
+                    # it never extends the graph's work budget invisibly.
                     run_timeout = getattr(limits, "timeout_s", None)
-                    failsafe_s = derive_graph_failsafe_timeout_s(
+                    failsafe = derive_graph_failsafe_window(
                         run_timeout,
                         current_run_session(),
-                        margin_s=self._GRAPH_FAILSAFE_MARGIN_S,
+                        cancellation_grace_s=self._GRAPH_CANCELLATION_GRACE_S,
                     )
-                    if failsafe_s is not None:
-                        graph_task = asyncio.ensure_future(
-                            self._invoke_graph(graph, state, graph_config)
+                    if failsafe is not None:
+                        result = await _invoke_graph_with_failsafe(
+                            self._invoke_graph(graph, state, graph_config),
+                            failsafe,
                         )
-                        result = await asyncio.wait_for(graph_task, timeout=failsafe_s)
                     else:
                         result = await self._invoke_graph(graph, state, graph_config)
                     outcome = derive_workflow_result_status(result)
                     fallback_error: Optional[Exception] = None
-                except asyncio.TimeoutError:
-                    # Typed timeout OWNERSHIP: this branch is the fail-safe's ONLY when
-                    # wait_for cancelled OUR graph task. A TimeoutError raised by code INSIDE
-                    # the graph completes the task with that exception — re-raise it as the
-                    # inner error it is, never relabel it as the fail-safe.
-                    if graph_task is None or not graph_task.cancelled():
-                        raise
+                except _GraphFailsafeExpired as exc:
                     # A hang outside a capability produced nothing salvageable — return a
                     # truthful FAILED result (observable), not a raised exception.
+                    failsafe_meta = exc.window.metadata(
+                        containment_failed=exc.containment_failed
+                    )
+                    error = (
+                        "run exhausted its remaining execution window; graph work was "
+                        f"cancelled after {exc.window.work_timeout_s:g}s and given "
+                        f"{exc.window.cancellation_grace_s:g}s for containment"
+                    )
+                    if exc.containment_failed:
+                        error += "; graph code did not acknowledge cancellation within the bound"
                     result = {
                         **state,
                         "status": "failed",
-                        "error": (
-                            "run exceeded its execution window and did not stop at any "
-                            "capability boundary — graph-level fail-safe tripped (a hang "
-                            f"outside a capability) after the remaining active budget plus "
-                            f"the {self._GRAPH_FAILSAFE_MARGIN_S:g}s fail-safe margin"
-                        ),
+                        "error": error,
+                        "graph_failsafe": failsafe_meta,
                     }
+                    if self.trace_sink is not None:
+                        self.trace_sink.record(
+                            WorkflowTraceEvent(
+                                node=getattr(session, "workflow_id", effective_type),
+                                decision="failed",
+                                node_status="failed",
+                                error=error,
+                                phase="run:failsafe",
+                                severity="error",
+                                metadata={"graph_failsafe": failsafe_meta},
+                            )
+                        )
                     outcome = "failed"
                     fallback_error = None
                 except Exception as exc:

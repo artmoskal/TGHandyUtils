@@ -36,7 +36,7 @@ ExecutionWindowBoundSource = Literal[
 ExecutionWindowClamp = Literal["capability", "run_remaining", "parent_soft_remaining"]
 
 # Interruptibility honesty (v0.10): the engine must never claim a hard stop it cannot perform.
-#   process     — capability owns a killable child process; can be hard-stopped (kill/reap).
+#   process     — capability owns a killable subprocess tree; can be hard-stopped (kill/reap).
 #   cooperative — async handler receives cancellation at the boundary; must ack within grace.
 #   none        — inline synchronous work; boundary checks only, a finite hard window is REJECTED.
 TimeoutEnforcement = Literal["process", "cooperative", "none"]
@@ -52,6 +52,20 @@ _CLAMP_BY_SOURCE: dict[ExecutionWindowBoundSource, ExecutionWindowClamp] = {
     "run_limit": "run_remaining",
     "parent_window": "parent_soft_remaining",
 }
+
+_COOPERATIVE_CLEANUP_RESERVE_S = 0.05
+_PROCESS_CLEANUP_RESERVE_S = 1.0
+_PROCESS_SETTLE_RESERVE_S = 0.25
+
+
+def _engine_cleanup_reserve_s(hard_s: float, enforcement: TimeoutEnforcement) -> float:
+    """Represent the runtime's own cancellation/reap room inside the hard deadline."""
+
+    if enforcement == "cooperative":
+        return min(_COOPERATIVE_CLEANUP_RESERVE_S, hard_s / 4.0)
+    if enforcement == "process":
+        return min(_PROCESS_CLEANUP_RESERVE_S, hard_s / 4.0)
+    return 0.0
 
 
 def _finite_non_negative(value: Optional[float], label: str) -> Optional[float]:
@@ -305,24 +319,14 @@ def resolve_execution_window(
     """Intersect all proposed durations into one decision. Minimum hard limit wins; every
     lower bound and clamp is named. No bound anywhere → an unbounded window (``None``).
 
-    ``completion_reserve_s`` (from the task request) must be strictly below the resolved hard
-    limit — a reserve that meets or exceeds the window leaves no work time and is an impossible
-    window (raised here, before any handler runs).
+    ``completion_reserve_s`` is the larger of the task's requested reserve and the engine's
+    small enforcement reserve (cooperative cancellation or process reap). It must be strictly
+    below the resolved hard limit; an impossible window is rejected before any handler runs.
     """
 
     request = inputs.request
     requested = request.timeout_s if request else None
-    reserve = request.completion_reserve_s if request else 0.0
-
-    common = dict(
-        requested_timeout_s=requested,
-        capability_timeout_s=inputs.capability_timeout_s,
-        run_remaining_s=inputs.run_remaining_s,
-        parent_remaining_s=inputs.parent_soft_remaining_s,
-        completion_reserve_s=reserve,
-        request_source=request.source if request else None,
-        enforcement=enforcement,
-    )
+    requested_reserve = request.completion_reserve_s if request else 0.0
 
     hard, limiting_sources, clamps = _derive_resolution(
         requested_timeout_s=requested,
@@ -333,22 +337,37 @@ def resolve_execution_window(
 
     if hard is None:
         # unbounded: no source proposed a hard limit
-        if reserve:
+        if requested_reserve:
             raise ValueError(
                 "completion_reserve_s was set but no execution window bounds it — a reserve "
                 "is only meaningful inside a finite window"
             )
-        return ExecutionWindowDecision(**common)
+        return ExecutionWindowDecision(
+            requested_timeout_s=requested,
+            capability_timeout_s=inputs.capability_timeout_s,
+            run_remaining_s=inputs.run_remaining_s,
+            parent_remaining_s=inputs.parent_soft_remaining_s,
+            completion_reserve_s=0.0,
+            request_source=request.source if request else None,
+            enforcement=enforcement,
+        )
 
     if hard == 0:
         return ExecutionWindowDecision(
-            **common,
+            requested_timeout_s=requested,
+            capability_timeout_s=inputs.capability_timeout_s,
+            run_remaining_s=inputs.run_remaining_s,
+            parent_remaining_s=inputs.parent_soft_remaining_s,
+            completion_reserve_s=0.0,
+            request_source=request.source if request else None,
+            enforcement=enforcement,
             hard_timeout_s=0,
             soft_timeout_s=0,
             limiting_sources=limiting_sources,
             clamps=clamps,
         )
 
+    reserve = max(requested_reserve, _engine_cleanup_reserve_s(hard, enforcement))
     if reserve >= hard:
         raise ValueError(
             f"impossible execution window: completion_reserve_s={reserve} leaves no work time "
@@ -357,7 +376,13 @@ def resolve_execution_window(
 
     # Build the final decision ONCE so the model_validator seals the complete object.
     return ExecutionWindowDecision(
-        **common,
+        requested_timeout_s=requested,
+        capability_timeout_s=inputs.capability_timeout_s,
+        run_remaining_s=inputs.run_remaining_s,
+        parent_remaining_s=inputs.parent_soft_remaining_s,
+        completion_reserve_s=reserve,
+        request_source=request.source if request else None,
+        enforcement=enforcement,
         hard_timeout_s=hard,
         soft_timeout_s=hard - reserve,
         limiting_sources=limiting_sources,
@@ -368,7 +393,7 @@ def resolve_execution_window(
 # --------------------------------------------------------------------------------------
 # v0.10 Phase 5R: the ONE engine-owned invocation-window surface for anything that runs
 # work OUTSIDE the Python interpreter (subprocesses, console CLIs). The capability runtime
-# publishes the ACTIVE invocation's soft deadline here; every process-backed door
+# publishes the ACTIVE invocation's soft and hard deadlines here; every process-backed door
 # (CliAgentCapability, ConsoleLLMClient, ConsoleChatModel, ExternalProcessCapability)
 # resolves its subprocess bound through `resolve_invocation_bound` — an explicit product
 # timeout may NARROW the engine bound but can never widen it, and cleanup time is
@@ -379,11 +404,25 @@ from contextvars import ContextVar as _ContextVar, Token as _Token
 from dataclasses import dataclass as _dataclass
 import time as _time
 
-# The active invocation's SOFT deadline (monotonic). Set by CapabilityRuntime.invoke around
-# the handler call; read by nested invocations (parent-soft clamp) and by process-backed
-# doors as their ambient work bound. ContextVars keep concurrent runs/tasks isolated.
-_ACTIVE_INVOCATION_SOFT_DEADLINE: "_ContextVar[Optional[float]]" = _ContextVar(
-    "ai_workflow_engine_active_invocation_soft_deadline", default=None
+@_dataclass(frozen=True)
+class InvocationWindowDeadlines:
+    """Absolute monotonic deadlines for the active capability invocation."""
+
+    soft_monotonic: float
+    hard_monotonic: float
+
+
+@_dataclass(frozen=True)
+class InvocationWindowRemaining:
+    """Remaining soft/hard durations sampled from one clock reading."""
+
+    soft_s: float
+    hard_s: float
+
+
+# ContextVars keep concurrent runs/tasks isolated and propagate through asyncio.to_thread.
+_ACTIVE_INVOCATION_WINDOW: "_ContextVar[Optional[InvocationWindowDeadlines]]" = _ContextVar(
+    "ai_workflow_engine_active_invocation_window", default=None
 )
 
 # Cleanup headroom carved from WORK time when a process-backed bound has no completion
@@ -391,34 +430,54 @@ _ACTIVE_INVOCATION_SOFT_DEADLINE: "_ContextVar[Optional[float]]" = _ContextVar(
 # so the child never outlives the engine's claim that it stopped. Bounded to a quarter of
 # the hard window so tiny windows (short probes, tests) stay usable. This is a REPRESENTED
 # reservation (recorded on the bound as ``headroom_s``), never a hidden margin.
-PROCESS_MIN_CLEANUP_HEADROOM_S = 1.0
+PROCESS_MIN_CLEANUP_HEADROOM_S = _PROCESS_CLEANUP_RESERVE_S
 
 
 def _process_cleanup_headroom_s(engine_hard_s: float) -> float:
     return min(PROCESS_MIN_CLEANUP_HEADROOM_S, engine_hard_s / 4.0)
 
 
-def publish_invocation_soft_deadline(
-    deadline_monotonic: Optional[float],
-) -> "_Token[Optional[float]]":
-    """Publish the active invocation's soft deadline (monotonic seconds). Returns the token
-    for `reset_invocation_soft_deadline`. The runtime owns the publish/reset pairing."""
+def publish_invocation_window(
+    *,
+    soft_deadline_monotonic: float,
+    hard_deadline_monotonic: float,
+) -> "_Token[Optional[InvocationWindowDeadlines]]":
+    """Publish the complete active invocation window.
 
-    return _ACTIVE_INVOCATION_SOFT_DEADLINE.set(deadline_monotonic)
+    The runtime owns the publish/reset pairing. Process transports need both deadlines: soft
+    limits work, while hard limits cleanup. Publishing only soft time makes it impossible to
+    prove that terminate/kill/reap fits before the authoritative cutoff.
+    """
+
+    if not math.isfinite(soft_deadline_monotonic) or not math.isfinite(hard_deadline_monotonic):
+        raise ValueError("invocation deadlines must be finite monotonic timestamps")
+    if soft_deadline_monotonic > hard_deadline_monotonic:
+        raise ValueError("invocation soft deadline must not exceed the hard deadline")
+    return _ACTIVE_INVOCATION_WINDOW.set(
+        InvocationWindowDeadlines(
+            soft_monotonic=soft_deadline_monotonic,
+            hard_monotonic=hard_deadline_monotonic,
+        )
+    )
 
 
-def reset_invocation_soft_deadline(token: "_Token[Optional[float]]") -> None:
-    _ACTIVE_INVOCATION_SOFT_DEADLINE.reset(token)
+def reset_invocation_window(token: "_Token[Optional[InvocationWindowDeadlines]]") -> None:
+    _ACTIVE_INVOCATION_WINDOW.reset(token)
 
 
-def invocation_soft_remaining_s(clock=_time.monotonic) -> Optional[float]:
-    """Remaining seconds of the ACTIVE invocation's soft window, or None outside any
-    bounded invocation. This is the ambient engine bound a process-backed door must obey."""
+def invocation_window_remaining_s(
+    clock=_time.monotonic,
+) -> Optional[InvocationWindowRemaining]:
+    """Sample remaining soft and hard time from the same monotonic clock reading."""
 
-    deadline = _ACTIVE_INVOCATION_SOFT_DEADLINE.get()
-    if deadline is None:
+    deadlines = _ACTIVE_INVOCATION_WINDOW.get()
+    if deadlines is None:
         return None
-    return max(0.0, deadline - clock())
+    now = clock()
+    return InvocationWindowRemaining(
+        soft_s=max(0.0, deadlines.soft_monotonic - now),
+        hard_s=max(0.0, deadlines.hard_monotonic - now),
+    )
 
 
 @_dataclass(frozen=True)
@@ -426,7 +485,8 @@ class InvocationBound:
     """The resolved subprocess bound for one process-backed invocation.
 
     ``timeout_s`` bounds the child's WORK; ``kill_grace_s`` (terminate→kill→reap) plus the
-    work bound always fits BEFORE the engine hard deadline when one exists. ``headroom_s``
+    work bound and ``settle_reserve_s`` always fit BEFORE the engine hard deadline when one exists.
+    ``headroom_s``
     is the cleanup time carved out of work when the window had no completion reserve —
     recorded so the reservation is visible, never a hidden margin. ``error`` is non-None
     only when no bound could be resolved but one is required, or the window is too small
@@ -438,7 +498,21 @@ class InvocationBound:
     engine_soft_s: Optional[float] = None
     engine_hard_s: Optional[float] = None
     headroom_s: float = 0.0
+    settle_reserve_s: float = 0.0
     error: Optional[str] = None
+
+    def metadata(self) -> dict[str, object]:
+        """Serializable enforcement truth suitable for trace/detail projection."""
+
+        return {
+            "work_timeout_s": self.timeout_s,
+            "kill_grace_s": self.kill_grace_s,
+            "source": self.source,
+            "engine_soft_s": self.engine_soft_s,
+            "engine_hard_s": self.engine_hard_s,
+            "cleanup_headroom_s": self.headroom_s,
+            "settle_reserve_s": self.settle_reserve_s,
+        }
 
 
 def resolve_invocation_bound(
@@ -454,7 +528,8 @@ def resolve_invocation_bound(
 
     Narrowing-only: the effective work bound is ``min`` of what exists — an explicit timeout
     can tighten an engine bound, never enlarge it. When ``engine_hard_s`` is known, cleanup
-    (kill grace) must FIT before it: the reserve (hard − work) hosts it; with no reserve,
+    (terminate grace plus reap/result settlement) must FIT before it: the reserve (hard − work)
+    hosts it; with no reserve,
     ``PROCESS_MIN_CLEANUP_HEADROOM_S`` is carved from work time and recorded; a window too
     small to work and reap is rejected (``error``) rather than enforced dishonestly.
     """
@@ -463,11 +538,25 @@ def resolve_invocation_bound(
         ("engine_soft_s", engine_soft_s),
         ("engine_hard_s", engine_hard_s),
         ("explicit_timeout_s", explicit_timeout_s),
+        ("default_kill_grace_s", default_kill_grace_s),
     ):
         if value is not None and (not math.isfinite(value) or value < 0):
             return InvocationBound(
                 error=f"{owner}: {label} must be finite and >= 0, got {value!r}"
             )
+    if (
+        engine_soft_s is not None
+        and engine_hard_s is not None
+        and engine_soft_s > engine_hard_s
+    ):
+        return InvocationBound(
+            error=(
+                f"{owner}: engine_soft_s={engine_soft_s!r} must not exceed "
+                f"engine_hard_s={engine_hard_s!r}"
+            ),
+            engine_soft_s=engine_soft_s,
+            engine_hard_s=engine_hard_s,
+        )
 
     candidates = [b for b in (engine_soft_s, explicit_timeout_s) if b is not None]
     if not candidates:
@@ -482,6 +571,12 @@ def resolve_invocation_bound(
         return InvocationBound(timeout_s=None, kill_grace_s=default_kill_grace_s)
 
     work = min(candidates)
+    if work <= 0:
+        return InvocationBound(
+            error=f"{owner}: process work timeout must be positive, got {work!r}",
+            engine_soft_s=engine_soft_s,
+            engine_hard_s=engine_hard_s,
+        )
     source: Literal["engine_window", "explicit"] = (
         "engine_window" if engine_soft_s is not None and work == engine_soft_s else "explicit"
     )
@@ -515,21 +610,32 @@ def resolve_invocation_bound(
                 engine_hard_s=engine_hard_s,
             )
 
+    settle_reserve = min(_PROCESS_SETTLE_RESERVE_S, cleanup_budget / 4.0)
+    kill_grace = max(
+        0.0,
+        min(default_kill_grace_s, cleanup_budget - settle_reserve),
+    )
+    # `settle_reserve` is the deliberately protected minimum for kill/reap, stream settlement,
+    # artifact salvage, and result construction. Any additional slack from a narrower explicit
+    # timeout is not mislabeled as reserved settlement time.
     return InvocationBound(
         timeout_s=work,
-        kill_grace_s=max(0.0, min(default_kill_grace_s, cleanup_budget)),
+        kill_grace_s=kill_grace,
         source=source,
         engine_soft_s=engine_soft_s,
         engine_hard_s=engine_hard_s,
         headroom_s=headroom,
+        settle_reserve_s=settle_reserve,
     )
 
 
 __all__ += [
     "InvocationBound",
+    "InvocationWindowDeadlines",
+    "InvocationWindowRemaining",
     "PROCESS_MIN_CLEANUP_HEADROOM_S",
-    "invocation_soft_remaining_s",
-    "publish_invocation_soft_deadline",
-    "reset_invocation_soft_deadline",
+    "invocation_window_remaining_s",
+    "publish_invocation_window",
+    "reset_invocation_window",
     "resolve_invocation_bound",
 ]

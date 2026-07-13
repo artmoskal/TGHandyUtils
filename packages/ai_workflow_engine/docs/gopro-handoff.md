@@ -1,8 +1,7 @@
 # GoPro Engine Adoption Guide
 
-Status: **release candidate — the `engine-v0.10.0` tag is pending final review and does not exist
-yet; do not re-pin until it is cut.** Once tagged, GoPro should then pin tag
-`engine-v0.10.0`, record the source commit and wheel hash, and run its sidecar canary before changing
+Status: **ready for GoPro consumer validation against the immutable `engine-v0.10.0` tag.** GoPro
+should pin tag `engine-v0.10.0`, record the source commit and wheel hash, and run its sidecar canary before changing
 the production image. Do not infer the actual GoPro pin from this document; the consumer repository's
 pin file is authoritative for deployed state.
 
@@ -140,7 +139,8 @@ GoPro adoption is complete when its repository proves:
 5. **Evidence grounding:** accepted observations retain resolvable evidence references.
 6. **Memory behavior:** a weak-model regression demonstrates reduced repeated inspection without
    changing control state.
-7. **Budget/concurrency:** VLM calls and parallel children stop at configured limits.
+7. **Budget/concurrency:** VLM calls and parallel children stop at configured limits; bounded inline
+   workers are async/cooperative or process-backed, never synchronous code behind a fake timeout.
 8. **Observation:** one real frame run produces a readable bundle with prompt/response, usage, and
    archived preview.
 9. **Failure honesty:** unavailable vision/evidence is blocked/inconclusive, not accepted inventory.

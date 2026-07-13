@@ -29,9 +29,9 @@ from ai_workflow_engine.models import (
 from ai_workflow_engine._runtime_state import current_run_session, current_workflow_run_context
 from ai_workflow_engine.execution_window import (
     ExecutionWindowInputs,
-    invocation_soft_remaining_s,
-    publish_invocation_soft_deadline,
-    reset_invocation_soft_deadline,
+    invocation_window_remaining_s,
+    publish_invocation_window,
+    reset_invocation_window,
     resolve_execution_window,
 )
 from ai_workflow_engine.observability_capture import ObservationCapture
@@ -306,12 +306,12 @@ def _handler_is_async(handler: Any) -> bool:
     return bool(call is not None and inspect.iscoroutinefunction(call))
 
 
-# v0.10 #6a / 5R: the active invocation's SOFT deadline lives on the ONE engine-owned
-# surface in execution_window.py — nested invocations read it as parent_soft_remaining_s
-# (can only SHORTEN the window), and process-backed doors (CLI/console/external) read it as
-# their ambient work bound. Set around the handler call by invoke().
+# The active invocation's complete soft/hard window lives on the context-local surface in
+# execution_window.py. Nested invocations inherit the remaining soft budget; process-backed doors
+# use both deadlines so cleanup fits before the hard cutoff.
 def _parent_soft_remaining_s() -> Optional[float]:
-    return invocation_soft_remaining_s()
+    remaining = invocation_window_remaining_s()
+    return remaining.soft_s if remaining is not None else None
 
 
 class _ExecutionTimeout(Exception):
@@ -327,6 +327,10 @@ class _CancellationContainmentError(Exception):
     """A cooperative handler suppressed cancellation at its execution window and finished
     anyway — the engine cannot claim it stopped. Surfaced as a FAILURE (not a clean partial),
     because unstoppable side effects may have continued past the boundary."""
+
+    def __init__(self, message: str, *, window: Any) -> None:
+        super().__init__(message)
+        self.window = window
 
 
 class CapabilityRuntime:
@@ -437,14 +441,11 @@ class CapabilityRuntime:
                     window=window,
                 )
 
-            declared_bound = bool(
-                {"task_request", "capability_limit"} & set(window.limiting_sources)
-            )
-            if enforcement == "none" and hard is not None and hard > 0 and declared_bound:
+            if enforcement == "none" and hard is not None and hard > 0:
                 raise _ExecutionTimeout(
                     f"capability '{name}' declares a finite execution window but cannot be "
-                    f"interrupted (enforcement='none'); place work needing a hard bound behind "
-                    f"a process-backed capability",
+                    f"interrupted (enforcement='none'); make it cooperative async or place "
+                    f"work needing a hard bound behind a process-backed capability",
                     window=window,
                 )
 
@@ -453,21 +454,43 @@ class CapabilityRuntime:
             # only shorten it), and process-backed doors (CLI/console/external) read it as
             # their ambient work bound.
             soft = window.soft_timeout_s
-            parent_token = (
-                publish_invocation_soft_deadline(time.monotonic() + soft)
-                if soft is not None
-                else None
-            )
+            if soft is not None and hard is not None:
+                now = time.monotonic()
+                parent_token = publish_invocation_window(
+                    soft_deadline_monotonic=now + soft,
+                    hard_deadline_monotonic=now + hard,
+                )
+            else:
+                parent_token = None
             try:
                 result = handler(context, parsed_payload)
                 if inspect.isawaitable(result):
                     if hard is not None and enforcement in ("cooperative", "process"):
-                        result = await self._run_bounded(name, result, hard, window)
+                        remaining = invocation_window_remaining_s()
+                        remaining_soft = remaining.soft_s if remaining is not None else soft
+                        remaining_hard = remaining.hard_s if remaining is not None else hard
+                        if enforcement == "process":
+                            # The process owner consumes soft for work and hard for reap. The
+                            # outer runtime waits to hard only as a containment belt.
+                            work_timeout_s = remaining_hard
+                            cancellation_grace_s = 0.0
+                        else:
+                            work_timeout_s = remaining_soft
+                            cancellation_grace_s = max(
+                                0.0, remaining_hard - remaining_soft
+                            )
+                        result = await self._run_bounded(
+                            name,
+                            result,
+                            work_timeout_s,
+                            cancellation_grace_s,
+                            window,
+                        )
                     else:
                         result = await result
             finally:
                 if parent_token is not None:
-                    reset_invocation_soft_deadline(parent_token)
+                    reset_invocation_window(parent_token)
             output = self._normalize_result(spec, result)
             elapsed_ms = int((time.monotonic() - start) * 1000)
             result_event_id = str(uuid.uuid4())
@@ -478,6 +501,9 @@ class CapabilityRuntime:
             result_metadata = (
                 {"execution_window": window.model_dump()} if window.is_bounded else {}
             )
+            process_bound = output.metadata.get("process_execution_bound")
+            if isinstance(process_bound, dict):
+                result_metadata["process_execution_bound"] = dict(process_bound)
             self._record(
                 WorkflowTraceEvent(
                     node=name,
@@ -541,6 +567,19 @@ class CapabilityRuntime:
             error = str(exc) or exc.__class__.__name__
             elapsed_ms = int((time.monotonic() - start) * 1000)
             decision = getattr(exc, "decision", None) or "failed"
+            containment_window = (
+                exc.window.model_dump()
+                if isinstance(exc, _CancellationContainmentError)
+                else None
+            )
+            failure_metadata = (
+                {
+                    "timeout_reason": "cancellation_containment_failed",
+                    "execution_window": containment_window,
+                }
+                if containment_window is not None
+                else {}
+            )
             error_event_id = str(uuid.uuid4())
             self._record(
                 WorkflowTraceEvent(
@@ -552,6 +591,7 @@ class CapabilityRuntime:
                     phase="tool:result",
                     severity="error",
                     event_id=error_event_id,
+                    metadata=failure_metadata,
                     detail_refs=self._record_tool_error(
                         spec,
                         decision=decision,
@@ -560,10 +600,17 @@ class CapabilityRuntime:
                     ),
                 )
             )
-            return CapabilityResult(status="failed", error=error)
+            return CapabilityResult(status="failed", error=error, metadata=failure_metadata)
 
-    async def _run_bounded(self, name: str, awaitable: Any, hard: float, window: Any) -> Any:
-        """Run an awaitable under a hard window with honest cancellation containment.
+    async def _run_bounded(
+        self,
+        name: str,
+        awaitable: Any,
+        work_timeout_s: float,
+        cancellation_grace_s: float,
+        window: Any,
+    ) -> Any:
+        """Run an awaitable under a represented work/cleanup window.
 
         Within the window: return its result. At the boundary: cancel it and give a bounded
         grace to acknowledge. If it raises CancelledError (clean stop) → PARTIAL timeout. If it
@@ -571,37 +618,85 @@ class CapabilityRuntime:
         claim a stop it did not perform). If it errors while cancelling → timeout/partial."""
 
         inner = asyncio.ensure_future(awaitable)
-        done, _pending = await asyncio.wait({inner}, timeout=hard)
+        try:
+            done, _pending = await asyncio.wait({inner}, timeout=work_timeout_s)
+        except asyncio.CancelledError:
+            # Cancellation of the caller is not this invocation's timeout. Stop the child,
+            # contain it for the represented grace, then preserve the caller's cancellation.
+            inner.cancel()
+            await self._settle_cancelled_inner(inner, cancellation_grace_s)
+            raise
         if inner in done:
             # completed within the window — return its result (or re-raise its own exception,
             # which the caller maps to a normal failure, NOT a timeout).
             return inner.result()
         inner.cancel()
         try:
-            await asyncio.wait_for(asyncio.shield(inner), timeout=self._CANCEL_GRACE_S)
+            if cancellation_grace_s == 0:
+                await asyncio.sleep(0)
+                if not inner.done():
+                    raise asyncio.TimeoutError
+                await inner
+            else:
+                await asyncio.wait_for(
+                    asyncio.shield(inner), timeout=cancellation_grace_s
+                )
         except asyncio.CancelledError:
+            if asyncio.current_task() is not None and asyncio.current_task().cancelling():
+                inner.cancel()
+                self._detach_cancelled_inner(inner)
+                raise
             raise _ExecutionTimeout(
-                f"capability '{name}' exceeded its {hard:g}s execution window",
+                f"capability '{name}' exceeded its {work_timeout_s:g}s execution window "
+                "(work deadline)",
                 window=window,
             )
         except asyncio.TimeoutError:
+            inner.cancel()
+            self._detach_cancelled_inner(inner)
             raise _CancellationContainmentError(
                 f"capability '{name}' did not acknowledge cancellation within "
-                f"{self._CANCEL_GRACE_S:g}s of its execution window"
+                f"{cancellation_grace_s:g}s of its work window",
+                window=window,
             )
         except Exception:
             raise _ExecutionTimeout(
-                f"capability '{name}' exceeded its {hard:g}s execution window",
+                f"capability '{name}' exceeded its {work_timeout_s:g}s execution window "
+                "(work deadline)",
                 window=window,
             )
         else:
             # cancelled but returned a value anyway → suppression → containment FAILURE.
             raise _CancellationContainmentError(
                 f"capability '{name}' suppressed cancellation at its execution window and "
-                f"returned anyway"
+                f"returned anyway",
+                window=window,
             )
 
-    _CANCEL_GRACE_S = 1.0
+    @staticmethod
+    async def _settle_cancelled_inner(inner: asyncio.Task[Any], grace_s: float) -> None:
+        try:
+            if grace_s > 0:
+                await asyncio.wait_for(asyncio.shield(inner), timeout=grace_s)
+            else:
+                await asyncio.sleep(0)
+        except BaseException:
+            logger.debug("capability child stopped while caller cancellation was propagating")
+        if not inner.done():
+            inner.cancel()
+            CapabilityRuntime._detach_cancelled_inner(inner)
+
+    @staticmethod
+    def _detach_cancelled_inner(inner: asyncio.Task[Any]) -> None:
+        def _consume(task: asyncio.Task[Any]) -> None:
+            if task.cancelled():
+                return
+            try:
+                task.exception()
+            except BaseException:
+                logger.exception("detached capability task failed after cancellation")
+
+        inner.add_done_callback(_consume)
 
     def _record(self, event: WorkflowTraceEvent) -> None:
         self.trace_sink.record(event)

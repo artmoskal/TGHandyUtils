@@ -439,7 +439,7 @@ async def test_v010_runtime_contracts_project_through_the_public_door_and_viewer
 
     bundle_dir = tmp_path / "bundle"
 
-    def planner(_ctx, _payload):
+    async def planner(_ctx, _payload):
         return PlanArtifact(
             goal="audit pages under a bounded window",
             tasks=[
@@ -457,10 +457,10 @@ async def test_v010_runtime_contracts_project_through_the_public_door_and_viewer
             ],
         )
 
-    def full_audit(_ctx, payload):
+    async def full_audit(_ctx, payload):
         return {"audited": payload, "pages": 10}
 
-    def salvaged_audit(_ctx, _payload):
+    async def salvaged_audit(_ctx, _payload):
         return CapabilityResult(
             status="partial",
             output={"pages_done": 3, "pages_total": 10},
@@ -471,12 +471,12 @@ async def test_v010_runtime_contracts_project_through_the_public_door_and_viewer
 
     rounds: list[int] = []
 
-    def refine(ctx, payload):
+    async def refine(ctx, payload):
         prov = getattr(ctx, "retrace_provenance", None)
         rounds.append(prov.round if prov is not None else 0)
         return payload
 
-    def gate(_ctx, _payload):
+    async def gate(_ctx, _payload):
         # reject the first two evaluations (-> two retrace rounds), then accept
         attempts = len(rounds)
         return CapabilityResult(
@@ -647,5 +647,8 @@ async def test_v010_real_timeout_through_engine_run_salvages_reaps_and_projects(
     assert any(m.startswith("window: soft") for m in metrics["browser_probe"]), (
         f"the enforced window must be projected from persisted truth: {metrics['browser_probe']}"
     )
+    assert any(m.startswith("process: work") for m in metrics["browser_probe"]), (
+        f"the process work/reap split must be projected: {metrics['browser_probe']}"
+    )
     page = observation_graph_to_html(run_data.definition, graph)
-    assert "window: soft" in page and "timed out" in page
+    assert "window: soft" in page and "process: work" in page and "timed out" in page

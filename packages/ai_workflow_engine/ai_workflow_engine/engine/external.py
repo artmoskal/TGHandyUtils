@@ -6,11 +6,14 @@ import asyncio
 import contextlib
 from dataclasses import dataclass, field
 import json
+import os
 from pathlib import Path
+import signal
+import time
 from typing import Any
 
 from ai_workflow_engine.execution_window import (
-    invocation_soft_remaining_s,
+    invocation_window_remaining_s,
     resolve_invocation_bound,
 )
 from ai_workflow_engine.models import (
@@ -79,8 +82,16 @@ class ExternalProcessCapability:
 
         # 5R: the engine's ambient invocation window bounds the child — the request timeout
         # may only NARROW it. Outside any engine run the explicit request timeout stands.
+        ambient = invocation_window_remaining_s()
+        context_window = getattr(_context, "execution_window", None)
+        engine_soft_s = ambient.soft_s if ambient is not None else None
+        engine_hard_s = ambient.hard_s if ambient is not None else None
+        if ambient is None and context_window is not None and context_window.is_bounded:
+            engine_soft_s = context_window.soft_timeout_s
+            engine_hard_s = context_window.hard_timeout_s
         bound = resolve_invocation_bound(
-            engine_soft_s=invocation_soft_remaining_s(),
+            engine_soft_s=engine_soft_s,
+            engine_hard_s=engine_hard_s,
             explicit_timeout_s=request.timeout_s,
             default_kill_grace_s=request.kill_grace_s,
             owner="external_process",
@@ -97,22 +108,30 @@ class ExternalProcessCapability:
             stdin=asyncio.subprocess.PIPE if request.stdin_data is not None else None,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            # A process-backed capability owns the whole process tree it starts. On POSIX,
+            # isolate it so timeout/cancellation can stop descendants as well as the CLI PID.
+            start_new_session=os.name == "posix",
         )
         stdout_task = asyncio.create_task(self._read_stream(process.stdout))
         stderr_task = asyncio.create_task(self._read_stream(process.stderr))
+        driver_task = asyncio.create_task(
+            self._drive_process(process, request.stdin_data)
+        )
         bound_meta = {
             "timeout_s": effective_timeout_s,
             "requested_timeout_s": request.timeout_s,
             "kill_grace_s": kill_grace_s,
             "bound_source": bound.source,
+            "process_execution_bound": bound.metadata(),
         }
         try:
-            if request.stdin_data is not None:
-                await self._write_stdin(process, request.stdin_data)
-            try:
-                await asyncio.wait_for(process.wait(), timeout=effective_timeout_s)
-            except asyncio.TimeoutError:
+            done, _pending = await asyncio.wait(
+                {driver_task}, timeout=effective_timeout_s
+            )
+            if driver_task not in done:
+                driver_task.cancel()
                 killed_after_grace = await self._terminate_with_grace(process, kill_grace_s)
+                await asyncio.gather(driver_task, return_exceptions=True)
                 stdout = await stdout_task
                 stderr = await stderr_task
                 result_text = self._read_result_file(request)
@@ -131,7 +150,12 @@ class ExternalProcessCapability:
                         "killed_after_grace": killed_after_grace,
                     },
                 )
-
+            # Re-raise a write/process-wait failure before reporting a successful process.
+            driver_task.result()
+            # A CLI that exits while leaving descendants behind has not completed its owned
+            # process episode. Stop the residual group before waiting for pipe EOF; otherwise a
+            # grandchild holding stdout/stderr open can hang this supposedly bounded door.
+            await self._ensure_process_tree_reaped(process)
             stdout = await stdout_task
             stderr = await stderr_task
         except asyncio.CancelledError:
@@ -139,12 +163,17 @@ class ExternalProcessCapability:
             # The child must not outlive the engine's claim that it stopped: kill NOW (the
             # polite grace belongs to the timeout path — cancellation means the deadline
             # already passed), reap, settle the reader tasks, then propagate the cancel.
-            await self._reap_on_cancel(process, stdout_task, stderr_task)
+            driver_task.cancel()
+            await self._reap_on_cancel(process, driver_task, stdout_task, stderr_task)
             raise
         finally:
             # Belt for ANY exit path that left the child alive (unexpected exception): a
-            # subprocess must never outlive its capability invocation.
-            await self._ensure_child_reaped(process)
+            # subprocess tree must never outlive its capability invocation.
+            await self._ensure_process_tree_reaped(process)
+            if not driver_task.done():
+                driver_task.cancel()
+            await asyncio.gather(driver_task, return_exceptions=True)
+            await self._settle_readers(stdout_task, stderr_task)
 
         result_text = self._read_result_file(request)
         status = "accepted" if process.returncode == 0 else "failed"
@@ -163,30 +192,59 @@ class ExternalProcessCapability:
             },
         )
 
-    @staticmethod
-    async def _ensure_child_reaped(process: asyncio.subprocess.Process) -> None:
-        """Immediate kill + reap for any exit path that left the child alive: a subprocess
-        must never outlive its capability invocation (no survivor, no zombie)."""
+    @classmethod
+    async def _drive_process(
+        cls,
+        process: asyncio.subprocess.Process,
+        stdin_data: str | None,
+    ) -> None:
+        """Bound stdin delivery and process execution as one unit of work."""
 
+        if stdin_data is not None:
+            await cls._write_stdin(process, stdin_data)
+        await process.wait()
+
+    @classmethod
+    async def _ensure_process_tree_reaped(
+        cls, process: asyncio.subprocess.Process
+    ) -> None:
+        """Kill the owned process group (when available) and reap the direct child."""
+
+        if cls._process_tree_alive(process):
+            cls._signal_process_tree(process, signal.SIGKILL)
         if process.returncode is None:
             with contextlib.suppress(ProcessLookupError):
                 process.kill()
-            with contextlib.suppress(Exception):
-                await process.wait()
+        with contextlib.suppress(Exception):
+            await process.wait()
 
     @classmethod
     async def _reap_on_cancel(
         cls,
         process: asyncio.subprocess.Process,
+        driver_task: "asyncio.Task[None]",
         stdout_task: "asyncio.Task[str]",
         stderr_task: "asyncio.Task[str]",
     ) -> None:
         """Bounded, immediate cleanup on cancellation — must fit inside the runtime's
         cooperative cancel grace: kill (no terminate grace), reap, settle readers."""
 
-        await cls._ensure_child_reaped(process)
+        await cls._ensure_process_tree_reaped(process)
+        if not driver_task.done():
+            driver_task.cancel()
+        await asyncio.gather(driver_task, return_exceptions=True)
+        await cls._settle_readers(stdout_task, stderr_task)
+
+    @staticmethod
+    async def _settle_readers(
+        stdout_task: "asyncio.Task[str]",
+        stderr_task: "asyncio.Task[str]",
+    ) -> None:
+        """Cancel and join stream readers that were not consumed by the normal result path."""
+
         for task in (stdout_task, stderr_task):
-            task.cancel()
+            if not task.done():
+                task.cancel()
         await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
 
     @staticmethod
@@ -201,23 +259,49 @@ class ExternalProcessCapability:
         process.stdin.close()
         await process.stdin.wait_closed()
 
-    @staticmethod
-    async def _terminate_with_grace(process: asyncio.subprocess.Process, kill_grace_s: float) -> bool:
+    @classmethod
+    async def _terminate_with_grace(
+        cls, process: asyncio.subprocess.Process, kill_grace_s: float
+    ) -> bool:
         killed_after_grace = False
+        if cls._process_tree_alive(process):
+            cls._signal_process_tree(process, signal.SIGTERM)
+        deadline = time.monotonic() + max(0.0, kill_grace_s)
+        while cls._process_tree_alive(process) and time.monotonic() < deadline:
+            await asyncio.sleep(min(0.01, max(0.0, deadline - time.monotonic())))
+        if cls._process_tree_alive(process):
+            cls._signal_process_tree(process, signal.SIGKILL)
+            killed_after_grace = True
         if process.returncode is None:
-            try:
-                process.terminate()
-            except ProcessLookupError:
-                await process.wait()
-                return killed_after_grace
-        try:
-            await asyncio.wait_for(process.wait(), timeout=max(0.0, kill_grace_s))
-        except asyncio.TimeoutError:
-            if process.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
                 process.kill()
-                killed_after_grace = True
+        with contextlib.suppress(Exception):
             await process.wait()
         return killed_after_grace
+
+    @staticmethod
+    def _process_tree_alive(process: asyncio.subprocess.Process) -> bool:
+        if os.name != "posix":
+            return process.returncode is None
+        try:
+            os.killpg(process.pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+
+    @staticmethod
+    def _signal_process_tree(process: asyncio.subprocess.Process, sig: signal.Signals) -> None:
+        try:
+            if os.name == "posix":
+                os.killpg(process.pid, sig)
+            elif sig == signal.SIGTERM:
+                process.terminate()
+            else:
+                process.kill()
+        except ProcessLookupError:
+            return
 
     @staticmethod
     def _read_result_file(request: ExternalProcessRequest) -> str | None:

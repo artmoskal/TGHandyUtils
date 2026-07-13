@@ -18,6 +18,30 @@ the ownership model in [`concepts.md`](concepts.md).
 Consumers should persist product facts only from a result shape they explicitly accept. A partial
 result is not a completed result with fewer fields.
 
+## Execution Window Lifecycle
+
+`RuntimeLimits.timeout_s` is the run's finite work budget. For each capability the engine
+intersects the task request, capability limit, remaining run time, and parent soft deadline into one
+persisted `ExecutionWindowDecision`.
+
+- Async in-process handlers are cooperatively cancelled at the soft deadline. A clean stop is
+  `partial`; cancellation suppression is `failed` and marked
+  `cancellation_containment_failed`.
+- Synchronous inline handlers cannot be killed. Under any finite task/capability/run/parent window,
+  they are rejected before invocation. Make bounded code async or process-backed.
+- Process-backed handlers use soft time for work and reserve time inside hard for terminate/kill,
+  reap, stream settlement, artifact salvage, and result construction. The process bound is recorded
+  in trace and shown by the viewer. The engine process owner includes stdin delivery in work and,
+  on POSIX, isolates and terminates the full spawned process group; CLI adapters must use that owner
+  rather than opening their own subprocess path.
+- The graph fail-safe covers hangs outside capability invocation. It returns after a separate,
+  recorded cancellation allowance. If in-process graph code suppresses cancellation, Python cannot
+  kill it; the run fails loudly and operators should recycle the worker. Side-effectful or untrusted
+  hard-bounded code belongs in a subprocess.
+
+An explicit worker timeout may narrow the engine window, never widen it. A process call outside an
+engine run must declare its own timeout; no hidden default is selected.
+
 ## Local Wait Lifecycle
 
 Use a local wait only when the caller can retain the returned snapshot:

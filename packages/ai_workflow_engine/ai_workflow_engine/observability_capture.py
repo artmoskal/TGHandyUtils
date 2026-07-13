@@ -283,6 +283,7 @@ def llm_response_payload(response: Any) -> dict[str, Any]:
         "estimated_usd": getattr(response, "estimated_usd", None),
         "cost_class": getattr(response, "cost_class", None),
         "notional_usd": getattr(response, "notional_usd", None),
+        "metadata": byte_free(getattr(response, "metadata", {})),
     }
 
 
@@ -295,6 +296,7 @@ def langchain_response_payload(response: Any, *, text: str) -> dict[str, Any]:
         "text": text,
         "raw_type": response.__class__.__name__,
         "content": byte_free(getattr(response, "content", response)),
+        "response_metadata": byte_free(getattr(response, "response_metadata", {})),
     }
 
 

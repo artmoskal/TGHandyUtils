@@ -434,6 +434,24 @@ async def test_console_chat_model_missing_binary_is_loud():
         model.invoke([SimpleNamespace(type="human", content="hi")])
 
 
+async def test_console_chat_model_timeout_uses_the_shared_process_owner(
+    fake_cli_path, monkeypatch, tmp_path
+):
+    from types import SimpleNamespace
+
+    from ai_workflow_tools.cli_agents import ConsoleChatModel
+
+    _configure_fake_cli(monkeypatch, tmp_path, mode="sleep")
+    monkeypatch.setenv("FAKE_CLI_SLEEP_S", "30")
+    model = ConsoleChatModel(
+        _fake_flavor(claude_p, fake_cli_path),
+        timeout_s=0.1,
+    )
+
+    with pytest.raises(RuntimeError, match="timed out"):
+        model.invoke([SimpleNamespace(type="human", content="hi")])
+
+
 async def test_console_chat_model_rejects_image_parts_loudly(fake_cli_path):
     from types import SimpleNamespace
 
@@ -702,7 +720,9 @@ class _SpyExternalRunner:
         from ai_workflow_engine.models import CapabilityResult
 
         self.request = request
-        stdout = json.dumps({"result": "ok", "usage": {"input_tokens": 1, "output_tokens": 1}})
+        stdout = json.dumps(
+            {"result": '{"label":"ok"}', "usage": {"input_tokens": 1, "output_tokens": 1}}
+        )
         return CapabilityResult(
             status="accepted",
             output={"returncode": 0, "stdout": stdout, "stderr": "", "result": stdout},
@@ -713,28 +733,36 @@ async def test_console_llm_client_is_clamped_by_the_ambient_engine_window():
     import time as _t
 
     from ai_workflow_engine.execution_window import (
-        publish_invocation_soft_deadline,
-        reset_invocation_soft_deadline,
+        publish_invocation_window,
+        reset_invocation_window,
     )
 
     spy = _SpyExternalRunner()
     client = ConsoleLLMClient(claude_p, timeout_s=240.0, external_runner=spy)
 
-    token = publish_invocation_soft_deadline(_t.monotonic() + 7.0)
+    now = _t.monotonic()
+    token = publish_invocation_window(
+        soft_deadline_monotonic=now + 7.0,
+        hard_deadline_monotonic=now + 8.0,
+    )
     try:
         await client(LLMRequest(user="hi"))
     finally:
-        reset_invocation_soft_deadline(token)
+        reset_invocation_window(token)
     assert spy.request.timeout_s <= 7.0, "the engine window must clamp the console bound"
     assert spy.request.timeout_s > 5.0, "sanity: the clamp is the remaining window, not zero"
 
     # a TIGHTER explicit client bound still narrows an ample engine window
     tight = ConsoleLLMClient(claude_p, timeout_s=3.0, external_runner=spy)
-    token = publish_invocation_soft_deadline(_t.monotonic() + 500.0)
+    now = _t.monotonic()
+    token = publish_invocation_window(
+        soft_deadline_monotonic=now + 500.0,
+        hard_deadline_monotonic=now + 501.0,
+    )
     try:
         await tight(LLMRequest(user="hi"))
     finally:
-        reset_invocation_soft_deadline(token)
+        reset_invocation_window(token)
     assert spy.request.timeout_s == 3.0
 
     # standalone (no ambient window): the explicit bound stands — no hidden default
@@ -742,36 +770,116 @@ async def test_console_llm_client_is_clamped_by_the_ambient_engine_window():
     assert spy.request.timeout_s == 240.0
 
 
-def test_console_chat_model_is_clamped_by_the_ambient_engine_window(monkeypatch):
-    import subprocess
+async def test_console_llm_client_inherits_and_records_a_real_engine_window():
+    """The real engine -> StructuredLLMNode -> console transport path shares one bound and
+    projects the process enforcement decision onto persisted trace truth."""
+
+    from ai_workflow_engine import WorkflowEngineBuilder, run_single_llm
+    from ai_workflow_engine.models import RuntimeLimits, WorkflowProfile
+
+    spy = _SpyExternalRunner()
+    client = ConsoleLLMClient(claude_p, timeout_s=240.0, external_runner=spy)
+    engine = (
+        WorkflowEngineBuilder()
+        .with_profile(
+            WorkflowProfile(
+                workflow_type="console_llm_bound",
+                limits=RuntimeLimits(timeout_s=5.0),
+            )
+        )
+        .build()
+    )
+
+    result = await run_single_llm(
+        client,
+        "Return a verdict for {item}.",
+        Verdict,
+        {"item": "mug"},
+        engine=engine,
+        name="bounded_console_llm",
+        return_result=True,
+    )
+
+    assert result.status == "completed" and result.output.label == "ok"
+    process_bound = spy.request.metadata["process_execution_bound"]
+    assert 0 < process_bound["work_timeout_s"] < process_bound["engine_hard_s"] <= 5.0
+    assert process_bound["cleanup_headroom_s"] == 0.0
+    llm_events = [
+        event
+        for event in result.trace
+        if event.node == "bounded_console_llm" and event.phase == "llm:response"
+    ]
+    assert llm_events[-1].metadata["process_execution_bound"]["engine_hard_s"] <= 5.0
+
+
+def test_console_chat_model_is_clamped_by_the_ambient_engine_window():
     import time as _t
     from types import SimpleNamespace
 
     from ai_workflow_engine.execution_window import (
-        publish_invocation_soft_deadline,
-        reset_invocation_soft_deadline,
+        publish_invocation_window,
+        reset_invocation_window,
     )
 
     from ai_workflow_tools.cli_agents.console import ConsoleChatModel
 
-    captured = {}
+    spy = _SpyExternalRunner()
+    model = ConsoleChatModel(claude_p, timeout_s=240.0, external_runner=spy)
 
-    def fake_run(argv, **kwargs):
-        captured["timeout"] = kwargs.get("timeout")
-        stdout = json.dumps({"result": "hello", "usage": {}})
-        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    model = ConsoleChatModel(claude_p, timeout_s=240.0)
-
-    token = publish_invocation_soft_deadline(_t.monotonic() + 6.0)
+    now = _t.monotonic()
+    token = publish_invocation_window(
+        soft_deadline_monotonic=now + 6.0,
+        hard_deadline_monotonic=now + 7.0,
+    )
     try:
         model.invoke([SimpleNamespace(type="user", content="hi")])
     finally:
-        reset_invocation_soft_deadline(token)
-    assert captured["timeout"] <= 6.0, "the engine window must clamp the chat-model bound"
-    assert captured["timeout"] > 4.0
+        reset_invocation_window(token)
+    assert spy.request.timeout_s <= 6.0, "the engine window must clamp the chat-model bound"
+    assert spy.request.timeout_s > 4.0
 
     # standalone: explicit bound stands
     model.invoke([SimpleNamespace(type="user", content="hi")])
-    assert captured["timeout"] == 240.0
+    assert spy.request.timeout_s == 240.0
+
+
+async def test_console_chat_model_inherits_a_real_engine_window():
+    from types import SimpleNamespace
+
+    from ai_workflow_engine import WorkflowEngineBuilder, run_single_llm
+    from ai_workflow_engine.models import RuntimeLimits, WorkflowProfile
+    from ai_workflow_tools.cli_agents.console import ConsoleChatModel
+
+    spy = _SpyExternalRunner()
+    model = ConsoleChatModel(claude_p, timeout_s=240.0, external_runner=spy)
+    engine = (
+        WorkflowEngineBuilder()
+        .with_profile(
+            WorkflowProfile(
+                workflow_type="console_chat_bound",
+                limits=RuntimeLimits(timeout_s=5.0),
+            )
+        )
+        .build()
+    )
+
+    result = await run_single_llm(
+        model,
+        "Return a verdict for {item}.",
+        Verdict,
+        {"item": "mug"},
+        engine=engine,
+        name="bounded_console_chat",
+        return_result=True,
+    )
+
+    assert result.status == "completed" and result.output.label == "ok"
+    assert 0 < spy.request.timeout_s < 5.0
+    process_bound = spy.request.metadata["process_execution_bound"]
+    assert process_bound["work_timeout_s"] == spy.request.timeout_s
+    llm_events = [
+        event
+        for event in result.trace
+        if event.node == "bounded_console_chat" and event.phase == "llm:response"
+    ]
+    assert llm_events[-1].metadata["process_execution_bound"]["engine_hard_s"] <= 5.0

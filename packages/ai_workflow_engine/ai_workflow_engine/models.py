@@ -624,9 +624,9 @@ class CapabilitySpec(BaseModel):
     is_flow_author: bool = False
     is_planner: bool = False
     # v0.10 interruptibility honesty: how the engine may enforce a hard execution window.
-    #   process     — owns a killable child process; a hard stop is real (kill/reap).
+    #   process     — owns a killable subprocess tree; a hard stop is real (kill/reap).
     #   cooperative — an async handler cancelled at the hard boundary; must acknowledge it.
-    #   none        — uninterruptible inline work; a DECLARED finite window (task/spec) is
+    #   none        — uninterruptible inline work; any finite window (task/spec/run/parent) is
     #                 rejected before the handler runs (the engine will not claim a hard stop
     #                 it cannot perform). None here = inferred at invoke from kind/awaitable.
     timeout_enforcement: Optional["TimeoutEnforcement"] = None

@@ -1308,6 +1308,15 @@ def test_execution_window_timeout_and_retrace_project_from_persisted_truth(tmp_p
         "clamps": ["run_remaining"],
         "enforcement": "process",
     }
+    process_bound = {
+        "work_timeout_s": 7.0,
+        "kill_grace_s": 1.0,
+        "source": "engine_window",
+        "engine_soft_s": 8.0,
+        "engine_hard_s": 10.0,
+        "cleanup_headroom_s": 1.0,
+        "settle_reserve_s": 0.25,
+    }
 
     def ev(**k):
         return WorkflowTraceEvent(run_id="r", phase="tool:result", **k)
@@ -1315,7 +1324,10 @@ def test_execution_window_timeout_and_retrace_project_from_persisted_truth(tmp_p
     events = [
         # bounded SUCCESS -> full window projected (not only the timeout path)
         ev(node="worker", decision="accepted", sequence=1, event_id="1",
-           metadata={"execution_window": window}),
+           metadata={
+               "execution_window": window,
+               "process_execution_bound": process_bound,
+           }),
         # timeout WITH a window -> window + timeout reason
         ev(node="slow", decision="partial", severity="error", sequence=2, event_id="2",
            metadata={"timeout_reason": "execution_window_exceeded", "execution_window": window}),
@@ -1331,6 +1343,10 @@ def test_execution_window_timeout_and_retrace_project_from_persisted_truth(tmp_p
     metrics = {n["id"]: n["metrics"] for n in _observation_view_data(definition, graph)["nodes"]}
 
     assert "window: soft 8s / hard 10s (clamped: run_remaining) [process]" in metrics["worker"]
+    assert (
+        "process: work 7s / cleanup 1s / settle 0.25s (reserved: 1s) [engine_window]"
+        in metrics["worker"]
+    )
     assert any(m.startswith("window: soft 8s / hard 10s") for m in metrics["slow"])
     assert "timeout: execution_window_exceeded" in metrics["slow"]
     assert "retrace round 1 → worker" in metrics["gate"]
@@ -1341,5 +1357,6 @@ def test_execution_window_timeout_and_retrace_project_from_persisted_truth(tmp_p
 
     page = observation_graph_to_html(definition, graph)
     assert "window: soft 8s / hard 10s" in page
+    assert "process: work 7s / cleanup 1s / settle 0.25s" in page
     assert "retrace round 1" in page
     assert "window: not recorded" in page
