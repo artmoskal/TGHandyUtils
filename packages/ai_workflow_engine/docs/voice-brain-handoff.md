@@ -1,7 +1,7 @@
 # Voice Brain Engine Integration Guide
 
 Status: **the engine supports the required execution boundary as of the immutable
-`engine-v0.10.0` release; voice
+`engine-v0.10.1` release candidate (tag pending — do not re-pin); voice
 integration remains product-owned and must run its own latency/cancellation canary.** This replaces
 the historical June request/reply transcript.
 
@@ -25,10 +25,10 @@ transcript + session context
 
 ## Package Choice
 
-- `ai-workflow-engine==0.10.0` for the runtime and custom `LLMCallable`.
-- `ai-workflow-tools==0.4.0` only when using `CliAgentCapability`/console tools. CLI subscription
+- `ai-workflow-engine==0.10.1` for the runtime and custom `LLMCallable`.
+- `ai-workflow-tools==0.4.1` only when using `CliAgentCapability`/console tools. CLI subscription
   workers are usually unsuitable for a low-latency conversational hot path.
-- `ai-workflow-viewer==0.2.2` in diagnostics, not the real-time audio path.
+- `ai-workflow-viewer==0.2.3` in diagnostics, not the real-time audio path.
 
 ## Streaming Boundary
 

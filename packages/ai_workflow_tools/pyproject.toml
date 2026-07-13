@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ai-workflow-tools"
-version = "0.4.0"
+version = "0.4.1"
 description = "Reusable CLI-agent tools for ai-workflow-engine."
 requires-python = ">=3.10"
 dependencies = [

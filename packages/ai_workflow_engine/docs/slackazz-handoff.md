@@ -1,7 +1,7 @@
 # SlackAzzCovered Engine Adoption Guide
 
-Status: **ready for SlackAzzCovered consumer validation against the immutable `engine-v0.10.0`
-tag.** SlackAzzCovered should pin tag `engine-v0.10.0`, implement its Redis coordinator, and pass the engine conformance kit plus product
+Status: **release candidate `engine-v0.10.1` — the tag is pending final review and does not exist
+yet; do not re-pin until it is cut.** Once tagged, SlackAzzCovered should pin tag `engine-v0.10.1`, implement its Redis coordinator, and pass the engine conformance kit plus product
 transaction tests before enabling live effects.
 
 This answers the consumer request in
@@ -32,9 +32,9 @@ client event
 
 | Package | SlackAzzCovered use |
 |---|---|
-| `ai-workflow-engine==0.10.0` | Required workflow/wait runtime |
-| `ai-workflow-tools==0.4.0` | Add for CLI agents/tool catalog if the product uses them |
-| `ai-workflow-viewer==0.2.2` | Developer diagnostics or product-linked run inspection |
+| `ai-workflow-engine==0.10.1` | Required workflow/wait runtime |
+| `ai-workflow-tools==0.4.1` | Add for CLI agents/tool catalog if the product uses them |
+| `ai-workflow-viewer==0.2.3` | Developer diagnostics or product-linked run inspection |
 
 Build from the immutable tag and record commit/hash. Never copy engine source or track the branch.
 

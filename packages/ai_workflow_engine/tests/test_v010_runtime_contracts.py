@@ -671,12 +671,13 @@ async def test_retrace_targeting_fanout_delivers_provenance_to_item_invocations(
 def test_tools_wheel_identity_advanced_for_changed_code():
     """Defect 4: ai_workflow_tools source changed between engine-v0.8.1 and engine-v0.9.2
     (cli_agents assembly/console/models) while both tags shipped as 0.3.0 — two different
-    wheels must never share name+version. v0.10 requires the 0.4.0 identity."""
+    wheels must never share name+version. v0.10 advanced to 0.4.0; v0.10.1 changed the tools
+    process-I/O surfacing again, so the identity advanced to 0.4.1."""
 
     import ai_workflow_tools
 
-    assert ai_workflow_tools.__version__ == "0.4.0", (
-        "tools code changed since the last released 0.3.0 wheel identity; the version must "
+    assert ai_workflow_tools.__version__ == "0.4.1", (
+        "tools code changed since the last released wheel identity; the version must "
         f"advance (found {ai_workflow_tools.__version__})"
     )
 

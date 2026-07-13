@@ -1,11 +1,12 @@
 # MageQA Engine Adoption Guide
 
-Status: **ready for MageQA consumer validation against the immutable `engine-v0.10.0` tag.** The five E0 blockers that
+Status: **BLOCKED until the `engine-v0.10.1` tag exists (release candidate — do not re-pin).** The five E0 blockers that
 failed MageQA against `engine-v0.9.2` — planned `partial` rewritten to `done` with the error
 cleared, `RuntimeLimits.timeout_s` declared but not enforced, retrace provenance not exposed to the
 retraced capability, the CLI request's hidden 600s default, and the reused `0.3.0` tools wheel
-identity — are all **addressed in `engine-v0.10.0`** (tools `0.4.0`, viewer `0.2.2`). MageQA must
-pin tag `engine-v0.10.0` from a clean checkout, rebuild wheels, and pass its E0 canaries before
+identity — are all **addressed in `engine-v0.10.0`** and carried forward into `engine-v0.10.1` (tools `0.4.1`, viewer `0.2.3`),
+which additionally bounds the external-process result-settlement boundary. MageQA must
+pin tag `engine-v0.10.1` from a clean checkout, rebuild wheels, and pass its E0 canaries before
 migrating; it stays on its existing pin until those canaries pass.
 Do not infer the actual MageQA pin from this document; the consumer repository's pin file is
 authoritative for deployed state.
@@ -13,7 +14,7 @@ authoritative for deployed state.
 Read first: [getting started](getting-started.md), [framework concepts](concepts.md),
 [operations](operations.md), and [misuse risks](misuse-risks.md).
 
-Moving to `engine-v0.10.0`? Read [migration-v0.10](migration-v0.10.md) — the `partial` timeout/plan
+Moving to `engine-v0.10.1`? Read [migration-v0.10](migration-v0.10.md) — the `partial` timeout/plan
 contract, enforced `RuntimeLimits.timeout_s`, interruptibility declaration, and the dropped CLI
 600s default are all listed there. Coming from `engine-v0.7.0`/`v0.8.1`, also read
 [migration-v0.9](migration-v0.9.md) first.
@@ -46,9 +47,9 @@ a defect.
 
 | Package | MageQA use |
 |---|---|
-| `ai-workflow-engine==0.10.0` | Required orchestration/runtime |
-| `ai-workflow-tools==0.4.0` | CLI agents, `claude -p`/`codex exec`, tool catalog, media helpers |
-| `ai-workflow-viewer==0.2.2` | Low-level engine run investigation and bundle rendering |
+| `ai-workflow-engine==0.10.1` | Required orchestration/runtime |
+| `ai-workflow-tools==0.4.1` | CLI agents, `claude -p`/`codex exec`, tool catalog, media helpers |
+| `ai-workflow-viewer==0.2.3` | Low-level engine run investigation and bundle rendering |
 
 The MageQA Next.js dashboard remains product-owned. It may link/embed/project engine bundle data, but
 it must not create a duplicate trace or workflow runtime.

@@ -101,3 +101,41 @@ wheels must never share `name+version`. Repin all three and rebuild.
 - Run your adapter/canary tests. In particular, confirm any status handler now accepts `partial`,
   and that any workflow relying on `RuntimeLimits.timeout_s` being inert still behaves acceptably now
   that it is enforced.
+
+## v0.10.1
+
+`engine-v0.10.1` (tools `0.4.1`, viewer `0.2.3`) is a corrective release: it bounds the
+external-process **result-settlement** boundary as tightly as the execution window already
+bounds time. `engine-v0.10.0` is superseded for NEW adoption; move directly to the
+`engine-v0.10.1` tag when it is cut.
+
+### Behavior changes
+- **Bounded process capture.** `ExternalProcessCapability` (and therefore the CLI-agent and
+  console doors) retains only a bounded head+tail of stdout/stderr — defaults stdout `1 MiB`,
+  stderr `256 KiB`, result file `4 MiB` — draining the rest to EOF and recording truthful
+  total-byte and truncation accounting under `metadata["process_io"]`. A noisy process can no
+  longer exhaust memory. Configure the caps at capability construction via `ProcessIOLimits`;
+  a per-request `io_limits` may only tighten them (never select unlimited).
+- **Safe result-file reading.** The declared result file is opened descriptor-first
+  (`O_NOFOLLOW`/`O_NONBLOCK`/`O_CLOEXEC`) and validated with `fstat` — a FIFO/socket/device/
+  directory/symlink is rejected WITHOUT being read (a FIFO no longer blocks the event loop past
+  the deadline; a symlink target is never disclosed), and an over-cap file is rejected without
+  allocation. A normally-exiting process whose declared result file is unsafe or oversized is
+  now **`failed`** with a typed `result file rejected: …` reason (previously the raw read hung,
+  leaked, or slurped). A timeout stays `partial`; exit-zero with no result file and truncated
+  stdout-as-result is `partial` (never accepted-incomplete); a valid result stays accepted even
+  if diagnostics were truncated. **If you branch on external-process outcomes, treat an unsafe/
+  oversized result as failed.**
+
+### Additive (no action required)
+- The shared `WaitCoordinator` conformance kit now also exercises `due()` and `health()` (due
+  filtering, overdue/stalled/oldest-deadline health, reconnect, and broken-adapter negatives).
+  Re-run `run_wait_registration_conformance` against your adapter — no new dependency, no
+  scheduler; the kit and your adapter must share the injected clock.
+- The viewer projects a concise `process_io` settlement summary and caps any single detail body
+  it renders, so a large (already engine-bounded) capture never bloats the page; the full record
+  stays extractable from the bundle.
+
+### Package identities
+`ai-workflow-engine==0.10.1`, `ai-workflow-tools==0.4.1`, `ai-workflow-viewer==0.2.3` — each
+advanced because its shipped source changed; no two different wheels share `name+version`.
