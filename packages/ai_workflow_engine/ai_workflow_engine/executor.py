@@ -1,15 +1,12 @@
 """Executable workflow runtime.
 
-``WorkflowExecutor`` compiles a :class:`~ai_workflow_engine.workflow.WorkflowDefinition` into a
-LangGraph ``StateGraph`` and runs it end to end. LangGraph is an *internal* execution backend:
-the framework is imported only inside :meth:`WorkflowExecutor.compile` and never leaks through the
-public API — products see only ``WorkflowBuilder``/``WorkflowEngine``.
+``WorkflowExecutor`` is the run/resume coordinator. It composes dedicated owners for machine
+compilation, node execution, suspension registration, and result assembly while keeping LangGraph
+an internal backend. Products see only ``WorkflowBuilder``/``WorkflowEngine``.
 
-The executor owns orchestration mechanics (node dispatch, input/output mapping, branch routing,
-fail-closed halting, trace/result shaping). Control loops that are naturally node-local
-(retry, evaluator retry/retrace, fan-out gather) are executed inside the relevant node so the
-compiled graph stays a predictable DAG with explicit, bounded back-edges only where a
-workflow declares a graph-level retrace.
+Control loops that are naturally node-local (retry, evaluator retry/retrace, fan-out gather) stay
+inside the relevant node. The compiled graph therefore remains a predictable DAG with explicit,
+bounded back-edges only where a workflow declares graph-level retrace.
 
 Public concepts: ``WorkflowExecutor``, ``NodeExecutionState``, ``NodeResult``,
 ``WorkflowRunResult``, ``UnsupportedNodeError``, ``CapabilityBindingError``.
@@ -18,20 +15,12 @@ Public concepts: ``WorkflowExecutor``, ``NodeExecutionState``, ``NodeResult``,
 from __future__ import annotations
 
 import asyncio
-import logging
 from contextvars import ContextVar
-import uuid
 from typing import Any, Callable, Dict, List, Optional, TypedDict
 
 from pydantic import field_validator, model_validator, BaseModel, ConfigDict, Field
 
-from ai_workflow_engine.engine.capabilities import (
-    CapabilityCall,
-    CapabilityRuntime,
-    gather_capabilities,
-)
-
-logger = logging.getLogger(__name__)
+from ai_workflow_engine.engine.capabilities import CapabilityRuntime
 
 # R-C2-2: private staging channel for authored-flow run-birth provenance. ONLY
 # WorkflowEngine.run_authored_flow may set it; the executor consumes it exactly once per run.
@@ -40,13 +29,14 @@ logger = logging.getLogger(__name__)
 _AUTHORED_PROVENANCE: ContextVar[Optional[Dict[str, Any]]] = ContextVar(
     "ai_workflow_engine_authored_provenance", default=None
 )
-from ai_workflow_engine.engine.runner import WorkflowRunner, derive_workflow_result_status
+from ai_workflow_engine.engine.runner import WorkflowRunner
 from ai_workflow_engine.machine_compiler import WorkflowMachineCompiler
 from ai_workflow_engine.node_services import (
     ExecutorNodeServices,
     NodeSchedulingRuntime,
 )
 from ai_workflow_engine.node_replay import NodeReplayRuntime
+from ai_workflow_engine.result_assembly import RunResultAssembler
 from ai_workflow_engine.nodes import NODE_HANDLERS
 from ai_workflow_engine.run_session import child_trace_slice, WorkflowRunSession
 from ai_workflow_engine._runtime_state import (
@@ -58,15 +48,13 @@ from ai_workflow_engine._runtime_state import (
 )
 from ai_workflow_engine.models import (
     CapabilityContext,
-    CapabilityResult,
-    CriticismEnvelope,
-    EvaluationDecision,
     WorkflowArtifact,
     WorkflowResultStatus,
     WorkflowTraceEvent,
     WorkflowUsageSummary,
 )
-from ai_workflow_engine.snapshot import MachineSnapshot, SNAPSHOT_SCHEMA_VERSION
+from ai_workflow_engine.snapshot import MachineSnapshot
+from ai_workflow_engine.suspension import SuspensionCoordinator
 from ai_workflow_engine.wait_contract import WaitHandle
 from ai_workflow_engine.workflow import WorkflowDefinition, WorkflowNode
 
@@ -219,7 +207,6 @@ class WorkflowExecutor:
         self._bound_loop: Optional[asyncio.AbstractEventLoop] = None
         # ModelProfile registry for declarative per-node model binding (set by WorkflowEngine).
         self._model_profiles: Dict[str, Any] = {}
-        self._wait_runtime: Any = None
         self._node_scheduling = NodeSchedulingRuntime()
         self._node_services: ExecutorNodeServices = ExecutorNodeServices(
             runtime=runtime,
@@ -229,6 +216,12 @@ class WorkflowExecutor:
             node_result_factory=NodeResult,
             capability_binding_error=CapabilityBindingError,
             scheduling=self._node_scheduling,
+        )
+        self._suspension = SuspensionCoordinator(runtime)
+        self._results = RunResultAssembler(
+            runtime=runtime,
+            result_factory=WorkflowRunResult,
+            suspension=self._suspension,
         )
         # Node-kind handler table. Kinds present here are *implemented*; any valid-but-absent
         # kind fails loudly (never silently downgraded). Phases register more kinds.
@@ -264,11 +257,11 @@ class WorkflowExecutor:
 
     @property
     def wait_runtime(self) -> Any:
-        return self._wait_runtime
+        return self._suspension.wait_runtime
 
     @wait_runtime.setter
     def wait_runtime(self, wait_runtime: Any) -> None:
-        self._wait_runtime = wait_runtime
+        self._suspension.set_wait_runtime(wait_runtime)
         if hasattr(self, "_compiler"):
             self._compiler.set_wait_runtime(wait_runtime)
 
@@ -304,7 +297,7 @@ class WorkflowExecutor:
         # Pre-flight: bindings and node kinds must resolve, or fail loudly + trace (no run).
         binding_error = self._preflight(definition)
         if binding_error is not None:
-            envelope = self._failed_envelope(definition, binding_error)
+            envelope = self._results.failed(definition, binding_error)
             if observation_bundle is not None:
                 WorkflowRunSession(
                     workflow_id=definition.workflow_id,
@@ -368,14 +361,14 @@ class WorkflowExecutor:
                 # W2.3: durable suspensions register BEFORE anything is exposed. A
                 # registration failure converts the run to FAILED with NO public wait door
                 # (the bundle finalizes failed; no orphan snapshot/handle is representable).
-                durable_handle, final_state = await self._register_durable_or_fold(
+                durable_handle, final_state = await self._suspension.register_or_fold(
                     definition, final_state, context, session
                 )
         except Exception:
             # The run raised: the bundle must still close, truthfully, as failed.
             session.close("failed")
             raise
-        envelope = self._envelope(definition, final_state, session=session)
+        envelope = self._results.envelope(definition, final_state, session=session)
         if durable_handle is not None:
             # handle-only public result for registered waits (C1): validated model_copy
             envelope = envelope.model_copy(
@@ -406,12 +399,7 @@ class WorkflowExecutor:
                         "machine snapshot — suspension must come from the workflow itself"
                     )
                 envelope = envelope.model_copy(update={"status": override})
-        session.close(envelope.status, artifacts=envelope.artifacts)
-        if session.bundle is not None and getattr(session.bundle, "path", None):
-            envelope = envelope.model_copy(
-                update={"observation_bundle_path": str(session.bundle.path)}
-            )
-        return envelope
+        return self._finalize_result(session, envelope)
 
     async def _run_inner(
         self,
@@ -428,7 +416,7 @@ class WorkflowExecutor:
         self._bind_or_validate_event_loop()
         binding_error = self._preflight(definition)
         if binding_error is not None:
-            return self._failed_envelope(definition, binding_error)
+            return self._results.failed(definition, binding_error)
         compiled = self.compile(definition)
         graph_config = {"recursion_limit": self._recursion_limit(definition, context)}
         with observation_capture_scope(self.runtime.observation):
@@ -436,12 +424,12 @@ class WorkflowExecutor:
             if (session := current_run_session()) is not None:
                 # Child workflows share the parent's usage/budget scope. Carry that same
                 # summary into the child envelope too; an empty fabricated summary would make
-                # nested costs look like zero and emitted a false plumbing warning on every run.
+                # nested costs look like zero and emit a false plumbing warning on every run.
                 child_state["usage_summary"] = session.usage_summary
                 child_state["workflow_context"] = session.run_context
             with child_trace_slice() as child_events:
                 final_state = await compiled.ainvoke(child_state, config=graph_config)
-        return self._envelope(definition, final_state, child_trace=child_events)
+        return self._results.envelope(definition, final_state, child_trace=child_events)
 
     async def resume(
         self,
@@ -499,7 +487,7 @@ class WorkflowExecutor:
             raise
         if binding_error is not None:
             _close_failed_bundle()
-            return self._failed_envelope(definition, binding_error)
+            return self._results.failed(definition, binding_error)
         compiled = self.compile(definition)
         state = self._initial_state(snapshot.payload, context)
         node_status = dict(snapshot.node_status)
@@ -574,24 +562,19 @@ class WorkflowExecutor:
                 # W4.2 (closing a W3 gap): a resumed run that suspends at the NEXT durable
                 # wait registers it under the SAME W2.3 contract as run() — chained/repeated
                 # waits get handles; an unregistered raw snapshot is never exposed.
-                durable_handle, final_state = await self._register_durable_or_fold(
+                durable_handle, final_state = await self._suspension.register_or_fold(
                     definition, final_state, context, session
                 )
         except Exception:
             # F8/R0: a raising resume must still finalize its bundle truthfully (run() parity).
             session.close("failed")
             raise
-        envelope = self._envelope(definition, final_state, session=session)
+        envelope = self._results.envelope(definition, final_state, session=session)
         if durable_handle is not None:
             envelope = envelope.model_copy(
                 update={"snapshot": None, "wait_handle": durable_handle}
             )
-        session.close(envelope.status, artifacts=envelope.artifacts)
-        if session.bundle is not None and getattr(session.bundle, "path", None):
-            envelope = envelope.model_copy(
-                update={"observation_bundle_path": str(session.bundle.path)}
-            )
-        return envelope
+        return self._finalize_result(session, envelope)
 
     def _bind_or_validate_event_loop(self) -> None:
         current = asyncio.get_running_loop()
@@ -626,6 +609,20 @@ class WorkflowExecutor:
             "plan_artifact": None,
         }
 
+    @staticmethod
+    def _finalize_result(
+        session: WorkflowRunSession,
+        envelope: WorkflowRunResult,
+    ) -> WorkflowRunResult:
+        """Close one run segment and project its bundle path exactly once."""
+
+        session.close(envelope.status, artifacts=envelope.artifacts)
+        if session.bundle is not None and getattr(session.bundle, "path", None):
+            return envelope.model_copy(
+                update={"observation_bundle_path": str(session.bundle.path)}
+            )
+        return envelope
+
     def compile(self, definition: WorkflowDefinition) -> Any:
         """Compile through the engine-owned machine compiler."""
 
@@ -639,315 +636,3 @@ class WorkflowExecutor:
         limits = context.limits
         loops = (limits.max_retries + limits.max_retrace + 1) if limits else 1
         return 25 + len(definition.nodes) * (2 + loops)
-
-    # ---------------------------------------------------------------- envelopes
-    @staticmethod
-    def _suspension_occurrence(final_state: Dict[str, Any], suspended: str) -> int:
-        """0-based ordinal of the CURRENT suspension of ``suspended`` (already recorded
-        in node_results). One shared source for snapshot sealing and wait registration."""
-
-        return max(
-            0,
-            sum(
-                1
-                for r in final_state.get("node_results", [])
-                if r.node_id == suspended and r.status == "requires_user_input"
-            )
-            - 1,
-        )
-
-    def _build_snapshot(
-        self,
-        definition: WorkflowDefinition,
-        suspended: str,
-        final_state: Dict[str, Any],
-        session: Optional[WorkflowRunSession] = None,
-    ) -> MachineSnapshot:
-        # W4: record WHICH observation segment captured this suspension, so any resume
-        # (local or claimed) derives the continuation segment from persisted lineage —
-        # never from a directory scan. No bundle/segment on the session -> defaults.
-        segment = getattr(getattr(session, "bundle", None), "segment", None)
-        # W3R.1: a durable suspension's snapshot carries its deterministic wait id, sealing
-        # it to the claimed delivery path (public resume rejects it). Same inputs as
-        # registration -> same id by construction; registration double-checks.
-        durable_wait_id: Optional[str] = None
-        node = definition.node(suspended) if suspended in {n.id for n in definition.nodes} else None
-        if node is not None and (node.wait_policy or {}).get("mode") == "durable":
-            from ai_workflow_engine.wait_runtime import DurableWaitRuntime
-
-            run_context_obj = final_state.get("workflow_context")
-            run_id_for_wait = getattr(run_context_obj, "workflow_id", None)
-            if run_id_for_wait:
-                durable_wait_id = DurableWaitRuntime.wait_id_for(
-                    str(run_id_for_wait),
-                    suspended,
-                    self._suspension_occurrence(final_state, suspended),
-                )
-        node_results: List[NodeResult] = list(final_state.get("node_results", []))
-        plan = final_state.get("plan_artifact")
-        if plan is not None and hasattr(plan, "model_dump"):
-            plan = plan.model_dump()
-        usage = final_state.get("usage_summary") or WorkflowUsageSummary()
-        # v0.11 (M6): the capturing run's identity is REQUIRED. Top-level/resume runs carry it in
-        # state; a CHILD run's identity lives on its CapabilityContext (goal) while its lineage
-        # keeps the parent's run_context (shared usage/budget scope, B-post3).
-        state_context = final_state.get(CONTEXT)
-        goal = final_state.get("workflow_goal") or getattr(state_context, "goal", None)
-        snapshot_run_context = final_state.get("workflow_context") or getattr(
-            state_context, "run_context", None
-        )
-        if goal is None or snapshot_run_context is None:
-            raise RuntimeError(
-                "suspension without run identity: neither state nor context carries "
-                "workflow_goal/run_context — a v0.11 snapshot requires the capturing run's identity"
-            )
-        # Recheck RR1 normalization at the OWNER: a CHILD capture pairs the child's goal with
-        # the parent's run context (B-post3 lineage). The public MachineSnapshot model seals
-        # identity consistency unconditionally, so build a coherent SNAPSHOT-ONLY run context:
-        # workflow_type/goal_id follow the capturing goal while the parent run id and
-        # correlation lineage are preserved. (The nested-suspension envelope is then converted
-        # to a loud failure by the subworkflow node — unchanged.)
-        goal_id = getattr(goal, "goal_id", None) or (goal.get("goal_id") if isinstance(goal, dict) else None)
-        goal_wt = getattr(goal, "workflow_type", None) or (goal.get("workflow_type") if isinstance(goal, dict) else None)
-        rc_goal_id = getattr(snapshot_run_context, "goal_id", None)
-        rc_wt = getattr(snapshot_run_context, "workflow_type", None)
-        if hasattr(snapshot_run_context, "model_copy") and (rc_goal_id != goal_id or rc_wt != goal_wt):
-            snapshot_run_context = snapshot_run_context.model_copy(
-                update={"goal_id": goal_id, "workflow_type": goal_wt}
-            )
-        return MachineSnapshot(
-            schema_version=SNAPSHOT_SCHEMA_VERSION,
-            workflow_id=definition.workflow_id,
-            suspended_node=suspended,
-            payload=final_state.get(RUNNING_PAYLOAD),
-            node_outputs=dict(final_state.get("node_outputs", {})),
-            node_inputs=dict(final_state.get("node_inputs", {})),
-            node_status=dict(final_state.get("node_status", {})),
-            routes=dict(final_state.get("routes", {})),
-            branch_decisions=dict(final_state.get("branch_decisions", {})),
-            eval_counters={
-                k: dict(v) for k, v in final_state.get("eval_counters", {}).items()
-            },
-            transition_counts=dict(final_state.get("transition_counts", {})),
-            attempts=dict(final_state.get("attempts", {})),
-            node_results=[r.model_dump() for r in node_results],
-            artifacts=[
-                a.model_dump() if hasattr(a, "model_dump") else a
-                for a in final_state.get("artifacts", [])
-            ],
-            plan_artifact=plan,
-            usage=usage.model_dump() if hasattr(usage, "model_dump") else {},
-            fallback_reason=final_state.get("fallback_reason"),
-            goal=goal,
-            run_context=snapshot_run_context,
-            segment_index=getattr(segment, "segment_index", None),
-            active_elapsed_s=(
-                _sess.active_elapsed_s()
-                if (_sess := current_run_session()) is not None
-                else 0.0
-            ),
-            durable_wait_id=durable_wait_id,
-        )
-
-    async def _register_durable_or_fold(
-        self,
-        definition: WorkflowDefinition,
-        final_state: Dict[str, Any],
-        context: CapabilityContext,
-        session: Optional[WorkflowRunSession] = None,
-    ) -> tuple[Optional[WaitHandle], Dict[str, Any]]:
-        """W2.3 for EVERY execution path: register a durable suspension or fold the run
-        to failed with the typed failure traces. Shared by run() and resume() — a resumed
-        run that suspends at the NEXT durable wait must register it exactly like a fresh
-        run would (chained/repeated waits), never expose a raw unregistered snapshot."""
-
-        try:
-            return (
-                await self._maybe_register_durable_wait(definition, final_state, context, session),
-                final_state,
-            )
-        except Exception as registration_error:
-            failed_node = next(
-                (
-                    r.node_id
-                    for r in reversed(final_state.get("node_results", []))
-                    if r.status == "requires_user_input"
-                ),
-                definition.workflow_id,
-            )
-            self.runtime.trace_sink.record(
-                WorkflowTraceEvent(
-                    node=definition.workflow_id,
-                    decision="wait:registration_failed",
-                    error=str(registration_error)[:500],
-                    run_id=str(context.run_context.workflow_id),
-                )
-            )
-            # W2R.4: the SUSPENDED node's typed lifecycle flips to failed — the projected
-            # bundle/viewer must never show a suspended node in a failed run.
-            self.runtime.trace_sink.record(
-                WorkflowTraceEvent(
-                    node=failed_node,
-                    node_status="failed",
-                    phase="node:result",
-                    error=str(registration_error)[:500],
-                    run_id=str(context.run_context.workflow_id),
-                    metadata={"failure_kind": "wait_registration_failed"},
-                )
-            )
-            return None, {
-                **final_state,
-                "status": "failed",
-                "error": f"durable wait registration failed: {registration_error}",
-            }
-
-    async def _maybe_register_durable_wait(
-        self,
-        definition: WorkflowDefinition,
-        final_state: Dict[str, Any],
-        context: CapabilityContext,
-        session: Optional[WorkflowRunSession] = None,
-    ) -> Optional[WaitHandle]:
-        """W2.3: a DURABLE suspension is registered with its coordinator BEFORE the engine
-        exposes anything. Returns the typed handle on success; raises on any registration
-        failure (the run then fails with NO public door); returns None for non-durable."""
-
-        # Only a run that ACTUALLY halted suspended registers (W4.2): restored
-        # node_results keep earlier halves' requires_user_input entries forever as
-        # evidence, so entry presence alone would spuriously re-register a finished
-        # resume — the explicit machine status is the truth.
-        if final_state.get("status") != "requires_user_input":
-            return None
-        node_results = list(final_state.get("node_results", []))
-        suspended = next(
-            (r.node_id for r in reversed(node_results) if r.status == "requires_user_input"),
-            None,
-        )
-        if suspended is None:
-            return None
-        node = definition.node(suspended)
-        policy_dict = node.wait_policy or {}
-        if policy_dict.get("mode") != "durable":
-            return None
-        wait_runtime = getattr(self, "wait_runtime", None)
-        if wait_runtime is None:
-            raise RuntimeError(
-                f"durable wait '{suspended}' suspended without a configured WaitCoordinator"
-            )
-        from ai_workflow_engine.byte_safety import assert_byte_safe
-        from ai_workflow_engine.wait_runtime import WaitRegistrationRequest
-        from ai_workflow_engine.waits import DurableWaitPolicy
-
-        policy = DurableWaitPolicy.model_validate(policy_dict)
-        snapshot = self._build_snapshot(definition, suspended, final_state, session)
-        assert_byte_safe(snapshot.model_dump(), mode="persist", path="durable_wait.snapshot")
-        run_id = str(context.run_context.workflow_id)
-        occurrence = self._suspension_occurrence(final_state, suspended)
-        # W2A.2: identity, reuse, receipt validation, and clock live in ONE lifecycle
-        # owner; the executor detects, builds the snapshot, delegates, and records.
-        outcome = await wait_runtime.register_suspension(
-            WaitRegistrationRequest(
-                run_id=run_id,
-                workflow_id=definition.workflow_id,
-                definition_digest=definition.definition_digest(),
-                suspended_node=suspended,
-                occurrence=occurrence,
-                policy=policy,
-                snapshot_json=snapshot.model_dump_json(),
-                # W3R.3a: the immutable facts terminal evidence is built from later —
-                # persisted NOW, while the definition and lineage still exist.
-                definition_json=definition.model_dump_json(),
-                origin_segment_index=snapshot.segment_index,
-                correlation_id=context.run_context.correlation_id,
-            )
-        )
-        if snapshot.durable_wait_id != outcome.handle.wait_id:
-            raise RuntimeError(
-                f"wait identity integrity failure: snapshot sealed to "
-                f"{snapshot.durable_wait_id!r} but registration produced "
-                f"{outcome.handle.wait_id!r}"
-            )
-        self.runtime.trace_sink.record(
-            WorkflowTraceEvent(
-                node=suspended,
-                decision="wait:registration_reused" if outcome.reused else "wait:registered",
-                run_id=run_id,
-                metadata={
-                    "wait_id": outcome.handle.wait_id,
-                    "deadline_at": outcome.deadline_at.isoformat(),
-                    **(
-                        {
-                            "adapter_id": outcome.adapter_id,
-                            "registration_id": outcome.registration_id,
-                        }
-                        if not outcome.reused
-                        else {}
-                    ),
-                },
-            )
-        )
-        return outcome.handle
-
-
-    def _envelope(
-        self,
-        definition: WorkflowDefinition,
-        final_state: Dict[str, Any],
-        session: Optional[WorkflowRunSession] = None,
-        *,
-        child_trace: Optional[List[WorkflowTraceEvent]] = None,
-    ) -> WorkflowRunResult:
-        node_results: List[NodeResult] = list(final_state.get("node_results", []))
-        run_context = final_state.get("workflow_context") or getattr(
-            final_state.get(CONTEXT), "run_context", None
-        )
-        run_id = str(run_context.workflow_id) if run_context and run_context.workflow_id else None
-        status: WorkflowResultStatus = derive_workflow_result_status(final_state)
-        usage = final_state.get("usage_summary")
-        if usage is None:
-            # Runner always seeds the summary; absence means a plumbing bug upstream. Report
-            # an empty summary rather than crash the result build, but never silently — a
-            # fabricated $0 would read as cost truth.
-            logger.warning("run produced no usage_summary — reporting an empty one (plumbing bug?)")
-            usage = WorkflowUsageSummary()
-        error = final_state.get("error")
-        if error is None and status in ("partial", "failed"):
-            # A child workflow crosses its parent boundary through WorkflowRunResult. Preserve
-            # terminal node reasons there so partial/failure provenance cannot disappear even
-            # though the child state itself has no single global error field.
-            reasons = [record.error for record in node_results if record.error]
-            error = "; ".join(dict.fromkeys(reasons)) or None
-        snapshot: Optional[MachineSnapshot] = None
-        if status == "requires_user_input":
-            suspended = next(
-                (r.node_id for r in reversed(node_results) if r.status == "requires_user_input"),
-                None,
-            )
-            if suspended is not None:
-                snapshot = self._build_snapshot(definition, suspended, final_state, session)
-        return WorkflowRunResult(
-            workflow_id=definition.workflow_id,
-            status=status,
-            output=final_state.get(RUNNING_PAYLOAD),
-            error=error,
-            fallback_reason=final_state.get("fallback_reason"),
-            node_results=node_results,
-            artifacts=list(final_state.get("artifacts", [])),
-            usage=usage,
-            # B6/B7 + v0.11 M7: top-level/resume envelopes carry the session's exact run
-            # buffer; CHILD envelopes carry their explicit session-owned slice. The sink-
-            # sniffing fallback is gone — custom sinks need no ``.events``.
-            trace=list(session.trace_events) if session is not None else list(child_trace or []),
-            snapshot=snapshot,
-        )
-
-    def _failed_envelope(self, definition: WorkflowDefinition, error: str) -> WorkflowRunResult:
-        # Loud failure: surface error + emit a trace event; never run a downgraded path.
-        event = WorkflowTraceEvent(node=definition.workflow_id, decision="rejected", error=error)
-        self.runtime.trace_sink.record(event)
-        return WorkflowRunResult(
-            workflow_id=definition.workflow_id,
-            status="failed",
-            error=error,
-            trace=[event],
-        )

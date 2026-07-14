@@ -129,6 +129,36 @@ class ChildRunPort(Protocol):
     ) -> Awaitable[Any]: ...
 
 
+def build_child_context(
+    parent: CapabilityContext,
+    child_definition: WorkflowDefinition,
+    reference: Any,
+) -> CapabilityContext:
+    """Project a parent context into one child workflow without opening a new budget."""
+
+    plan = parent.plan
+    if plan is not None and reference is not None and (
+        reference.budget_usd is not None or reference.max_steps is not None
+    ):
+        limit_update: Dict[str, Any] = {}
+        if reference.budget_usd is not None:
+            limit_update["max_estimated_usd"] = reference.budget_usd
+        if reference.max_steps is not None:
+            limit_update["max_steps"] = reference.max_steps
+        plan = plan.model_copy(
+            update={"limits": plan.limits.model_copy(update=limit_update)}
+        )
+    goal = parent.goal.model_copy(update={"workflow_type": child_definition.workflow_id})
+    return CapabilityContext(
+        goal=goal,
+        run_context=parent.run_context,
+        plan=plan,
+        usage_summary=parent.usage_summary,
+        limits=plan.limits if plan is not None else parent.limits,
+        metadata=dict(parent.metadata),
+    )
+
+
 class NodeSchedulingRuntime:
     """Own the shared scheduler and active/supersession task bookkeeping."""
 
@@ -357,27 +387,7 @@ class ExecutorNodeServices:
     def child_context(
         self, parent: CapabilityContext, child_def: WorkflowDefinition, ref: Any
     ) -> CapabilityContext:
-        plan = parent.plan
-        if plan is not None and ref is not None and (
-            ref.budget_usd is not None or ref.max_steps is not None
-        ):
-            limit_update: Dict[str, Any] = {}
-            if ref.budget_usd is not None:
-                limit_update["max_estimated_usd"] = ref.budget_usd
-            if ref.max_steps is not None:
-                limit_update["max_steps"] = ref.max_steps
-            plan = plan.model_copy(
-                update={"limits": plan.limits.model_copy(update=limit_update)}
-            )
-        goal = parent.goal.model_copy(update={"workflow_type": child_def.workflow_id})
-        return CapabilityContext(
-            goal=goal,
-            run_context=parent.run_context,
-            plan=plan,
-            usage_summary=parent.usage_summary,
-            limits=plan.limits if plan is not None else parent.limits,
-            metadata=dict(parent.metadata),
-        )
+        return build_child_context(parent, child_def, ref)
 
     async def run_child(
         self, definition: WorkflowDefinition, payload: Any, context: CapabilityContext

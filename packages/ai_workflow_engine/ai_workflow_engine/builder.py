@@ -464,7 +464,9 @@ class WorkflowEngine:
 
         async def run_child(context: CapabilityContext, payload: Any) -> CapabilityResult:
             child = self.workflows[workflow_id]
-            child_context = self.executor._child_context(context, child, None)
+            from ai_workflow_engine.node_services import build_child_context
+
+            child_context = build_child_context(context, child, None)
             run_result = await self.executor._run_inner(child, payload, child_context)
             if run_result.status == "completed":
                 status = "accepted"

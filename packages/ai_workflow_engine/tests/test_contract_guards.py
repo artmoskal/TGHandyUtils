@@ -192,6 +192,21 @@ def test_node_service_owns_behavior_without_an_executor_back_reference():
     }
     assert not (present & forbidden), f"node-service twins remain: {sorted(present & forbidden)}"
 
+    bypasses = []
+    for path in _python_files(ENGINE_ROOT):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            reaches_executor = (
+                isinstance(node, ast.Attribute)
+                and (
+                    isinstance(node.value, ast.Name) and node.value.id == "executor"
+                    or isinstance(node.value, ast.Attribute) and node.value.attr == "executor"
+                )
+            )
+            if reaches_executor and node.attr in forbidden:
+                bypasses.append(f"{path.name}:{node.lineno} reaches {node.attr}")
+    assert not bypasses, "engine code reaches removed node-service internals:\n" + "\n".join(bypasses)
+
     assigned = {
         target.attr
         for node in ast.walk(executor)
@@ -204,6 +219,31 @@ def test_node_service_owns_behavior_without_an_executor_back_reference():
         and target.value.id == "self"
     }
     assert not ({"_scheduled_tasks", "_scheduled_cancellations"} & assigned)
+
+
+def test_executor_is_only_the_run_resume_coordinator():
+    """Snapshot, wait registration, and envelope projection have dedicated owners."""
+
+    executor_path = ENGINE_ROOT / "executor.py"
+    tree = ast.parse(executor_path.read_text(encoding="utf-8"))
+    executor = next(
+        node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "WorkflowExecutor"
+    )
+    forbidden = {
+        "_suspension_occurrence",
+        "_build_snapshot",
+        "_register_durable_or_fold",
+        "_maybe_register_durable_wait",
+        "_envelope",
+        "_failed_envelope",
+    }
+    present = {
+        node.name
+        for node in executor.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert not (present & forbidden), f"suspension/result twins remain: {sorted(present & forbidden)}"
+    assert len(executor_path.read_text(encoding="utf-8").splitlines()) <= 750
 
 
 def test_capability_status_vocabulary_is_closed():
