@@ -150,11 +150,16 @@ async def test_mageqa_shape_process_timeout_partial_and_side_effect_denial(tmp_p
     assert isinstance(process_io, dict), f"partial trace lacks process_io truth: {probe_partial.metadata}"
     for stream in ("stdout", "stderr"):
         stream_meta = process_io.get(stream)
-        assert isinstance(stream_meta, dict) and stream_meta.get("truncated") is False, (
-            f"{stream} settlement truth missing/wrong: {process_io}"
-        )
+        assert isinstance(stream_meta, dict), f"{stream} settlement truth missing: {process_io}"
         assert stream_meta.get("total_bytes") == 0, f"sleeping probe wrote no {stream}: {stream_meta}"
-    assert isinstance(process_io.get("result_file"), dict), process_io
+        assert stream_meta.get("retained_bytes") == 0, stream_meta
+        assert isinstance(stream_meta.get("limit_bytes"), int) and stream_meta["limit_bytes"] > 0, stream_meta
+        assert stream_meta.get("truncated") is False, stream_meta
+    result_file = process_io.get("result_file")
+    assert isinstance(result_file, dict), process_io
+    assert result_file.get("status") == "missing", (
+        f"a sleeping probe writes no result file — settlement must say so: {result_file}"
+    )
     # Bound truth for an explicit per-request process window (the engine run itself is
     # unbounded here, so the window rides as process_execution_bound, not execution_window).
     bound_meta = probe_partial.metadata.get("process_execution_bound")
@@ -286,12 +291,29 @@ async def test_slackazz_shape_durable_suspend_resume_grouped_bundle(tmp_path):
     )
     assert group.records, "the merged group must carry the segment-ordered records"
 
+    # Merged truth at the DATA level: the projection over the group's MERGED events must show
+    # the gate node completed. This is the permanent lock for the pre-resume-only regression
+    # (rendering from group.segments[0] instead of the merged events leaves the gate
+    # requires_user_input and fails here).
+    merged_graph = build_observation_graph(
+        group.definition, group.trace_events, group.usage_events, group.details
+    )
+    assert merged_graph.nodes["gate"].status == "completed", (
+        f"merged gate node must be completed, got {merged_graph.nodes['gate'].status}"
+    )
+
+    # Merged truth at the RENDERED level: the gate node card itself carries the completed
+    # status class (the segment strip legitimately shows one historical requires_user_input
+    # card, so substring counting proves nothing — the node card class does).
+    import re
+
     html = observation_group_to_html(group)
     assert "qual-slack" in html
-    gate_sections = [seg for seg in html.split("segment") if "gate" in seg]
-    assert gate_sections, "group page must render the gate node"
-    assert "completed" in html, "the resumed lifecycle must render as completed"
-    # the terminal story is completed — the page must not present the run as still waiting
-    assert html.count("requires_user_input") <= html.count("completed"), (
-        "grouped page reads as still-suspended despite the completed resume"
+    gate_card = re.search(
+        r'class="graph-node run-status-(\w+)[^"]*"[^>]*data-node-id="gate"', html
+    )
+    assert gate_card is not None, "group page must render the gate node card"
+    assert gate_card.group(1) == "completed", (
+        f"rendered gate card must be run-status-completed, got run-status-{gate_card.group(1)} — "
+        "the grouped page presents the resumed run as still suspended"
     )
