@@ -714,6 +714,48 @@ def test_no_class_defines_the_same_method_twice():
 
 
 
+_SCAN_EXCLUDED_PARTS = {
+    ".git", "__pycache__", "build", "node_modules", ".venv", "venv",
+    "test-results", "graphify-out", ".playwright-mcp", "htmlcov",
+}
+
+
+def _find_scan_root(start):
+    from pathlib import Path as _P
+
+    node = _P(start).resolve()
+    for ancestor in [node] + list(node.parents):
+        if (ancestor / ".git").exists() or (ancestor / "environment.yml").exists():
+            return ancestor
+    # standalone package checkout: scan the package tree we live in
+    return _P(start).resolve().parents[1]
+
+
+def scan_for_vision_image_input_imports(root):
+    """Every .py under ``root`` (minus generated/cache dirs) that imports ImageInput from the
+    removed vision home. Factored (recheck RR2) so the arbitrary-root test below can prove an
+    unlisted location is caught."""
+
+    import ast as _ast
+
+    offenders = []
+    for path in sorted(root.rglob("*.py")):
+        if _SCAN_EXCLUDED_PARTS.intersection(path.parts):
+            continue
+        try:
+            tree = _ast.parse(path.read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+        for node in _ast.walk(tree):
+            if (
+                isinstance(node, _ast.ImportFrom)
+                and node.module == "ai_workflow_engine.vision"
+                and any(a.name == "ImageInput" for a in node.names)
+            ):
+                offenders.append(f"{path.relative_to(root)}:{node.lineno}")
+    return offenders
+
+
 def test_image_input_import_home_is_transport_models():
     """v0.11 clean contract (manifest row M4): the vision-module compat re-export marker is gone;
     ImageInput's import homes are the package root and transport_models. vision.py may USE the
@@ -722,33 +764,13 @@ def test_image_input_import_home_is_transport_models():
     import ast as _ast
     from pathlib import Path as _Path
 
-    offenders = []
-    # REPO-WIDE sweep (codex recheck R2): the first review's stale caller lived in the
-    # repository's own integration tests, outside the three package dirs. Scan every tracked
-    # python source that exists in this checkout (dirs absent in a standalone package checkout
-    # are skipped harmlessly).
-    repo = (_Path(__file__).parents[3]).resolve()
-    roots = [
-        repo / "packages", repo / "services", repo / "core", repo / "handlers",
-        repo / "platforms", repo / "models", repo / "database", repo / "tests",
-    ]
-    for base in roots:
-        if not base.exists():
-            continue
-        for path in base.rglob("*.py"):
-            if "build" in path.parts or "__pycache__" in path.parts:
-                continue
-            try:
-                tree = _ast.parse(path.read_text(encoding="utf-8"))
-            except SyntaxError:
-                continue
-            for node in _ast.walk(tree):
-                if (
-                    isinstance(node, _ast.ImportFrom)
-                    and node.module == "ai_workflow_engine.vision"
-                    and any(a.name == "ImageInput" for a in node.names)
-                ):
-                    offenders.append(f"{path.relative_to(repo)}:{node.lineno}")
+    # TRUE repo-wide sweep (recheck RR2): walk the WHOLE repository root recursively — no
+    # hand-enumerated directory list to fall out of date. Root discovery: nearest ancestor
+    # carrying a repo marker (.git or environment.yml); standalone package checkouts fall back
+    # to the package root. The scanner is factored so a test can point it at an ARBITRARY root
+    # and prove previously-unlisted locations are caught.
+    repo = _find_scan_root(_Path(__file__))
+    offenders = scan_for_vision_image_input_imports(repo)
     assert not offenders, f"ImageInput imported from vision (home is transport_models): {offenders}"
 
     # Runtime half, DYNAMIC so this guard file never contains the offending import shape
@@ -761,3 +783,20 @@ def test_image_input_import_home_is_transport_models():
     )
     with pytest.raises(ImportError):
         exec("from ai_workflow_engine.vision import ImageInput")
+
+
+
+def test_vision_import_scanner_catches_arbitrary_unlisted_roots(tmp_path):
+    """Recheck RR2 lock: the scanner takes a root and walks EVERYTHING under it — a forbidden
+    import planted in a never-enumerated directory is found (the old hand-listed roots could
+    silently miss new locations)."""
+
+    nested = tmp_path / "totally" / "new_location" / "handlers_modular"
+    nested.mkdir(parents=True)
+    (nested / "offender.py").write_text(
+        "from ai_workflow_engine.vision import ImageInput\n", encoding="utf-8"
+    )
+    (tmp_path / "clean.py").write_text("x = 1\n", encoding="utf-8")
+
+    offenders = scan_for_vision_image_input_imports(tmp_path)
+    assert offenders == ["totally/new_location/handlers_modular/offender.py:1"], offenders

@@ -628,6 +628,11 @@ class WorkflowEngine:
 
         if isinstance(snapshot, str):
             snapshot = MachineSnapshot.model_validate_json(snapshot)
+        else:
+            # Recheck RR1: an already-built object re-passes the FULL seal (wire checks
+            # included) — model_copy or other validator-skipping constructions cannot smuggle
+            # a conflicting identity through the public resume door.
+            snapshot = MachineSnapshot.model_validate(snapshot.model_dump())
         definition = self.workflows.get(snapshot.workflow_id)
         if definition is None:
             raise KeyError(

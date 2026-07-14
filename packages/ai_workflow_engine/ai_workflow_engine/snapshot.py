@@ -112,12 +112,6 @@ class MachineSnapshot(BaseModel):
                 problems.append("run_context.workflow_id is missing/blank")
             if _blank(rc_raw.get("goal_id")):
                 problems.append("run_context.goal_id is missing/blank")
-            g_id, rc_id = goal_raw.get("goal_id"), rc_raw.get("goal_id")
-            if not _blank(g_id) and not _blank(rc_id) and g_id != rc_id:
-                problems.append(f"conflicting identities: goal.goal_id={g_id!r} != run_context.goal_id={rc_id!r}")
-            g_wt, rc_wt = goal_raw.get("workflow_type"), rc_raw.get("workflow_type")
-            if not _blank(g_wt) and not _blank(rc_wt) and g_wt != rc_wt:
-                problems.append(f"conflicting workflow_type: goal={g_wt!r} != run_context={rc_wt!r}")
             unknown = set(goal_raw) - set(WorkflowGoal.model_fields)
             if unknown:
                 problems.append(f"unknown goal fields: {sorted(unknown)}")
@@ -130,6 +124,38 @@ class MachineSnapshot(BaseModel):
                     + " — resume requires the exact captured identity"
                 )
         return data
+
+    @model_validator(mode="after")
+    def _identity_is_consistent(self) -> "MachineSnapshot":
+        """Recheck RR1: identity consistency is an UNCONDITIONAL post-parse invariant — dict,
+        typed, and mixed inputs all land here, so no representation can smuggle a conflicting
+        or hollow identity into a valid snapshot. (Raw-dict pre-validation above additionally
+        blocks decode-time minting and unknown nested keys.)"""
+
+        problems: list[str] = []
+        if not (self.goal.goal_id or "").strip():
+            problems.append("goal.goal_id is blank")
+        if not (self.run_context.workflow_id or "").strip():
+            problems.append("run_context.workflow_id is blank")
+        rc_goal_id = self.run_context.goal_id
+        if not (rc_goal_id or "").strip():
+            problems.append("run_context.goal_id is missing/blank")
+        elif rc_goal_id != self.goal.goal_id:
+            problems.append(
+                f"conflicting identities: goal.goal_id={self.goal.goal_id!r} != "
+                f"run_context.goal_id={rc_goal_id!r}"
+            )
+        if self.run_context.workflow_type != self.goal.workflow_type:
+            problems.append(
+                f"conflicting workflow_type: goal={self.goal.workflow_type!r} != "
+                f"run_context={self.run_context.workflow_type!r}"
+            )
+        if problems:
+            raise ValueError(
+                "unsupported machine-snapshot identity: " + "; ".join(problems)
+                + " — resume requires the exact captured identity"
+            )
+        return self
 
     def to_json(self) -> str:
         """Serialize for cross-process resume. Raises loudly on non-serializable payloads."""

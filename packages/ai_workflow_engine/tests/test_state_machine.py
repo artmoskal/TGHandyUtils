@@ -721,3 +721,89 @@ async def test_public_resume_never_mints_a_replacement_identity():
     with _pytest.raises(_VE):
         await engine.resume(blob, "answer")
     assert calls["n"] == 0, "a capability executed under a minted replacement identity"
+
+
+def test_snapshot_identity_invariant_is_representation_independent():
+    """Recheck RR1: the identity seal binds for TYPED and MIXED construction, not only wire
+    dicts — no representation can build a conflicting or hollow-identity snapshot."""
+
+    import pytest as _pytest
+    from pydantic import ValidationError as _VE
+    from ai_workflow_engine.models import WorkflowGoal, WorkflowRunContext
+    from ai_workflow_engine.snapshot import MachineSnapshot
+
+    goal = WorkflowGoal(workflow_type="w", objective="o", goal_id="g-1")
+    good_rc = WorkflowRunContext(workflow_id="r", workflow_type="w", goal_id="g-1")
+
+    ok = MachineSnapshot(
+        schema_version="v0.11", workflow_id="w", suspended_node="n",
+        goal=goal, run_context=good_rc,
+    )
+    assert ok.goal.goal_id == "g-1"
+
+    # typed mismatch
+    with _pytest.raises(_VE, match="conflicting identities"):
+        MachineSnapshot(
+            schema_version="v0.11", workflow_id="w", suspended_node="n",
+            goal=goal,
+            run_context=WorkflowRunContext(workflow_id="r", workflow_type="w", goal_id="OTHER"),
+        )
+    # typed missing run-context goal id
+    with _pytest.raises(_VE, match="run_context.goal_id is missing"):
+        MachineSnapshot(
+            schema_version="v0.11", workflow_id="w", suspended_node="n",
+            goal=goal,
+            run_context=WorkflowRunContext(workflow_id="r", workflow_type="w"),
+        )
+    # typed workflow_type conflict
+    with _pytest.raises(_VE, match="conflicting workflow_type"):
+        MachineSnapshot(
+            schema_version="v0.11", workflow_id="w", suspended_node="n",
+            goal=goal,
+            run_context=WorkflowRunContext(workflow_id="r", workflow_type="zzz", goal_id="g-1"),
+        )
+    # mixed dict/model mismatch
+    with _pytest.raises(_VE, match="conflicting identities"):
+        MachineSnapshot(
+            schema_version="v0.11", workflow_id="w", suspended_node="n",
+            goal={"workflow_type": "w", "objective": "o", "goal_id": "g-1"},
+            run_context=WorkflowRunContext(workflow_id="r", workflow_type="w", goal_id="OTHER"),
+        )
+
+
+async def test_public_resume_reseals_already_built_snapshot_objects():
+    """Recheck RR1: resume(MachineSnapshot) re-passes the FULL seal — a conflicting identity
+    smuggled past validators via model_copy is rejected with ZERO capability calls."""
+
+    import pytest as _pytest
+    from pydantic import ValidationError as _VE
+    from ai_workflow_engine import WorkflowEngine
+    from ai_workflow_engine.models import WorkflowRunContext
+
+    engine = WorkflowEngine()
+    calls = {"n": 0}
+
+    class Gate(BaseModel):
+        status: str
+        value: str = ""
+
+    def gate(context, _payload):
+        event = context.metadata.get("resume_event")
+        if event is None:
+            return Gate(status="pending")
+        calls["n"] += 1
+        return Gate(status="answered", value=str(event))
+
+    engine.register_capability("gate", gate)
+    engine.register_workflow(
+        WorkflowBuilder("reseal_flow").human("gate", wait_policy=LocalWaitPolicy()).build()
+    )
+    first = await engine.run("reseal_flow", {})
+    assert first.snapshot is not None
+
+    smuggled = first.snapshot.model_copy(
+        update={"run_context": WorkflowRunContext(workflow_id="r2", workflow_type="reseal_flow", goal_id="FORGED")}
+    )
+    with _pytest.raises(_VE, match="conflicting identities"):
+        await engine.resume(smuggled, "answer")
+    assert calls["n"] == 0, "a capability executed under a smuggled identity"

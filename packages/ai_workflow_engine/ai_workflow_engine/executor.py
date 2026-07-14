@@ -1113,6 +1113,20 @@ class WorkflowExecutor:
                 "suspension without run identity: neither state nor context carries "
                 "workflow_goal/run_context — a v0.11 snapshot requires the capturing run's identity"
             )
+        # Recheck RR1 normalization at the OWNER: a CHILD capture pairs the child's goal with
+        # the parent's run context (B-post3 lineage). The public MachineSnapshot model seals
+        # identity consistency unconditionally, so build a coherent SNAPSHOT-ONLY run context:
+        # workflow_type/goal_id follow the capturing goal while the parent run id and
+        # correlation lineage are preserved. (The nested-suspension envelope is then converted
+        # to a loud failure by the subworkflow node — unchanged.)
+        goal_id = getattr(goal, "goal_id", None) or (goal.get("goal_id") if isinstance(goal, dict) else None)
+        goal_wt = getattr(goal, "workflow_type", None) or (goal.get("workflow_type") if isinstance(goal, dict) else None)
+        rc_goal_id = getattr(snapshot_run_context, "goal_id", None)
+        rc_wt = getattr(snapshot_run_context, "workflow_type", None)
+        if hasattr(snapshot_run_context, "model_copy") and (rc_goal_id != goal_id or rc_wt != goal_wt):
+            snapshot_run_context = snapshot_run_context.model_copy(
+                update={"goal_id": goal_id, "workflow_type": goal_wt}
+            )
         return MachineSnapshot(
             schema_version=SNAPSHOT_SCHEMA_VERSION,
             workflow_id=definition.workflow_id,
