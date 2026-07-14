@@ -145,6 +145,61 @@ def test_extracted_runtime_owners_never_import_the_executor():
     assert not offenders, "runtime owner imports executor:\n" + "\n".join(offenders)
 
 
+def test_observation_bundle_owners_have_one_way_dependencies():
+    """Bundle truth flows contract -> retention/writer -> canonical composition door."""
+
+    modules = {
+        name: ast.parse((ENGINE_ROOT / name).read_text(encoding="utf-8"))
+        for name in (
+            "observation_contract.py",
+            "observation_retention.py",
+            "observation_writer.py",
+            "observation_bundle.py",
+        )
+    }
+
+    def imports(tree: ast.AST) -> set[str]:
+        found: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                found.add(node.module)
+            elif isinstance(node, ast.Import):
+                found.update(alias.name for alias in node.names)
+        return found
+
+    contract_imports = imports(modules["observation_contract.py"])
+    assert not {
+        name
+        for name in contract_imports
+        if name.startswith("ai_workflow_engine.") or name.startswith("ai_workflow_viewer")
+    }, "persisted observation contract must stay dependency-light"
+
+    retention_imports = imports(modules["observation_retention.py"])
+    assert "ai_workflow_engine.observation_contract" in retention_imports
+    assert not {
+        "ai_workflow_engine.observation_writer",
+        "ai_workflow_engine.observation_bundle",
+    } & retention_imports
+
+    writer_imports = imports(modules["observation_writer.py"])
+    assert {
+        "ai_workflow_engine.observation_contract",
+        "ai_workflow_engine.observation_retention",
+    } <= writer_imports
+    assert not any(name.startswith("ai_workflow_viewer") for name in writer_imports)
+
+    facade = modules["observation_bundle.py"]
+    implementations = [
+        node.name
+        for node in facade.body
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    assert implementations == [], (
+        "canonical observation_bundle door must compose owners, not regrow implementations: "
+        f"{implementations}"
+    )
+
+
 def test_executor_contains_no_compiler_implementation_twins():
     """The public compile/preflight doors delegate; compiler mechanics have one owner."""
 
