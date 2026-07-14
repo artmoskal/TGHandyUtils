@@ -237,7 +237,7 @@ Follow [`operations.md`](operations.md) for production recovery. File missing me
 [`extension-lifecycle.md`](extension-lifecycle.md), keeping Slack policy in product capabilities.
 
 
-## v0.11 Candidate Note (unreleased — keep the pin above)
+## v0.11 Release Contract
 
 `engine-v0.11.0` is the current release of the **latest-only** line: strict versioned persisted
 contracts (snapshot `v0.11`, bundle meta v2, wait records `wait-v1`), one strict viewer loader, and

@@ -301,6 +301,16 @@ def test_documented_package_matrix_is_coherent_and_derived_from_pyproject():
         assert "Pending v0.11 candidate set" not in text, (
             f"{name}: candidate framing must not survive the release flip"
         )
+        lowered = text.lower()
+        for stale_phrase in (
+            "candidate note",
+            "unreleased",
+            "pending tag",
+            "keep the pin above",
+        ):
+            assert stale_phrase not in lowered, (
+                f"{name}: stale release framing {stale_phrase!r} survived the release flip"
+            )
         assert "Current matrix" in text, f"{name}: must label the one current matrix"
 
 

@@ -163,7 +163,7 @@ post-adoption evidence using [the framework request lifecycle](extension-lifecyc
 second memory, retry, or observation runtime into the sidecar.
 
 
-## v0.11 Candidate Note (unreleased — keep the pin above)
+## v0.11 Release Contract
 
 `engine-v0.11.0` is the current release of the **latest-only** line: strict versioned persisted
 contracts (snapshot `v0.11`, bundle meta v2, wait records `wait-v1`), one strict viewer loader, and

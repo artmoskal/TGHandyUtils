@@ -194,7 +194,7 @@ If one of these blocks a concrete workflow, use [the framework request lifecycle
 with a scenario and acceptance proof. Upgrade via [`operations.md`](operations.md#upgrade-lifecycle).
 
 
-## v0.11 Candidate Note (unreleased — keep the pin above)
+## v0.11 Release Contract
 
 `engine-v0.11.0` is the current release of the **latest-only** line: strict versioned persisted
 contracts (snapshot `v0.11`, bundle meta v2, wait records `wait-v1`), one strict viewer loader, and
