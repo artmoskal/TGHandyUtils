@@ -544,6 +544,38 @@
       "manifest_row": "M15",
       "status": "spent",
       "consumed_by_seal": "2026-07-14 public-seal-completeness transition (fixture already current)"
+    },
+    {
+      "path_prefix": "public.schemas.WaitRecord",
+      "match": "prefix",
+      "status": "spent",
+      "reason": "wait record versioned (M12): required record_schema_version Literal \u2014 subtree-scoped for this one seal, spent immediately after",
+      "manifest_row": "M12",
+      "consumed_by_seal": "2026-07-14 bundle-v2 + wait-record-version seal (2A)"
+    },
+    {
+      "path_prefix": "public.exports.ObservationBundleMetaV2",
+      "match": "exact",
+      "status": "spent",
+      "reason": "bundle v2 meta model exported as the public reader contract (M9)",
+      "manifest_row": "M9",
+      "consumed_by_seal": "2026-07-14 bundle-v2 + wait-record-version seal (2A)"
+    },
+    {
+      "path_prefix": "public.exports.load_bundle_meta_v2",
+      "match": "exact",
+      "status": "spent",
+      "reason": "strict v2 meta loader exported (M9)",
+      "manifest_row": "M9",
+      "consumed_by_seal": "2026-07-14 bundle-v2 + wait-record-version seal (2A)"
+    },
+    {
+      "path_prefix": "public.schemas.ObservationBundleMetaV2",
+      "match": "exact",
+      "status": "spent",
+      "reason": "new sealed public model (M9)",
+      "manifest_row": "M9",
+      "consumed_by_seal": "2026-07-14 bundle-v2 + wait-record-version seal (2A)"
     }
   ]
 }

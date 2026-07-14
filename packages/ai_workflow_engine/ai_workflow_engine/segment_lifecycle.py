@@ -241,8 +241,12 @@ async def ensure_terminal_evidence(observation: Any, runtime: Any, wait_id: str)
         segment_path = Path(observation.bundle_dir) / segment_id
         meta_path = segment_path / "meta.json"
         if meta_path.exists():
-            # at-least-once redelivery after the evidence write: validate, never append
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            # at-least-once redelivery after the evidence write: validate, never append.
+            # v0.11 (M9): the meta is read through the STRICT v2 loader — a pre-v2 or
+            # malformed terminal meta fails loudly instead of being half-compared.
+            from ai_workflow_engine.observation_bundle import load_bundle_meta_v2
+
+            meta = load_bundle_meta_v2(segment_path)
             existing_definition = WorkflowDefinition.model_validate_json(
                 (segment_path / "definition.json").read_text(encoding="utf-8")
             )
@@ -253,7 +257,9 @@ async def ensure_terminal_evidence(observation: Any, runtime: Any, wait_id: str)
                 "segment_kind": "wait_terminal",
                 "definition_digest": record.definition_digest,
             }
-            mismatches = [name for name, value in expected.items() if meta.get(name) != value]
+            mismatches = [
+                name for name, value in expected.items() if getattr(meta, name) != value
+            ]
             if existing_definition.definition_digest() != record.definition_digest:
                 mismatches.append("definition.json")
             if mismatches:

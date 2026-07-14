@@ -20,6 +20,7 @@ __all__ = ["run_wait_registration_conformance"]  # name kept: it now covers the 
 
 def _record(now: datetime, wait_id: str = "w-1", *, timeout_s: float = 60.0) -> WaitRecord:
     return WaitRecord(
+        record_schema_version="wait-v1",
         wait_id=wait_id,
         run_id="run-1",
         workflow_id="wf",

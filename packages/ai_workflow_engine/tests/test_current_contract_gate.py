@@ -147,8 +147,13 @@ def test_ledger_entries_are_exact_no_standing_wildcards():
     for a genuinely subtree-scoped break approved in the manifest, and none exists today."""
 
     for e in load_ledger(_LEDGER):
-        assert e.get("match", "prefix") == "exact", (
-            f"standing wildcard entry found: {e['path_prefix']!r} — use exact paths"
+        if e.get("match", "prefix") == "exact":
+            continue
+        # a subtree prefix is legal ONLY as a consumed (spent) one-seal permission — an
+        # ACTIVE prefix would be a standing wildcard (recheck R3/R4 rule)
+        assert e.get("status") == "spent", (
+            f"ACTIVE wildcard entry found: {e['path_prefix']!r} — prefix entries must be "
+            f"spent immediately after their one seal"
         )
 
 

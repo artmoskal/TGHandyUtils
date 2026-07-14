@@ -29,6 +29,7 @@ pytestmark = pytest.mark.unit
 def test_wait_models_are_strict_and_round_trip():
     policy = DurableWaitPolicy(timeout_s=3600, signal_correlation={"ticket": "T-1"})
     record = WaitRecord(
+        record_schema_version="wait-v1",
         wait_id="w1",
         run_id="r1",
         workflow_id="wf",
@@ -62,6 +63,7 @@ def test_wait_vocabulary_is_closed_and_overdue_is_not_a_status():
     assert "overdue" not in WAIT_STATUSES, "overdue is DERIVED health, never a stored status"
     assert "expired" not in WAIT_STATUSES, "resolution reason is separate from status (C5)"
     base = dict(
+        record_schema_version="wait-v1",
         wait_id="w", run_id="r", workflow_id="wf", suspended_node="n",
         definition_digest="digest-base",
         policy=DurableWaitPolicy(timeout_s=1), deadline_at="2026-07-11T13:00:00+00:00",
@@ -309,6 +311,7 @@ def test_wait_timestamps_must_be_timezone_aware_datetimes():
     from datetime import datetime, timezone
 
     base = dict(
+        record_schema_version="wait-v1",
         wait_id="w", run_id="r", workflow_id="wf", suspended_node="n",
         definition_digest="digest-ts",
         policy=DurableWaitPolicy(timeout_s=1),
@@ -560,6 +563,7 @@ async def test_in_memory_coordinator_is_deterministic_and_never_self_fires():
 
     now = clock()
     record = WaitRecord(
+        record_schema_version="wait-v1",
         wait_id="w-due", run_id="r", workflow_id="wf", suspended_node="g",
         definition_digest="digest-conf", policy=DWP(timeout_s=30), created_at=now, deadline_at=now + timedelta(seconds=30),
     )
@@ -833,6 +837,7 @@ async def test_conformance_rejects_snapshot_loss_and_supports_reconnect():
 
     now = clock()
     record = WaitRecord(
+        record_schema_version="wait-v1",
         wait_id="w-copy", run_id="r", workflow_id="wf", suspended_node="g",
         definition_digest="digest-conf", policy=DWP(timeout_s=30), created_at=now, deadline_at=now + timedelta(seconds=30),
     )
@@ -1136,6 +1141,7 @@ async def test_reference_adapter_is_async_and_alias_free():
     coordinator = InMemoryWaitCoordinator(clock=clock)
     now = clock()
     record = WaitRecord(
+        record_schema_version="wait-v1",
         wait_id="w-alias", run_id="r", workflow_id="wf", suspended_node="g",
         policy=DWP(timeout_s=1), definition_digest="d", created_at=now,
         deadline_at=now + timedelta(seconds=1),
@@ -1164,6 +1170,7 @@ def test_blank_definition_digest_is_rejected_everywhere():
 
     now = _clock()()
     base = dict(
+        record_schema_version="wait-v1",
         wait_id="w", run_id="r", workflow_id="wf", suspended_node="g",
         policy=DWP(timeout_s=1), created_at=now, deadline_at=now + timedelta(seconds=1),
     )
@@ -1193,6 +1200,7 @@ async def test_duplicate_receipt_is_a_defensive_result():
     coordinator = InMemoryWaitCoordinator(clock=clock)
     now = clock()
     record = WaitRecord(
+        record_schema_version="wait-v1",
         wait_id="w-rcpt", run_id="r", workflow_id="wf", suspended_node="g",
         definition_digest="d", policy=DWP(timeout_s=1),
         created_at=now, deadline_at=now + timedelta(seconds=1),
@@ -2752,3 +2760,21 @@ async def test_correlation_is_immutable_registration_truth_across_wait_lifecycle
     assert observation == "recorded"
     plain_meta = _bundle_meta(tmp_path / "plain-w--s001-wfail")
     assert "correlation_id" not in plain_meta
+
+
+def test_wait_record_rejects_non_current_schema_versions():
+    """v0.11 (manifest row M12): the wait record is versioned and closed — a coordinator
+    returning a pre-v0.11 record (no version field) or an unknown version fails with the
+    actionable discard/historical-tag message; the conformance kit inherits this rejection."""
+
+    base = dict(
+        wait_id="w-1", run_id="r-1", workflow_id="wf", suspended_node="gate",
+        policy=DurableWaitPolicy(timeout_s=60), definition_digest="d" * 8,
+        deadline_at="2026-07-11T13:00:00+00:00",
+    )
+    with pytest.raises(ValidationError, match="unsupported wait-record schema"):
+        WaitRecord.model_validate(base)  # pre-v0.11: no version field
+    with pytest.raises(ValidationError, match="unsupported wait-record schema"):
+        WaitRecord.model_validate({**base, "record_schema_version": "wait-v0"})
+    ok = WaitRecord.model_validate({**base, "record_schema_version": "wait-v1"})
+    assert ok.record_schema_version == "wait-v1"

@@ -78,6 +78,7 @@
     "NodeExecutionState": "export",
     "NodeResult": "export",
     "NodeSchedulingServices": "export",
+    "ObservationBundleMetaV2": "export",
     "ObservationConfig": "export",
     "ObservationDetail": "export",
     "ObservationRunBundle": "export",
@@ -174,6 +175,7 @@
     "format_trace_events": "export",
     "gather_capabilities": "export",
     "is_plain_llm_callable": "export",
+    "load_bundle_meta_v2": "export",
     "load_prompt_template": "export",
     "load_workflow_config": "export",
     "model_profile_scope": "export",
@@ -5571,6 +5573,188 @@
       "title": "NodeResult",
       "type": "object"
     },
+    "ObservationBundleMetaV2": {
+      "additionalProperties": false,
+      "description": "The CLOSED, versioned meta contract of one observation segment (v0.11, manifest row M9).\n\nEvery engine-written bundle is a segment of a logical run and carries its full identity,\nfile layout, counts, cost truth, and the definition digest. Unknown or missing fields fail;\npre-v2 metas are rejected by :func:`load_bundle_meta_v2` with the historical-tag route (the\ncurrent line has no importer). The v1 duplicate ``workflow`` alias key is gone.",
+      "properties": {
+        "artifact_count": {
+          "minimum": 0,
+          "title": "Artifact Count",
+          "type": "integer"
+        },
+        "artifact_manifest_path": {
+          "title": "Artifact Manifest Path",
+          "type": "string"
+        },
+        "artifact_root": {
+          "title": "Artifact Root",
+          "type": "string"
+        },
+        "artifacts_copied": {
+          "minimum": 0,
+          "title": "Artifacts Copied",
+          "type": "integer"
+        },
+        "attempt": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Attempt"
+        },
+        "bundle_schema_version": {
+          "const": 2,
+          "title": "Bundle Schema Version",
+          "type": "integer"
+        },
+        "correlation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Correlation Id"
+        },
+        "definition_digest": {
+          "title": "Definition Digest",
+          "type": "string"
+        },
+        "definition_path": {
+          "title": "Definition Path",
+          "type": "string"
+        },
+        "detail_count": {
+          "minimum": 0,
+          "title": "Detail Count",
+          "type": "integer"
+        },
+        "detail_path": {
+          "title": "Detail Path",
+          "type": "string"
+        },
+        "metered_usd": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Metered Usd"
+        },
+        "notional_usd": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Notional Usd"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "segment_id": {
+          "title": "Segment Id",
+          "type": "string"
+        },
+        "segment_index": {
+          "minimum": 0,
+          "title": "Segment Index",
+          "type": "integer"
+        },
+        "segment_kind": {
+          "enum": [
+            "initial",
+            "resume",
+            "wait_terminal"
+          ],
+          "title": "Segment Kind",
+          "type": "string"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "timestamp": {
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "total_tokens": {
+          "minimum": 0,
+          "title": "Total Tokens",
+          "type": "integer"
+        },
+        "trace_count": {
+          "minimum": 0,
+          "title": "Trace Count",
+          "type": "integer"
+        },
+        "trace_path": {
+          "title": "Trace Path",
+          "type": "string"
+        },
+        "usage_count": {
+          "minimum": 0,
+          "title": "Usage Count",
+          "type": "integer"
+        },
+        "usage_path": {
+          "title": "Usage Path",
+          "type": "string"
+        },
+        "usage_totals_scope": {
+          "const": "run_cumulative_at_finalize",
+          "title": "Usage Totals Scope",
+          "type": "string"
+        },
+        "workflow_id": {
+          "title": "Workflow Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "bundle_schema_version",
+        "run_id",
+        "workflow_id",
+        "status",
+        "timestamp",
+        "trace_path",
+        "detail_path",
+        "usage_path",
+        "definition_path",
+        "definition_digest",
+        "artifact_manifest_path",
+        "artifact_root",
+        "artifact_count",
+        "artifacts_copied",
+        "trace_count",
+        "detail_count",
+        "usage_count",
+        "usage_totals_scope",
+        "total_tokens",
+        "segment_id",
+        "segment_index",
+        "segment_kind"
+      ],
+      "title": "ObservationBundleMetaV2",
+      "type": "object"
+    },
     "ObservationConfig": {
       "additionalProperties": false,
       "description": "Application-level observation policy (the engine owns the per-run mechanics).\n\nv0.11 clean contract (manifest row M8): the schema is CLOSED \u2014 a misspelled or\nobsolete key fails loudly instead of being silently ignored.\n\nConfigure once in the application config; when ``enabled`` the engine auto-opens a\nper-run observation bundle, routes trace/detail/usage into it, finalizes it with the\ntrue terminal status, and prunes old finalized bundles to ``retention_limit``.\nProducts never call bundle mechanics in the normal path.",
@@ -7256,7 +7440,7 @@
         }
       },
       "additionalProperties": false,
-      "description": "The engine-owned wait state a coordinator persists (snapshot itself is store-owned).",
+      "description": "The engine-owned wait state a coordinator persists (snapshot itself is store-owned).\n\nv0.11 clean contract (manifest row M12): the record is VERSIONED and closed \u2014 a coordinator\nreturning a pre-v0.11 or unknown record shape fails loudly at validation; the current line\nhas no importer for old persisted waits (approved policy: pending old waits are discarded).",
       "properties": {
         "correlation_id": {
           "anyOf": [
@@ -7332,6 +7516,11 @@
         "policy": {
           "$ref": "#/$defs/DurableWaitPolicy"
         },
+        "record_schema_version": {
+          "const": "wait-v1",
+          "title": "Record Schema Version",
+          "type": "string"
+        },
         "resolution_kind": {
           "anyOf": [
             {
@@ -7390,6 +7579,7 @@
         }
       },
       "required": [
+        "record_schema_version",
         "wait_id",
         "run_id",
         "workflow_id",

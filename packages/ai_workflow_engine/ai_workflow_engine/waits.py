@@ -20,7 +20,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Dict, Literal, Optional, Protocol, Union, runtime_checkable
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
+from pydantic import model_validator, AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 
 __all__ = [
     "WaitClaimOutcome",
@@ -131,11 +131,20 @@ class WaitEvent(BaseModel):
         return value
 
 
+WAIT_RECORD_SCHEMA_VERSION = "wait-v1"
+
+
 class WaitRecord(BaseModel):
-    """The engine-owned wait state a coordinator persists (snapshot itself is store-owned)."""
+    """The engine-owned wait state a coordinator persists (snapshot itself is store-owned).
+
+    v0.11 clean contract (manifest row M12): the record is VERSIONED and closed — a coordinator
+    returning a pre-v0.11 or unknown record shape fails loudly at validation; the current line
+    has no importer for old persisted waits (approved policy: pending old waits are discarded).
+    """
 
     model_config = ConfigDict(extra="forbid")
 
+    record_schema_version: Literal["wait-v1"]
     wait_id: str
     run_id: str
     workflow_id: str
@@ -148,6 +157,19 @@ class WaitRecord(BaseModel):
     status: WaitStatus = "pending"
     resolution_kind: Optional[ResolutionKind] = None  # set only when an event WINS (C5)
     created_at: AwareDatetime = Field(default_factory=_utc_now)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _current_record_version_only(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            found = data.get("record_schema_version")
+            if found != WAIT_RECORD_SCHEMA_VERSION:
+                raise ValueError(
+                    f"unsupported wait-record schema: expected {WAIT_RECORD_SCHEMA_VERSION!r}, "
+                    f"got {found!r} — pre-v0.11 waits are not readable by the current line "
+                    f"(discard them or inspect with the matching historical tag)"
+                )
+        return data
     deadline_at: AwareDatetime
     version: int = Field(default=1, ge=1)
 

@@ -991,6 +991,7 @@ async def test_conflicting_related_run_identity_is_loud_on_every_event_surface(t
     for blank in ("", "   "):
         with _pytest.raises(Exception, match="non-blank"):
             WaitRecord(
+                record_schema_version="wait-v1",
                 wait_id="w", run_id="r", workflow_id="wf", suspended_node="g",
                 policy=DurableWaitPolicy(timeout_s=1), definition_digest="d",
                 created_at=now, deadline_at=now + timedelta(seconds=1),

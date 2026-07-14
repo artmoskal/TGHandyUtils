@@ -12,6 +12,8 @@ import re
 import shutil
 from typing import Any, Iterable, Literal, Optional
 
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
 from ai_workflow_engine.engine.capabilities import (
     DetailSink,
     JsonlDetailSink,
@@ -84,6 +86,90 @@ class ObservationSegment:
             raise ValueError(
                 f"{self.kind} observation segment needs segment_index >= 1, got {self.segment_index}"
             )
+
+
+BUNDLE_SCHEMA_VERSION = 2
+
+# The REAL closed status vocabulary a bundle can be finalized with: every WorkflowResultStatus
+# the engine's session close can carry, wait-terminal resolutions written by the reclaim path
+# (cancelled/timeout evidence), and the retention-owned "abandoned" marker.
+_BUNDLE_STATUSES = (
+    "accepted", "completed", "failed", "unknown", "uncertain", "partial",
+    "low_confidence", "insufficient_evidence", "requires_user_input",
+    "external_tool_unavailable", "cancelled", "timeout", "abandoned",
+)
+
+
+class ObservationBundleMetaV2(BaseModel):
+    """The CLOSED, versioned meta contract of one observation segment (v0.11, manifest row M9).
+
+    Every engine-written bundle is a segment of a logical run and carries its full identity,
+    file layout, counts, cost truth, and the definition digest. Unknown or missing fields fail;
+    pre-v2 metas are rejected by :func:`load_bundle_meta_v2` with the historical-tag route (the
+    current line has no importer). The v1 duplicate ``workflow`` alias key is gone."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    bundle_schema_version: Literal[2]
+    run_id: str
+    workflow_id: str
+    status: str
+    timestamp: str
+    trace_path: str
+    detail_path: str
+    usage_path: str
+    definition_path: str
+    definition_digest: str
+    artifact_manifest_path: str
+    artifact_root: str
+    artifact_count: int = Field(ge=0)
+    artifacts_copied: int = Field(ge=0)
+    trace_count: int = Field(ge=0)
+    detail_count: int = Field(ge=0)
+    usage_count: int = Field(ge=0)
+    usage_totals_scope: Literal["run_cumulative_at_finalize"]
+    total_tokens: int = Field(ge=0)
+    metered_usd: Optional[float] = None
+    notional_usd: Optional[float] = None
+    segment_id: str
+    segment_index: int = Field(ge=0)
+    segment_kind: Literal["initial", "resume", "wait_terminal"]
+    attempt: Optional[int] = None
+    correlation_id: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _coherent_segment_identity(self) -> "ObservationBundleMetaV2":
+        problems: list[str] = []
+        if self.status not in _BUNDLE_STATUSES:
+            problems.append(f"status {self.status!r} outside the closed vocabulary {_BUNDLE_STATUSES}")
+        for name in ("run_id", "workflow_id", "segment_id", "timestamp", "definition_digest"):
+            if not str(getattr(self, name) or "").strip():
+                problems.append(f"{name} is blank")
+        if self.segment_kind == "initial" and (self.segment_index != 0 or self.attempt is not None):
+            problems.append(
+                f"initial segment must have segment_index=0 and no attempt — got "
+                f"index={self.segment_index}, attempt={self.attempt!r}"
+            )
+        if self.segment_kind in ("resume", "wait_terminal") and self.segment_index < 1:
+            problems.append(f"{self.segment_kind} segment needs segment_index >= 1")
+        if problems:
+            raise ValueError("invalid observation-bundle meta: " + "; ".join(problems))
+        return self
+
+
+def load_bundle_meta_v2(bundle_dir: Path) -> ObservationBundleMetaV2:
+    """The ONE meta reader for engine-owned lifecycle (retention/reclaim). Pre-v2 or malformed
+    metas fail loudly with the historical route — never a permissive ``meta.get`` fallback."""
+
+    raw = json.loads((Path(bundle_dir) / "meta.json").read_text(encoding="utf-8"))
+    version = raw.get("bundle_schema_version") if isinstance(raw, dict) else None
+    if version != BUNDLE_SCHEMA_VERSION:
+        raise ValueError(
+            f"unsupported observation-bundle schema in {Path(bundle_dir).name!r}: expected "
+            f"{BUNDLE_SCHEMA_VERSION}, got {version!r} — read pre-v2 bundles with their matching "
+            f"historical engine/viewer tag (the current line has no importer)"
+        )
+    return ObservationBundleMetaV2.model_validate(raw)
 
 
 @dataclass
@@ -169,8 +255,8 @@ class ObservationRunBundle:
     artifact_max_bytes: int = DEFAULT_ARTIFACT_MAX_BYTES
     # W4: physical/logical split. ``run_id`` stays the LOGICAL run identity (stamped into
     # events + meta); ``segment`` supplies the physical storage key and lineage for one
-    # run-half. Without a segment the bundle keeps the pre-W4 shape exactly (dir = run_id,
-    # no segment meta) — a group of one.
+    # run-half. v0.11 (M9): a bundle is ALWAYS a segment — when omitted, __post_init__
+    # creates the explicit initial segment of a group-of-one (dir = run_id, index 0).
     segment: Optional[ObservationSegment] = None
     # R4-B opt-in policy threaded from ObservationConfig (None = never evict suspended)
     evict_suspended_after_s: Optional[float] = None
@@ -203,8 +289,15 @@ class ObservationRunBundle:
         # the EXPORTED bundle boundary enforces the same schema rule as every model —
         # a blank related-run id must not enter meta through the public open_… door
         validate_optional_correlation(self.correlation_id)
+        # v0.11 (M9): every bundle is a SEGMENT. A caller that supplies none gets the explicit
+        # INITIAL segment of a group-of-one — created AFTER the plain-name guard above so a
+        # malicious/blank run id keeps its original loud path error, not a segment error.
+        if self.segment is None:
+            self.segment = ObservationSegment(
+                segment_id=str(self.run_id), segment_index=0, kind="initial"
+            )
         self.base_dir = Path(self.base_dir)
-        self.path = self.base_dir / (self.segment.segment_id if self.segment else str(self.run_id))
+        self.path = self.base_dir / self.segment.segment_id
         self.path.mkdir(parents=True, exist_ok=True)
         self.trace_path = self.path / "trace.jsonl"
         self.detail_path = self.path / "details.jsonl"
@@ -235,55 +328,63 @@ class ObservationRunBundle:
         usage: WorkflowUsageSummary | Iterable[WorkflowUsageEvent] | None = None,
         artifacts: Iterable[WorkflowArtifact] | None = None,
     ) -> None:
-        (self.path / "definition.json").write_text(definition.model_dump_json(), encoding="utf-8")
+        if self.segment is None:
+            raise RuntimeError(
+                "engine-owned observation lifecycle emits ONLY segmented v2 bundles "
+                "(v0.11, manifest row M9) — open the bundle with an ObservationSegment "
+                "(open_observation_run_bundle supplies the initial segment automatically)"
+            )
+        definition_json = definition.model_dump_json()
+        (self.path / "definition.json").write_text(definition_json, encoding="utf-8")
         usage_events = _usage_events(usage)
         manifest = self._archive_artifacts(list(artifacts or []))
         (self.path / ARTIFACT_MANIFEST_NAME).write_text(
             json.dumps(manifest, sort_keys=True, indent=2),
             encoding="utf-8",
         )
-        meta = {
-            # Versioned contract for dashboards/viewers programming against the bundle.
-            # Bump ONLY on breaking layout/field changes (reviewed decision, never drift).
-            "bundle_schema_version": 1,
-            "run_id": self.run_id,
-            "workflow_id": definition.workflow_id,
-            "workflow": definition.workflow_id,
-            "status": status,
-            "timestamp": _utc_timestamp(),
-            "trace_path": self.trace_path.name,
-            "detail_path": self.detail_path.name,
-            "usage_path": self.usage_path.name,
-            "definition_path": "definition.json",
+        meta_model = ObservationBundleMetaV2(
+            bundle_schema_version=BUNDLE_SCHEMA_VERSION,
+            run_id=str(self.run_id),
+            workflow_id=definition.workflow_id,
+            status=status,
+            timestamp=_utc_timestamp(),
+            trace_path=self.trace_path.name,
+            detail_path=self.detail_path.name,
+            usage_path=self.usage_path.name,
+            definition_path="definition.json",
+            # the ONE digest authority (W2B/W3 waits use the same method) — no second rule
+            definition_digest=definition.definition_digest(),
             # Evidence resolution (G1): dashboards resolve EvidenceRef.uri / artifact paths
             # by source_path lookup in the manifest, then open bundle_path relative to the
             # bundle directory. Artifacts prune WITH the bundle (single retention policy).
-            "artifact_manifest_path": ARTIFACT_MANIFEST_NAME,
-            "artifact_root": ARTIFACT_DIR_NAME,
-            "artifact_count": len(manifest),
-            "artifacts_copied": sum(1 for entry in manifest if entry["copied"]),
-            "trace_count": _line_count(self.trace_path),
-            "detail_count": _line_count(self.detail_path),
-            "usage_count": len(usage_events),
-            # W4.4 honesty label: these totals are computed from the SUMMARY the session
-            # closed with — cumulative since run start (a resumed segment's summary includes
-            # pre-suspension events restored from the snapshot). Per-segment spend lives in
-            # this segment's usage.jsonl; group readers aggregate EVENTS, never these totals.
-            **({"usage_totals_scope": "run_cumulative_at_finalize"} if self.segment else {}),
-            "total_tokens": sum(event.total_tokens for event in usage_events),
-            "metered_usd": _sum_cost(
+            artifact_manifest_path=ARTIFACT_MANIFEST_NAME,
+            artifact_root=ARTIFACT_DIR_NAME,
+            artifact_count=len(manifest),
+            artifacts_copied=sum(1 for entry in manifest if entry["copied"]),
+            trace_count=_line_count(self.trace_path),
+            detail_count=_line_count(self.detail_path),
+            usage_count=len(usage_events),
+            # W4.4 honesty label: totals come from the SUMMARY the session closed with —
+            # cumulative since run start. Per-segment spend lives in this segment's
+            # usage.jsonl; group readers aggregate EVENTS, never these totals.
+            usage_totals_scope="run_cumulative_at_finalize",
+            total_tokens=sum(event.total_tokens for event in usage_events),
+            metered_usd=_sum_cost(
                 event.estimated_usd
                 for event in usage_events
                 if event.cost_class == "metered"
             ),
-            "notional_usd": _sum_cost(event.notional_usd for event in usage_events),
-        }
-        if self.correlation_id:
-            meta["correlation_id"] = self.correlation_id
-        if self.segment is not None:
-            # W4.1 additive segment identity (schema stays v1: pure addition; absence of
-            # these fields marks a pre-segment bundle, which readers treat as a group of one).
-            meta.update(_segment_meta_fields(self.segment))
+            notional_usd=_sum_cost(event.notional_usd for event in usage_events),
+            segment_id=self.segment.segment_id,
+            segment_index=self.segment.segment_index,
+            segment_kind=self.segment.kind,
+            attempt=self.segment.attempt,
+            correlation_id=self.correlation_id or None,
+        )
+        meta = json.loads(meta_model.model_dump_json())
+        if meta.get("correlation_id") is None:
+            # absence-not-null contract: an unset related-run id never appears in meta
+            meta.pop("correlation_id", None)
         (self.path / "meta.json").write_text(
             json.dumps(meta, sort_keys=True, indent=2),
             encoding="utf-8",
@@ -379,8 +480,10 @@ def open_observation_run_bundle(
     evict_suspended_after_s: Optional[float] = None,
     correlation_id: Optional[str] = None,
 ) -> ObservationRunBundle:
-    """Create a per-run observation source bundle (one SEGMENT of a logical run when
-    ``segment`` is given; the pre-W4 single-directory shape otherwise)."""
+    """Create a per-run observation source bundle — always ONE SEGMENT of a logical run
+    (v0.11, manifest row M9). When no segment is supplied, the run is a group of one and its
+    INITIAL segment is created here explicitly (dir = run_id, index 0) — the pre-W4
+    unsegmented shape no longer exists in the engine-owned lifecycle."""
 
     return ObservationRunBundle(
         Path(base_dir),
@@ -420,32 +523,43 @@ def write_minimal_abandoned_meta(
     (status ``abandoned``) so group retention owns it. Identity keys come from the same
     helper the full finalize uses — the two writers cannot drift on the segment contract."""
 
-    (path / "definition.json").write_text(definition.model_dump_json(), encoding="utf-8")
-    segment = ObservationSegment(
+    definition_json = definition.model_dump_json()
+    (path / "definition.json").write_text(definition_json, encoding="utf-8")
+    meta_model = ObservationBundleMetaV2(
+        bundle_schema_version=BUNDLE_SCHEMA_VERSION,
+        run_id=run_id,
+        workflow_id=definition.workflow_id,
+        status="abandoned",
+        timestamp=_utc_timestamp(),
+        trace_path="trace.jsonl",
+        detail_path="details.jsonl",
+        usage_path="usage.jsonl",
+        definition_path="definition.json",
+        definition_digest=definition.definition_digest(),
+        artifact_manifest_path=ARTIFACT_MANIFEST_NAME,
+        artifact_root=ARTIFACT_DIR_NAME,
+        artifact_count=0,
+        artifacts_copied=0,
+        trace_count=_line_count(path / "trace.jsonl"),
+        detail_count=_line_count(path / "details.jsonl"),
+        usage_count=_line_count(path / "usage.jsonl"),
+        usage_totals_scope="run_cumulative_at_finalize",
+        total_tokens=0,
+        metered_usd=None,
+        notional_usd=None,
         segment_id=path.name,
         segment_index=segment_index,
-        kind="resume",
-        definition_digest=definition_digest,
+        segment_kind="resume",
         attempt=attempt,
+        correlation_id=correlation_id or None,
     )
-    meta = {
-        "bundle_schema_version": 1,
-        "run_id": run_id,
-        "workflow_id": definition.workflow_id,
-        "workflow": definition.workflow_id,
-        "status": "abandoned",
-        "timestamp": _utc_timestamp(),
-        "trace_path": "trace.jsonl",
-        "detail_path": "details.jsonl",
-        "usage_path": "usage.jsonl",
-        "definition_path": "definition.json",
-        "trace_count": _line_count(path / "trace.jsonl"),
-        "detail_count": _line_count(path / "details.jsonl"),
-        "usage_count": _line_count(path / "usage.jsonl"),
-        **({"correlation_id": correlation_id} if correlation_id else {}),
-        **_segment_meta_fields(segment),
-    }
-    (path / "meta.json").write_text(json.dumps(meta, sort_keys=True, indent=2), encoding="utf-8")
+    meta = json.loads(meta_model.model_dump_json())
+    if meta.get("correlation_id") is None:
+        meta.pop("correlation_id", None)
+    (path / "meta.json").write_text(
+        json.dumps(meta, sort_keys=True, indent=2),
+        encoding="utf-8",
+    )
 
 
 def prune_observation_bundles(
@@ -482,27 +596,27 @@ def prune_observation_bundles(
         canonical = [
             (meta, path)
             for meta, path in entries
-            if str(meta.get("status")) != "abandoned"
+            if meta.status != "abandoned"
             and not (path / ABANDON_MARKER_NAME).exists()
             and (
-                meta.get("attempt") is None
+                meta.attempt is None
                 or (path / COMMIT_MARKER_NAME).exists()
             )
         ] or entries
         newest_meta = max(
             (meta for meta, _ in canonical),
             key=lambda meta: (
-                int(meta.get("segment_index") or 0),
-                str(meta.get("timestamp") or ""),
+                meta.segment_index,
+                meta.timestamp,
             ),
         )
-        if str(newest_meta.get("status")) == "requires_user_input":
+        if newest_meta.status == "requires_user_input":
             # R4-B (opt-in): a group suspended longer than the configured cap becomes
             # evictable — VIEWER history only; the wait itself stays resumable in the
             # coordinator. Default (None) = in-flight groups are never evicted.
             if evict_suspended_after_s is None:
                 continue
-            newest_ts = str(newest_meta.get("timestamp") or "")
+            newest_ts = newest_meta.timestamp
             try:
                 suspended_at = datetime.fromisoformat(newest_ts.replace("Z", "+00:00"))
             except ValueError:
@@ -543,11 +657,7 @@ def _sum_cost(values: Iterable[float | None]) -> float | None:
 def _bundle_sort_key(path: Path) -> tuple[str, float]:
     meta_path = path / "meta.json"
     if meta_path.exists():
-        try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            meta = {}
-        timestamp = str(meta.get("timestamp") or "")
+        timestamp = _bundle_meta(path).timestamp  # typed v2; loud on pre-v2 (M9)
         if timestamp:
             return (timestamp, path.stat().st_mtime)
     return ("", path.stat().st_mtime)
@@ -557,17 +667,18 @@ def _is_finalized_bundle(path: Path) -> bool:
     return (path / "meta.json").exists()
 
 
-def _bundle_meta(path: Path) -> dict:
-    try:
-        return json.loads((path / "meta.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
+def _bundle_meta(path: Path) -> ObservationBundleMetaV2:
+    """Typed meta of a finalized bundle — the engine-owned lifecycle reads ONLY v2 (M9).
+    A pre-v2 or malformed meta in the retention tree fails LOUDLY (historical bundles are
+    inspected with their historical tag, never half-read by the current engine)."""
+
+    return load_bundle_meta_v2(path)
 
 
 def _bundle_logical_run_id(path: Path) -> str:
-    """Logical run id of a finalized bundle: meta.run_id, else the directory name."""
+    """Logical run id of a finalized bundle (typed meta; loud on pre-v2)."""
 
-    return str(_bundle_meta(path).get("run_id") or path.name)
+    return _bundle_meta(path).run_id
 
 
 def _artifact_filename(artifact_id: str, source: Path, used: set[str]) -> str:
