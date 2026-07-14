@@ -53,6 +53,10 @@ def _scan_files():
             parts = set(path.parts)
             if "__pycache__" in parts or "tests" in parts or "test-results" in parts:
                 continue
+            if "build" in parts:
+                # setuptools in-tree build debris duplicates sources already scanned at
+                # their real paths — the guard governs the source tree, not wheel copies
+                continue
             if path.name.startswith("test_") or path.name == "conftest.py":
                 continue
             yield path

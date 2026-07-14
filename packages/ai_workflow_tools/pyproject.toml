@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ai-workflow-tools"
-version = "0.4.1"
+version = "0.5.0"
 description = "Reusable CLI-agent tools for ai-workflow-engine."
 requires-python = ">=3.10"
 dependencies = [
     # Lockstep with the engine v0.10 release (the tools 0.4.0 wheel targets engine 0.10.x).
-    "ai-workflow-engine>=0.10,<0.11",
+    "ai-workflow-engine>=0.11,<0.12",
     "pydantic>=2.13.0",
 ]
 

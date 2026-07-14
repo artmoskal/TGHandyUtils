@@ -193,7 +193,7 @@ An engine release is ready only when:
 - named consumer scenarios pass hermetically;
 - any approved paid/live qualification stays within recorded caps;
 - a human inspects the observation UI when the release changes user-visible viewer behavior;
-- permanent docs describe tagged truth and consumer handoffs identify migration risk;
+- permanent docs describe tagged truth and consumer handoffs identify re-adoption risk (the line is latest-only — no migration layer exists);
 - a counterpart review checks code, docs, examples, and evidence from primary sources.
 
 Framework requests and post-adoption feedback close through

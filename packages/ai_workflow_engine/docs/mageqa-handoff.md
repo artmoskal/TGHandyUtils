@@ -1,24 +1,22 @@
 # MageQA Engine Adoption Guide
 
-Status: **ready for consumer validation against immutable tag `engine-v0.10.1`; deployed adoption
-remains blocked until MageQA's own E0 canaries pass.** The five E0 blockers that
-failed MageQA against `engine-v0.9.2` — planned `partial` rewritten to `done` with the error
-cleared, `RuntimeLimits.timeout_s` declared but not enforced, retrace provenance not exposed to the
-retraced capability, the CLI request's hidden 600s default, and the reused `0.3.0` tools wheel
-identity — are all **addressed in `engine-v0.10.0`** and carried forward into `engine-v0.10.1` (tools `0.4.1`, viewer `0.2.3`),
-which additionally bounds the external-process result-settlement boundary. MageQA must
-pin tag `engine-v0.10.1` from a clean checkout, rebuild wheels, and pass its E0 canaries before
-migrating; it stays on its existing pin until those canaries pass.
+Status: **ready for consumer validation against the pending `engine-v0.11.0` tag (latest-only
+line; do not re-pin until it is cut); deployed adoption
+remains blocked until MageQA's own E0 canaries pass.** The five historical E0 blockers (planned
+`partial` rewritten to `done`, unenforced `RuntimeLimits.timeout_s`, hidden retrace provenance,
+the CLI 600s default, and the reused tools wheel identity) are addressed and carried forward;
+v0.11 additionally hardens every persisted contract (strict versioned snapshot, bundle meta v2,
+wait records) with NO migration layer. MageQA must
+pin tag `engine-v0.11.0` once cut, from a clean checkout, rebuild wheels, and pass its E0 canaries before
+adopting; it stays on its existing pin until those canaries pass.
 Do not infer the actual MageQA pin from this document; the consumer repository's pin file is
 authoritative for deployed state.
 
 Read first: [getting started](getting-started.md), [framework concepts](concepts.md),
 [operations](operations.md), and [misuse risks](misuse-risks.md).
 
-Moving to `engine-v0.10.1`? Read [migration-v0.10](migration-v0.10.md) — the `partial` timeout/plan
-contract, enforced `RuntimeLimits.timeout_s`, interruptibility declaration, and the dropped CLI
-600s default are all listed there. Coming from `engine-v0.7.0`/`v0.8.1`, also read
-[migration-v0.9](migration-v0.9.md) first.
+The line is **latest-only** — no migration guides exist. Adopt the current contract fresh; data
+written under older tags is rejected loudly and stays inspectable with its matching historical tag.
 
 ## Product Outcome
 
@@ -49,8 +47,8 @@ a defect.
 | Package | MageQA use |
 |---|---|
 | `ai-workflow-engine==0.10.1` | Required orchestration/runtime |
-| `ai-workflow-tools==0.4.1` | CLI agents, `claude -p`/`codex exec`, tool catalog, media helpers |
-| `ai-workflow-viewer==0.2.3` | Low-level engine run investigation and bundle rendering |
+| `ai-workflow-tools==0.5.0` | CLI agents, `claude -p`/`codex exec`, tool catalog, media helpers |
+| `ai-workflow-viewer==0.3.0` | Low-level engine run investigation and bundle rendering |
 
 The MageQA Next.js dashboard remains product-owned. It may link/embed/project engine bundle data, but
 it must not create a duplicate trace or workflow runtime.
@@ -192,9 +190,10 @@ with a scenario and acceptance proof. Upgrade via [`operations.md`](operations.m
 
 ## v0.11 Candidate Note (unreleased — keep the pin above)
 
-An internal v0.11 refactor of `CapabilityRuntime.invoke` is in progress and UNRELEASED — no
-`engine-v0.11.0` tag exists; keep the pin this document names. Nothing in this handoff changes:
-the public door, statuses, error text, trace/detail/usage shapes, budget rules, and wait behavior
-are locked by a sealed preservation oracle plus a live differential against the pinned v0.10.1
-wheel. When the tag ships, the consumer delta is NONE (see
-[`migration-v0.11.md`](migration-v0.11.md)); re-pin only after your own canary passes.
+`engine-v0.11.0` is the pending release candidate of the **latest-only** line: strict versioned
+persisted contracts (snapshot `v0.11`, bundle meta v2, wait records `wait-v1`), one strict viewer
+loader, and NO migration layer — the sealed current-contract corpus shows 0 behavior deltas vs
+v0.10.1, but old persisted data is rejected loudly naming its historical tag. Until the tag is cut,
+keep your existing pin; adopt by re-pinning fresh (pin tag `engine-v0.11.0` once it exists, rebuild
+wheels: engine `0.11.0`, tools `0.5.0`, viewer `0.3.0`) and re-run your canaries. Historical data
+stays inspectable with its own historical tag.

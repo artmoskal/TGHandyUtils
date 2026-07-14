@@ -676,11 +676,12 @@ def test_tools_wheel_identity_advanced_for_changed_code():
     """Defect 4: ai_workflow_tools source changed between engine-v0.8.1 and engine-v0.9.2
     (cli_agents assembly/console/models) while both tags shipped as 0.3.0 — two different
     wheels must never share name+version. v0.10 advanced to 0.4.0; v0.10.1 changed the tools
-    process-I/O surfacing again, so the identity advanced to 0.4.1."""
+    process-I/O surfacing again (0.4.1); the v0.11 latest-only line changed the tools surface
+    again, advancing the identity to 0.5.0."""
 
     import ai_workflow_tools
 
-    assert ai_workflow_tools.__version__ == "0.4.1", (
+    assert ai_workflow_tools.__version__ == "0.5.0", (
         "tools code changed since the last released wheel identity; the version must "
         f"advance (found {ai_workflow_tools.__version__})"
     )

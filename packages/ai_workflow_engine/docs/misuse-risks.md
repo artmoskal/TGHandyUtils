@@ -125,7 +125,9 @@ retention. Export redaction is a separate concern and must not silently alter th
 ## Upgrade Risks
 
 - Never move a consumed tag. Release a new tag and update pin, source commit, wheel hash, and canary.
-- Read current migration notes, not historical discussion files.
+- The line is latest-only: there are no migration guides or compatibility readers. Old persisted
+  data (snapshots, wait records, observation bundles) is rejected loudly by the current line —
+  inspect it with its matching historical tag; adopt the current contract fresh.
 - Run product contract tests and one real workflow before production rollout.
 - Keep the previous wheel/image available for rollback; do not mix snapshots produced by an
   unvalidated machine definition with a changed definition.

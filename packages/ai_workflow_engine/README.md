@@ -5,16 +5,19 @@ declare a workflow, register typed capabilities, and call one engine door. The e
 transitions, retries, fan-out, budgets, waits, trace, usage, and observation bundles; products own
 domain models, provider clients, storage adapters, clocks, and side-effect delivery.
 
-> **`engine-v0.10.1` is the current release.** Pin the immutable tag and build a wheel; consumer
-> canaries still decide whether each product changes its deployed pin. Never depend on a
+> **`engine-v0.11.0` is the release candidate** (no tag exists yet —
+> do not re-pin until it is cut; `engine-v0.10.1` remains the last released tag). Pin immutable tags and build wheels;
+> consumer canaries still decide whether each product changes its deployed pin. Never depend on a
 > live branch. The binding contract is the repository-level
 > [`executable-workflow-engine-spec.md`](../../docs/executable-workflow-engine-spec.md).
 >
-> A v0.11 internal refactor is in progress on the branch and is UNRELEASED (no tag exists — keep
-> pinning `engine-v0.10.1`). It changes no public API, schema, or behavior: `invoke` internals are
-> split into contract/supervision/observation owners, proven behavior-identical by a sealed
-> preservation oracle plus a live differential against the pinned v0.10.1 wheel. Consumer delta
-> when it ships: none required — see [`docs/migration-v0.11.md`](docs/migration-v0.11.md).
+> **v0.11 is a latest-only line.** The engine supports exactly one current contract: current code,
+> current persisted schemas (snapshot `v0.11`, observation bundle meta v2, wait records `wait-v1`),
+> current docs. There are no importers, adapters, migration shims, or dual readers — data written
+> by older lines is REJECTED with an error naming the historical route: inspect it with its
+> matching historical tag (`engine-v0.10.1` and earlier keep working for their own data forever).
+> Adoption is fresh: new consumers start on the current contract; existing consumers re-adopt the
+> current surface rather than migrate state.
 
 ## Start Here
 
@@ -41,20 +44,23 @@ Build from the tag because this monorepo is not published to PyPI:
 
 ```bash
 git clone <TGHandyUtils-repository> /tmp/tghandy-engine
-git -C /tmp/tghandy-engine checkout --detach engine-v0.10.1
+git -C /tmp/tghandy-engine checkout --detach engine-v0.11.0
 python -m pip wheel --no-deps -w ./vendor \
   /tmp/tghandy-engine/packages/ai_workflow_engine
-python -m pip install ./vendor/ai_workflow_engine-0.10.1-py3-none-any.whl
-python -c "import ai_workflow_engine as e; assert e.__version__ == '0.10.1'"
+python -m pip install ./vendor/ai_workflow_engine-0.11.0-py3-none-any.whl
+python -c "import ai_workflow_engine as e; assert e.__version__ == '0.11.0'"
 ```
+
+(Until the `engine-v0.11.0` tag is cut, the commands above name the pending candidate;
+`engine-v0.10.1` is the last tag that exists.)
 
 Optional packages:
 
 | Package | Install when |
 |---|---|
-| `ai-workflow-engine==0.10.1` | Always. Core builder, executor, memory, waits, observation writer. |
-| `ai-workflow-tools==0.4.1` | The product uses CLI agents, the tool catalog, or media helpers. |
-| `ai-workflow-viewer==0.2.3` | A developer or product service renders observation bundles. |
+| `ai-workflow-engine==0.11.0` | Always. Core builder, executor, memory, waits, observation writer. |
+| `ai-workflow-tools==0.5.0` | The product uses CLI agents, the tool catalog, or media helpers. |
+| `ai-workflow-viewer==0.3.0` | A developer or product service renders observation bundles. |
 
 Record the engine tag, source commit, and wheel SHA-256 in the consumer repository. A tag already
 consumed by another repository is frozen; fixes require a new tag.
@@ -117,9 +123,13 @@ minimal profile.
 
 ## Release Highlights
 
-`engine-v0.10.1` adds a bounded, race-resistant external-process result-settlement boundary
-(see [`migration-v0.10.md`](docs/migration-v0.10.md#v0101)); `engine-v0.10.0` includes (see
-[`migration-v0.10.md`](docs/migration-v0.10.md) for the breaking changes):
+`engine-v0.11.0` makes the line **latest-only**: strict versioned persisted contracts
+(MachineSnapshot `schema_version="v0.11"` with required typed identity; observation bundle meta v2
+with closed status vocabulary and segment identity; wait records `record_schema_version="wait-v1"`),
+one strict viewer loader with typed status authority, a sealed current-contract oracle replacing
+old-wheel equality, and removal of every compatibility fallback — old persisted data fails loudly
+naming its historical tag. Earlier lines added, and v0.11 preserves behaviorally (sealed corpus:
+0 behavior deltas vs v0.10.1):
 
 - an engine-owned, **enforced** execution window (soft work deadline, hard timeout, completion
   reserve, named limiting sources/clamps) intersecting task request, capability limit, remaining run

@@ -133,12 +133,16 @@ def test_release_docs_name_the_current_tag_consistently():
 
 def test_documentation_index_links_every_consumer_path_and_canonical_guide():
     index = (PACKAGE_ROOT / "docs" / "README.md").read_text(encoding="utf-8")
+    docs_dir = PACKAGE_ROOT / "docs"
+    assert not list(docs_dir.glob("migration-*.md")), (
+        "latest-only line (M14): the shipped package must carry no migration guides — "
+        "historical lines are documented by their historical tags"
+    )
     for name in (
         "getting-started.md",
         "concepts.md",
         "operations.md",
         "misuse-risks.md",
-        "migration-v0.9.md",
         "extension-lifecycle.md",
         "observability-levels-feedback.md",
         "gopro-handoff.md",

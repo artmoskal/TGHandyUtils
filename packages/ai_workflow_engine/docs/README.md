@@ -1,6 +1,6 @@
 # AI Workflow Engine Documentation
 
-This directory is the consumer documentation home for `engine-v0.10.0`. It is written for both
+This directory is the consumer documentation home for `engine-v0.11.0` (latest-only line). It is written for both
 engineers and coding agents: each file has one responsibility, links to the next action, and avoids
 embedding release history in current instructions.
 
@@ -8,8 +8,10 @@ embedding release history in current instructions.
 
 ### First-time adopter
 
-0. [`migration-v0.9.md`](migration-v0.9.md) — **read first when moving your pin from `engine-v0.8.1`** (breaking changes).
-0. [`migration-v0.10.md`](migration-v0.10.md) — **read when moving your pin to `engine-v0.10.0`** (`partial` timeout/plan contract, enforced `RuntimeLimits.timeout_s`, interruptibility, no CLI 600s default).
+0. **Latest-only rule:** the current line supports exactly ONE contract — current code, current
+   persisted schemas, current docs. There are no migration guides in this package: adoption is
+   fresh, and data written by older lines is rejected with an error naming its historical tag
+   (inspect old data with that tag's own docs and viewer).
 1. [`getting-started.md`](getting-started.md) — packages, pinning, first workflow, configuration,
    and first contract tests.
 2. [`concepts.md`](concepts.md) — machine, capability, state, result, memory, evidence, and ownership.

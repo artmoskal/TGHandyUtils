@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ai-workflow-viewer"
-version = "0.2.3"
+version = "0.3.0"
 description = "Standalone observability viewer for ai-workflow-engine observation bundles."
 requires-python = ">=3.10"
 dependencies = [
     # Downstream-only: the viewer reads engine artifacts; the engine NEVER depends on the viewer.
-    "ai-workflow-engine>=0.10,<0.11",
+    "ai-workflow-engine>=0.11,<0.12",
 ]
 
 [project.optional-dependencies]

@@ -12,8 +12,7 @@ What a seal run does:
    error strings embed the pydantic version, so seal-env and gate-env must match);
 2. runs the version-agnostic corpus TWICE in that venv and requires byte-equal canonical results
    (seal-time metamorphic determinism), plus the public-surface snapshot;
-3. diffs the new records against the PREVIOUS sealed fixture (the current-contract fixture if it
-   exists, else the retained historical v0.10.1 fixture for the transition seal) and REFUSES to
+3. diffs the new records against the PREVIOUS sealed current-contract fixture and REFUSES to
    write if any delta path is not covered by
    ``fixtures/v011_intentional_break_ledger.json`` — every unledgered delta is printed. Resealing
    can therefore never silently bless a regression;
@@ -49,9 +48,10 @@ _FIXTURE = _FIXTURES / "invocation_current_contract.json"
 _PUBLIC_FIXTURE = _FIXTURES / "public_surface_current.json"
 _PROVENANCE = _FIXTURES / "current_contract.provenance.json"
 _LEDGER = _FIXTURES / "v011_intentional_break_ledger.json"
-# Transition predecessor (retained historical files; deleted in Phase 2C after delta closeout).
-_HISTORICAL_FIXTURE = _FIXTURES / "invocation_baseline_v0_10_1.json"
-_HISTORICAL_PUBLIC = _FIXTURES / "public_surface_v0_10_1.json"
+# 2C closeout (2026-07-14): the v0.10.1 transition predecessor files are DELETED. Recorded
+# accounting at deletion: corpus deltas v0.10.1->final = 0 (behavior preserved end to end);
+# public-surface deltas = 68, all 68 mapped to (now spent) ledger rows, 0 unledgered. The
+# sealed CURRENT fixtures are the only predecessor from here on.
 
 _RUNNER = (
     "import asyncio, json\n"
@@ -184,8 +184,6 @@ def _build_candidate_env(work: Path, pydantic_pin: str) -> Path:
 def _predecessor_fixture() -> tuple[Path, str] | tuple[None, None]:
     if _FIXTURE.exists():
         return _FIXTURE, "current-contract fixture"
-    if _HISTORICAL_FIXTURE.exists():
-        return _HISTORICAL_FIXTURE, "historical v0.10.1 fixture (transition seal)"
     return None, None
 
 
@@ -223,9 +221,7 @@ def main() -> int:
             return 1
 
     # The PUBLIC surface is ledger-governed too (exports/signatures/schemas prefixed "public.").
-    prev_public_path = _PUBLIC_FIXTURE if _PUBLIC_FIXTURE.exists() else (
-        _HISTORICAL_PUBLIC if _HISTORICAL_PUBLIC.exists() else None
-    )
+    prev_public_path = _PUBLIC_FIXTURE if _PUBLIC_FIXTURE.exists() else None
     if prev_public_path is not None:
         pdeltas = compare_records({"public": json.loads(prev_public_path.read_text(encoding="utf-8"))},
                                   {"public": public})

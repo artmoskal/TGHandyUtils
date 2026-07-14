@@ -9,17 +9,18 @@ Always install `ai-workflow-engine`. Add `ai-workflow-tools` only for reusable C
 `ai-workflow-viewer` only where bundles are rendered. Keeping optional packages out of simple runtime
 images preserves the complexity gradient.
 
-Build from `engine-v0.10.0` and record:
+Build from `engine-v0.11.0` (pending tag: do not re-pin until it is cut) and record:
 
 ```text
-engine_tag=engine-v0.10.0
-engine_source_commit=<git rev-parse engine-v0.10.0^{}>
+engine_tag=engine-v0.11.0
+engine_source_commit=<git rev-parse engine-v0.11.0^{}>
 engine_wheel_sha256=<sha256 of vendored wheel>
 ```
 
-Never vendor engine source or install a live branch. Moving from `engine-v0.9.2`? Read
-[`migration-v0.10.md`](migration-v0.10.md) FIRST. Moving from `engine-v0.8.1` or older also requires
-[`migration-v0.9.md`](migration-v0.9.md); both list real contract changes.
+Never vendor engine source or install a live branch. **The line is latest-only**: there is no
+migration path between lines — adopt the current contract fresh. Runs, snapshots, wait records,
+and observation bundles written under an older tag are rejected loudly by the current engine and
+viewer; inspect that data with its matching historical tag instead.
 
 ## 2. Declare, Register, Run
 

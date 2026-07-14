@@ -1,14 +1,15 @@
 # GoPro Engine Adoption Guide
 
-Status: **ready for consumer validation against immutable tag `engine-v0.10.1`.** GoPro should
-pin tag `engine-v0.10.1`, record the source commit and wheel hash, and run its sidecar canary before changing
+Status: **ready for consumer validation against the pending `engine-v0.11.0` tag (latest-only line;
+do not re-pin until it is cut).** GoPro should
+pin tag `engine-v0.11.0` once cut, record the source commit and wheel hash, and run its sidecar canary before changing
 the production image. Do not infer the actual GoPro pin from this document; the consumer repository's
 pin file is authoritative for deployed state.
 
 Read first: [getting started](getting-started.md), [framework concepts](concepts.md), and
 [misuse risks](misuse-risks.md). This file contains only GoPro-specific mapping.
 
-Moving to `engine-v0.10.1`? Read [migration-v0.10](migration-v0.10.md) — the `partial` timeout/plan contract, enforced `RuntimeLimits.timeout_s`, interruptibility declaration, and the dropped CLI 600s default. Coming from `engine-v0.8.1`, also read [migration-v0.9](migration-v0.9.md) — strict RuntimeLimits, typed firewall markers, hard-zero caps, failed-call accounting, and `.human` wait policy.
+The line is **latest-only** — no migration guides exist. Adopt the current contract fresh; data written under older tags is rejected loudly and stays inspectable with its matching historical tag.
 
 ## Product Outcome
 
@@ -35,8 +36,8 @@ The engine owns execution and gates. GoPro owns inventory semantics and storage.
 | Package | GoPro use |
 |---|---|
 | `ai-workflow-engine==0.10.1` | Required in the detection/sidecar runtime |
-| `ai-workflow-tools==0.4.1` | Add only when GoPro uses CLI agents or shared media helpers |
-| `ai-workflow-viewer==0.2.3` | Developer/diagnostic service; not required in the detector image |
+| `ai-workflow-tools==0.5.0` | Add only when GoPro uses CLI agents or shared media helpers |
+| `ai-workflow-viewer==0.3.0` | Developer/diagnostic service; not required in the detector image |
 
 Vendoring only the engine wheel is the correct lightweight configuration for the current direct-VLM
 path.
@@ -158,9 +159,10 @@ second memory, retry, or observation runtime into the sidecar.
 
 ## v0.11 Candidate Note (unreleased — keep the pin above)
 
-An internal v0.11 refactor of `CapabilityRuntime.invoke` is in progress and UNRELEASED — no
-`engine-v0.11.0` tag exists; keep the pin this document names. Nothing in this handoff changes:
-the public door, statuses, error text, trace/detail/usage shapes, budget rules, and wait behavior
-are locked by a sealed preservation oracle plus a live differential against the pinned v0.10.1
-wheel. When the tag ships, the consumer delta is NONE (see
-[`migration-v0.11.md`](migration-v0.11.md)); re-pin only after your own canary passes.
+`engine-v0.11.0` is the pending release candidate of the **latest-only** line: strict versioned
+persisted contracts (snapshot `v0.11`, bundle meta v2, wait records `wait-v1`), one strict viewer
+loader, and NO migration layer — the sealed current-contract corpus shows 0 behavior deltas vs
+v0.10.1, but old persisted data is rejected loudly naming its historical tag. Until the tag is cut,
+keep your existing pin; adopt by re-pinning fresh (pin tag `engine-v0.11.0` once it exists, rebuild
+wheels: engine `0.11.0`, tools `0.5.0`, viewer `0.3.0`) and re-run your canaries. Historical data
+stays inspectable with its own historical tag.

@@ -1,7 +1,8 @@
 # SlackAzzCovered Engine Adoption Guide
 
-Status: **ready for consumer validation against immutable tag `engine-v0.10.1`.** SlackAzzCovered
-should pin tag `engine-v0.10.1`, implement its Redis coordinator, and pass the engine conformance kit plus product
+Status: **ready for consumer validation against the pending `engine-v0.11.0` tag (latest-only
+line; do not re-pin until it is cut).** SlackAzzCovered
+should pin tag `engine-v0.11.0` once cut, implement its Redis coordinator, and pass the engine conformance kit plus product
 transaction tests before enabling live effects.
 
 This answers the consumer request in
@@ -33,8 +34,8 @@ client event
 | Package | SlackAzzCovered use |
 |---|---|
 | `ai-workflow-engine==0.10.1` | Required workflow/wait runtime |
-| `ai-workflow-tools==0.4.1` | Add for CLI agents/tool catalog if the product uses them |
-| `ai-workflow-viewer==0.2.3` | Developer diagnostics or product-linked run inspection |
+| `ai-workflow-tools==0.5.0` | Add for CLI agents/tool catalog if the product uses them |
+| `ai-workflow-viewer==0.3.0` | Developer diagnostics or product-linked run inspection |
 
 Build from the immutable tag and record commit/hash. Never copy engine source or track the branch.
 
@@ -232,9 +233,10 @@ Follow [`operations.md`](operations.md) for production recovery. File missing me
 
 ## v0.11 Candidate Note (unreleased — keep the pin above)
 
-An internal v0.11 refactor of `CapabilityRuntime.invoke` is in progress and UNRELEASED — no
-`engine-v0.11.0` tag exists; keep the pin this document names. Nothing in this handoff changes:
-the public door, statuses, error text, trace/detail/usage shapes, budget rules, and wait behavior
-are locked by a sealed preservation oracle plus a live differential against the pinned v0.10.1
-wheel. When the tag ships, the consumer delta is NONE (see
-[`migration-v0.11.md`](migration-v0.11.md)); re-pin only after your own canary passes.
+`engine-v0.11.0` is the pending release candidate of the **latest-only** line: strict versioned
+persisted contracts (snapshot `v0.11`, bundle meta v2, wait records `wait-v1`), one strict viewer
+loader, and NO migration layer — the sealed current-contract corpus shows 0 behavior deltas vs
+v0.10.1, but old persisted data is rejected loudly naming its historical tag. Until the tag is cut,
+keep your existing pin; adopt by re-pinning fresh (pin tag `engine-v0.11.0` once it exists, rebuild
+wheels: engine `0.11.0`, tools `0.5.0`, viewer `0.3.0`) and re-run your canaries. Historical data
+stays inspectable with its own historical tag.

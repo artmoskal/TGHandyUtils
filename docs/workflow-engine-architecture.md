@@ -582,13 +582,15 @@ result commitment stays in the executor; subprocess settlement stays in `engine/
 These module names are INTERNAL — consumers keep importing the same public surface and never
 need the owner split as a concept.
 
-Preservation evidence (how "behavior-identical to v0.10.1" is proven, not asserted): a sealed
-27-scenario preservation oracle runs the full behavior inventory through the public door and is
-compared against the immutable `engine-v0.10.1` baseline both as a committed fixture and as a
-LIVE differential — the sha256-pinned v0.10.1 wheel is itself a committed fixture, so
-`./test.sh unit -- packages/ai_workflow_engine/tests/test_invocation_differential_gate.py`
-re-runs baseline-vs-candidate hermetically (no git/network), and a provenance record makes any
-un-resealed edit to the oracle, fixtures, or wheel fail loudly. One-door enforcement is locked by
+Preservation evidence (v0.11 latest-only line): a sealed 27-scenario CURRENT-contract oracle
+runs the full behavior inventory through the public door and is locked as committed fixtures
+(`invocation_current_contract.json`, `public_surface_current.json`) with a provenance hash chain,
+so `./test.sh unit -- packages/ai_workflow_engine/tests/test_current_contract_gate.py` re-checks
+the live corpus against the seal hermetically (no git/network) and any un-resealed edit to the
+oracle, fixtures, sealer, or intentional-break ledger fails loudly. Resealing refuses any delta
+not covered by an ACTIVE ledger row, and the v0.10.1→v0.11 transition closed with corpus deltas 0
+and all 68 public-surface deltas mapped to (now spent) ledger rows; the old-wheel differential and
+its baseline artifacts are deleted — historical lines are inspected with their historical tags. One-door enforcement is locked by
 AST guards (`tests/test_one_door.py`) as an ACCIDENTAL-BYPASS lock: every ordinary call shape —
 direct chained `registry.get(...)[1](...)`, unpacked or subscript-bound handlers, whole-pair
 calls, and simple function-local registry aliases — fails the suite (each family has a permanent
