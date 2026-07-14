@@ -1,13 +1,13 @@
 """Preservation gate for the v0.11 invocation refactor (Iteration 1).
 
 The fast in-process gate: run the deterministic corpus through the public door and compare it,
-path-by-path, against the SEALED v0.10.1 canonical baseline fixture. Any structural difference is
-a behavior delta and fails. A MISSING fixture is a hard failure, never a silent regeneration: the
-only sanctioned (re)generation path is the explicit host sealer
-(``invocation_differential.py --seal``), which builds the pinned v0.10.1 wheel from the immutable
-tag, requires wheel-vs-candidate equality, and seals fixtures + provenance from the BASELINE
-wheel's own output. The hermetic in-container live differential + provenance verification live in
-``test_invocation_differential_gate.py``.
+path-by-path, against the SEALED CURRENT-CONTRACT fixture (v0.11 clean-contract line; the old
+v0.10.1 wheel-equality gate is retired — final run recorded EQUAL x4 at 53ef867). Any structural
+difference is a behavior delta and fails. A MISSING fixture is a hard failure, never a silent
+regeneration: the only sanctioned (re)generation path is the explicit host sealer
+(``current_contract_seal.py --seal``), which requires two-run determinism and refuses any fixture
+delta not covered by the intentional-break ledger. Provenance verification lives in
+``test_current_contract_gate.py``.
 
 Also here: the behavior-inventory completeness guard and the comparator/canonicalizer self-tests
 (the oracle is load-bearing code — it must FAIL on real drift and must NOT normalize anything
@@ -32,11 +32,11 @@ from invocation_oracle import (
 
 pytestmark = [pytest.mark.unit]  # async tests are marked individually — do not mark sync tests async
 
-_FIXTURE = Path(__file__).parent / "fixtures" / "invocation_baseline_v0_10_1.json"
+_FIXTURE = Path(__file__).parent / "fixtures" / "invocation_current_contract.json"
 
 _RESEAL_HINT = (
-    "sealed baseline missing — regeneration is EXPLICIT-ONLY via the host sealer:\n"
-    "  python3 packages/ai_workflow_engine/tests/invocation_differential.py --seal"
+    "current-contract seal missing — regeneration is EXPLICIT-ONLY via the host sealer:\n"
+    "  python3 packages/ai_workflow_engine/tests/current_contract_seal.py --seal"
 )
 
 
@@ -99,13 +99,13 @@ def test_behavior_inventory_is_complete():
 
 
 @pytest.mark.asyncio
-async def test_corpus_matches_sealed_v0_10_1_baseline():
+async def test_corpus_matches_sealed_current_contract():
     if not _FIXTURE.exists():
         pytest.fail(_RESEAL_HINT)
     records = await run_corpus()
     baseline = json.loads(_FIXTURE.read_text(encoding="utf-8"))
     mismatches = compare_records(baseline, records)
-    assert not mismatches, "candidate diverged from the sealed v0.10.1 baseline:\n" + "\n".join(mismatches)
+    assert not mismatches, "live corpus diverged from the sealed current contract:\n" + "\n".join(mismatches)
 
 
 def test_comparator_and_canonicalizer_detect_real_drift():
@@ -330,19 +330,19 @@ def test_exact_path_normalizer_table_is_reviewed_and_minimal():
 # behavior-preserving refactor must not drift the public API, signatures, or full Pydantic schemas
 # (defaults/constraints included), and must not pull advanced modules into the simple tier. The
 # snapshot logic is the oracle's version-agnostic public_surface_snapshot — the same code the
-# sealer runs against the v0.10.1 wheel, so fixture and candidate are measured identically.
+# sealer runs in its pinned venv, so fixture and candidate are measured identically.
 # --------------------------------------------------------------------------------------
 
-_PUBLIC_FIXTURE = Path(__file__).parent / "fixtures" / "public_surface_v0_10_1.json"
+_PUBLIC_FIXTURE = Path(__file__).parent / "fixtures" / "public_surface_current.json"
 
 
-def test_public_surface_is_locked_against_v0_10_1():
+def test_public_surface_matches_sealed_current_contract():
     if not _PUBLIC_FIXTURE.exists():
         pytest.fail(_RESEAL_HINT)
     snapshot = public_surface_snapshot()
     sealed = json.loads(_PUBLIC_FIXTURE.read_text(encoding="utf-8"))
     mismatches = compare_records({"public": sealed}, {"public": snapshot})
-    assert not mismatches, "public surface drifted from v0.10.1:\n" + "\n".join(mismatches)
+    assert not mismatches, "public surface drifted from the sealed current contract:\n" + "\n".join(mismatches)
 
 
 def test_simple_tier_loads_no_advanced_modules():

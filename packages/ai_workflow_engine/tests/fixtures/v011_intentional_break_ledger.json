@@ -1,0 +1,4 @@
+{
+  "comment": "v0.11 clean-contract intentional-break ledger. The ONLY paths on which the sealed current-contract fixture may change at reseal. Every entry names its removal-manifest row. The sealer prints and refuses any fixture delta whose path matches no entry; the provenance record hashes this file so ledger edits are tamper-evident.",
+  "entries": []
+}

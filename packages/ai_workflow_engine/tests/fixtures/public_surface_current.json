@@ -1,0 +1,1541 @@
+{
+  "exports": [
+    "AgentCapability",
+    "AgentEpisodePlanner",
+    "AgentMemory",
+    "AgentMemoryRenderContext",
+    "AgentRunRequest",
+    "AgentRunResult",
+    "AgentStepDecision",
+    "AgentToolCall",
+    "AgentToolStep",
+    "AsyncQueueDetailSink",
+    "AsyncQueueTraceSink",
+    "AsyncQueueUsageSink",
+    "BranchDecision",
+    "BranchFlowNode",
+    "CallbackTraceSink",
+    "CapabilityBindingError",
+    "CapabilityCall",
+    "CapabilityContext",
+    "CapabilityRegistry",
+    "CapabilityResult",
+    "CapabilityRuntime",
+    "CapabilitySpec",
+    "ChatMessage",
+    "CheckpointStore",
+    "ClarificationOption",
+    "CompactingMemory",
+    "DEFAULT_FLOW_AUTHOR_PROMPT",
+    "DetailSink",
+    "DurableWaitPolicy",
+    "END",
+    "EvaluateFlowNode",
+    "EvaluationController",
+    "EvaluationPlanner",
+    "EvidenceRef",
+    "ExternalAdapterCapability",
+    "ExternalProcessCapability",
+    "ExternalProcessRequest",
+    "ExternalWriteRequest",
+    "ExternalWriteResult",
+    "Fallback",
+    "FanoutFlowNode",
+    "FlowArtifact",
+    "FlowAuthorRequest",
+    "FlowNode",
+    "FlowNodeSpec",
+    "FullReplayMemory",
+    "HumanClarificationCapability",
+    "HumanClarificationChannel",
+    "HumanClarificationRequest",
+    "HumanClarificationResponse",
+    "ImageEvictingMemory",
+    "ImageInput",
+    "InMemoryCheckpointStore",
+    "InMemoryDetailSink",
+    "InMemoryExternalWriteSink",
+    "InMemoryHumanClarificationChannel",
+    "InMemoryMemoryStore",
+    "InMemoryTraceSink",
+    "InMemoryUsageSink",
+    "InMemoryWaitCoordinator",
+    "JsonlCheckpointStore",
+    "JsonlDetailSink",
+    "JsonlExternalWriteSink",
+    "JsonlTraceSink",
+    "JsonlUsageSink",
+    "LLMCallable",
+    "LLMRequest",
+    "LLMResponse",
+    "LocalWaitPolicy",
+    "MachineSnapshot",
+    "MemoryNamespace",
+    "MemoryRecord",
+    "MemoryStore",
+    "ModelProfile",
+    "NodeExecutionServices",
+    "NodeExecutionState",
+    "NodeResult",
+    "NodeSchedulingServices",
+    "ObservationConfig",
+    "ObservationDetail",
+    "ObservationRunBundle",
+    "ObservationSegment",
+    "ObservationSequence",
+    "PlanArtifact",
+    "PlanTask",
+    "ProcessIOLimits",
+    "PromptCapturingLLMClient",
+    "PromptRef",
+    "PromptRenderError",
+    "PromptRenderResult",
+    "PromptRenderService",
+    "PromptRenderer",
+    "PromptTemplateLoader",
+    "Replan",
+    "Retrace",
+    "Retry",
+    "RuntimePlan",
+    "RuntimePlanCompiler",
+    "SchedulingDecision",
+    "SequencedDetailSink",
+    "SequencedTraceSink",
+    "SequencedUsageSink",
+    "SessionState",
+    "StepFlowNode",
+    "StructuredLLMNode",
+    "StructuredOutputError",
+    "StructuredStateMemory",
+    "StructuredVisionLLMNode",
+    "SubworkflowRef",
+    "TeeDetailSink",
+    "TeeTraceSink",
+    "TeeUsageSink",
+    "ToolCallRequest",
+    "ToolResult",
+    "ToolSpec",
+    "TraceSink",
+    "Transition",
+    "UnsupportedNodeError",
+    "UsageSink",
+    "WEAK_MODEL_CLEANER",
+    "WaitClaim",
+    "WaitCoordinator",
+    "WaitDeliveryOutcome",
+    "WaitEvent",
+    "WaitHandle",
+    "WaitHealth",
+    "WaitReceipt",
+    "WaitRecord",
+    "WindowedMemory",
+    "WorkflowArtifact",
+    "WorkflowBuilder",
+    "WorkflowCheckpoint",
+    "WorkflowConfigBundle",
+    "WorkflowConfigError",
+    "WorkflowConfigLoader",
+    "WorkflowDecisionPlanner",
+    "WorkflowDefinition",
+    "WorkflowEngine",
+    "WorkflowEngineBuilder",
+    "WorkflowExecutor",
+    "WorkflowGoal",
+    "WorkflowInstrument",
+    "WorkflowInstrumentRegistry",
+    "WorkflowLoopController",
+    "WorkflowNode",
+    "WorkflowPack",
+    "WorkflowProfile",
+    "WorkflowResult",
+    "WorkflowRunResult",
+    "WorkflowRunner",
+    "WorkflowScheduler",
+    "WorkflowStepPlanner",
+    "WorkflowSupervisor",
+    "WorkflowTraceEvent",
+    "WorkflowUsageEvent",
+    "WorkflowUsageSummary",
+    "WorkflowValidationError",
+    "artifact_result",
+    "assert_checkpoint_payload_safe",
+    "assert_no_config_secrets",
+    "build_definition_from_artifact",
+    "build_flow_author_capability",
+    "capability_context_for_goal",
+    "cleanup_artifacts",
+    "compose_cleaners",
+    "current_model_profile",
+    "default_rule_based_compactor",
+    "default_state_renderer",
+    "default_tool_state_reducer",
+    "extract_fenced_json",
+    "extract_first_json_object",
+    "format_trace_events",
+    "gather_capabilities",
+    "is_plain_llm_callable",
+    "load_prompt_template",
+    "load_workflow_config",
+    "model_profile_scope",
+    "open_observation_run_bundle",
+    "prune_observation_bundles",
+    "render_capability_catalog",
+    "render_full_replay_messages",
+    "render_machine_card",
+    "render_plan",
+    "render_prompt_manifest",
+    "resolve_agent_memory",
+    "run_single_llm",
+    "run_single_step",
+    "strip_think_tags"
+  ],
+  "schemas": {
+    "CapabilityContext": {
+      "$defs": {
+        "CriticismEnvelope": {
+          "description": "Evaluator criticism used for repair/retry/retrace prompts.",
+          "properties": {
+            "expected": {
+              "title": "Expected",
+              "type": "string"
+            },
+            "observed": {
+              "title": "Observed",
+              "type": "string"
+            },
+            "severity": {
+              "default": "medium",
+              "enum": [
+                "low",
+                "medium",
+                "high",
+                "blocking"
+              ],
+              "title": "Severity",
+              "type": "string"
+            },
+            "target_capability": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Target Capability"
+            },
+            "user_visible_effect": {
+              "default": "",
+              "title": "User Visible Effect",
+              "type": "string"
+            }
+          },
+          "required": [
+            "observed",
+            "expected"
+          ],
+          "title": "CriticismEnvelope",
+          "type": "object"
+        },
+        "ExecutionWindowDecision": {
+          "additionalProperties": false,
+          "description": "The one resolved, serializable time-limit decision for an invocation.\n\n``hard_timeout_s`` is the outer cutoff; ``soft_timeout_s`` = hard minus the completion\nreserve (the work deadline that leaves room for salvage/cleanup). ``None`` hard means no\nbound applied \u2014 an unbounded invocation. ``limiting_sources``/``clamps`` name exactly why\nthe hard limit is what it is; ``enforcement`` is how it will be enforced.",
+          "properties": {
+            "capability_timeout_s": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Capability Timeout S"
+            },
+            "clamps": {
+              "items": {
+                "enum": [
+                  "capability",
+                  "run_remaining",
+                  "parent_soft_remaining"
+                ],
+                "type": "string"
+              },
+              "title": "Clamps",
+              "type": "array"
+            },
+            "completion_reserve_s": {
+              "default": 0.0,
+              "title": "Completion Reserve S",
+              "type": "number"
+            },
+            "enforcement": {
+              "default": "none",
+              "enum": [
+                "process",
+                "cooperative",
+                "none"
+              ],
+              "title": "Enforcement",
+              "type": "string"
+            },
+            "hard_timeout_s": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Hard Timeout S"
+            },
+            "limiting_sources": {
+              "items": {
+                "enum": [
+                  "task_request",
+                  "capability_limit",
+                  "run_limit",
+                  "parent_window"
+                ],
+                "type": "string"
+              },
+              "title": "Limiting Sources",
+              "type": "array"
+            },
+            "parent_remaining_s": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Parent Remaining S"
+            },
+            "request_source": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Request Source"
+            },
+            "requested_timeout_s": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Requested Timeout S"
+            },
+            "run_remaining_s": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Run Remaining S"
+            },
+            "soft_timeout_s": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Soft Timeout S"
+            }
+          },
+          "title": "ExecutionWindowDecision",
+          "type": "object"
+        },
+        "ModelProfile": {
+          "description": "Provider/model selection for a capability or node.",
+          "properties": {
+            "max_retries": {
+              "default": 1,
+              "title": "Max Retries",
+              "type": "integer"
+            },
+            "metadata": {
+              "additionalProperties": true,
+              "title": "Metadata",
+              "type": "object"
+            },
+            "model": {
+              "title": "Model",
+              "type": "string"
+            },
+            "name": {
+              "title": "Name",
+              "type": "string"
+            },
+            "provider": {
+              "default": "openai",
+              "title": "Provider",
+              "type": "string"
+            },
+            "temperature": {
+              "default": 0.0,
+              "title": "Temperature",
+              "type": "number"
+            },
+            "timeout_s": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Timeout S"
+            }
+          },
+          "required": [
+            "name",
+            "model"
+          ],
+          "title": "ModelProfile",
+          "type": "object"
+        },
+        "RetraceProvenance": {
+          "additionalProperties": false,
+          "description": "Typed retrace control state delivered to the retraced capability for ONE invocation.\n\nv0.10: the target learns it is being retraced as machine data \u2014 round, the evaluator\nnode, the rejected source node, and the retrace target \u2014 instead of inferring control\nstate from criticism prose. Retry/repair/replan do not produce this; only an actual\nretrace round does. The criticism rides as feedback, never as a control encoding.",
+          "properties": {
+            "criticism": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CriticismEnvelope"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "evaluator_node": {
+              "title": "Evaluator Node",
+              "type": "string"
+            },
+            "round": {
+              "minimum": 1,
+              "title": "Round",
+              "type": "integer"
+            },
+            "source_node": {
+              "title": "Source Node",
+              "type": "string"
+            },
+            "target_node": {
+              "title": "Target Node",
+              "type": "string"
+            }
+          },
+          "required": [
+            "round",
+            "evaluator_node",
+            "source_node",
+            "target_node"
+          ],
+          "title": "RetraceProvenance",
+          "type": "object"
+        },
+        "RuntimeLimits": {
+          "additionalProperties": false,
+          "description": "Per-run limits that bound loops, tool calls, and paid work.\n\nThe ONE budget source (v0.9 clean contract): ceilings configured here enforce\nunconditionally. ``0`` is an honest hard-zero cap; \"no cap\" = leave the field None.\nUnknown keys are rejected \u2014 a typo'd ceiling must never silently mean \"unlimited\".",
+          "properties": {
+            "max_authored_fanout_items": {
+              "default": 100,
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Max Authored Fanout Items",
+              "type": "integer"
+            },
+            "max_estimated_usd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Max Estimated Usd"
+            },
+            "max_estimated_usd_per_call": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Max Estimated Usd Per Call"
+            },
+            "max_image_calls": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Max Image Calls"
+            },
+            "max_images_per_call": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Max Images Per Call"
+            },
+            "max_input_tokens_per_call": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Max Input Tokens Per Call"
+            },
+            "max_output_tokens_per_call": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Max Output Tokens Per Call"
+            },
+            "max_parallel_children": {
+              "default": 4,
+              "minimum": 1,
+              "title": "Max Parallel Children",
+              "type": "integer"
+            },
+            "max_retrace": {
+              "default": 1,
+              "title": "Max Retrace",
+              "type": "integer"
+            },
+            "max_retries": {
+              "default": 1,
+              "title": "Max Retries",
+              "type": "integer"
+            },
+            "max_steps": {
+              "default": 32,
+              "title": "Max Steps",
+              "type": "integer"
+            },
+            "max_text_calls": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Max Text Calls"
+            },
+            "max_worker_calls": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Max Worker Calls"
+            },
+            "timeout_s": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Timeout S"
+            }
+          },
+          "title": "RuntimeLimits",
+          "type": "object"
+        },
+        "RuntimePlan": {
+          "description": "Inspectable product-neutral plan produced from a profile and trigger.",
+          "properties": {
+            "capability_names": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Capability Names",
+              "type": "array"
+            },
+            "constraints": {
+              "additionalProperties": true,
+              "title": "Constraints",
+              "type": "object"
+            },
+            "fail_mode": {
+              "default": "fallback",
+              "enum": [
+                "fallback",
+                "fail_closed",
+                "fail_open",
+                "ask_user"
+              ],
+              "title": "Fail Mode",
+              "type": "string"
+            },
+            "limits": {
+              "$ref": "#/$defs/RuntimeLimits"
+            },
+            "profile_id": {
+              "default": "default",
+              "title": "Profile Id",
+              "type": "string"
+            },
+            "safety": {
+              "$ref": "#/$defs/SafetyPolicy"
+            },
+            "scheduling": {
+              "$ref": "#/$defs/SchedulingPolicy"
+            },
+            "warnings": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Warnings",
+              "type": "array"
+            },
+            "workflow_type": {
+              "title": "Workflow Type",
+              "type": "string"
+            }
+          },
+          "required": [
+            "workflow_type"
+          ],
+          "title": "RuntimePlan",
+          "type": "object"
+        },
+        "SafetyPolicy": {
+          "description": "Shared safety controls for capability execution.",
+          "properties": {
+            "allowed_side_effects": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Allowed Side Effects",
+              "type": "array"
+            },
+            "fail_mode": {
+              "default": "fallback",
+              "enum": [
+                "fallback",
+                "fail_closed",
+                "fail_open",
+                "ask_user"
+              ],
+              "title": "Fail Mode",
+              "type": "string"
+            },
+            "require_registered_capabilities": {
+              "default": true,
+              "title": "Require Registered Capabilities",
+              "type": "boolean"
+            },
+            "require_trace": {
+              "default": true,
+              "title": "Require Trace",
+              "type": "boolean"
+            }
+          },
+          "title": "SafetyPolicy",
+          "type": "object"
+        },
+        "SchedulingPolicy": {
+          "description": "Generic run scheduling behavior for live or queued workflows.",
+          "properties": {
+            "backend_key": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Backend Key"
+            },
+            "max_backend_concurrency": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Max Backend Concurrency"
+            },
+            "max_queue_size": {
+              "default": 1,
+              "title": "Max Queue Size",
+              "type": "integer"
+            },
+            "mode": {
+              "default": "run_immediately",
+              "enum": [
+                "run_immediately",
+                "fan_out_gather",
+                "queue",
+                "replay_process_all",
+                "run_latest",
+                "live_latest_only",
+                "drop_stale",
+                "drop_not_queue",
+                "single_flight_cancel",
+                "coalesce"
+              ],
+              "title": "Mode",
+              "type": "string"
+            },
+            "priority": {
+              "default": 0,
+              "title": "Priority",
+              "type": "integer"
+            },
+            "stale_after_s": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Stale After S"
+            }
+          },
+          "title": "SchedulingPolicy",
+          "type": "object"
+        },
+        "TaskExecutionRequest": {
+          "additionalProperties": false,
+          "description": "Optional per-task execution request carried on a ``PlanTask`` / node.\n\n``source`` is a bounded, non-blank OBSERVATION label (e.g. ``\"llm_planner\"``); it is\nrecorded but never participates in resolution or control.",
+          "properties": {
+            "completion_reserve_s": {
+              "default": 0.0,
+              "title": "Completion Reserve S",
+              "type": "number"
+            },
+            "source": {
+              "default": "planner_task",
+              "maxLength": 128,
+              "title": "Source",
+              "type": "string"
+            },
+            "timeout_s": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Timeout S"
+            }
+          },
+          "title": "TaskExecutionRequest",
+          "type": "object"
+        },
+        "WorkflowGoal": {
+          "description": "Normalized user objective passed through workflow orchestration.\n\nA goal is not a product-specific config object. Product workflows may read the objective and\nconstraints, but they still own their own typed state, prompts, validators, and side effects.",
+          "properties": {
+            "constraints": {
+              "additionalProperties": true,
+              "title": "Constraints",
+              "type": "object"
+            },
+            "correlation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Correlation Id"
+            },
+            "delivery_target": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Delivery Target"
+            },
+            "goal_id": {
+              "title": "Goal Id",
+              "type": "string"
+            },
+            "metadata": {
+              "additionalProperties": true,
+              "title": "Metadata",
+              "type": "object"
+            },
+            "objective": {
+              "title": "Objective",
+              "type": "string"
+            },
+            "user_id": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "User Id"
+            },
+            "workflow_type": {
+              "title": "Workflow Type",
+              "type": "string"
+            }
+          },
+          "required": [
+            "workflow_type",
+            "objective"
+          ],
+          "title": "WorkflowGoal",
+          "type": "object"
+        },
+        "WorkflowRunContext": {
+          "properties": {
+            "correlation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Correlation Id"
+            },
+            "delivery_target": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Delivery Target"
+            },
+            "goal_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Goal Id"
+            },
+            "metadata": {
+              "additionalProperties": true,
+              "title": "Metadata",
+              "type": "object"
+            },
+            "user_id": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "User Id"
+            },
+            "workflow_id": {
+              "title": "Workflow Id",
+              "type": "string"
+            },
+            "workflow_type": {
+              "title": "Workflow Type",
+              "type": "string"
+            }
+          },
+          "required": [
+            "workflow_id",
+            "workflow_type"
+          ],
+          "title": "WorkflowRunContext",
+          "type": "object"
+        },
+        "WorkflowUsageEvent": {
+          "description": "One metered paid-provider call inside a workflow run.",
+          "properties": {
+            "attempt": {
+              "default": 1,
+              "title": "Attempt",
+              "type": "integer"
+            },
+            "cost_class": {
+              "default": "metered",
+              "enum": [
+                "metered",
+                "subscription_notional"
+              ],
+              "title": "Cost Class",
+              "type": "string"
+            },
+            "elapsed_ms": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Elapsed Ms"
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Error"
+            },
+            "estimated_usd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Estimated Usd"
+            },
+            "event_id": {
+              "title": "Event Id",
+              "type": "string"
+            },
+            "input_token_details": {
+              "additionalProperties": true,
+              "title": "Input Token Details",
+              "type": "object"
+            },
+            "input_tokens": {
+              "default": 0,
+              "title": "Input Tokens",
+              "type": "integer"
+            },
+            "metadata": {
+              "additionalProperties": true,
+              "title": "Metadata",
+              "type": "object"
+            },
+            "model": {
+              "default": "",
+              "title": "Model",
+              "type": "string"
+            },
+            "node": {
+              "title": "Node",
+              "type": "string"
+            },
+            "notional_usd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Notional Usd"
+            },
+            "operation": {
+              "default": "chat",
+              "enum": [
+                "chat",
+                "image",
+                "tool"
+              ],
+              "title": "Operation",
+              "type": "string"
+            },
+            "output_token_details": {
+              "additionalProperties": true,
+              "title": "Output Token Details",
+              "type": "object"
+            },
+            "output_tokens": {
+              "default": 0,
+              "title": "Output Tokens",
+              "type": "integer"
+            },
+            "provider": {
+              "default": "openai",
+              "title": "Provider",
+              "type": "string"
+            },
+            "request_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Request Id"
+            },
+            "run_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Run Id"
+            },
+            "sequence": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Sequence"
+            },
+            "success": {
+              "default": true,
+              "title": "Success",
+              "type": "boolean"
+            },
+            "total_tokens": {
+              "default": 0,
+              "title": "Total Tokens",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "node"
+          ],
+          "title": "WorkflowUsageEvent",
+          "type": "object"
+        },
+        "WorkflowUsageSummary": {
+          "description": "Aggregated usage/cost view for one workflow run.",
+          "properties": {
+            "events": {
+              "items": {
+                "$ref": "#/$defs/WorkflowUsageEvent"
+              },
+              "title": "Events",
+              "type": "array"
+            },
+            "worker_call_count": {
+              "default": 0,
+              "title": "Worker Call Count",
+              "type": "integer"
+            }
+          },
+          "title": "WorkflowUsageSummary",
+          "type": "object"
+        }
+      },
+      "description": "Context passed into a capability invocation.",
+      "properties": {
+        "execution_request": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TaskExecutionRequest"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "execution_window": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExecutionWindowDecision"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "goal": {
+          "$ref": "#/$defs/WorkflowGoal"
+        },
+        "limits": {
+          "$ref": "#/$defs/RuntimeLimits"
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "title": "Metadata",
+          "type": "object"
+        },
+        "model_profile": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelProfile"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "plan": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RuntimePlan"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "retrace_provenance": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RetraceProvenance"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "run_context": {
+          "$ref": "#/$defs/WorkflowRunContext"
+        },
+        "usage_summary": {
+          "$ref": "#/$defs/WorkflowUsageSummary"
+        }
+      },
+      "required": [
+        "goal",
+        "run_context"
+      ],
+      "title": "CapabilityContext",
+      "type": "object"
+    },
+    "CapabilityResult": {
+      "$defs": {
+        "WorkflowArtifact": {
+          "description": "Product-agnostic side-effect artifact owned by a workflow run.",
+          "properties": {
+            "artifact_id": {
+              "title": "Artifact Id",
+              "type": "string"
+            },
+            "cleanup_on_failure": {
+              "default": true,
+              "title": "Cleanup On Failure",
+              "type": "boolean"
+            },
+            "kind": {
+              "default": "file",
+              "enum": [
+                "file",
+                "media",
+                "package",
+                "reference",
+                "other"
+              ],
+              "title": "Kind",
+              "type": "string"
+            },
+            "metadata": {
+              "additionalProperties": true,
+              "title": "Metadata",
+              "type": "object"
+            },
+            "owner_node": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Owner Node"
+            },
+            "path": {
+              "title": "Path",
+              "type": "string"
+            },
+            "source": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Source"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "title": "WorkflowArtifact",
+          "type": "object"
+        }
+      },
+      "description": "Result envelope for one capability invocation.",
+      "properties": {
+        "artifacts": {
+          "items": {
+            "$ref": "#/$defs/WorkflowArtifact"
+          },
+          "title": "Artifacts",
+          "type": "array"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "title": "Metadata",
+          "type": "object"
+        },
+        "output": {
+          "default": null,
+          "title": "Output"
+        },
+        "status": {
+          "default": "accepted",
+          "enum": [
+            "accepted",
+            "failed",
+            "partial",
+            "rejected"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "title": "CapabilityResult",
+      "type": "object"
+    },
+    "CapabilitySpec": {
+      "additionalProperties": false,
+      "description": "Typed, traceable runtime capability available to a supervisor.\n\nUnknown fields are rejected (R3): a typo'd firewall marker (``is_planer=``) must fail\nloudly at registration, never silently vanish into an unmarked capability.",
+      "properties": {
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "input_model": {
+          "anyOf": [
+            {},
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input Model"
+        },
+        "input_schema_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input Schema Name"
+        },
+        "is_flow_author": {
+          "default": false,
+          "title": "Is Flow Author",
+          "type": "boolean"
+        },
+        "is_planner": {
+          "default": false,
+          "title": "Is Planner",
+          "type": "boolean"
+        },
+        "kind": {
+          "enum": [
+            "workflow",
+            "llm",
+            "tool",
+            "deterministic",
+            "media",
+            "voice",
+            "agent",
+            "external",
+            "human"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "max_attempts": {
+          "default": 1,
+          "title": "Max Attempts",
+          "type": "integer"
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "title": "Metadata",
+          "type": "object"
+        },
+        "metered": {
+          "default": false,
+          "title": "Metered",
+          "type": "boolean"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "output_model": {
+          "anyOf": [
+            {},
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Model"
+        },
+        "output_schema_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Schema Name"
+        },
+        "side_effects": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Side Effects",
+          "type": "array"
+        },
+        "timeout_enforcement": {
+          "anyOf": [
+            {
+              "enum": [
+                "process",
+                "cooperative",
+                "none"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout Enforcement"
+        },
+        "timeout_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout S"
+        }
+      },
+      "required": [
+        "name",
+        "kind"
+      ],
+      "title": "CapabilitySpec",
+      "type": "object"
+    },
+    "WorkflowArtifact": {
+      "description": "Product-agnostic side-effect artifact owned by a workflow run.",
+      "properties": {
+        "artifact_id": {
+          "title": "Artifact Id",
+          "type": "string"
+        },
+        "cleanup_on_failure": {
+          "default": true,
+          "title": "Cleanup On Failure",
+          "type": "boolean"
+        },
+        "kind": {
+          "default": "file",
+          "enum": [
+            "file",
+            "media",
+            "package",
+            "reference",
+            "other"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "title": "Metadata",
+          "type": "object"
+        },
+        "owner_node": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Owner Node"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "title": "WorkflowArtifact",
+      "type": "object"
+    }
+  },
+  "signatures": {
+    "CapabilityRuntime.__init__": "(self, registry: 'CapabilityRegistry', trace_sink: 'TraceSink | None' = None, *, detail_sink: 'DetailSink | None' = None, capture_detail_text: 'bool' = False) -> 'None'",
+    "CapabilityRuntime.invoke": "(self, name: 'str', payload: 'Any', context: 'CapabilityContext', *, attempt: 'int' = 1) -> 'CapabilityResult'"
+  }
+}
