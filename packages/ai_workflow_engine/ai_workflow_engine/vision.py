@@ -1,9 +1,9 @@
 """Vision/multimodal structured LLM support.
 
-``ImageInput`` is the per-call *transport payload* for images: it may carry base64 bytes for the
-one LLM call, is never persisted, and only its :meth:`ImageInput.fingerprint` may appear in logs,
+``_ImageInput`` is the per-call *transport payload* for images: it may carry base64 bytes for the
+one LLM call, is never persisted, and only its :meth:`_ImageInput.fingerprint` may appear in logs,
 traces, or usage metadata. Persistent workflow state keeps byte-free ``EvidenceRef``s; the
-:meth:`ImageInput.from_evidence` bridge loads bytes only at the call boundary (layering confirmed
+:meth:`_ImageInput.from_evidence` bridge loads bytes only at the call boundary (layering confirmed
 with the GoPro consumer, 2026-06-10).
 
 ``StructuredVisionLLMNode`` extends ``StructuredLLMNode`` with image attachments: same Pydantic
@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field
 from ai_workflow_engine.engine.llm_node import MessageFactory, StructuredLLMNode
 from ai_workflow_engine.models import EvidenceRef
 from ai_workflow_engine.budget import check_images_per_call
-from ai_workflow_engine.transport_models import ImageInput
+from ai_workflow_engine.transport_models import ImageInput as _ImageInput
 
 
 
@@ -38,11 +38,11 @@ class StructuredVisionLLMNode(StructuredLLMNode):
         self,
         values: Dict[str, Any],
         *,
-        images: Sequence[ImageInput] = (),
+        images: Sequence[_ImageInput] = (),
         content_hash_input: str = "",
         message_factory: Optional[MessageFactory] = None,
     ) -> Any:
-        image_list: List[ImageInput] = list(images)
+        image_list: List[_ImageInput] = list(images)
         check_images_per_call(len(image_list), self.name)
 
         def with_images(messages, attempt):
@@ -65,7 +65,7 @@ class StructuredVisionLLMNode(StructuredLLMNode):
         )
 
     @staticmethod
-    def _attach_images(messages, images: Sequence[ImageInput]):
+    def _attach_images(messages, images: Sequence[_ImageInput]):
         """Append image content parts to the last human message (works for repair messages too)."""
 
         from langchain_core.messages import HumanMessage

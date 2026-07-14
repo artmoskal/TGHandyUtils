@@ -103,3 +103,50 @@ def test_ledger_schema_is_strict():
             load_ledger(Path(name))
     finally:
         Path(name).unlink()
+
+
+
+def test_unrelated_export_removal_is_refused_by_the_ledger():
+    """Review finding 4: exports are key-addressable, so a REMOVED export names itself and no
+    exact ledger entry covers it — the sealer must refuse. The old list-shaped exports let any
+    later removal hide under one broad 'public.exports' prefix."""
+
+    entries = load_ledger(_LEDGER)
+    deltas = ["public.exports.WorkflowBuilder: only in baseline = 'export'"]
+    ledgered, unledgered = partition_deltas(deltas, entries)
+    assert unledgered == deltas, "an unrelated export removal slipped through the ledger"
+
+
+def test_schema_drift_of_every_sealed_model_is_a_delta():
+    """Review finding 4: the public seal covers EVERY exported pydantic model — a
+    validator/default/constraint change in MachineSnapshot, LLMRequest, or ObservationConfig is
+    a named delta the ledger must approve, never a blind spot."""
+
+    import json as _json
+
+    sealed = _json.loads(_PUBLIC_FIXTURE.read_text(encoding="utf-8"))
+    for model in ("MachineSnapshot", "LLMRequest", "ObservationConfig", "WorkflowGoal"):
+        assert model in sealed["schemas"], f"{model} missing from the sealed public surface"
+
+    from current_contract_seal import compare_records
+
+    for model in ("MachineSnapshot", "LLMRequest", "ObservationConfig"):
+        mutated = _json.loads(_PUBLIC_FIXTURE.read_text(encoding="utf-8"))
+        mutated["schemas"][model]["properties"]["__drift__"] = {"type": "integer", "default": 7}
+        deltas = compare_records({"public": sealed}, {"public": mutated})
+        assert any(f"public.schemas.{model}" in d for d in deltas), (
+            f"schema drift in {model} produced no named delta"
+        )
+        entries = load_ledger(_LEDGER)
+        _, unledgered = partition_deltas(deltas, entries)
+        assert unledgered, f"schema drift in {model} was silently ledgered"
+
+
+def test_ledger_entries_are_exact_no_standing_wildcards():
+    """Review finding 4 hygiene: every ledger entry is exact-match — prefix mode may only appear
+    for a genuinely subtree-scoped break approved in the manifest, and none exists today."""
+
+    for e in load_ledger(_LEDGER):
+        assert e.get("match", "prefix") == "exact", (
+            f"standing wildcard entry found: {e['path_prefix']!r} — use exact paths"
+        )

@@ -114,17 +114,24 @@ def load_ledger(path: Path = _LEDGER) -> list[dict]:
 
 
 def partition_deltas(mismatches: list[str], entries: list[dict]) -> tuple[list[str], list[str]]:
-    """Split fixture deltas into (ledgered, unledgered). A delta is ledgered when its path — the
-    text before the first ': ' — starts with any entry's path_prefix."""
+    """Split fixture deltas into (ledgered, unledgered). Entry matching (review finding 4):
+    ``match: "exact"`` covers ONLY that path; the default ``"prefix"`` covers subpaths — use it
+    solely for genuinely subtree-scoped breaks, never as a standing wildcard."""
 
     ledgered: list[str] = []
     unledgered: list[str] = []
     for m in mismatches:
         path = m.split(": ", 1)[0]
-        if any(path.startswith(e["path_prefix"]) for e in entries):
-            ledgered.append(m)
-        else:
-            unledgered.append(m)
+        hit = False
+        for e in entries:
+            if e.get("match", "prefix") == "exact":
+                if path == e["path_prefix"]:
+                    hit = True
+                    break
+            elif path.startswith(e["path_prefix"]):
+                hit = True
+                break
+        (ledgered if hit else unledgered).append(m)
     return ledgered, unledgered
 
 

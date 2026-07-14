@@ -306,3 +306,109 @@ async def test_child_trace_slice_is_exact_per_task_under_concurrency():
         # the session run buffer still carries EVERYTHING (parent envelope truth)
         buffered = [e.node for e in session.trace_events]
         assert sorted(buffered) == ["a-end", "a-start", "b-end", "b-start"]
+
+        # review finding 3: an ANCESTOR scope includes its descendants' events (stack chain),
+        # while a sibling opened afterwards stays disjoint.
+        with child_trace_slice() as parent_events:
+            sink.record(WorkflowTraceEvent(node="p-start", decision="start"))
+            with child_trace_slice() as inner_events:
+                sink.record(WorkflowTraceEvent(node="c-inner", decision="accepted"))
+            sink.record(WorkflowTraceEvent(node="p-end", decision="accepted"))
+        assert [e.node for e in inner_events] == ["c-inner"]
+        assert [e.node for e in parent_events] == ["p-start", "c-inner", "p-end"], (
+            f"parent scope must include descendant events: {[e.node for e in parent_events]}"
+        )
+
+
+async def test_nested_and_sibling_child_envelopes_are_exact_through_real_wiring():
+    """Review finding 3, real executor wiring: a parent->child->grandchild chain of ACTUAL
+    _run_inner envelopes — the child envelope includes its grandchild's capability events
+    (descendants), and two barrier-interleaved sibling child runs capture disjoint envelopes.
+    A custom sink WITHOUT .events proves no sniffing anywhere."""
+
+    import asyncio
+
+    from ai_workflow_engine import WorkflowBuilder, WorkflowEngineBuilder
+    from ai_workflow_engine.models import WorkflowGoal
+
+    class NoEventsSink:
+        def record(self, event):
+            pass
+
+    builder = WorkflowEngineBuilder().with_trace_sink(NoEventsSink())
+    builder.register_capability("leaf_work", lambda ctx, p: {"leaf": True})
+    builder.register_workflow(WorkflowBuilder("grandchild").step("leaf_work").build())
+    builder.register_workflow(
+        WorkflowBuilder("child").subworkflow("run_grandchild", workflow="grandchild").build()
+    )
+    builder.register_workflow(
+        WorkflowBuilder("parent").subworkflow("run_child", workflow="child").build()
+    )
+
+    barrier_x, barrier_y = asyncio.Event(), asyncio.Event()
+
+    async def waiter(ctx, payload):
+        tag = payload["tag"] if isinstance(payload, dict) else "?"
+        if tag == "x":
+            barrier_x.set()
+            await asyncio.wait_for(barrier_y.wait(), timeout=5.0)
+        else:
+            barrier_y.set()
+            await asyncio.wait_for(barrier_x.wait(), timeout=5.0)
+        return {"tag": tag}
+
+    builder.register_capability("waiter", waiter)
+    builder.register_workflow(WorkflowBuilder("sib").step("waiter").build())
+    engine = builder.build()
+
+    # ---- nested: run the top workflow; capture the CHILD envelope through real _run_inner
+    # wiring by invoking the child definition the same way the subworkflow node does.
+    result = await engine.run("parent", {})
+    assert result.status == "completed", result.error
+    parent_nodes = [e.node for e in result.trace]
+    assert "leaf_work" in parent_nodes, "top envelope must include grandchild capability events"
+
+    # child envelope, captured via the executor door subworkflow nodes use (_run_inner) inside
+    # a live session: its trace must include the grandchild's leaf_work (descendants), proving
+    # the ancestor-chain fix end to end.
+    from ai_workflow_engine._runtime_state import run_session_scope
+    from ai_workflow_engine.run_session import WorkflowRunSession
+    from ai_workflow_engine.models import CapabilityContext, WorkflowRunContext
+
+    goal = WorkflowGoal(workflow_type="child", objective="nested-trace")
+    ctx = CapabilityContext(
+        goal=goal, run_context=WorkflowRunContext(workflow_id="nest-run", workflow_type="child")
+    )
+    session = WorkflowRunSession(workflow_id="child", context=ctx)
+    with run_session_scope(session):
+        child_env = await engine.executor._run_inner(
+            engine.workflows["child"], {}, ctx
+        )
+    assert child_env.status == "completed", child_env.error
+    child_nodes = [e.node for e in child_env.trace]
+    assert "leaf_work" in child_nodes, (
+        f"child envelope lost its grandchild's events (single-scope regression): {child_nodes}"
+    )
+
+    # ---- siblings: two interleaved child runs in ONE session — envelopes disjoint and exact
+    sib_goal = WorkflowGoal(workflow_type="sib", objective="sibling-trace")
+    sib_ctx = CapabilityContext(
+        goal=sib_goal, run_context=WorkflowRunContext(workflow_id="sib-run", workflow_type="sib")
+    )
+    sib_session = WorkflowRunSession(workflow_id="sib", context=sib_ctx)
+    with run_session_scope(sib_session):
+        env_x, env_y = await asyncio.gather(
+            engine.executor._run_inner(engine.workflows["sib"], {"tag": "x"}, sib_ctx),
+            engine.executor._run_inner(engine.workflows["sib"], {"tag": "y"}, sib_ctx),
+        )
+    assert barrier_x.is_set() and barrier_y.is_set()
+    for env in (env_x, env_y):
+        assert env.status == "completed", env.error
+        waiter_events = [e for e in env.trace if e.node == "waiter"]
+        assert waiter_events, "sibling envelope must carry its own capability events"
+        # exactly ONE start + terminal pair per sibling — the other sibling's pair must NOT bleed
+        starts = [e for e in waiter_events if e.decision == "start"]
+        terms = [e for e in waiter_events if e.decision == "accepted"]
+        assert len(starts) == 1 and len(terms) == 1, (
+            f"sibling envelope not exact: {[ (e.node, e.decision) for e in waiter_events ]}"
+        )

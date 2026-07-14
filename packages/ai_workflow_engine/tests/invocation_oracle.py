@@ -1016,13 +1016,16 @@ def missing_behavior_rows() -> list[str]:
 
 
 def public_surface_snapshot() -> dict[str, Any]:
-    """Version-agnostic snapshot of the stable public surface: package exports, the
-    CapabilityRuntime constructor/invoke signatures, and the FULL normalized JSON schemas
-    (defaults/constraints/types/enums/required) of the public models. Runs identically against the
-    baseline and candidate wheels, so the sealed surface is captured from v0.10.1, not the candidate."""
+    """Version-agnostic snapshot of the stable public surface (hardened per review finding 4):
+    package exports as a KEY-ADDRESSABLE map (a removed/added export names itself in the delta
+    path), the CapabilityRuntime constructor/invoke signatures, and the FULL normalized JSON
+    schema of EVERY exported pydantic model — so any public model's validator/default/constraint
+    drift (MachineSnapshot, LLMRequest, ObservationConfig, ...) is a sealed fact, not a blind
+    spot. Runs identically in the sealer venv and the gate container."""
 
     import inspect
     import ai_workflow_engine as pkg
+    from pydantic import BaseModel as _PydanticBase
 
     def _sig(obj) -> str:
         try:
@@ -1030,18 +1033,27 @@ def public_surface_snapshot() -> dict[str, Any]:
         except (TypeError, ValueError):
             return "<no-signature>"
 
+    export_names = sorted(getattr(pkg, "__all__", []) or [n for n in dir(pkg) if not n.startswith("_")])
+    schemas: dict[str, Any] = {}
+    for name in export_names:
+        try:
+            obj = getattr(pkg, name)
+        except Exception as exc:  # a broken lazy export is itself a sealed fact
+            schemas[name] = f"<unresolvable: {type(exc).__name__}>"
+            continue
+        if isinstance(obj, type) and issubclass(obj, _PydanticBase):
+            try:
+                schemas[name] = obj.model_json_schema()
+            except Exception as exc:
+                schemas[name] = f"<schema-error: {type(exc).__name__}>"
+
     return {
-        "exports": sorted(getattr(pkg, "__all__", []) or [n for n in dir(pkg) if not n.startswith("_")]),
+        "exports": {name: "export" for name in export_names},
         "signatures": {
             "CapabilityRuntime.__init__": _sig(CapabilityRuntime.__init__),
             "CapabilityRuntime.invoke": _sig(CapabilityRuntime.invoke),
         },
-        "schemas": {
-            "CapabilitySpec": CapabilitySpec.model_json_schema(),
-            "CapabilityResult": CapabilityResult.model_json_schema(),
-            "CapabilityContext": CapabilityContext.model_json_schema(),
-            "WorkflowArtifact": WorkflowArtifact.model_json_schema(),
-        },
+        "schemas": schemas,
     }
 
 

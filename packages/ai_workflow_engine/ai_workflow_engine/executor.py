@@ -1136,12 +1136,8 @@ class WorkflowExecutor:
             plan_artifact=plan,
             usage=usage.model_dump() if hasattr(usage, "model_dump") else {},
             fallback_reason=final_state.get("fallback_reason"),
-            goal=goal.model_dump() if hasattr(goal, "model_dump") else dict(goal),
-            run_context=(
-                snapshot_run_context.model_dump()
-                if hasattr(snapshot_run_context, "model_dump")
-                else dict(snapshot_run_context)
-            ),
+            goal=goal,
+            run_context=snapshot_run_context,
             segment_index=getattr(segment, "segment_index", None),
             active_elapsed_s=(
                 _sess.active_elapsed_s()
@@ -1353,4 +1349,3 @@ class WorkflowExecutor:
             error=error,
             trace=[event],
         )
-

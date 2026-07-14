@@ -30,23 +30,26 @@ from ai_workflow_engine.models import (
 )
 
 
-_ACTIVE_CHILD_TRACE: ContextVar[Optional[List[WorkflowTraceEvent]]] = ContextVar(
-    "workflow_child_trace_slice", default=None
-)
+# The ANCESTOR CHAIN of active child-trace scopes (v0.11 M7, hardened per review finding 3):
+# a tuple stack, one list per open scope. Every recorded event is appended to EVERY active
+# ancestor, so a parent envelope includes its grandchildren; sibling tasks hold disjoint chains
+# (ContextVar copy-on-task), so siblings never bleed.
+_ACTIVE_CHILD_TRACES: ContextVar[tuple] = ContextVar("workflow_child_trace_scopes", default=())
 
 
 @contextmanager
 def child_trace_slice() -> Iterator[List[WorkflowTraceEvent]]:
     """Session-owned trace slice for ONE child run (v0.11, manifest row M7). Events recorded in
-    this task context while the scope is open are appended to the yielded list — the child
-    envelope's exact trace — replacing the removed sink-``.events`` sniffing fallback."""
+    this task context while the scope is open are appended to the yielded list AND to every
+    enclosing ancestor scope — the child envelope's exact trace including descendants —
+    replacing the removed sink-``.events`` sniffing fallback."""
 
     events: List[WorkflowTraceEvent] = []
-    token = _ACTIVE_CHILD_TRACE.set(events)
+    token = _ACTIVE_CHILD_TRACES.set(_ACTIVE_CHILD_TRACES.get() + (events,))
     try:
         yield events
     finally:
-        _ACTIVE_CHILD_TRACE.reset(token)
+        _ACTIVE_CHILD_TRACES.reset(token)
 
 
 class SessionScopedTraceSink:
@@ -84,12 +87,12 @@ class SessionScopedTraceSink:
             if updates:
                 event = event.model_copy(update=updates)
             session.trace_events.append(event)
-            child_slice = _ACTIVE_CHILD_TRACE.get()
-            if child_slice is not None:
+            for child_slice in _ACTIVE_CHILD_TRACES.get():
                 # v0.11 (manifest row M7): a child run's envelope trace is an EXPLICIT
-                # session-owned slice — captured here per task (ContextVar), never sniffed
-                # back out of a sink. Exact under concurrency: each child task has its own
-                # slice; sibling events never bleed in.
+                # session-owned slice — captured per task (ContextVar chain), never sniffed
+                # back out of a sink. Appending to EVERY active ancestor keeps parent
+                # envelopes complete (grandchildren included); sibling tasks have disjoint
+                # chains, so sibling events never bleed in.
                 child_slice.append(event)
             if session.bundle is not None:
                 session.bundle.trace_sink.record(event)

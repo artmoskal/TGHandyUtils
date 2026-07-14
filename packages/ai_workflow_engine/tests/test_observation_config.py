@@ -724,7 +724,7 @@ async def test_correlation_id_spans_runs_events_bundles_and_writes(tmp_path):
     )
     first = await engine.run("seg_flow", {}, goal=goal)
     assert first.status == "requires_user_input"
-    assert first.snapshot.goal["correlation_id"] == "case-7", "correlation survives snapshots"
+    assert first.snapshot.goal.correlation_id == "case-7", "correlation survives snapshots"
     resumed = await engine.resume(first.snapshot, "yes")
     assert resumed.status == "completed"
 

@@ -668,15 +668,16 @@ class WorkflowEngine:
                 "to continue under the snapshot's original identity"
             )
         forked = goal is not None
-        if not forked and snapshot.goal:
-            goal = WorkflowGoal.model_validate(snapshot.goal)
+        if not forked:
+            # v0.11 (review finding 1): the snapshot's identity is TYPED and REQUIRED — consume
+            # it directly, no truthiness test, no reparse. A snapshot cannot reach here without
+            # a valid goal/run_context, so resume can never mint a replacement identity.
+            goal = snapshot.goal
         context = self._run_context_for(
             definition, goal=goal, user_id=user_id, constraints=constraints
         )
-        if snapshot.run_context and not forked:
-            context = context.model_copy(
-                update={"run_context": WorkflowRunContext.model_validate(snapshot.run_context)}
-            )
+        if not forked:
+            context = context.model_copy(update={"run_context": snapshot.run_context})
         observation_bundle = None
         if self.observation is not None and self.observation.enabled:
             # Q-R5/R1: the resumed half is one physical ATTEMPT of the next LOGICAL

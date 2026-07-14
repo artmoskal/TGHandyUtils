@@ -12,9 +12,11 @@ In-process resume accepts any payload; CROSS-process resume requires JSON-serial
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from ai_workflow_engine.models import WorkflowGoal, WorkflowRunContext
 
 
 SNAPSHOT_SCHEMA_VERSION = "v0.11"
@@ -31,7 +33,7 @@ class MachineSnapshot(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
 
-    schema_version: str
+    schema_version: Literal["v0.11"]
     workflow_id: str
     suspended_node: str
     reason: str = "requires_user_input"
@@ -51,9 +53,10 @@ class MachineSnapshot(BaseModel):
     fallback_reason: Optional[str] = None
     # B-post3: the run's identity travels with the machine position, so resume continues under
     # the SAME goal/constraints/user/delivery/run-id lineage unless the caller overrides them.
-    # REQUIRED (v0.11): a suspension without identity is not honestly resumable.
-    goal: Dict[str, Any]
-    run_context: Dict[str, Any]
+    # REQUIRED and TYPED (v0.11, review finding 1): an empty/malformed identity fails at the
+    # model — resume can never see a hollow identity and mint a replacement.
+    goal: WorkflowGoal
+    run_context: WorkflowRunContext
     # W4/R1: the LOGICAL observation position of the run-half that captured this snapshot
     # (segment index within the logical run). Deliberately NOT a physical directory key —
     # physical attempt identity varies per delivery retry, and the machine position must

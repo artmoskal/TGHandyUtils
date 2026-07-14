@@ -740,3 +740,15 @@ def test_image_input_import_home_is_transport_models():
                 ):
                     offenders.append(f"{path.name}:{node.lineno}")
     assert not offenders, f"ImageInput imported from vision (home is transport_models): {offenders}"
+
+    # Runtime half (codex I1 review finding 2): the OLD attribute itself is gone — vision holds
+    # its dependency under a private alias, so `from ai_workflow_engine.vision import ImageInput`
+    # raises ImportError, not just a lint finding.
+    import importlib
+
+    vision = importlib.import_module("ai_workflow_engine.vision")
+    assert not hasattr(vision, "ImageInput"), (
+        "vision still binds the public ImageInput name — the old import would keep working"
+    )
+    with pytest.raises(ImportError):
+        from ai_workflow_engine.vision import ImageInput  # noqa: F401

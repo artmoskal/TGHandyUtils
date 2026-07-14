@@ -644,3 +644,59 @@ def test_machine_snapshot_rejects_non_current_schemas_loudly():
         MachineSnapshot.model_validate({k: v for k, v in current.items() if k != "goal"})
     with _pytest.raises(_VE):
         MachineSnapshot.model_validate({k: v for k, v in current.items() if k != "run_context"})
+    # review finding 1: EMPTY/MALFORMED identity fails AT THE MODEL — resume can never see it
+    with _pytest.raises(_VE):
+        MachineSnapshot.model_validate({**current, "goal": {}})
+    with _pytest.raises(_VE):
+        MachineSnapshot.model_validate({**current, "run_context": {}})
+    with _pytest.raises(_VE):
+        MachineSnapshot.model_validate({**current, "goal": {"objective": 42}})
+
+    # JSON-schema truth: typed identity refs, const version, closed schema
+    schema = MachineSnapshot.model_json_schema()
+    assert schema.get("additionalProperties") is False
+    version_schema = schema["properties"]["schema_version"]
+    assert version_schema.get("const") == "v0.11" or version_schema.get("enum") == ["v0.11"]
+    for field, model_name in (("goal", "WorkflowGoal"), ("run_context", "WorkflowRunContext")):
+        ref = schema["properties"][field].get("$ref", "")
+        assert model_name in ref, f"{field} must be the typed model, got {schema['properties'][field]}"
+        assert field in schema.get("required", []), f"{field} must be required"
+
+
+async def test_public_resume_never_mints_a_replacement_identity():
+    """Review finding 1 regression: a snapshot whose identity was hollowed out (goal -> {}) must
+    fail BEFORE any capability executes — the old dict-truthiness path silently created a fresh
+    goal/run identity and resumed under it."""
+
+    import pytest as _pytest
+    from pydantic import ValidationError as _VE
+
+    from ai_workflow_engine import WorkflowEngine
+
+    engine = WorkflowEngine()
+    calls = {"n": 0}
+
+    class Gate(BaseModel):
+        status: str
+        value: str = ""
+
+    def gate(context, _payload):
+        event = context.metadata.get("resume_event")
+        if event is None:
+            return Gate(status="pending")
+        calls["n"] += 1
+        return Gate(status="answered", value=str(event))
+
+    engine.register_capability("gate", gate)
+    engine.register_workflow(
+        WorkflowBuilder("identity_flow").human("gate", wait_policy=LocalWaitPolicy()).build()
+    )
+    first = await engine.run("identity_flow", {})
+    assert first.status == "requires_user_input" and first.snapshot is not None
+
+    hollowed = first.snapshot.model_dump()
+    hollowed["goal"] = {}
+    blob = __import__("json").dumps(hollowed, default=str)
+    with _pytest.raises(_VE):
+        await engine.resume(blob, "answer")
+    assert calls["n"] == 0, "a capability executed under a minted replacement identity"
