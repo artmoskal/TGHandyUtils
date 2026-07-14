@@ -589,8 +589,11 @@ LIVE differential — the sha256-pinned v0.10.1 wheel is itself a committed fixt
 `./test.sh unit -- packages/ai_workflow_engine/tests/test_invocation_differential_gate.py`
 re-runs baseline-vs-candidate hermetically (no git/network), and a provenance record makes any
 un-resealed edit to the oracle, fixtures, or wheel fail loudly. One-door enforcement is locked by
-AST guards (`tests/test_one_door.py`): a looked-up handler called anywhere outside the facade
-fails the suite.
+AST guards (`tests/test_one_door.py`) as an ACCIDENTAL-BYPASS lock: every ordinary call shape —
+direct chained `registry.get(...)[1](...)`, unpacked or subscript-bound handlers, whole-pair
+calls, and simple function-local registry aliases — fails the suite (each family has a permanent
+probe), while inspection-only lookups stay legal. It is a static guard against ordinary code, not
+a whole-program security proof.
 
 ## Guidance Propagation
 

@@ -22,8 +22,11 @@ What moved (internal modules only — never a consumer concept):
   (still resolved from the runtime at call time, so replacing `runtime.trace_sink` or
   `runtime.observation` after construction keeps working — the shipped GoPro tee pattern).
 
-`CapabilityRuntime.invoke` remains the only execution door; AST guards fail the suite if any
-engine code calls a looked-up handler directly.
+`CapabilityRuntime.invoke` remains the only execution door; AST guards fail the suite when
+engine code executes a looked-up handler through any ordinary call shape (direct chained call,
+unpacked/subscript-bound handler, whole-pair call, simple registry alias — each family has a
+permanent probe). The guard is an accidental-bypass lock, not a whole-program security proof;
+inspection-only lookups remain legal.
 
 ## How the "no behavior change" claim is verified
 

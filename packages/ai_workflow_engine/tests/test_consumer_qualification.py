@@ -139,6 +139,29 @@ async def test_mageqa_shape_process_timeout_partial_and_side_effect_denial(tmp_p
     assert probe_node.status == "partial"
     assert "timed out" in (probe_node.error or ""), probe_node.error
 
+    # The claimed process truth, actually asserted (codex I2 review): the capability-door partial
+    # event carries the bounded process_io settlement (byte totals/truncation per stream + the
+    # result-file state) AND the resolved execution window.
+    probe_partial = next(
+        e for e in overrun.trace
+        if e.node == "probe" and e.decision == "partial" and e.phase == "tool:result"
+    )
+    process_io = probe_partial.metadata.get("process_io")
+    assert isinstance(process_io, dict), f"partial trace lacks process_io truth: {probe_partial.metadata}"
+    for stream in ("stdout", "stderr"):
+        stream_meta = process_io.get(stream)
+        assert isinstance(stream_meta, dict) and stream_meta.get("truncated") is False, (
+            f"{stream} settlement truth missing/wrong: {process_io}"
+        )
+        assert stream_meta.get("total_bytes") == 0, f"sleeping probe wrote no {stream}: {stream_meta}"
+    assert isinstance(process_io.get("result_file"), dict), process_io
+    # Bound truth for an explicit per-request process window (the engine run itself is
+    # unbounded here, so the window rides as process_execution_bound, not execution_window).
+    bound_meta = probe_partial.metadata.get("process_execution_bound")
+    assert isinstance(bound_meta, dict), f"partial trace lacks the process bound truth: {probe_partial.metadata}"
+    assert bound_meta.get("work_timeout_s") == 0.4 and bound_meta.get("kill_grace_s") == 0.5, bound_meta
+    assert bound_meta.get("source") == "explicit", bound_meta
+
     denied = await engine.run("qa_guard", {})
     assert denied.status == "failed", (denied.status, denied.error)
     crawl_node = next(n for n in denied.node_results if n.node_id == "crawl")
@@ -248,4 +271,27 @@ async def test_slackazz_shape_durable_suspend_resume_grouped_bundle(tmp_path):
     assert [metas[name]["segment_index"] for name in segments] == [0, 1]
     assert all(m["run_id"] == "qual-slack" for m in metas.values()), (
         "both segments must carry the LOGICAL run id"
+    )
+
+    # The claimed grouped lifecycle, actually crossed end to end (codex I2 review): read the
+    # LOGICAL run through the grouped reader and render the grouped viewer page — the resumed
+    # story must merge into ONE truthful lifecycle, never a false still-suspended state.
+    from ai_workflow_viewer import FileEventSource, observation_group_to_html
+
+    group = FileEventSource(bundle_root).read_group("qual-slack")
+    assert group.run_id == "qual-slack"
+    assert [s.segment_index for s in group.segments] == [0, 1]
+    assert [s.status for s in group.segments] == ["requires_user_input", "completed"], (
+        f"grouped reader must show suspended->completed, got {[s.status for s in group.segments]}"
+    )
+    assert group.records, "the merged group must carry the segment-ordered records"
+
+    html = observation_group_to_html(group)
+    assert "qual-slack" in html
+    gate_sections = [seg for seg in html.split("segment") if "gate" in seg]
+    assert gate_sections, "group page must render the gate node"
+    assert "completed" in html, "the resumed lifecycle must render as completed"
+    # the terminal story is completed — the page must not present the run as still waiting
+    assert html.count("requires_user_input") <= html.count("completed"), (
+        "grouped page reads as still-suspended despite the completed resume"
     )
