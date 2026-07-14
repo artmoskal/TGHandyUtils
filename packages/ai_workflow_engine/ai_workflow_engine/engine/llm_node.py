@@ -20,7 +20,8 @@ from ai_workflow_engine.observability_capture import (
     llm_response_payload,
 )
 from ai_workflow_engine.parsing import STRUCTURED_REPAIR_PROMPT
-from ai_workflow_engine.usage import WorkflowBudgetExceeded, invoke_metered_chat
+from ai_workflow_engine.budget import WorkflowBudgetExceeded
+from ai_workflow_engine.usage import invoke_metered_chat
 
 logger = logging.getLogger(__name__)
 
@@ -353,8 +354,9 @@ class StructuredLLMNode:
         profile: Any = None,
     ) -> Any:
         from ai_workflow_engine.llm_protocol import LLMRequest, record_callable_usage
-        from ai_workflow_engine.usage import check_budget_before_call, check_images_per_call
-        from ai_workflow_engine.usage import check_input_tokens_per_call, estimate_text_tokens
+        from ai_workflow_engine.budget import check_budget_before_call, check_images_per_call
+        from ai_workflow_engine.budget import check_input_tokens_per_call
+        from ai_workflow_engine.token_estimation import estimate_text_tokens
 
         request_metadata = {"model_profile": profile.model_dump()} if profile is not None else {}
         # The SAME resolution the dispatch probed (codex ship-review finding): with a
@@ -452,7 +454,8 @@ class StructuredLLMNode:
         usage_metadata: Optional[dict[str, Any]] = None,
         profile: Any = None,
     ) -> Any:
-        from ai_workflow_engine.usage import check_input_tokens_per_call, estimate_text_tokens
+        from ai_workflow_engine.budget import check_input_tokens_per_call
+        from ai_workflow_engine.token_estimation import estimate_text_tokens
 
         last_error = ""
         for attempt in range(1, 2 + self.max_repair_rounds):

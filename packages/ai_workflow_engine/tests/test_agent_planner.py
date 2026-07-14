@@ -37,8 +37,8 @@ from ai_workflow_engine.models import (
     WorkflowUsageSummary,
 )
 from ai_workflow_engine.observability_capture import ObservationCapture
-from ai_workflow_engine.usage import WorkflowBudget, WorkflowBudgetExceeded, WorkflowUsageContext
-from ai_workflow_engine.usage import workflow_usage_scope
+from ai_workflow_engine.budget import WorkflowBudget, WorkflowBudgetExceeded, WorkflowUsageContext
+from ai_workflow_engine.budget import workflow_usage_scope
 from ai_workflow_engine.vision import ImageInput
 
 pytestmark = pytest.mark.unit
@@ -729,7 +729,7 @@ async def test_planner_preserves_client_reported_notional_cost():
         WorkflowRunContext,
         WorkflowUsageSummary,
     )
-    from ai_workflow_engine.usage import WorkflowBudget, WorkflowUsageContext, workflow_usage_scope
+    from ai_workflow_engine.budget import WorkflowBudget, WorkflowUsageContext, workflow_usage_scope
 
     async def console_style_client(request: LLMRequest) -> LLMResponse:
         return LLMResponse(

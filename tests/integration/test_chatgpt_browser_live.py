@@ -21,7 +21,7 @@ from pydantic import BaseModel
 
 from ai_workflow_engine import LLMRequest, StructuredLLMNode, WEAK_MODEL_CLEANER
 from ai_workflow_engine.models import WorkflowRunContext, WorkflowUsageSummary
-from ai_workflow_engine.usage import WorkflowBudget, WorkflowUsageContext, workflow_usage_scope
+from ai_workflow_engine.budget import WorkflowBudget, WorkflowUsageContext, workflow_usage_scope
 from ai_workflow_tools.chatgpt_browser import ChatGptBrowserLLMClient
 from ai_workflow_tools.media.image_generation import ChatGptBrowserImageGenerator
 from ai_workflow_tools.media.image_models import ImageGenerationRequest

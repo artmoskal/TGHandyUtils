@@ -22,7 +22,8 @@ from ai_workflow_engine import (
 from ai_workflow_engine.engine import InMemoryDetailSink, JsonlDetailSink
 from ai_workflow_engine.observability_capture import byte_free
 from ai_workflow_engine.observation_bundle import open_observation_run_bundle, prune_observation_bundles
-from ai_workflow_engine.usage import invoke_metered_chat, record_usage_event
+from ai_workflow_engine.usage import invoke_metered_chat
+from ai_workflow_engine.usage_events import record_usage_event
 from ai_workflow_viewer import build_observation_graph, observation_graph_to_html, render_runtime_timeline
 
 pytestmark = pytest.mark.unit

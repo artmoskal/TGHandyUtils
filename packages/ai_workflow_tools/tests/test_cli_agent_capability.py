@@ -12,7 +12,7 @@ from ai_workflow_engine.execution_window import (
     resolve_execution_window,
 )
 from ai_workflow_engine.models import CapabilityResult, EvidenceRef, WorkflowUsageSummary
-from ai_workflow_engine.usage import WorkflowBudget, WorkflowUsageContext, workflow_usage_scope
+from ai_workflow_engine.budget import WorkflowBudget, WorkflowUsageContext, workflow_usage_scope
 
 from ai_workflow_tools.cli_agents import (
     CliAgentCapability,

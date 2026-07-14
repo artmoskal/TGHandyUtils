@@ -12,11 +12,9 @@ from typing import Any, Callable, Protocol
 
 from ai_workflow_tools.media.image_models import GeneratedImage, ImageGenerationRequest
 from ai_workflow_engine.models import WorkflowUsageEvent
-from ai_workflow_engine.usage import (
-    check_budget_before_call,
-    record_image_usage,
-    record_usage_event,
-)
+from ai_workflow_engine.budget import check_budget_before_call
+from ai_workflow_engine.usage import record_image_usage
+from ai_workflow_engine.usage_events import record_usage_event
 
 logger = logging.getLogger(__name__)
 

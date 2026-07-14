@@ -26,7 +26,7 @@ from ai_workflow_engine.models import (
     WorkflowUsageEvent,
 )
 from ai_workflow_engine.parsing import compose_cleaners, extract_fenced_json, extract_first_json_object
-from ai_workflow_engine.usage import record_usage_event
+from ai_workflow_engine.usage_events import record_usage_event
 
 from ai_workflow_tools.toolsets import BASH_SIDE_EFFECTS, bash_in_tools
 

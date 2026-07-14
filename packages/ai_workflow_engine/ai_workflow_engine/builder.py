@@ -64,7 +64,7 @@ from ai_workflow_engine.run_session import (
 )
 from ai_workflow_engine.snapshot import MachineSnapshot
 from ai_workflow_engine.models import CapabilityResult, WorkflowTraceEvent
-from ai_workflow_engine.usage import UsageSink
+from ai_workflow_engine.usage_events import UsageSink
 from ai_workflow_engine.workflow import BranchDecision, WorkflowDefinition
 
 logger = logging.getLogger(__name__)

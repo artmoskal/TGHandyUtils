@@ -19,7 +19,7 @@ from ai_workflow_engine.models import (
 from ai_workflow_engine.pricing import estimate_cost_usd
 from ai_workflow_engine.provider_usage import _usage_event_from_chat_output
 from ai_workflow_engine.token_estimation import estimate_text_tokens
-from ai_workflow_engine.usage import format_usage_summary  # facade import stays valid
+from ai_workflow_engine.usage_rendering import format_usage_summary
 from ai_workflow_engine.usage_rendering import _event_display_cost
 
 pytestmark = pytest.mark.unit
@@ -170,12 +170,8 @@ def test_failed_call_usage_event_keeps_provider_and_cost_class():
     failed non-OpenAI/subscription calls were mislabeled as metered OpenAI."""
 
     from ai_workflow_engine.models import WorkflowRunContext
-    from ai_workflow_engine.usage import (
-        WorkflowBudget,
-        WorkflowUsageContext,
-        invoke_metered_chat,
-        workflow_usage_scope,
-    )
+    from ai_workflow_engine.budget import WorkflowBudget, WorkflowUsageContext, workflow_usage_scope
+    from ai_workflow_engine.usage import invoke_metered_chat
 
     class ExplodingLLM:
         def invoke(self, messages):
@@ -203,3 +199,23 @@ def test_failed_call_usage_event_keeps_provider_and_cost_class():
     assert event.provider == "chatgpt_browser"
     assert event.cost_class == "subscription_notional"
     assert event.estimated_usd is None
+
+
+def test_removed_usage_facade_names_fail_loudly():
+    """v0.11 clean contract (manifest row M3): the v0.10-era re-export facade is GONE — every
+    moved name now raises ImportError from ai_workflow_engine.usage, pointing importers at the
+    real owners. invoke_metered_chat/record_image_usage remain usage.py's own entry points."""
+
+    import importlib
+
+    module = importlib.import_module("ai_workflow_engine.usage")
+    for name in (
+        "WorkflowBudget", "WorkflowBudgetExceeded", "WorkflowUsageContext",
+        "workflow_usage_scope", "current_usage_context", "budget_from_limits",
+        "check_images_per_call", "UsageSink", "InMemoryUsageSink", "JsonlUsageSink",
+        "AsyncQueueUsageSink", "TeeUsageSink", "format_usage_summary",
+    ):
+        assert not hasattr(module, name), (
+            f"ai_workflow_engine.usage still exposes removed facade name {name!r}"
+        )
+    assert hasattr(module, "invoke_metered_chat") and hasattr(module, "record_image_usage")

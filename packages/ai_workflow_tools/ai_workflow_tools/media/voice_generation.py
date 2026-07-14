@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from ai_workflow_engine.models import WorkflowUsageEvent
-from ai_workflow_engine.usage import record_usage_event
+from ai_workflow_engine.usage_events import record_usage_event
 
 
 class VoiceGenerationError(RuntimeError):

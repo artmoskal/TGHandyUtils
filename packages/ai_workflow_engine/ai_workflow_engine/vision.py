@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 
 from ai_workflow_engine.engine.llm_node import MessageFactory, StructuredLLMNode
 from ai_workflow_engine.models import EvidenceRef
-from ai_workflow_engine.usage import check_images_per_call
+from ai_workflow_engine.budget import check_images_per_call
 
 
 from ai_workflow_engine.transport_models import ImageInput  # noqa: F401 — public compat re-export (home moved to the transport leaf, F1.2)

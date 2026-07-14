@@ -18,12 +18,8 @@ from ai_workflow_engine.models import (
     WorkflowTraceEvent,
     WorkflowUsageSummary,
 )
-from ai_workflow_engine.usage import (
-    UsageSink,
-    WorkflowUsageContext,
-    budget_from_limits,
-    workflow_usage_scope,
-)
+from ai_workflow_engine.budget import WorkflowUsageContext, budget_from_limits, workflow_usage_scope
+from ai_workflow_engine.usage_events import UsageSink
 
 logger = logging.getLogger(__name__)
 

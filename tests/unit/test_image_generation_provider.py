@@ -13,7 +13,7 @@ from ai_workflow_tools.media.image_generation import (
     OpenAIImageGenerator,
     create_image_generator,
 )
-from ai_workflow_engine.usage import WorkflowBudget, WorkflowUsageContext, workflow_usage_scope
+from ai_workflow_engine.budget import WorkflowBudget, WorkflowUsageContext, workflow_usage_scope
 
 
 class FakeOpenAIImages:

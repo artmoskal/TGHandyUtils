@@ -624,7 +624,7 @@ class CompactingMemory:
 
     @staticmethod
     def _estimate_tokens(messages: Sequence[ChatMessage]) -> int:
-        from ai_workflow_engine.usage import estimate_text_tokens
+        from ai_workflow_engine.token_estimation import estimate_text_tokens
 
         return estimate_text_tokens(list(messages))
 

@@ -40,7 +40,7 @@ from ai_workflow_engine.engine.invocation_supervision import (
 )
 from ai_workflow_engine.engine.capability_observation import CapabilityObservationProjector
 from ai_workflow_engine.observability_capture import ObservationCapture
-from ai_workflow_engine.usage import check_budget_before_call
+from ai_workflow_engine.budget import check_budget_before_call
 
 CapabilityHandler = Callable[[CapabilityContext, Any], Any]
 logger = logging.getLogger(__name__)

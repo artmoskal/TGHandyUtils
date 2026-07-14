@@ -19,7 +19,7 @@ from ai_workflow_engine.models import (
     WorkflowUsageEvent,
 )
 from ai_workflow_engine.run_session import WorkflowRunSession
-from ai_workflow_engine.usage import record_usage_event
+from ai_workflow_engine.usage_events import record_usage_event
 
 pytestmark = pytest.mark.unit
 

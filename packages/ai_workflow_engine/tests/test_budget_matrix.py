@@ -16,15 +16,8 @@ from ai_workflow_engine import (
 from ai_workflow_engine.config_loader import load_workflow_config
 from ai_workflow_engine.llm_protocol import record_callable_usage
 from ai_workflow_engine.models import RuntimeLimits, WorkflowProfile, WorkflowRunContext, WorkflowUsageSummary
-from ai_workflow_engine.usage import (
-    WorkflowBudget,
-    WorkflowBudgetExceeded,
-    WorkflowUsageContext,
-    budget_from_limits,
-    check_budget_before_call,
-    invoke_metered_chat,
-    workflow_usage_scope,
-)
+from ai_workflow_engine.budget import WorkflowBudget, WorkflowBudgetExceeded, WorkflowUsageContext, budget_from_limits, check_budget_before_call, workflow_usage_scope
+from ai_workflow_engine.usage import invoke_metered_chat
 
 pytestmark = pytest.mark.unit
 
@@ -562,7 +555,7 @@ async def test_input_token_cap_applies_to_langchain_path_too():
 
 def test_estimate_text_tokens_counts_chat_message_content_not_repr():
     from ai_workflow_engine import ChatMessage, ToolCallRequest, ToolResult
-    from ai_workflow_engine.usage import estimate_text_tokens
+    from ai_workflow_engine.token_estimation import estimate_text_tokens
 
     message = ChatMessage(role="user", content="abcd")
     assert estimate_text_tokens([message]) == 1  # 4 chars -> 1 token, no field-name inflation

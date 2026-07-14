@@ -21,7 +21,7 @@ from services.content.thread_assembly import assemble_thread, collect_screenshot
 from services.content.anki_directives import parse_directives, HELP_TEXT
 from services.content.anki_source import build_content_source
 from services.content import anki_buffer
-from ai_workflow_engine.usage import format_usage_summary
+from ai_workflow_engine.usage_rendering import format_usage_summary
 
 logger = get_logger(__name__)
 

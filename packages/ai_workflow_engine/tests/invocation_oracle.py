@@ -441,7 +441,7 @@ async def _sc_side_effect_denied():
 
 async def _sc_budget_denied():
     from ai_workflow_engine.budget import WorkflowBudget
-    from ai_workflow_engine.usage import WorkflowUsageContext, workflow_usage_scope
+    from ai_workflow_engine.budget import WorkflowUsageContext, workflow_usage_scope
     from ai_workflow_engine.models import WorkflowUsageSummary
 
     ctx = _fixed_context()
@@ -457,7 +457,7 @@ async def _sc_worker_call_accounting():
     calls and that the usage capture is non-empty, not just locking zeros."""
 
     from ai_workflow_engine.budget import WorkflowBudget
-    from ai_workflow_engine.usage import WorkflowUsageContext, workflow_usage_scope
+    from ai_workflow_engine.budget import WorkflowUsageContext, workflow_usage_scope
     from ai_workflow_engine.models import WorkflowUsageSummary
 
     ctx = _fixed_context()
@@ -816,7 +816,7 @@ async def _sc_usage_event_semantics():
     the door's own metadata enrichment (run/workflow identity under the fixed oracle context)."""
 
     from ai_workflow_engine.budget import WorkflowBudget
-    from ai_workflow_engine.usage import WorkflowUsageContext, workflow_usage_scope
+    from ai_workflow_engine.budget import WorkflowUsageContext, workflow_usage_scope
     from ai_workflow_engine.models import WorkflowUsageEvent, WorkflowUsageSummary
     from ai_workflow_engine.usage_events import record_usage_event
 

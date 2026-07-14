@@ -1,11 +1,12 @@
-"""Workflow usage metering — compatibility facade + the metered-call entry points.
+"""Workflow usage metering — the metered-call entry points.
 
-H3 split: budgets/gates live in ``budget``, sinks + event recording in ``usage_events``,
-provider metadata extraction in ``provider_usage``, price tables/cost math in ``pricing``,
-token heuristics in ``token_estimation``, display in ``usage_rendering``. Public names keep
-importing from ``ai_workflow_engine.usage`` (preserved through the next tag); this module
-retains the metered-call orchestration (``invoke_metered_chat``/``record_image_usage``)
-that composes those pieces around an actual provider call.
+Owns the metered-call orchestration (``invoke_metered_chat``/``record_image_usage``) that
+composes budgets, pricing, token estimation, and event recording around an actual provider
+call. It is NOT an import facade: budgets/gates live in ``budget``, sinks + event recording in
+``usage_events``, price math in ``pricing``, token heuristics in ``token_estimation``, display
+in ``usage_rendering`` — import public names from ``ai_workflow_engine`` (package root) and
+internals from their owners. The v0.10-era re-export block was removed by the v0.11
+clean-contract line (manifest row M3): importing those names from here fails loudly.
 """
 
 from __future__ import annotations
@@ -18,41 +19,19 @@ from langchain_core.messages import BaseMessage
 
 from ai_workflow_engine._runtime_state import current_observation_capture
 from ai_workflow_engine.budget import (
-    WorkflowBudget,
-    WorkflowBudgetExceeded,
-    WorkflowUsageContext,
-    budget_from_limits,
     check_budget_before_call,
-    check_images_per_call,
     check_input_tokens_per_call,
-    current_usage_context,
-    workflow_usage_scope,
-    _enforce_per_call_budget,
-    _enforce_usd_budget,
 )
-from ai_workflow_engine.models import WorkflowUsageEvent, WorkflowUsageSummary
+from ai_workflow_engine.models import WorkflowUsageEvent
 from ai_workflow_engine.observability_capture import (
     is_engine_worker_observation_active,
     langchain_messages_payload,
     langchain_response_payload,
 )
-from ai_workflow_engine.pricing import (
-    estimate_cost_usd,
-    _DEFAULT_PRICE_TABLE,
-    _price_for_model,
-    _price_overrides,
-)
+from ai_workflow_engine.pricing import estimate_cost_usd
 from ai_workflow_engine.provider_usage import _usage_event_from_chat_output
 from ai_workflow_engine.token_estimation import estimate_text_tokens
-from ai_workflow_engine.usage_events import (
-    AsyncQueueUsageSink,
-    InMemoryUsageSink,
-    JsonlUsageSink,
-    TeeUsageSink,
-    UsageSink,
-    record_usage_event,
-)
-from ai_workflow_engine.usage_rendering import format_usage_summary
+from ai_workflow_engine.usage_events import record_usage_event
 from ai_workflow_engine.usage_support import (
     _details,
     _model_or_dict,
