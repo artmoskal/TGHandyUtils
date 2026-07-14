@@ -1667,3 +1667,69 @@ def test_boundary_attacks_are_refused_on_every_viewer_surface(tmp_path):
     finally:
         server.shutdown()
         thread.join(timeout=5)
+
+
+def test_symlinked_child_bundles_are_refused_on_every_viewer_surface(tmp_path):
+    """C2GR-1 attack (2)+(4): a child symlink named like a valid run id and pointing to an
+    OUTSIDE valid v2 bundle never lists, reads, groups, or serves — loudly, not silently
+    skipped; a deliberately symlinked CONFIGURED base stays functional (base trusted,
+    children not)."""
+
+    import threading
+    import urllib.error
+    import urllib.request
+
+    import pytest as _pytest
+
+    from ai_workflow_engine import WorkflowBuilder
+    from ai_workflow_viewer import FileEventSource, serve_viewer
+
+    definition = WorkflowBuilder("linked").step("gate").build()
+    outside = tmp_path / "outside"
+    _write_bundle(
+        outside, "link-run", definition,
+        trace_events=[WorkflowTraceEvent(node="gate", node_status="completed", phase="node:result", run_id="link-run", sequence=1, event_id="l-1")],
+        meta_extra=_segment_meta("link-run", "link-run", 0, digest=definition.definition_digest()),
+    )
+    root = tmp_path / "root"
+    root.mkdir()
+    _write_group(root)  # healthy content beside the trap
+    (root / "link-run").symlink_to(outside / "link-run")
+    # An INSIDE-pointing alias (resolves within root) is the case the containment fallback
+    # cannot catch — only the is-symlink rejection refuses it. Both must be loud, never a
+    # silently duplicated run.
+    (root / "alias-run").symlink_to(root / "logical-run")
+    source = FileEventSource(root)
+
+    with _pytest.raises(ValueError, match="symlink"):
+        source.read("link-run")
+    with _pytest.raises(ValueError, match="symlink"):
+        source.read("alias-run")
+    with _pytest.raises(ValueError, match="symlink"):
+        source.list_runs()
+    with _pytest.raises(ValueError, match="symlink"):
+        source.list_groups()
+    with _pytest.raises(ValueError, match="symlink"):
+        source.read_group("logical-run")  # the scan refuses loudly, never skips the trap
+
+    server = serve_viewer(JsonlObservationViewer(source), port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        with _pytest.raises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(f"{base_url}/?run_id=link-run", timeout=5)
+        assert caught.value.code == 500
+        assert "symlink" in caught.value.read().decode("utf-8")
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    # (4) symlinked CONFIGURED base is supported: same content, alias root, full group read
+    clean_root = tmp_path / "clean-root"
+    clean_root.mkdir()
+    _write_group(clean_root)
+    alias = tmp_path / "alias-root"
+    alias.symlink_to(clean_root)
+    group = FileEventSource(alias).read_group("logical-run")
+    assert group.status == "completed" and len(group.segments) == 2

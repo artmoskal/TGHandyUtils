@@ -274,7 +274,22 @@ def test_documented_package_matrix_is_coherent_and_derived_from_pyproject():
             f"{versions['ai_workflow_engine']} — the documented matrix could never resolve"
         )
 
-    tools_pin = f"ai-workflow-tools=={versions['ai_workflow_tools']}"
+    # C2GR-2: the VISIBLE tables are the copyable instruction — every handoff carries TWO
+    # internally coherent sets, and this test binds ALL SIX pins (engine row included).
+    released = {"engine": "0.10.1", "tools": "0.4.1", "viewer": "0.2.3"}  # last released tag set
+    candidate = {
+        "engine": versions["ai_workflow_engine"],
+        "tools": versions["ai_workflow_tools"],
+        "viewer": versions["ai_workflow_viewer"],
+    }
+
+    def _pins(matrix: dict[str, str]) -> list[str]:
+        return [
+            f"ai-workflow-engine=={matrix['engine']}",
+            f"ai-workflow-tools=={matrix['tools']}",
+            f"ai-workflow-viewer=={matrix['viewer']}",
+        ]
+
     for name in (
         "gopro-handoff.md",
         "mageqa-handoff.md",
@@ -282,10 +297,24 @@ def test_documented_package_matrix_is_coherent_and_derived_from_pyproject():
         "voice-brain-handoff.md",
     ):
         text = (PACKAGE_ROOT / "docs" / name).read_text(encoding="utf-8")
-        assert tools_pin in text, f"{name} must pin the repository tools version"
-        assert "One coherent matrix at a time" in text, (
-            f"{name} must state the candidate-vs-released matrix rule (C2-5)"
-        )
+        released_at = text.index("Current released set")
+        candidate_at = text.index("Pending v0.11 candidate set")
+        assert released_at < candidate_at, f"{name}: released set must come first"
+        note_at = text.index("One coherent matrix at a time")
+        released_block = text[released_at:candidate_at]
+        candidate_block = text[candidate_at:note_at]
+        for pin in _pins(released):
+            assert pin in released_block, f"{name}: released set is missing {pin}"
+        for pin in _pins(candidate):
+            assert pin in candidate_block, f"{name}: candidate set is missing {pin}"
+        for wrong in _pins(candidate):
+            assert wrong not in released_block, (
+                f"{name}: released set mixes in candidate pin {wrong} — an impossible table"
+            )
+        for wrong in _pins(released):
+            assert wrong not in candidate_block, (
+                f"{name}: candidate set mixes in released pin {wrong} — an impossible table"
+            )
 
 
 def test_documented_bundle_schema_version_is_the_engine_truth():

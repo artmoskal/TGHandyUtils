@@ -33,9 +33,19 @@ The engine owns execution and gates. GoPro owns inventory semantics and storage.
 
 ## Package Choice
 
+**Current released set (installable today, tag `engine-v0.10.1`):**
+
 | Package | GoPro use |
 |---|---|
 | `ai-workflow-engine==0.10.1` | Required in the detection/sidecar runtime |
+| `ai-workflow-tools==0.4.1` | Add only when GoPro uses CLI agents or shared media helpers |
+| `ai-workflow-viewer==0.2.3` | Developer/diagnostic service; not required in the detector image |
+
+**Pending v0.11 candidate set (NOT installable until `engine-v0.11.0` is cut — one matrix, all three together):**
+
+| Package | GoPro use |
+|---|---|
+| `ai-workflow-engine==0.11.0` | Required in the detection/sidecar runtime |
 | `ai-workflow-tools==0.5.0` | Add only when GoPro uses CLI agents or shared media helpers |
 | `ai-workflow-viewer==0.3.0` | Developer/diagnostic service; not required in the detector image |
 

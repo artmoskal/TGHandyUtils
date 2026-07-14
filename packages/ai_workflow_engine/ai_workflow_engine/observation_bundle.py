@@ -71,8 +71,7 @@ class ObservationSegment:
     attempt: Optional[int] = None
 
     def __post_init__(self) -> None:
-        if not str(self.segment_id).strip():
-            raise ValueError("observation segment_id must be non-blank")
+        assert_plain_identity(self.segment_id, what="observation segment_id")
         if self.kind not in ("initial", "resume", "wait_terminal"):
             raise ValueError(
                 f"observation segment kind must be initial|resume|wait_terminal: {self.kind!r}"
@@ -114,6 +113,39 @@ def _looks_like_path(value: str) -> bool:
         or value.startswith("~")
         or (len(value) >= 2 and value[1] == ":")
     )
+
+
+def assert_plain_identity(value: str, *, what: str) -> str:
+    """The ONE plain-name identity rule (C2GR-1): run/segment identities become directory
+    names and are joined to configured roots — writer, meta model, segment identity, and
+    the viewer door all enforce THIS function, never a local variant."""
+
+    text = str(value)
+    if not text.strip() or _looks_like_path(text) or Path(text).is_absolute():
+        raise ValueError(
+            f"{what} must be a plain name — path syntax is rejected (no separators, '..', "
+            f"'~', drive prefixes, absolute paths, or blanks): {text!r}"
+        )
+    return text
+
+
+def resolve_child_dir(base_dir: "str | Path", name: str, *, what: str = "observation bundle directory") -> Path:
+    """The ONE safe child resolver (C2GR-1): identity-checked join under a configured base.
+    A symlinked child is rejected outright — physical segment identity is a REAL directory —
+    and an existing child must resolve inside the RESOLVED base (the base itself may be a
+    deliberate symlink, e.g. a tmpfs alias; children may not redirect)."""
+
+    assert_plain_identity(name, what=f"{what} name")
+    base = Path(base_dir)
+    child = base / name
+    if child.is_symlink():
+        raise ValueError(
+            f"{what} {child} is a symlink — symlinked children of the bundle root are "
+            "rejected (history lives in real directories)"
+        )
+    if child.exists() and not child.resolve().is_relative_to(base.resolve()):
+        raise ValueError(f"{what} {child} escapes the configured bundle root {base}")
+    return child
 
 
 class ObservationBundleMetaV2(BaseModel):
@@ -162,15 +194,13 @@ class ObservationBundleMetaV2(BaseModel):
         for name in ("run_id", "workflow_id", "segment_id", "timestamp", "definition_digest"):
             if not str(getattr(self, name) or "").strip():
                 problems.append(f"{name} is blank")
-        # C2-1: run/segment identities are PLAIN names — they become directory names and are
-        # joined to configured roots by readers, so any path syntax is an attack, not an id.
+        # C2-1/C2GR-1: run/segment identities are PLAIN names — validated by the ONE
+        # engine-owned rule so writer, meta, and viewer can never disagree.
         for name in ("run_id", "segment_id"):
-            value = str(getattr(self, name))
-            if _looks_like_path(value):
-                problems.append(
-                    f"{name} {value!r} contains path syntax — identities are plain names, "
-                    "never paths"
-                )
+            try:
+                assert_plain_identity(str(getattr(self, name)), what=name)
+            except ValueError as exc:
+                problems.append(str(exc))
         # C2-2: the timestamp is the retention/ordering truth — it must parse as tz-aware
         # ISO-8601 (the writer emits UTC with a Z suffix), never a lexicographic guess.
         try:
@@ -197,6 +227,11 @@ def load_bundle_meta_v2(bundle_dir: Path) -> ObservationBundleMetaV2:
     C2-1: the read is containment-checked — a ``meta.json`` symlink escaping the bundle
     directory is rejected, never followed."""
 
+    if Path(bundle_dir).is_symlink():
+        raise ValueError(
+            f"observation bundle directory {bundle_dir} is a symlink — symlinked children "
+            "of the bundle root are rejected (history lives in real directories)"
+        )
     root = Path(bundle_dir).resolve()
     meta_path = root / "meta.json"
     if not meta_path.resolve().is_relative_to(root):
@@ -309,24 +344,10 @@ class ObservationRunBundle:
 
     def __post_init__(self) -> None:
         # A bundle storage key is a FILESYSTEM NAME, never a path: run ids can arrive from
-        # caller-supplied goal metadata, so an unchecked "../escape" or absolute path would
-        # write observation files outside the configured bundle root. Reject loudly — the
-        # logical run id AND the segment id (when present) both must be plain names.
-        for label, value in (
-            ("run_id", str(self.run_id)),
-            *((("segment_id", str(self.segment.segment_id)),) if self.segment else ()),
-        ):
-            if (
-                not value.strip()
-                or value in (".", "..")
-                or "/" in value
-                or "\\" in value
-                or Path(value).is_absolute()
-            ):
-                raise ValueError(
-                    f"observation {label} must be a plain directory name (no separators, "
-                    f"no '..', not absolute, not empty): {value!r}"
-                )
+        # caller-supplied goal metadata. C2GR-1: the ONE identity rule (assert_plain_identity)
+        # runs here — the same function the meta model, segment identity, and viewer door use —
+        # so a C:evil / ~home / ..prefix id dies BEFORE any directory exists.
+        assert_plain_identity(str(self.run_id), what="observation run_id")
         from ai_workflow_engine.correlation import validate_optional_correlation
 
         # the EXPORTED bundle boundary enforces the same schema rule as every model —
@@ -340,7 +361,11 @@ class ObservationRunBundle:
                 segment_id=str(self.run_id), segment_index=0, kind="initial"
             )
         self.base_dir = Path(self.base_dir)
-        self.path = self.base_dir / self.segment.segment_id
+        # C2GR-1: the child join is the SAFE resolver — a pre-existing symlink at the
+        # segment directory (base/run -> outside) is rejected with ZERO files written.
+        self.path = resolve_child_dir(
+            self.base_dir, self.segment.segment_id, what="observation segment directory"
+        )
         self.path.mkdir(parents=True, exist_ok=True)
         self.trace_path = self.path / "trace.jsonl"
         self.detail_path = self.path / "details.jsonl"

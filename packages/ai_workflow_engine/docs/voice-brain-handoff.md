@@ -26,7 +26,16 @@ transcript + session context
 
 ## Package Choice
 
+Current released set (installable today, tag `engine-v0.10.1`):
+
 - `ai-workflow-engine==0.10.1` for the runtime and custom `LLMCallable`.
+- `ai-workflow-tools==0.4.1` only when using `CliAgentCapability`/console tools. CLI subscription
+  workers are usually unsuitable for a low-latency conversational hot path.
+- `ai-workflow-viewer==0.2.3` in diagnostics, not the real-time audio path.
+
+Pending v0.11 candidate set (NOT installable until `engine-v0.11.0` is cut — one matrix, all three together):
+
+- `ai-workflow-engine==0.11.0` for the runtime and custom `LLMCallable`.
 - `ai-workflow-tools==0.5.0` only when using `CliAgentCapability`/console tools. CLI subscription
   workers are usually unsuitable for a low-latency conversational hot path.
 - `ai-workflow-viewer==0.3.0` in diagnostics, not the real-time audio path.

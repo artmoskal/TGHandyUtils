@@ -18,7 +18,8 @@ from ai_workflow_engine import (
 from ai_workflow_engine.observation_bundle import (
     ABANDON_MARKER_NAME as _ABANDON_MARKER,
     COMMIT_MARKER_NAME as _COMMIT_MARKER,
-    _looks_like_path,
+    assert_plain_identity,
+    resolve_child_dir,
 )
 
 
@@ -361,16 +362,17 @@ class FileEventSource:
         return groups
 
     def _run_path(self, run_id: str | None) -> Path:
-        # C2-1: a caller-supplied run id (including HTTP query/path values) is joined to the
-        # configured root — path syntax is an attack, not an identity. One guard, every door.
-        if run_id is not None and _looks_like_path(str(run_id)):
-            raise ValueError(
-                f"run id {run_id!r} contains path syntax — identities are plain names, "
-                "never paths"
-            )
+        # C2-1/C2GR-1: a caller-supplied run id (including HTTP query/path values) is joined
+        # to the configured root through the ENGINE's safe resolver — path syntax is an
+        # attack, and a symlinked child directory never becomes a bundle root. The CONFIGURED
+        # base itself stays trusted (it may deliberately be a symlink).
+        if run_id is not None:
+            assert_plain_identity(str(run_id), what="run id")
         if _is_run_bundle(self.base_path):
             if run_id is not None and run_id != self.base_path.name:
-                candidate = self.base_path.parent / run_id
+                candidate = resolve_child_dir(
+                    self.base_path.parent, run_id, what="observation bundle directory"
+                )
                 if candidate.exists():
                     return candidate
             return self.base_path
@@ -379,7 +381,7 @@ class FileEventSource:
             if len(runs) != 1:
                 raise ValueError("Observation source contains multiple runs; pass run_id")
             run_id = str(runs[0]["run_id"])
-        return self.base_path / run_id
+        return resolve_child_dir(self.base_path, run_id, what="observation bundle directory")
 
 
 def _load_records(path: Path, kind: str, model: type) -> list[ObservationRecord]:

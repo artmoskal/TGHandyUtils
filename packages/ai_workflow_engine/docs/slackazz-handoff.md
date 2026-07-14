@@ -31,9 +31,19 @@ client event
 
 ## Package Choice
 
+**Current released set (installable today, tag `engine-v0.10.1`):**
+
 | Package | SlackAzzCovered use |
 |---|---|
 | `ai-workflow-engine==0.10.1` | Required workflow/wait runtime |
+| `ai-workflow-tools==0.4.1` | Add for CLI agents/tool catalog if the product uses them |
+| `ai-workflow-viewer==0.2.3` | Developer diagnostics or product-linked run inspection |
+
+**Pending v0.11 candidate set (NOT installable until `engine-v0.11.0` is cut — one matrix, all three together):**
+
+| Package | SlackAzzCovered use |
+|---|---|
+| `ai-workflow-engine==0.11.0` | Required workflow/wait runtime |
 | `ai-workflow-tools==0.5.0` | Add for CLI agents/tool catalog if the product uses them |
 | `ai-workflow-viewer==0.3.0` | Developer diagnostics or product-linked run inspection |
 

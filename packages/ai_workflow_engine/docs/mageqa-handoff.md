@@ -44,9 +44,19 @@ a defect.
 
 ## Package Choice
 
+**Current released set (installable today, tag `engine-v0.10.1`):**
+
 | Package | MageQA use |
 |---|---|
 | `ai-workflow-engine==0.10.1` | Required orchestration/runtime |
+| `ai-workflow-tools==0.4.1` | CLI agents, `claude -p`/`codex exec`, tool catalog, media helpers |
+| `ai-workflow-viewer==0.2.3` | Low-level engine run investigation and bundle rendering |
+
+**Pending v0.11 candidate set (NOT installable until `engine-v0.11.0` is cut — one matrix, all three together):**
+
+| Package | MageQA use |
+|---|---|
+| `ai-workflow-engine==0.11.0` | Required orchestration/runtime |
 | `ai-workflow-tools==0.5.0` | CLI agents, `claude -p`/`codex exec`, tool catalog, media helpers |
 | `ai-workflow-viewer==0.3.0` | Low-level engine run investigation and bundle rendering |
 

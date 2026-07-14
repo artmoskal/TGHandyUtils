@@ -226,12 +226,12 @@ def test_malicious_run_id_cannot_escape_the_bundle_root(tmp_path):
         objective="escape attempt",
         metadata={"run_id": "../escape"},
     )
-    with pytest.raises(ValueError, match="plain directory name"):
+    with pytest.raises(ValueError, match="plain name"):
         asyncio.run(engine.run("escape_flow", {"x": 1}, goal=goal))
     assert not (tmp_path / "escape").exists(), "bundle escaped the configured root"
 
     for bad in ("/tmp/abs-escape", "..", "", "a/b"):
-        with pytest.raises(ValueError, match="plain directory name"):
+        with pytest.raises(ValueError, match="plain name"):
             open_observation_run_bundle(tmp_path / "root", bad)
 
 
@@ -642,9 +642,9 @@ def test_malformed_segment_identity_is_loud(tmp_path):
         ObservationSegment(segment_id="x", segment_index=0, kind="resume")
     with _pytest.raises(ValueError, match="initial|resume"):
         ObservationSegment(segment_id="x", segment_index=0, kind="weird")
-    with _pytest.raises(ValueError, match="non-blank"):
+    with _pytest.raises(ValueError, match="plain name"):
         ObservationSegment(segment_id="  ", segment_index=0, kind="initial")
-    with _pytest.raises(ValueError, match="plain directory name"):
+    with _pytest.raises(ValueError, match="plain name"):
         open_observation_run_bundle(
             tmp_path,
             "logical",

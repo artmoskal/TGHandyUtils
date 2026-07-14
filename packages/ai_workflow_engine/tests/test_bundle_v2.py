@@ -185,3 +185,45 @@ def test_meta_symlink_escaping_the_bundle_is_rejected(tmp_path):
     (attacker / "meta.json").symlink_to(outside)
     with pytest.raises(ValueError, match="escapes its bundle directory"):
         load_bundle_meta_v2(attacker)
+
+
+def test_child_directory_symlinks_never_escape_the_bundle_root(tmp_path):
+    """C2GR-1 attacks (1)+(3)+(4): a pre-existing ``base/run -> outside`` symlink is rejected
+    by the WRITER with zero outside files; hostile identities (``C:evil``/``~home``/
+    ``..prefix``) die BEFORE any directory exists (the writer shares the ONE identity rule);
+    ordinary runs and a deliberately symlinked CONFIGURED base keep working — the base is
+    trusted, children are not."""
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    base = tmp_path / "root"
+    base.mkdir()
+    (base / "trap-run").symlink_to(outside)
+
+    with pytest.raises(ValueError, match="symlink"):
+        open_observation_run_bundle(base, "trap-run")
+    assert list(outside.iterdir()) == [], "the writer must never create files through a symlink"
+
+    # A child symlink pointing INSIDE the base is the case the containment fallback CANNOT
+    # catch (it resolves within the root) — only the is-symlink rejection does. Physical
+    # segment identity is a real directory: an aliased child is refused, not followed.
+    (base / "decoy").mkdir()
+    (base / "alias-run").symlink_to(base / "decoy")
+    with pytest.raises(ValueError, match="symlink"):
+        open_observation_run_bundle(base, "alias-run")
+    assert list((base / "decoy").iterdir()) == [], "no files may be written through an inside symlink"
+
+    for bad in ("C:evil", "~home", "..prefix"):
+        with pytest.raises(ValueError, match="plain name"):
+            open_observation_run_bundle(base, bad)
+        assert not (base / bad).exists(), f"{bad!r} must be rejected BEFORE directory creation"
+
+    real_root = tmp_path / "real-root"
+    real_root.mkdir()
+    alias = tmp_path / "alias-root"
+    alias.symlink_to(real_root)
+    bundle = open_observation_run_bundle(alias, "ok-run")
+    bundle.finalize(WorkflowBuilder("wf").step("s").build(), status="completed")
+    assert load_bundle_meta_v2(real_root / "ok-run").run_id == "ok-run", (
+        "a deliberately symlinked CONFIGURED base is supported configuration"
+    )
