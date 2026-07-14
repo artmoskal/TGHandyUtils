@@ -25,18 +25,18 @@ from ai_workflow_engine.models import (
     WorkflowUsageSummary,
 )
 from ai_workflow_engine._runtime_state import current_run_session, current_workflow_run_context
-from ai_workflow_engine.execution_window import (
-    ExecutionWindowInputs,
-    invocation_window_remaining_s,
-    publish_invocation_window,
-    reset_invocation_window,
-    resolve_execution_window,
-)
 from ai_workflow_engine.engine.capability_contract import (
     denied_side_effects,
     handler_is_async,
     normalize_result,
     validate_payload,
+)
+from ai_workflow_engine.engine.invocation_supervision import (
+    CancellationContainmentError,
+    ExecutionTimeout,
+    published_invocation_scope,
+    resolve_invocation_window,
+    supervise_awaitable,
 )
 from ai_workflow_engine.engine.capability_observation import CapabilityObservationProjector
 from ai_workflow_engine.observability_capture import ObservationCapture
@@ -302,33 +302,6 @@ class RuntimePlanCompiler:
         )
 
 
-# The active invocation's complete soft/hard window lives on the context-local surface in
-# execution_window.py. Nested invocations inherit the remaining soft budget; process-backed doors
-# use both deadlines so cleanup fits before the hard cutoff.
-def _parent_soft_remaining_s() -> Optional[float]:
-    remaining = invocation_window_remaining_s()
-    return remaining.soft_s if remaining is not None else None
-
-
-class _ExecutionTimeout(Exception):
-    """A capability exceeded its resolved execution window. Carries the window so the outcome
-    can be recorded as a truthful PARTIAL (bounded work stopped), not an anonymous failure."""
-
-    def __init__(self, message: str, *, window: Any = None) -> None:
-        super().__init__(message)
-        self.window = window
-
-
-class _CancellationContainmentError(Exception):
-    """A cooperative handler suppressed cancellation at its execution window and finished
-    anyway — the engine cannot claim it stopped. Surfaced as a FAILURE (not a clean partial),
-    because unstoppable side effects may have continued past the boundary."""
-
-    def __init__(self, message: str, *, window: Any) -> None:
-        super().__init__(message)
-        self.window = window
-
-
 class CapabilityRuntime:
     """Invoke registered capabilities with validation, timeout, result envelope, and trace."""
 
@@ -389,82 +362,21 @@ class CapabilityRuntime:
             if spec.kind in {"agent", "external"}:
                 check_budget_before_call(spec.kind, name)
 
-            # v0.10 execution window. Determine the enforcement mode FIRST (an object with an
-            # async __call__ is async too — #4), so the RESOLVED, PERSISTED decision carries the
-            # truthful enforcement (#2). Intersect the capability limit + run-remaining + any
-            # per-task request the planner attached (#3).
+            # v0.11: the supervision owner resolves the window (enforcement-first, intersecting
+            # capability limit + run-remaining + per-task request + parent-soft), refuses
+            # already-exhausted or misdeclared-uninterruptible work, publishes/resets the ambient
+            # nested-window scope, and bounds the await with cancellation containment.
             session = current_run_session()
             is_async = handler_is_async(handler)
-            enforcement = spec.resolved_timeout_enforcement(is_async=is_async)
-            window = resolve_execution_window(
-                ExecutionWindowInputs(
-                    request=context.execution_request,
-                    capability_timeout_s=spec.timeout_s,
-                    run_remaining_s=session.run_remaining_s() if session is not None else None,
-                    parent_soft_remaining_s=_parent_soft_remaining_s(),
-                ),
-                enforcement=enforcement,
+            window, context, enforcement = resolve_invocation_window(
+                name=name, spec=spec, context=context, is_async=is_async, session=session
             )
-            context = context.model_copy(update={"execution_window": window})
-            hard = window.hard_timeout_s
-
-            # A run whose deadline has ALREADY passed must not start new work.
-            if hard is not None and hard <= 0:
-                raise _ExecutionTimeout(
-                    f"run execution window exhausted before capability '{name}' could start",
-                    window=window,
-                )
-
-            if enforcement == "none" and hard is not None and hard > 0:
-                raise _ExecutionTimeout(
-                    f"capability '{name}' declares a finite execution window but cannot be "
-                    f"interrupted (enforcement='none'); make it cooperative async or place "
-                    f"work needing a hard bound behind a process-backed capability",
-                    window=window,
-                )
-
-            # Publish THIS invocation's soft deadline on the engine-owned surface: nested
-            # subworkflow/child-plan calls are bounded by our remaining soft budget (they can
-            # only shorten it), and process-backed doors (CLI/console/external) read it as
-            # their ambient work bound.
-            soft = window.soft_timeout_s
-            if soft is not None and hard is not None:
-                now = time.monotonic()
-                parent_token = publish_invocation_window(
-                    soft_deadline_monotonic=now + soft,
-                    hard_deadline_monotonic=now + hard,
-                )
-            else:
-                parent_token = None
-            try:
+            with published_invocation_scope(window):
                 result = handler(context, parsed_payload)
                 if inspect.isawaitable(result):
-                    if hard is not None and enforcement in ("cooperative", "process"):
-                        remaining = invocation_window_remaining_s()
-                        remaining_soft = remaining.soft_s if remaining is not None else soft
-                        remaining_hard = remaining.hard_s if remaining is not None else hard
-                        if enforcement == "process":
-                            # The process owner consumes soft for work and hard for reap. The
-                            # outer runtime waits to hard only as a containment belt.
-                            work_timeout_s = remaining_hard
-                            cancellation_grace_s = 0.0
-                        else:
-                            work_timeout_s = remaining_soft
-                            cancellation_grace_s = max(
-                                0.0, remaining_hard - remaining_soft
-                            )
-                        result = await self._run_bounded(
-                            name,
-                            result,
-                            work_timeout_s,
-                            cancellation_grace_s,
-                            window,
-                        )
-                    else:
-                        result = await result
-            finally:
-                if parent_token is not None:
-                    reset_invocation_window(parent_token)
+                    result = await supervise_awaitable(
+                        name=name, awaitable=result, window=window, enforcement=enforcement
+                    )
             output = normalize_result(spec, result)
             elapsed_ms = int((time.monotonic() - start) * 1000)
             # v0.10: record the resolved window on the result event of a BOUNDED call so the
@@ -488,7 +400,7 @@ class CapabilityRuntime:
                 elapsed_ms=elapsed_ms, metadata=result_metadata,
             )
             return output
-        except _ExecutionTimeout as timeout_exc:
+        except ExecutionTimeout as timeout_exc:
             # v0.10: timeout is honest PARTIAL machine data — the work was bounded and stopped,
             # its already-incurred usage stays counted, and the window rides in metadata.
             elapsed_ms = int((time.monotonic() - start) * 1000)
@@ -511,7 +423,7 @@ class CapabilityRuntime:
             decision = getattr(exc, "decision", None) or "failed"
             containment_window = (
                 exc.window.model_dump()
-                if isinstance(exc, _CancellationContainmentError)
+                if isinstance(exc, CancellationContainmentError)
                 else None
             )
             failure_metadata = (
@@ -527,103 +439,6 @@ class CapabilityRuntime:
                 elapsed_ms=elapsed_ms, metadata=failure_metadata,
             )
             return CapabilityResult(status="failed", error=error, metadata=failure_metadata)
-
-    async def _run_bounded(
-        self,
-        name: str,
-        awaitable: Any,
-        work_timeout_s: float,
-        cancellation_grace_s: float,
-        window: Any,
-    ) -> Any:
-        """Run an awaitable under a represented work/cleanup window.
-
-        Within the window: return its result. At the boundary: cancel it and give a bounded
-        grace to acknowledge. If it raises CancelledError (clean stop) → PARTIAL timeout. If it
-        SUPPRESSES cancellation and returns anyway → a containment FAILURE (the engine will not
-        claim a stop it did not perform). If it errors while cancelling → timeout/partial."""
-
-        inner = asyncio.ensure_future(awaitable)
-        try:
-            done, _pending = await asyncio.wait({inner}, timeout=work_timeout_s)
-        except asyncio.CancelledError:
-            # Cancellation of the caller is not this invocation's timeout. Stop the child,
-            # contain it for the represented grace, then preserve the caller's cancellation.
-            inner.cancel()
-            await self._settle_cancelled_inner(inner, cancellation_grace_s)
-            raise
-        if inner in done:
-            # completed within the window — return its result (or re-raise its own exception,
-            # which the caller maps to a normal failure, NOT a timeout).
-            return inner.result()
-        inner.cancel()
-        try:
-            if cancellation_grace_s == 0:
-                await asyncio.sleep(0)
-                if not inner.done():
-                    raise asyncio.TimeoutError
-                await inner
-            else:
-                await asyncio.wait_for(
-                    asyncio.shield(inner), timeout=cancellation_grace_s
-                )
-        except asyncio.CancelledError:
-            if asyncio.current_task() is not None and asyncio.current_task().cancelling():
-                inner.cancel()
-                self._detach_cancelled_inner(inner)
-                raise
-            raise _ExecutionTimeout(
-                f"capability '{name}' exceeded its {work_timeout_s:g}s execution window "
-                "(work deadline)",
-                window=window,
-            )
-        except asyncio.TimeoutError:
-            inner.cancel()
-            self._detach_cancelled_inner(inner)
-            raise _CancellationContainmentError(
-                f"capability '{name}' did not acknowledge cancellation within "
-                f"{cancellation_grace_s:g}s of its work window",
-                window=window,
-            )
-        except Exception:
-            raise _ExecutionTimeout(
-                f"capability '{name}' exceeded its {work_timeout_s:g}s execution window "
-                "(work deadline)",
-                window=window,
-            )
-        else:
-            # cancelled but returned a value anyway → suppression → containment FAILURE.
-            raise _CancellationContainmentError(
-                f"capability '{name}' suppressed cancellation at its execution window and "
-                f"returned anyway",
-                window=window,
-            )
-
-    @staticmethod
-    async def _settle_cancelled_inner(inner: asyncio.Task[Any], grace_s: float) -> None:
-        try:
-            if grace_s > 0:
-                await asyncio.wait_for(asyncio.shield(inner), timeout=grace_s)
-            else:
-                await asyncio.sleep(0)
-        except BaseException:
-            logger.debug("capability child stopped while caller cancellation was propagating")
-        if not inner.done():
-            inner.cancel()
-            CapabilityRuntime._detach_cancelled_inner(inner)
-
-    @staticmethod
-    def _detach_cancelled_inner(inner: asyncio.Task[Any]) -> None:
-        def _consume(task: asyncio.Task[Any]) -> None:
-            if task.cancelled():
-                return
-            try:
-                task.exception()
-            except BaseException:
-                logger.exception("detached capability task failed after cancellation")
-
-        inner.add_done_callback(_consume)
-
 
 def _enrich_trace_event(event: WorkflowTraceEvent) -> WorkflowTraceEvent:
     updates: dict[str, Any] = {}

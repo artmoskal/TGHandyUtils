@@ -373,6 +373,30 @@
       "worker_call_count": 0
     }
   },
+  "bounded_caller_cancellation": {
+    "details": [],
+    "exception": {
+      "type": "CancelledError"
+    },
+    "handler_calls": 1,
+    "result": null,
+    "trace": [
+      {
+        "artifacts": [],
+        "attempt": 1,
+        "decision": "start",
+        "detail_refs": [],
+        "error": null,
+        "event": "E0",
+        "metadata": {},
+        "node": "blocker_bounded",
+        "node_status": null,
+        "phase": "tool:request",
+        "severity": "info"
+      }
+    ],
+    "usage": null
+  },
   "budget_denied": {
     "details": [],
     "exception": null,
@@ -1211,6 +1235,82 @@
     "handler_calls": 0,
     "result": null,
     "trace": [],
+    "usage": null
+  },
+  "unacknowledged_cancellation": {
+    "details": [],
+    "exception": null,
+    "handler_calls": 1,
+    "result": {
+      "artifacts": [],
+      "error": "capability 'unacknowledging' did not acknowledge cancellation within 0.05s of its work window",
+      "kind": "result",
+      "metadata": {
+        "execution_window": {
+          "capability_timeout_s": null,
+          "clamps": [],
+          "completion_reserve_s": 0.05,
+          "enforcement": "cooperative",
+          "hard_timeout_s": 0.3,
+          "limiting_sources": [
+            "task_request"
+          ],
+          "parent_remaining_s": null,
+          "request_source": "planner_task",
+          "requested_timeout_s": 0.3,
+          "run_remaining_s": null,
+          "soft_timeout_s": 0.25
+        },
+        "timeout_reason": "cancellation_containment_failed"
+      },
+      "output": null,
+      "status": "failed"
+    },
+    "trace": [
+      {
+        "artifacts": [],
+        "attempt": 1,
+        "decision": "start",
+        "detail_refs": [],
+        "error": null,
+        "event": "E0",
+        "metadata": {},
+        "node": "unacknowledging",
+        "node_status": null,
+        "phase": "tool:request",
+        "severity": "info"
+      },
+      {
+        "artifacts": [],
+        "attempt": 1,
+        "decision": "failed",
+        "detail_refs": [],
+        "error": "capability 'unacknowledging' did not acknowledge cancellation within 0.05s of its work window",
+        "event": "E1",
+        "metadata": {
+          "execution_window": {
+            "capability_timeout_s": null,
+            "clamps": [],
+            "completion_reserve_s": 0.05,
+            "enforcement": "cooperative",
+            "hard_timeout_s": 0.3,
+            "limiting_sources": [
+              "task_request"
+            ],
+            "parent_remaining_s": null,
+            "request_source": "planner_task",
+            "requested_timeout_s": 0.3,
+            "run_remaining_s": null,
+            "soft_timeout_s": 0.25
+          },
+          "timeout_reason": "cancellation_containment_failed"
+        },
+        "node": "unacknowledging",
+        "node_status": null,
+        "phase": "tool:result",
+        "severity": "error"
+      }
+    ],
     "usage": null
   },
   "unknown_capability": {

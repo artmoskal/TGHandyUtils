@@ -103,7 +103,9 @@ BEHAVIOR_ROWS = (
     "handler_owned_timeout",
     "cooperative_deadline",
     "caller_cancellation",
+    "bounded_caller_cancellation",
     "swallowed_cancellation",
+    "unacknowledged_cancellation",
     "process_timeout",
     "artifact_result",
     "capture_off",
@@ -558,6 +560,69 @@ async def _sc_caller_cancellation():
     }
 
 
+async def _sc_bounded_caller_cancellation():
+    """Caller cancellation of a BOUNDED invocation (I2.0 gap found by mutation m3): the bounded
+    supervisor owns a child when the caller cancels, and the cancellation must propagate
+    UNTRANSLATED (never laundered into a partial timeout) after the child is settled. The
+    unbounded variant is the caller_cancellation row; this one enters the bounded-await path."""
+
+    started = asyncio.Event()
+
+    async def h(_ctx, _p):
+        started.set()
+        await asyncio.sleep(30.0)
+        return {"unreached": True}
+
+    registry = CapabilityRegistry()
+    registry.register(_spec("blocker_bounded"), h)
+    trace = InMemoryTraceSink()
+    runtime = CapabilityRuntime(registry, trace)
+    task = asyncio.ensure_future(runtime.invoke("blocker_bounded", {}, _windowed_ctx(0.8)))
+    await started.wait()
+    task.cancel()
+    cancelled = False
+    result_rec = None
+    try:
+        result = await task
+        result_rec = _canon_result(result)
+    except asyncio.CancelledError:
+        cancelled = True
+    except BaseException:
+        cancelled = False
+    amap = _build_alias_map(trace.events, [], [])
+    return {
+        "result": result_rec,
+        "exception": {"type": "CancelledError"} if cancelled else {"type": "other"},
+        "handler_calls": 1,
+        "trace": [_canon_event(e, amap) for e in trace.events],
+        "details": [],
+        "usage": None,
+    }
+
+
+async def _sc_unacknowledged_cancellation():
+    """A child that refuses to acknowledge cancellation within the grace window (I2.0 gap found
+    by mutation m4): it swallows every CancelledError and keeps working past the boundary, so the
+    engine must report a containment FAILURE ("did not acknowledge cancellation within ...s"),
+    never a clean partial timeout. The child is stubborn for a bounded wall time so the corpus
+    does not leak a spinning task."""
+
+    import time as _time
+
+    async def h(_ctx, _p):
+        deadline = _time.monotonic() + 1.0
+        while _time.monotonic() < deadline:
+            try:
+                await asyncio.sleep(0.05)
+            except asyncio.CancelledError:
+                pass  # refuse to stop while the "critical section" runs
+        return {"late": True}
+
+    return await capture_invocation(
+        spec=_spec("unacknowledging"), handler=h, payload={}, context=_windowed_ctx(0.3)
+    )
+
+
 async def _sc_artifact_result():
     def h(_ctx, _p):
         return CapabilityResult(
@@ -929,7 +994,9 @@ SCENARIOS: dict[str, Callable] = {
     "handler_owned_timeout": _sc_handler_owned_timeout,
     "cooperative_deadline": _sc_cooperative_deadline,
     "caller_cancellation": _sc_caller_cancellation,
+    "bounded_caller_cancellation": _sc_bounded_caller_cancellation,
     "swallowed_cancellation": _sc_swallowed_cancellation,
+    "unacknowledged_cancellation": _sc_unacknowledged_cancellation,
     "process_timeout": _sc_process_timeout,
     "artifact_result": _sc_artifact_result,
     "capture_off": _sc_capture_off,
