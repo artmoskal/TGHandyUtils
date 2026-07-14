@@ -106,7 +106,7 @@ from ai_workflow_engine import (  # noqa: E402
 )
 from ai_workflow_engine.memory import AgentMemoryRenderContext, render_full_replay_messages  # noqa: E402
 from ai_workflow_engine.models import AgentRunRequest, AgentToolCall, AgentToolStep  # noqa: E402
-from ai_workflow_engine.vision import ImageInput  # noqa: E402
+from ai_workflow_engine.transport_models import ImageInput  # noqa: E402
 
 
 def _render_ctx(system: str | None = "sys") -> AgentMemoryRenderContext:

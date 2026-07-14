@@ -178,6 +178,7 @@
     "load_workflow_config",
     "model_profile_scope",
     "open_observation_run_bundle",
+    "parse_flow_node",
     "prune_observation_bundles",
     "render_capability_catalog",
     "render_full_replay_messages",

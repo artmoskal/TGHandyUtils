@@ -3,6 +3,7 @@
 import pytest
 
 from ai_workflow_engine import (
+    parse_flow_node,
     FlowArtifact,
     FlowNodeSpec,
     PlanArtifact,
@@ -177,10 +178,10 @@ async def test_authored_flow_reports_branch_evaluate_side_effect_and_firewall_er
     bad = FlowArtifact(
         flow_id="bad_validation_buckets",
         nodes=[
-            FlowNodeSpec(kind="step", id="send_external"),
-            FlowNodeSpec(kind="branch", id="route", branches={"bad": "missing"}),
-            FlowNodeSpec(kind="evaluate", id="gate", target="summarize", on_reject="fallback"),
-            FlowNodeSpec(kind="step", id="recursive_author", capability="author_flow"),
+            parse_flow_node({"kind": "step", "id": "send_external"}),
+            parse_flow_node({"kind": "branch", "id": "route", "branches": {"bad": "missing"}}),
+            parse_flow_node({"kind": "evaluate", "id": "gate", "target": "summarize", "on_reject": "fallback"}),
+            parse_flow_node({"kind": "step", "id": "recursive_author", "capability": "author_flow"}),
         ],
     )
 
@@ -908,14 +909,6 @@ async def test_round_tripped_artifact_executes_on_peer_engine():
     assert sorted(analyzed) == ["a", "b", "c"]
 
 
-def test_flow_node_spec_compat_constructor_returns_kind_models():
-    step = FlowNodeSpec(id="s")  # kind defaults to step, as before
-    fanout = FlowNodeSpec(kind="fanout", id="f", items_key="x.items", max_items=3)
-
-    assert step.kind == "step" and type(step).__name__ == "StepFlowNode"
-    assert fanout.kind == "fanout" and fanout.max_items == 3
-
-
 # ------------------------------ Phase R7: run-scoped provenance + direct-entry byte-safety
 
 
@@ -1033,41 +1026,39 @@ async def test_capability_registered_after_factory_is_visible_and_authorable():
 # --------------------------- Phase R10: FlowNodeSpec is a REAL discriminated base class
 
 
-def test_flow_node_spec_base_class_dispatches_and_supports_isinstance_and_schema():
-    """R10 (recheck finding #1): FlowNodeSpec must stay a genuine class — construction and
-    model_validate dispatch to the discriminated subtypes, isinstance filtering works, and
-    JSON-schema generation does not crash (a function stand-in broke all three)."""
+def test_parse_flow_node_dispatches_and_supports_isinstance_and_schema():
+    """v0.11 clean contract (M2): parse_flow_node is the one dispatch door — concrete subtype
+    instances, isinstance against the base TYPE, and the union schema advertised where dicts
+    actually enter (FlowArtifact.nodes); each subclass keeps its per-kind schema."""
 
-    step = FlowNodeSpec(id="s1")
-    fan = FlowNodeSpec(
-        id="f1", kind="fanout", capability="analyze", items_key="collect.frames", max_items=3
+    step = parse_flow_node({"kind": "step", "id": "s1"})
+    fan = parse_flow_node(
+        {"kind": "fanout", "id": "f1", "capability": "analyze",
+         "items_key": "collect.frames", "max_items": 3}
     )
     assert type(step).__name__ == "StepFlowNode"
     assert type(fan).__name__ == "FanoutFlowNode"
     assert isinstance(step, FlowNodeSpec) and isinstance(fan, FlowNodeSpec)
 
-    branch = FlowNodeSpec.model_validate(
-        {"id": "b1", "kind": "branch", "branches": {"ok": "s1"}}
-    )
+    branch = parse_flow_node({"id": "b1", "kind": "branch", "branches": {"ok": "s1"}})
     assert type(branch).__name__ == "BranchFlowNode"
     assert isinstance(branch, FlowNodeSpec)
 
-    # R-C2-3: the base schema is the DISCRIMINATED UNION (what base validation accepts),
-    # while each subclass keeps its per-kind schema.
-    schema_blob = _json.dumps(FlowNodeSpec.model_json_schema())
+    # the artifact schema (where node dicts actually enter) advertises the full union
+    schema_blob = _json.dumps(FlowArtifact.model_json_schema())
     for kind in ("step", "branch", "evaluate", "fanout"):
-        assert f'"{kind}"' in schema_blob, f"base schema must advertise kind={kind}"
+        assert f'"{kind}"' in schema_blob, f"artifact schema must advertise kind={kind}"
     assert "id" in StepFlowNode.model_json_schema()["properties"]
 
 
-def test_flow_node_spec_base_rejects_foreign_fields_not_smuggles_them():
-    """R10: dispatch does not weaken R6 — a step-shaped payload carrying fanout-only fields
-    is REJECTED by the discriminated schema, not silently accepted via the base class."""
+def test_parse_flow_node_rejects_foreign_fields_not_smuggles_them():
+    """R6 stays strict at the one door: a step payload carrying fanout-only fields is REJECTED
+    by the discriminated schema; kind is REQUIRED (no v0.10-era defaulting)."""
 
     with pytest.raises(_PydanticValidationError):
-        FlowNodeSpec(id="x", items_key="smuggled.key")
+        parse_flow_node({"kind": "step", "id": "x", "items_key": "smuggled.key"})
     with pytest.raises(_PydanticValidationError):
-        FlowNodeSpec.model_validate({"id": "x", "max_items": 5})
+        parse_flow_node({"id": "x", "max_items": 5})  # no kind -> refused at the door
 
 
 # --------------------------- Phase R11: per-invocation immutable registry snapshot
@@ -1252,23 +1243,26 @@ async def test_provenance_channel_is_consumed_once_never_inherited():
 
 
 def test_flow_node_spec_json_validation_dispatches_for_every_kind():
-    """R-C2-3 (codex probe): model_validate_json must accept what model_validate accepts —
-    all four kinds plus the kind-defaulting step shorthand."""
+    """JSON payloads dispatch through the ONE parse door for all four kinds; the v0.10-era
+    kind-defaulting shorthand is an explicit rejection now (M2)."""
 
+    # v0.11 clean contract: kind is REQUIRED at the door — the old '{"id":"s1"}' defaulting
+    # case is now a rejection (asserted below), not a dispatch case.
     cases = {
-        '{"id":"s1"}': "StepFlowNode",
         '{"id":"s2","kind":"step"}': "StepFlowNode",
         '{"id":"b1","kind":"branch","branches":{"ok":"s1"}}': "BranchFlowNode",
         '{"id":"e1","kind":"evaluate"}': "EvaluateFlowNode",
         '{"id":"f1","kind":"fanout","capability":"c","items_key":"k","max_items":2}': "FanoutFlowNode",
     }
     for payload, expected in cases.items():
-        node = FlowNodeSpec.model_validate_json(payload)
+        node = parse_flow_node(_json.loads(payload))
         assert type(node).__name__ == expected, (payload, type(node).__name__)
         assert isinstance(node, FlowNodeSpec)
 
     with pytest.raises(_PydanticValidationError):
-        FlowNodeSpec.model_validate_json('{"id":"x","items_key":"smuggled"}')
+        parse_flow_node(_json.loads('{"id":"x","items_key":"smuggled"}'))
+    with pytest.raises(_PydanticValidationError):
+        parse_flow_node(_json.loads('{"id":"s1"}'))  # kind-defaulting removed (M2)
 
 
 async def test_nested_run_inside_authored_flow_does_not_inherit_provenance():
@@ -1328,3 +1322,39 @@ async def test_new_flow_authored_events_carry_typed_status_with_legacy_fallback(
     assert graph.nodes["legacy_flow"].status == "completed", (
         "legacy bundles without the typed field must still project terminal"
     )
+
+
+
+def test_flow_node_base_is_a_type_not_a_constructor():
+    """v0.11 clean contract (manifest row M2): the v0.10-era kind-defaulting dispatch is gone —
+    base construction and base model_validate fail loudly; parse_flow_node is the ONE door and
+    requires an explicit kind."""
+
+    import pytest as _pytest
+    from ai_workflow_engine.flow_authoring import (
+        BranchFlowNode,
+        EvaluateFlowNode,
+        FanoutFlowNode,
+        FlowNodeSpec,
+        StepFlowNode,
+        parse_flow_node,
+    )
+
+    with _pytest.raises(TypeError, match="cannot be constructed"):
+        FlowNodeSpec(kind="step", id="x")
+    with _pytest.raises(TypeError, match="not a parse door"):
+        FlowNodeSpec.model_validate({"kind": "step", "id": "x"})
+    with _pytest.raises(TypeError, match="not a parse door"):
+        FlowNodeSpec.model_validate_json('{"kind": "step", "id": "x"}')
+
+    assert isinstance(parse_flow_node({"kind": "step", "id": "s"}), StepFlowNode)
+    assert isinstance(parse_flow_node({"kind": "branch", "id": "b", "branches": {"a": "s"}}), BranchFlowNode)
+    assert isinstance(parse_flow_node({"kind": "evaluate", "id": "e", "target": "s", "on_reject": "fallback"}), EvaluateFlowNode)
+    assert isinstance(parse_flow_node({"kind": "fanout", "id": "f", "items_key": "s.items", "max_items": 4}), FanoutFlowNode)
+
+    with _pytest.raises(Exception):
+        parse_flow_node({"id": "no_kind_given"})       # kind is REQUIRED at the door
+    with _pytest.raises(Exception):
+        parse_flow_node({"kind": "mystery", "id": "x"})  # unknown kind fails
+    with _pytest.raises(Exception):
+        parse_flow_node({"kind": "step", "id": "x", "branches": {"a": "b"}})  # mixed fields fail

@@ -11,7 +11,7 @@ from ai_workflow_engine.llm_protocol import ChatMessage, LLMRequest, LLMResponse
 from ai_workflow_engine.observability_capture import engine_worker_observation_scope
 from ai_workflow_engine.prompt_capture import PromptCapturingLLMClient
 from ai_workflow_engine.viz import render_prompt_manifest
-from ai_workflow_engine.vision import ImageInput
+from ai_workflow_engine.transport_models import ImageInput
 from ai_workflow_engine.workflow import WorkflowBuilder
 from ai_workflow_viewer import build_observation_graph, observation_graph_to_html
 
@@ -73,8 +73,10 @@ async def test_prompt_capturing_client_records_compact_trace_without_pseudo_deta
     client = PromptCapturingLLMClient(inner, sink, detail_sink=details)
     secret_image = ImageInput(source="base64", data="RAW_SECRET_BYTES", media_type="image/png")
     request = LLMRequest(
-        system="be terse",
-        messages=[ChatMessage(role="user", content="hello world", images=[secret_image])],
+        messages=[
+            ChatMessage(role="system", content="be terse"),
+            ChatMessage(role="user", content="hello world", images=[secret_image]),
+        ],
         metadata={"agent_node": "ask", "workflow_id": "wf1", "repair_round": 0},
     )
 
@@ -135,8 +137,10 @@ async def test_prompt_capturing_client_can_capture_full_text_in_detail_only():
 
     client = PromptCapturingLLMClient(inner, sink, detail_sink=details, capture_text=True)
     request = LLMRequest(
-        system="be terse",
-        messages=[ChatMessage(role="user", content="hello world")],
+        messages=[
+            ChatMessage(role="system", content="be terse"),
+            ChatMessage(role="user", content="hello world"),
+        ],
         metadata={"agent_node": "ask"},
     )
 
@@ -232,3 +236,32 @@ async def test_prompt_capturing_client_records_error_response_then_reraises():
     assert response_detail.kind == "llm_response"
     assert response_detail.redaction_state == "none"
     assert response_detail.json_value["error"] == "model unavailable"
+
+
+
+def test_llm_request_modes_are_exclusive_and_deliberate():
+    """v0.11 clean contract (manifest row M5): simple mode (system?/user/+images) and multi-turn
+    mode (messages only) are both first-class; mixing them fails loudly — no silent precedence."""
+
+    import pytest as _pytest
+
+    simple = LLMRequest(system="be terse", user="hi", images=[])
+    assert simple.user == "hi" and not simple.messages
+
+    multi = LLMRequest(messages=[
+        ChatMessage(role="system", content="be terse"),
+        ChatMessage(role="user", content="hi"),
+    ])
+    assert multi.messages and not multi.user and multi.system is None
+
+    with _pytest.raises(ValueError, match="modes are exclusive"):
+        LLMRequest(user="hi", messages=[ChatMessage(role="user", content="x")])
+    with _pytest.raises(ValueError, match="modes are exclusive"):
+        LLMRequest(system="s", messages=[ChatMessage(role="user", content="x")])
+    with _pytest.raises(ValueError, match="modes are exclusive"):
+        LLMRequest(
+            images=[ImageInput(source="base64", data="QUFB", media_type="image/png")],
+            messages=[ChatMessage(role="user", content="x")],
+        )
+    with _pytest.raises(ValueError, match="either user text or messages"):
+        LLMRequest()

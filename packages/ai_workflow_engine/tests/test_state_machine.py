@@ -18,6 +18,7 @@ from ai_workflow_engine import (
     EvidenceRef,
     FlowArtifact,
     FlowNodeSpec,
+    parse_flow_node,
     LLMAgentPlanner,
     LLMRequest,
     LLMResponse,
@@ -415,9 +416,9 @@ def _authored_loop_artifact(with_bounds: bool) -> FlowArtifact:
         flow_id="polish_loop",
         goal="draft then polish at most twice",
         nodes=[
-            FlowNodeSpec(kind="step", id="draft"),
-            FlowNodeSpec(**gate),
-            FlowNodeSpec(kind="step", id="finish"),
+            parse_flow_node({"kind": "step", "id": "draft"}),
+            parse_flow_node(gate),
+            parse_flow_node({"kind": "step", "id": "finish"}),
         ],
     )
 

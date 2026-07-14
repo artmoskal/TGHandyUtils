@@ -872,7 +872,7 @@ def test_checkpoint_stores_reject_raw_bytes_and_keep_latest():
 def test_checkpoint_guard_rejects_nested_transport_payload_shapes():
     from dataclasses import dataclass
 
-    from ai_workflow_engine.vision import ImageInput
+    from ai_workflow_engine.transport_models import ImageInput
 
     @dataclass
     class DataclassState:

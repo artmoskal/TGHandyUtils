@@ -28,7 +28,7 @@ from ai_workflow_engine.observability_capture import (
 )
 from ai_workflow_engine.budget import check_budget_before_call, check_images_per_call, check_input_tokens_per_call
 from ai_workflow_engine.token_estimation import estimate_text_tokens
-from ai_workflow_engine.vision import ImageInput
+from ai_workflow_engine.transport_models import ImageInput
 
 logger = logging.getLogger(__name__)
 

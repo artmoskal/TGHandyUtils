@@ -38,56 +38,51 @@ from ai_workflow_engine.workflow import (
 # own fields (extra="forbid"), so per-kind field discipline lives in the schema itself and an
 # ordinary `model_dump()` → `model_validate()` round-trip is loss- and surprise-free — no
 # caller-sensitive `model_fields_set` inspection, no hidden `exclude_unset` serialization ritual.
-# R10: `FlowNodeSpec` is a REAL base type again — isinstance, static annotations, schema access,
-# and `FlowNodeSpec.model_validate` all work; constructing the BASE dispatches to the right kind.
+# v0.11 clean contract (manifest row M2): the base is a TYPE, not a constructor — the former
+# `__new__`/`model_validate` dispatch magic is gone. `parse_flow_node(...)` is the ONE explicit
+# parse door for a bare node payload; `FlowArtifact.model_validate(...)` parses whole artifacts
+# through the same discriminated union. Constructing or validating the BASE fails loudly.
 
 
 class FlowNodeSpec(BaseModel):
-    """Base type of every authored-flow node.
+    """Base TYPE of every authored-flow node (isinstance/annotations/schema anchor).
 
-    Constructing this base (``FlowNodeSpec(kind="fanout", ...)``) dispatches through the
-    discriminated union and returns the kind-specific model; ``kind`` defaults to ``"step"``.
-    ``FlowNodeSpec.model_validate(data)`` dispatches the same way. A bare base instance can
-    never enter ``FlowArtifact.nodes`` (the field is the discriminated union of subclasses).
+    Not constructible: build a concrete node model (``StepFlowNode`` etc.), or parse a payload
+    through :func:`parse_flow_node` / ``FlowArtifact.model_validate`` — the discriminated union
+    requires an explicit ``kind`` and rejects unknown or mixed fields.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    kind: str = "step"
+    kind: str
     id: str
 
-    def __new__(cls, **data: Any):
-        if cls is FlowNodeSpec:
-            payload = {"kind": "step", **data}
-            return _FLOW_NODE_ADAPTER.validate_python(payload)
-        return super().__new__(cls)
+    def __init__(self, **data: Any) -> None:
+        if type(self) is FlowNodeSpec:
+            raise TypeError(
+                "FlowNodeSpec is a base type and cannot be constructed; use a concrete node "
+                "model or parse_flow_node({'kind': ..., ...}) — the v0.10-era kind-defaulting "
+                "dispatch was removed by the v0.11 clean contract"
+            )
+        super().__init__(**data)
 
     @classmethod
     def model_validate(cls, obj: Any, **kwargs: Any) -> Any:  # type: ignore[override]
         if cls is FlowNodeSpec:
-            if isinstance(obj, Mapping):
-                obj = {"kind": "step", **obj}
-            return _FLOW_NODE_ADAPTER.validate_python(obj, **kwargs)
+            raise TypeError(
+                "FlowNodeSpec.model_validate is not a parse door; use parse_flow_node(payload) "
+                "(explicit kind required) or FlowArtifact.model_validate for whole artifacts"
+            )
         return super().model_validate(obj, **kwargs)
 
     @classmethod
     def model_validate_json(cls, json_data: Any, **kwargs: Any) -> Any:  # type: ignore[override]
-        # R-C2-3: JSON validation dispatches exactly like Python validation — a valid
-        # branch/evaluate/fanout JSON document must not die on the base extra="forbid".
         if cls is FlowNodeSpec:
-            payload = json.loads(json_data)
-            if isinstance(payload, Mapping):
-                payload = {"kind": "step", **payload}
-            return _FLOW_NODE_ADAPTER.validate_python(payload)
+            raise TypeError(
+                "FlowNodeSpec.model_validate_json is not a parse door; use "
+                "parse_flow_node(json.loads(payload)) or FlowArtifact.model_validate_json"
+            )
         return super().model_validate_json(json_data, **kwargs)
-
-    @classmethod
-    def model_json_schema(cls, *args: Any, **kwargs: Any) -> Any:  # type: ignore[override]
-        # R-C2-3: the base schema advertises what base validation ACCEPTS — the full
-        # discriminated union, not the bare kind/id skeleton. Subclasses keep per-kind schemas.
-        if cls is FlowNodeSpec:
-            return _FLOW_NODE_ADAPTER.json_schema()
-        return super().model_json_schema(*args, **kwargs)
 
 
 class StepFlowNode(FlowNodeSpec):
@@ -155,6 +150,18 @@ FlowNode = Annotated[
 ]
 
 _FLOW_NODE_ADAPTER: TypeAdapter = TypeAdapter(FlowNode)
+
+
+def parse_flow_node(payload: Any) -> "FlowNode":
+    """The ONE explicit parse door for a single authored-flow node payload.
+
+    Dispatches through the discriminated union: ``kind`` is REQUIRED and must be one of
+    step/branch/evaluate/fanout; unknown kinds and unknown/mixed fields fail loudly. Concrete
+    ``FlowNodeSpec`` subclass instances pass through unchanged."""
+
+    if isinstance(payload, FlowNodeSpec) and type(payload) is not FlowNodeSpec:
+        return payload
+    return _FLOW_NODE_ADAPTER.validate_python(payload)
 
 
 class FlowArtifact(BaseModel):

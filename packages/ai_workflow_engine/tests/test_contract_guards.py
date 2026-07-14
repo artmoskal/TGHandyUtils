@@ -711,3 +711,32 @@ def test_no_class_defines_the_same_method_twice():
                     else:
                         seen[item.name] = item.lineno
     assert not offenders, "duplicate method definitions shadow silently:\n" + "\n".join(offenders)
+
+
+
+def test_image_input_import_home_is_transport_models():
+    """v0.11 clean contract (manifest row M4): the vision-module compat re-export marker is gone;
+    ImageInput's import homes are the package root and transport_models. vision.py may USE the
+    class (real dependency), but nothing may IMPORT it from vision."""
+
+    import ast as _ast
+    from pathlib import Path as _Path
+
+    offenders = []
+    for pkg in ("ai_workflow_engine", "../ai_workflow_tools/ai_workflow_tools",
+                "../ai_workflow_viewer/ai_workflow_viewer"):
+        base = (_Path(__file__).parents[1] / pkg).resolve()
+        if not base.exists():
+            continue
+        for path in base.rglob("*.py"):
+            if "build" in path.parts:
+                continue
+            tree = _ast.parse(path.read_text(encoding="utf-8"))
+            for node in _ast.walk(tree):
+                if (
+                    isinstance(node, _ast.ImportFrom)
+                    and node.module == "ai_workflow_engine.vision"
+                    and any(a.name == "ImageInput" for a in node.names)
+                ):
+                    offenders.append(f"{path.name}:{node.lineno}")
+    assert not offenders, f"ImageInput imported from vision (home is transport_models): {offenders}"

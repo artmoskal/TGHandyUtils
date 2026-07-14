@@ -205,6 +205,21 @@ def main() -> int:
                   "manifest row, or fix the regression.")
             return 1
 
+    # The PUBLIC surface is ledger-governed too (exports/signatures/schemas prefixed "public.").
+    prev_public_path = _PUBLIC_FIXTURE if _PUBLIC_FIXTURE.exists() else (
+        _HISTORICAL_PUBLIC if _HISTORICAL_PUBLIC.exists() else None
+    )
+    if prev_public_path is not None:
+        pdeltas = compare_records({"public": json.loads(prev_public_path.read_text(encoding="utf-8"))},
+                                  {"public": public})
+        pledg, punledg = partition_deltas(pdeltas, entries)
+        print(f"public deltas vs {prev_public_path.name}: {len(pdeltas)} ({len(pledg)} ledgered / {len(punledg)} unledgered)")
+        for m in punledg[:40]:
+            print("  UNLEDGERED -", m)
+        if punledg:
+            print("\nSEAL REFUSED — public-surface deltas must be ledgered like corpus deltas.")
+            return 1
+
     if not seal:
         if not _FIXTURE.exists():
             print("\nNO CURRENT-CONTRACT SEAL — run with --seal to create it.")

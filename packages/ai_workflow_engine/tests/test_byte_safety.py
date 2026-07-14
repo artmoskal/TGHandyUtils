@@ -17,7 +17,7 @@ from ai_workflow_engine.byte_safety import (
     redact_transport_data_uris,
 )
 from ai_workflow_engine.models import EvidenceRef
-from ai_workflow_engine.vision import ImageInput
+from ai_workflow_engine.transport_models import ImageInput
 
 pytestmark = pytest.mark.unit
 

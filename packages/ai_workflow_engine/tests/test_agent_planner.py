@@ -39,7 +39,7 @@ from ai_workflow_engine.models import (
 from ai_workflow_engine.observability_capture import ObservationCapture
 from ai_workflow_engine.budget import WorkflowBudget, WorkflowBudgetExceeded, WorkflowUsageContext
 from ai_workflow_engine.budget import workflow_usage_scope
-from ai_workflow_engine.vision import ImageInput
+from ai_workflow_engine.transport_models import ImageInput
 
 pytestmark = pytest.mark.unit
 

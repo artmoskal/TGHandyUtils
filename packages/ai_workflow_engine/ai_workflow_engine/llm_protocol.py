@@ -74,9 +74,19 @@ class LLMRequest(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def _require_user_or_messages(self) -> "LLMRequest":
+    def _one_explicit_mode(self) -> "LLMRequest":
+        """v0.11 clean contract (manifest row M5): two DELIBERATE modes, no silent precedence.
+        Simple mode: system?/user (+images), messages empty. Multi-turn mode: messages only —
+        a system prompt goes in a role="system" ChatMessage and images ride on their message."""
+
         if not self.user and not self.messages:
             raise ValueError("LLMRequest requires either user text or messages")
+        if self.messages and (self.user or self.system or self.images):
+            raise ValueError(
+                "LLMRequest modes are exclusive: with messages=[...], top-level system/user/"
+                "images must be empty (put the system prompt in a role='system' ChatMessage "
+                "and images on their ChatMessage)"
+            )
         return self
 
 
