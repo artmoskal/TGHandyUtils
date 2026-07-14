@@ -39,6 +39,12 @@ The engine owns execution and gates. GoPro owns inventory semantics and storage.
 | `ai-workflow-tools==0.5.0` | Add only when GoPro uses CLI agents or shared media helpers |
 | `ai-workflow-viewer==0.3.0` | Developer/diagnostic service; not required in the detector image |
 
+> **One coherent matrix at a time:** `ai-workflow-tools==0.5.0` and `ai-workflow-viewer==0.3.0`
+> require `ai-workflow-engine>=0.11,<0.12` — the three CANDIDATE versions install together only
+> once the pending `engine-v0.11.0` tag exists. Until then, the released coherent set is
+> `engine-v0.10.1` + `ai-workflow-tools==0.4.1` + `ai-workflow-viewer==0.2.3`; never mix the two.
+
+
 Vendoring only the engine wheel is the correct lightweight configuration for the current direct-VLM
 path.
 

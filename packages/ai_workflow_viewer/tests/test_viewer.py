@@ -1575,3 +1575,95 @@ def test_decision_text_never_sets_terminal_status(tmp_path):
         run_id="r",
     )
     assert typed.nodes["plan"].status == "completed", "typed node_status stays authoritative"
+
+
+def test_boundary_attacks_are_refused_on_every_viewer_surface(tmp_path):
+    """C2-1/C2-2/C2-3 (codex Iteration-2 review): the strict boundary is strict on EVERY
+    public/untrusted surface — (a) run-id path syntax never reaches a join (Python and HTTP
+    doors); (b) a symlinked bundle file escaping its directory is rejected; (c) a forged
+    definition digest fails the SINGLE read exactly like the grouped one; (d) a damaged
+    meta-only segment stays visible and loud, never disappears; (e) /events commits 200 only
+    after the strict read, and /artifact maps contract violations to the plain 500."""
+
+    import json as _json
+    import shutil as _shutil
+    import threading
+    import urllib.error
+    import urllib.request
+
+    import pytest as _pytest
+
+    from ai_workflow_viewer import FileEventSource, serve_viewer
+
+    definition = _write_group(tmp_path)
+    source = FileEventSource(tmp_path)
+
+    # (a) identity guard: Python door...
+    with _pytest.raises(ValueError, match="path syntax"):
+        source.read("../escape")
+
+    # (b) symlinked evidence escaping the bundle directory
+    sym_run = _write_bundle(
+        tmp_path, "sym-run", definition,
+        trace_events=[WorkflowTraceEvent(node="gate", node_status="completed", phase="node:result", run_id="sym-run", sequence=1, event_id="s-1")],
+        meta_extra=_segment_meta("sym-run", "sym-run", 0, digest=definition.definition_digest()),
+    )
+    outside = tmp_path.parent / "evil-trace.jsonl"
+    outside.write_text("", encoding="utf-8")
+    (sym_run / "trace.jsonl").unlink()
+    (sym_run / "trace.jsonl").symlink_to(outside)
+    with _pytest.raises(ValueError, match="escapes its bundle directory"):
+        FileEventSource(sym_run).read()
+    _shutil.rmtree(sym_run)
+
+    # (c) forged digest fails the SINGLE read too (was group-only)
+    forge_run = _write_bundle(
+        tmp_path, "forge-run", definition,
+        trace_events=[WorkflowTraceEvent(node="gate", node_status="completed", phase="node:result", run_id="forge-run", sequence=1, event_id="f-1")],
+        meta_extra=_segment_meta("forge-run", "forge-run", 0, digest=definition.definition_digest()),
+    )
+    meta = _json.loads((forge_run / "meta.json").read_text(encoding="utf-8"))
+    meta["definition_digest"] = "deadbeefdeadbeef"
+    (forge_run / "meta.json").write_text(_json.dumps(meta), encoding="utf-8")
+    with _pytest.raises(ValueError, match="forged or stale"):
+        FileEventSource(forge_run).read()
+
+    # (d) damaged meta-only segment: VISIBLE in the chooser, loud on read
+    damaged = tmp_path / "damaged-run"
+    damaged.mkdir()
+    base_meta = _json.loads((tmp_path / "logical-run" / "meta.json").read_text(encoding="utf-8"))
+    base_meta.update(run_id="damaged-run", segment_id="damaged-run")
+    (damaged / "meta.json").write_text(_json.dumps(base_meta), encoding="utf-8")
+    rows = {row["run_id"] for row in source.list_groups()}
+    assert "damaged-run" in rows, "a damaged segment must stay visible, never disappear"
+    with _pytest.raises(FileNotFoundError, match="missing workflow definition"):
+        source.read_group("damaged-run")
+
+    # (e) served doors: query traversal, missing run, and contract violations are plain
+    # errors with the raising contract's message — never a 200 that drops or half-renders
+    server = serve_viewer(JsonlObservationViewer(source), port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        root = f"http://127.0.0.1:{server.server_address[1]}"
+        with _pytest.raises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(f"{root}/?run_id=../escape", timeout=5)
+        assert caught.value.code == 500
+        assert "path syntax" in caught.value.read().decode("utf-8")
+
+        with _pytest.raises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(f"{root}/events?run_id=unknown-run", timeout=5)
+        assert caught.value.code == 404, "SSE must refuse BEFORE claiming success"
+
+        with _pytest.raises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(f"{root}/events?run_id=forge-run", timeout=5)
+        assert caught.value.code == 500
+        assert "forged or stale" in caught.value.read().decode("utf-8")
+
+        with _pytest.raises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(f"{root}/artifact/forge-run/forge-run/artifacts/x.png", timeout=5)
+        assert caught.value.code == 500
+        assert "forged or stale" in caught.value.read().decode("utf-8")
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)

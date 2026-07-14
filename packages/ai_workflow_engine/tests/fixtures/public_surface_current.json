@@ -5583,10 +5583,12 @@
           "type": "integer"
         },
         "artifact_manifest_path": {
+          "const": "artifacts.json",
           "title": "Artifact Manifest Path",
           "type": "string"
         },
         "artifact_root": {
+          "const": "artifacts",
           "title": "Artifact Root",
           "type": "string"
         },
@@ -5598,6 +5600,7 @@
         "attempt": {
           "anyOf": [
             {
+              "minimum": 1,
               "type": "integer"
             },
             {
@@ -5629,6 +5632,7 @@
           "type": "string"
         },
         "definition_path": {
+          "const": "definition.json",
           "title": "Definition Path",
           "type": "string"
         },
@@ -5638,6 +5642,7 @@
           "type": "integer"
         },
         "detail_path": {
+          "const": "details.jsonl",
           "title": "Detail Path",
           "type": "string"
         },
@@ -5688,6 +5693,21 @@
           "type": "string"
         },
         "status": {
+          "enum": [
+            "accepted",
+            "completed",
+            "failed",
+            "unknown",
+            "uncertain",
+            "partial",
+            "low_confidence",
+            "insufficient_evidence",
+            "requires_user_input",
+            "external_tool_unavailable",
+            "cancelled",
+            "timeout",
+            "abandoned"
+          ],
           "title": "Status",
           "type": "string"
         },
@@ -5706,6 +5726,7 @@
           "type": "integer"
         },
         "trace_path": {
+          "const": "trace.jsonl",
           "title": "Trace Path",
           "type": "string"
         },
@@ -5715,6 +5736,7 @@
           "type": "integer"
         },
         "usage_path": {
+          "const": "usage.jsonl",
           "title": "Usage Path",
           "type": "string"
         },

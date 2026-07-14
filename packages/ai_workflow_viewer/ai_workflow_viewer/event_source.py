@@ -18,6 +18,7 @@ from ai_workflow_engine import (
 from ai_workflow_engine.observation_bundle import (
     ABANDON_MARKER_NAME as _ABANDON_MARKER,
     COMMIT_MARKER_NAME as _COMMIT_MARKER,
+    _looks_like_path,
 )
 
 
@@ -148,14 +149,23 @@ class FileEventSource:
                 f"Observation bundle at {run_path} belongs to run {meta.run_id!r}, "
                 f"not {run_id!r} — the meta identity is the truth, never the directory name"
             )
-        definition_path = run_path / meta.definition_path
+        definition_path = _contained_file(run_path, meta.definition_path)
         if not definition_path.exists():
             raise FileNotFoundError(f"Observation bundle is missing workflow definition: {definition_path}")
         definition = WorkflowDefinition.model_validate_json(definition_path.read_text(encoding="utf-8"))
+        # C2-2: the digest is verified on EVERY read surface, not only the grouped one — the
+        # same segment must never render through one door and refuse through another.
+        actual_digest = definition.definition_digest()
+        if actual_digest != meta.definition_digest:
+            raise ValueError(
+                f"Observation bundle at {run_path}: meta claims digest "
+                f"{meta.definition_digest!r} but definition.json recomputes {actual_digest!r} "
+                "— forged or stale metadata is rejected"
+            )
         records = [
-            *_load_records(run_path / meta.trace_path, "trace", WorkflowTraceEvent),
-            *_load_records(run_path / meta.detail_path, "detail", ObservationDetail),
-            *_load_records(run_path / meta.usage_path, "usage", WorkflowUsageEvent),
+            *_load_records(_contained_file(run_path, meta.trace_path), "trace", WorkflowTraceEvent),
+            *_load_records(_contained_file(run_path, meta.detail_path), "detail", ObservationDetail),
+            *_load_records(_contained_file(run_path, meta.usage_path), "usage", WorkflowUsageEvent),
         ]
         records.sort(key=_record_sort_key)
         _assert_sequence_sane(records)
@@ -351,6 +361,13 @@ class FileEventSource:
         return groups
 
     def _run_path(self, run_id: str | None) -> Path:
+        # C2-1: a caller-supplied run id (including HTTP query/path values) is joined to the
+        # configured root — path syntax is an attack, not an identity. One guard, every door.
+        if run_id is not None and _looks_like_path(str(run_id)):
+            raise ValueError(
+                f"run id {run_id!r} contains path syntax — identities are plain names, "
+                "never paths"
+            )
         if _is_run_bundle(self.base_path):
             if run_id is not None and run_id != self.base_path.name:
                 candidate = self.base_path.parent / run_id
@@ -611,7 +628,24 @@ def _usage_totals_from_events(events: list[WorkflowUsageEvent], *, scope: str) -
 
 
 def _is_run_bundle(path: Path) -> bool:
-    return (path / "meta.json").exists() and (path / "definition.json").exists()
+    # C2-2: meta.json is the finalized-bundle recognition fact. A damaged segment that lost
+    # other required files is still RECOGNIZED — it lists and then fails loudly on read,
+    # never silently disappears from history.
+    return (path / "meta.json").exists()
+
+
+def _contained_file(run_path: Path, name: str) -> Path:
+    """C2-1: resolve one fixed-layout bundle file and require it to stay inside the bundle
+    directory — a symlink escaping the bundle is rejected, never followed."""
+
+    root = run_path.resolve()
+    candidate = root / name
+    if not candidate.resolve().is_relative_to(root):
+        raise ValueError(
+            f"bundle file {name!r} in {run_path} escapes its bundle directory — "
+            "symlinked evidence is rejected"
+        )
+    return candidate
 
 
 def _run_entry(path: Path) -> dict:

@@ -216,10 +216,31 @@ def serve_viewer(
             run_id = _request_run_id(parsed.path, query)
             related = (query.get("related_run_id") or [None])[0]
             if parsed.path.startswith("/events"):
-                _write_sse(self, viewer, run_id=run_id)
+                # C2-3: the stream commits 200 only AFTER the strict read succeeds — a
+                # pre-v2/corrupt/missing run answers with the loud plain error, never a
+                # success status followed by a dropped connection.
+                try:
+                    initial = viewer.event_records(run_id=run_id)
+                except FileNotFoundError as exc:
+                    _write_plain_error(self, 404, exc)
+                    return
+                except ValueError as exc:
+                    _write_plain_error(self, 500, exc)
+                    return
+                _write_sse(self, viewer, run_id=run_id, initial=initial)
                 return
             if parsed.path.startswith("/artifact/"):
-                resolved = _artifact_response(viewer, parsed.path)
+                # C2-3: artifact resolution shares the strict error door — absence is 404,
+                # contract violations (pre-v2, corrupt lineage, malformed meta) are the loud
+                # 500 with the raising contract's message.
+                try:
+                    resolved = _artifact_response(viewer, parsed.path)
+                except FileNotFoundError as exc:
+                    _write_plain_error(self, 404, exc)
+                    return
+                except ValueError as exc:
+                    _write_plain_error(self, 500, exc)
+                    return
                 if resolved is None:
                     self.send_response(404)
                     self.end_headers()
@@ -275,21 +296,39 @@ def _write_plain_error(handler: BaseHTTPRequestHandler, status: int, exc: Except
     handler.wfile.write(body)
 
 
-def _write_sse(handler: BaseHTTPRequestHandler, viewer: JsonlObservationViewer, *, run_id: Optional[str] = None) -> None:
+def _write_sse(
+    handler: BaseHTTPRequestHandler,
+    viewer: JsonlObservationViewer,
+    *,
+    run_id: Optional[str] = None,
+    initial: Optional[list[dict]] = None,
+) -> None:
+    # ``initial`` is the PREFLIGHTED strict read (C2-3) — success is only claimed after it.
+    records = initial if initial is not None else viewer.event_records(run_id=run_id)
     handler.send_response(200)
     handler.send_header("Content-Type", "text/event-stream; charset=utf-8")
     handler.send_header("Cache-Control", "no-cache")
     handler.end_headers()
-    for record in _poll_records(viewer, seconds=60, run_id=run_id):
-        import json
+    import json
 
+    for record in records:
+        payload = json.dumps(record, sort_keys=True, default=str).encode("utf-8")
+        handler.wfile.write(b"data: " + payload + b"\n\n")
+        handler.wfile.flush()
+    for record in _poll_records(viewer, seconds=60, run_id=run_id, already_seen=len(records)):
         payload = json.dumps(record, sort_keys=True, default=str).encode("utf-8")
         handler.wfile.write(b"data: " + payload + b"\n\n")
         handler.wfile.flush()
 
 
-def _poll_records(viewer: JsonlObservationViewer, *, seconds: int, run_id: Optional[str] = None) -> Iterable[dict]:
-    seen = 0
+def _poll_records(
+    viewer: JsonlObservationViewer,
+    *,
+    seconds: int,
+    run_id: Optional[str] = None,
+    already_seen: int = 0,
+) -> Iterable[dict]:
+    seen = already_seen
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         records = viewer.event_records(run_id=run_id)

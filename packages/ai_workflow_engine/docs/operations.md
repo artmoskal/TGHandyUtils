@@ -120,8 +120,9 @@ including abandoned attempts.
 state or results.
 
 **Bundle schema is versioned.** Each bundle's `meta.json` carries `bundle_schema_version` (currently
-`1`). A dashboard that reads bundle files directly must check it and **fail loudly on an unknown
-version** rather than mis-parse a future layout. Resolve a run's disposition through the group reader
+`2` — the value of `ai_workflow_engine.observation_bundle.BUNDLE_SCHEMA_VERSION`). A dashboard that
+reads bundle files directly must check it and **fail loudly on an unknown version** rather than
+mis-parse a future layout; prefer the engine's `load_bundle_meta_v2`, which is that check. Resolve a run's disposition through the group reader
 (`read_group(...).status`) rather than re-deriving it from raw events, and project result/segment
 status into product state through an exhaustive closed mapping (partial vs failed vs rejected vs
 requires_user_input vs completed) so a new status can never fall through silently.
@@ -194,6 +195,12 @@ An engine release is ready only when:
 - any approved paid/live qualification stays within recorded caps;
 - a human inspects the observation UI when the release changes user-visible viewer behavior;
 - permanent docs describe tagged truth and consumer handoffs identify re-adoption risk (the line is latest-only — no migration layer exists);
+- **latest-only cutover procedure** (moving a deployment to a new line): stop writers; archive the
+  old observation bundle root and START A NEW EMPTY bundle root (mixed roots fail scans by design —
+  one pre-v0.11 bundle beside current segments poisons listing and finalize-time retention);
+  use a NEW wait-coordinator namespace, and explicitly settle or discard pending waits/snapshots
+  under the OLD tag first (the current engine rejects them); keep the historical viewer/tag around
+  only for reading historical data;
 - a counterpart review checks code, docs, examples, and evidence from primary sources.
 
 Framework requests and post-adoption feedback close through

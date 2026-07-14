@@ -50,6 +50,12 @@ a defect.
 | `ai-workflow-tools==0.5.0` | CLI agents, `claude -p`/`codex exec`, tool catalog, media helpers |
 | `ai-workflow-viewer==0.3.0` | Low-level engine run investigation and bundle rendering |
 
+> **One coherent matrix at a time:** `ai-workflow-tools==0.5.0` and `ai-workflow-viewer==0.3.0`
+> require `ai-workflow-engine>=0.11,<0.12` — the three CANDIDATE versions install together only
+> once the pending `engine-v0.11.0` tag exists. Until then, the released coherent set is
+> `engine-v0.10.1` + `ai-workflow-tools==0.4.1` + `ai-workflow-viewer==0.2.3`; never mix the two.
+
+
 The MageQA Next.js dashboard remains product-owned. It may link/embed/project engine bundle data, but
 it must not create a duplicate trace or workflow runtime.
 

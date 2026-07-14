@@ -37,6 +37,12 @@ client event
 | `ai-workflow-tools==0.5.0` | Add for CLI agents/tool catalog if the product uses them |
 | `ai-workflow-viewer==0.3.0` | Developer diagnostics or product-linked run inspection |
 
+> **One coherent matrix at a time:** `ai-workflow-tools==0.5.0` and `ai-workflow-viewer==0.3.0`
+> require `ai-workflow-engine>=0.11,<0.12` — the three CANDIDATE versions install together only
+> once the pending `engine-v0.11.0` tag exists. Until then, the released coherent set is
+> `engine-v0.10.1` + `ai-workflow-tools==0.4.1` + `ai-workflow-viewer==0.2.3`; never mix the two.
+
+
 Build from the immutable tag and record commit/hash. Never copy engine source or track the branch.
 
 ## Ownership Boundary

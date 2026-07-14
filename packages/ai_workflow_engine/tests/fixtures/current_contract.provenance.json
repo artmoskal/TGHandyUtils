@@ -4,10 +4,10 @@
   "determinism": "two-run-equal",
   "fixture_sha256": "b8bb8d58aaaa44e8d102312fe71583b3f9e428e4908c5e49566f10059eb6a5cf",
   "how_to_verify": "re-run this sealer in verify mode (rebuilds the candidate wheel and compares to the sealed fixture); the hermetic per-run gate re-hashes every sealed input and compares the live corpus inside ./test.sh.",
-  "ledger_sha256": "5250f1af844288a7fddd7dea8c0863e4c2d0cf2e927782512413a53d780bf787",
-  "public_surface_sha256": "d2f1baeed65e23f58c3aea5b1c4985c1957a8535bc6a47b6b2614f35612d549d",
+  "ledger_sha256": "7899196110ab3b4fe87557a1d8adc022195fd398959ad6998ee81f7107cbc695",
+  "public_surface_sha256": "3f60566fef7640fce347b6f5647fb7af886e41848cfb06684a0835d4f6a9fbb4",
   "pydantic_pin": "2.13.4",
   "python_version": "3.11",
-  "sealed_at": "2026-07-14T15:39:39+00:00",
+  "sealed_at": "2026-07-14T16:30:59+00:00",
   "sealer_sha256": "e9c7c07bf3b004fde241d72cb1358acddc5d089a6dc356179688ec76a674d43e"
 }

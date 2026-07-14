@@ -242,3 +242,62 @@ def test_documented_examples_execute_through_public_engine_doors():
     for name in ("minimal_step.py", "observed_workflow.py", "durable_wait.py"):
         namespace = runpy.run_path(str(examples / name), run_name=f"docs_example_{name}")
         asyncio.run(namespace["main"]())
+
+
+def test_documented_package_matrix_is_coherent_and_derived_from_pyproject():
+    """C2-5: the documented pins form ONE resolvable matrix — versions and the engine
+    requirement come from the three pyproject.toml files, never from hand-kept strings.
+    A handoff pairing a released engine with candidate tools/viewer could never install."""
+
+    packages_root = PACKAGE_ROOT.parent
+    versions: dict[str, str] = {}
+    engine_reqs: dict[str, str] = {}
+    for pkg in ("ai_workflow_engine", "ai_workflow_tools", "ai_workflow_viewer"):
+        data = tomllib.loads((packages_root / pkg / "pyproject.toml").read_text(encoding="utf-8"))
+        versions[pkg] = data["project"]["version"]
+        for dep in data["project"].get("dependencies", ()):
+            flat = dep.replace(" ", "")
+            if flat.startswith("ai-workflow-engine"):
+                engine_reqs[pkg] = flat
+    assert set(engine_reqs) == {"ai_workflow_tools", "ai_workflow_viewer"}
+
+    def _tuple(text: str) -> tuple[int, ...]:
+        parts = tuple(int(piece) for piece in text.split("."))
+        return parts + (0,) * (3 - len(parts))
+
+    engine = _tuple(versions["ai_workflow_engine"])
+    for pkg, req in engine_reqs.items():
+        bounds = re.fullmatch(r"ai-workflow-engine>=([0-9.]+),<([0-9.]+)", req)
+        assert bounds, f"{pkg} engine requirement {req!r} must be a simple >=,< range"
+        assert _tuple(bounds.group(1)) <= engine < _tuple(bounds.group(2)), (
+            f"{pkg} requires engine {req!r} but the repository engine is "
+            f"{versions['ai_workflow_engine']} — the documented matrix could never resolve"
+        )
+
+    tools_pin = f"ai-workflow-tools=={versions['ai_workflow_tools']}"
+    for name in (
+        "gopro-handoff.md",
+        "mageqa-handoff.md",
+        "slackazz-handoff.md",
+        "voice-brain-handoff.md",
+    ):
+        text = (PACKAGE_ROOT / "docs" / name).read_text(encoding="utf-8")
+        assert tools_pin in text, f"{name} must pin the repository tools version"
+        assert "One coherent matrix at a time" in text, (
+            f"{name} must state the candidate-vs-released matrix rule (C2-5)"
+        )
+
+
+def test_documented_bundle_schema_version_is_the_engine_truth():
+    """C2-5: docs state the CURRENT bundle schema version from the engine constant —
+    a stale hand-written number misleads every dashboard author."""
+
+    from ai_workflow_engine.observation_bundle import BUNDLE_SCHEMA_VERSION
+
+    text = (PACKAGE_ROOT / "docs" / "operations.md").read_text(encoding="utf-8")
+    found = re.search(r"`bundle_schema_version`\s*\(currently\s*\n?`(\d+)`", text)
+    assert found, "operations.md must document the current bundle schema version"
+    assert int(found.group(1)) == BUNDLE_SCHEMA_VERSION, (
+        f"operations.md claims bundle schema {found.group(1)} but the engine writes "
+        f"{BUNDLE_SCHEMA_VERSION}"
+    )

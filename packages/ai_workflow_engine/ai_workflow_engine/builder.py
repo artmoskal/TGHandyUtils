@@ -562,6 +562,19 @@ class WorkflowEngine:
         terminal_status: Optional[Any] = None,
     ) -> WorkflowRunResult:
         definition = self._resolve(workflow)
+        if observation_bundle is not None:
+            # C2-4 (F-2G-1): the escape hatch is public API — a string/path or partial duck
+            # object must fail HERE, at the door, not deep inside the run session. Call-time
+            # import keeps the simple tier lazy (F1.1).
+            from ai_workflow_engine.observation_bundle import ObservationRunBundle
+
+            if not isinstance(observation_bundle, ObservationRunBundle):
+                raise TypeError(
+                    "observation_bundle= expects the canonical ObservationRunBundle "
+                    f"(got {type(observation_bundle).__name__!r}). Open one with "
+                    "open_observation_run_bundle(...), or configure engine-owned bundles "
+                    "via with_observation(ObservationConfig(enabled=True, bundle_dir=...))."
+                )
         context = self._run_context_for(
             definition,
             goal=goal,

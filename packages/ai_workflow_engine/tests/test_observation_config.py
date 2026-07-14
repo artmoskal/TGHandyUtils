@@ -251,6 +251,39 @@ def test_explicit_bundle_escape_hatch_beats_the_config(tmp_path):
     assert meta["status"] == "completed"
 
 
+def test_explicit_bundle_wrong_types_fail_at_the_door_with_zero_calls(tmp_path):
+    """C2-4 (F-2G-1, codex Iteration-2 review): the escape hatch is public API — a string or
+    a partial duck object is a TypeError AT ``engine.run``, before compilation or any
+    capability call, and the message names both supported routes."""
+
+    calls: list[int] = []
+
+    def probe(payload, context):
+        calls.append(1)
+        return {"ok": True}
+
+    engine = WorkflowEngine()
+    engine.register_capability("probe", probe, kind="deterministic")
+    engine.register_workflow(WorkflowBuilder("door_flow").step("probe").build())
+
+    with pytest.raises(TypeError, match="ObservationRunBundle"):
+        asyncio.run(
+            engine.run("door_flow", {"x": 1}, observation_bundle=str(tmp_path / "str-bundle"))
+        )
+
+    class Impostor:
+        trace_sink = None
+
+        def finalize(self, *args, **kwargs):
+            return None
+
+    with pytest.raises(TypeError, match="open_observation_run_bundle"):
+        asyncio.run(engine.run("door_flow", {"x": 1}, observation_bundle=Impostor()))
+
+    assert calls == [], "wrong bundle types must be rejected before ANY capability executes"
+    assert not (tmp_path / "str-bundle").exists(), "the string must never become a directory"
+
+
 # --- G1: evidence resolution — artifacts are archived INTO the bundle -----------------
 
 

@@ -298,7 +298,9 @@ mermaid.initialize({{ startOnLoad: true }});
 # content) — SVG/HTML are ACTIVE content and must never execute in the viewer context.
 INLINE_SAFE_MEDIA_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
 
-ARTIFACT_MANIFEST_NAME = "artifacts.json"
+# C2-1: the manifest name is the ENGINE's fixed-layout fact (a Literal field of the v2 meta) —
+# one owner, no viewer-side duplicate that could drift.
+from ai_workflow_engine.observation_bundle import ARTIFACT_MANIFEST_NAME  # noqa: E402
 
 # A3: the manifest is UNTRUSTED input — the loader is the ONE place that proves it is a
 # list of dict rows. Sentinels distinguish "no manifest" (absent → no section) from

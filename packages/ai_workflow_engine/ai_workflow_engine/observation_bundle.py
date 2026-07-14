@@ -10,7 +10,7 @@ import logging
 from pathlib import Path
 import re
 import shutil
-from typing import Any, Iterable, Literal, Optional
+from typing import Any, Iterable, Literal, Optional, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -93,11 +93,27 @@ BUNDLE_SCHEMA_VERSION = 2
 # The REAL closed status vocabulary a bundle can be finalized with: every WorkflowResultStatus
 # the engine's session close can carry, wait-terminal resolutions written by the reclaim path
 # (cancelled/timeout evidence), and the retention-owned "abandoned" marker.
-_BUNDLE_STATUSES = (
+# The ONE closed status vocabulary — a typed Literal so the published JSON schema carries the
+# enum itself (C2-2), and a runtime tuple derived from it for message text and membership checks.
+BundleStatus = Literal[
     "accepted", "completed", "failed", "unknown", "uncertain", "partial",
     "low_confidence", "insufficient_evidence", "requires_user_input",
     "external_tool_unavailable", "cancelled", "timeout", "abandoned",
-)
+]
+_BUNDLE_STATUSES = get_args(BundleStatus)
+
+
+def _looks_like_path(value: str) -> bool:
+    """True when an identity string carries path syntax (separators, traversal, drive/root)."""
+
+    return (
+        "/" in value
+        or "\\" in value
+        or value in (".", "..")
+        or value.startswith("..")
+        or value.startswith("~")
+        or (len(value) >= 2 and value[1] == ":")
+    )
 
 
 class ObservationBundleMetaV2(BaseModel):
@@ -113,15 +129,17 @@ class ObservationBundleMetaV2(BaseModel):
     bundle_schema_version: Literal[2]
     run_id: str
     workflow_id: str
-    status: str
+    status: BundleStatus
     timestamp: str
-    trace_path: str
-    detail_path: str
-    usage_path: str
-    definition_path: str
+    # C2-1: the file layout is FIXED — these are facts of the contract, not knobs. Literal
+    # fields publish the truth in the schema and leave no traversal surface to validate.
+    trace_path: Literal["trace.jsonl"]
+    detail_path: Literal["details.jsonl"]
+    usage_path: Literal["usage.jsonl"]
+    definition_path: Literal["definition.json"]
     definition_digest: str
-    artifact_manifest_path: str
-    artifact_root: str
+    artifact_manifest_path: Literal["artifacts.json"]
+    artifact_root: Literal["artifacts"]
     artifact_count: int = Field(ge=0)
     artifacts_copied: int = Field(ge=0)
     trace_count: int = Field(ge=0)
@@ -129,22 +147,38 @@ class ObservationBundleMetaV2(BaseModel):
     usage_count: int = Field(ge=0)
     usage_totals_scope: Literal["run_cumulative_at_finalize"]
     total_tokens: int = Field(ge=0)
-    metered_usd: Optional[float] = None
-    notional_usd: Optional[float] = None
+    metered_usd: Optional[float] = Field(default=None, allow_inf_nan=False)
+    notional_usd: Optional[float] = Field(default=None, allow_inf_nan=False)
     segment_id: str
     segment_index: int = Field(ge=0)
     segment_kind: Literal["initial", "resume", "wait_terminal"]
-    attempt: Optional[int] = None
+    # durable claim ordinals are 1-based; None = initial/local segment
+    attempt: Optional[int] = Field(default=None, ge=1)
     correlation_id: Optional[str] = None
 
     @model_validator(mode="after")
     def _coherent_segment_identity(self) -> "ObservationBundleMetaV2":
         problems: list[str] = []
-        if self.status not in _BUNDLE_STATUSES:
-            problems.append(f"status {self.status!r} outside the closed vocabulary {_BUNDLE_STATUSES}")
         for name in ("run_id", "workflow_id", "segment_id", "timestamp", "definition_digest"):
             if not str(getattr(self, name) or "").strip():
                 problems.append(f"{name} is blank")
+        # C2-1: run/segment identities are PLAIN names — they become directory names and are
+        # joined to configured roots by readers, so any path syntax is an attack, not an id.
+        for name in ("run_id", "segment_id"):
+            value = str(getattr(self, name))
+            if _looks_like_path(value):
+                problems.append(
+                    f"{name} {value!r} contains path syntax — identities are plain names, "
+                    "never paths"
+                )
+        # C2-2: the timestamp is the retention/ordering truth — it must parse as tz-aware
+        # ISO-8601 (the writer emits UTC with a Z suffix), never a lexicographic guess.
+        try:
+            parsed = datetime.fromisoformat(str(self.timestamp).replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                problems.append(f"timestamp {self.timestamp!r} is not timezone-aware")
+        except ValueError:
+            problems.append(f"timestamp {self.timestamp!r} is not ISO-8601")
         if self.segment_kind == "initial" and (self.segment_index != 0 or self.attempt is not None):
             problems.append(
                 f"initial segment must have segment_index=0 and no attempt — got "
@@ -159,9 +193,18 @@ class ObservationBundleMetaV2(BaseModel):
 
 def load_bundle_meta_v2(bundle_dir: Path) -> ObservationBundleMetaV2:
     """The ONE meta reader for engine-owned lifecycle (retention/reclaim). Pre-v2 or malformed
-    metas fail loudly with the historical route — never a permissive ``meta.get`` fallback."""
+    metas fail loudly with the historical route — never a permissive ``meta.get`` fallback.
+    C2-1: the read is containment-checked — a ``meta.json`` symlink escaping the bundle
+    directory is rejected, never followed."""
 
-    raw = json.loads((Path(bundle_dir) / "meta.json").read_text(encoding="utf-8"))
+    root = Path(bundle_dir).resolve()
+    meta_path = root / "meta.json"
+    if not meta_path.resolve().is_relative_to(root):
+        raise ValueError(
+            f"observation bundle meta at {meta_path} escapes its bundle directory — "
+            "symlinked metadata is rejected"
+        )
+    raw = json.loads(meta_path.read_text(encoding="utf-8"))
     version = raw.get("bundle_schema_version") if isinstance(raw, dict) else None
     if version != BUNDLE_SCHEMA_VERSION:
         raise ValueError(

@@ -576,6 +576,14 @@
       "reason": "new sealed public model (M9)",
       "manifest_row": "M9",
       "consumed_by_seal": "2026-07-14 bundle-v2 + wait-record-version seal (2A)"
+    },
+    {
+      "path_prefix": "public.schemas.ObservationBundleMetaV2",
+      "match": "prefix",
+      "status": "spent",
+      "reason": "C2-1/C2-2 boundary hardening (codex Iteration-2 review): fixed-layout Literal paths, published status enum, tz-aware timestamp rule, 1-based attempt, finite costs, plain-name identities - subtree-scoped for this ONE seal, spent immediately after",
+      "manifest_row": "M9",
+      "consumed_by_seal": "2026-07-14 C2 boundary-hardening seal (2GR; 8 subtree deltas)"
     }
   ]
 }
