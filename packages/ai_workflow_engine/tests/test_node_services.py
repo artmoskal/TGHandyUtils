@@ -14,7 +14,11 @@ from ai_workflow_engine.models import (
     WorkflowRunContext,
 )
 from ai_workflow_engine.nodes import NODE_HANDLERS, build_branch_node, build_step_node
-from ai_workflow_engine.node_services import NodeExecutionServices
+from ai_workflow_engine.node_services import (
+    ExecutorNodeServices,
+    NodeExecutionServices,
+    NodeSchedulingRuntime,
+)
 from ai_workflow_engine._runtime_state import CONTEXT, RUNNING_PAYLOAD
 from ai_workflow_engine.workflow import BranchDecision
 
@@ -140,3 +144,28 @@ def test_handler_table_covers_all_known_kinds():
     assert set(NODE_HANDLERS) == {
         "step", "branch", "fanout", "evaluate", "subworkflow", "human", "planner",
     }
+
+
+async def test_concrete_node_services_uses_only_the_typed_child_run_port():
+    calls = []
+
+    async def run_child(definition, payload, context):
+        calls.append((definition.workflow_id, payload, context.run_context.workflow_id))
+        return "child-result"
+
+    services = ExecutorNodeServices(
+        runtime=_FakeRuntime(),
+        subworkflows={},
+        model_profiles={},
+        child_run=run_child,
+        node_result_factory=lambda **values: values,
+        capability_binding_error=ValueError,
+    )
+    definition = WorkflowBuilder("child").step("work").build()
+
+    result = await services.run_child(definition, {"x": 1}, _context())
+
+    assert result == "child-result"
+    assert calls == [("child", {"x": 1}, "run-1")]
+    assert isinstance(services.scheduling, NodeSchedulingRuntime)
+    assert not hasattr(services, "_executor")

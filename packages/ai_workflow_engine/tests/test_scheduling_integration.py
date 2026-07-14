@@ -213,7 +213,9 @@ async def test_cancel_previous_race_previous_exits_before_lookup_does_not_wedge_
         if decision.action == "cancel_previous":
             # Simulate the previous worker exiting inside the submit→lookup window:
             # registry entry gone, slot freed, the new run already promoted to active.
-            engine.executor._scheduled_tasks.pop(kwargs["key"], None)
+            engine.executor._node_scheduling.unregister_task(
+                kwargs["key"], decision.previous_run_id
+            )
             scheduler.complete(key=kwargs["key"], run_id=decision.previous_run_id)
         return decision
 

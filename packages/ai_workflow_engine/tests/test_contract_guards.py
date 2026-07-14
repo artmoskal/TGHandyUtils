@@ -168,6 +168,44 @@ def test_executor_contains_no_compiler_implementation_twins():
     assert not (present & forbidden), f"compiler twins remain on executor: {sorted(present & forbidden)}"
 
 
+def test_node_service_owns_behavior_without_an_executor_back_reference():
+    """The concrete node boundary is real ownership, not private-method forwarding."""
+
+    source = (ENGINE_ROOT / "node_services.py").read_text(encoding="utf-8")
+    assert "_executor" not in source
+    tree = ast.parse((ENGINE_ROOT / "executor.py").read_text(encoding="utf-8"))
+    executor = next(
+        node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "WorkflowExecutor"
+    )
+    forbidden = {
+        "_sequential_predecessor",
+        "_invoke_bound",
+        "_context_for_node",
+        "_child_context",
+        "_node_input",
+        "_record",
+    }
+    present = {
+        node.name
+        for node in executor.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert not (present & forbidden), f"node-service twins remain: {sorted(present & forbidden)}"
+
+    assigned = {
+        target.attr
+        for node in ast.walk(executor)
+        if isinstance(node, (ast.Assign, ast.AnnAssign))
+        for target in (
+            node.targets if isinstance(node, ast.Assign) else [node.target]
+        )
+        if isinstance(target, ast.Attribute)
+        and isinstance(target.value, ast.Name)
+        and target.value.id == "self"
+    }
+    assert not ({"_scheduled_tasks", "_scheduled_cancellations"} & assigned)
+
+
 def test_capability_status_vocabulary_is_closed():
     """G-ext3: the run-state vocabulary is a closed set — widening it is a reviewed act."""
 

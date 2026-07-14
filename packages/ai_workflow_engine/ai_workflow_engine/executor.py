@@ -41,10 +41,11 @@ _AUTHORED_PROVENANCE: ContextVar[Optional[Dict[str, Any]]] = ContextVar(
     "ai_workflow_engine_authored_provenance", default=None
 )
 from ai_workflow_engine.engine.runner import WorkflowRunner, derive_workflow_result_status
-from ai_workflow_engine.engine.scheduler import WorkflowScheduler
 from ai_workflow_engine.machine_compiler import WorkflowMachineCompiler
-from ai_workflow_engine.model_binding import model_profile_scope
-from ai_workflow_engine.node_services import ExecutorNodeServices, NodeExecutionServices
+from ai_workflow_engine.node_services import (
+    ExecutorNodeServices,
+    NodeSchedulingRuntime,
+)
 from ai_workflow_engine.node_replay import NodeReplayRuntime
 from ai_workflow_engine.nodes import NODE_HANDLERS
 from ai_workflow_engine.run_session import child_trace_slice, WorkflowRunSession
@@ -54,7 +55,6 @@ from ai_workflow_engine._runtime_state import (
     RUNNING_PAYLOAD,
     observation_capture_scope,
     run_session_scope,
-    _ACTIVE_RETRACE_PROVENANCE,
 )
 from ai_workflow_engine.models import (
     CapabilityContext,
@@ -66,10 +66,9 @@ from ai_workflow_engine.models import (
     WorkflowTraceEvent,
     WorkflowUsageSummary,
 )
-from ai_workflow_engine.planning import PlanArtifact, PlanTask, render_plan
 from ai_workflow_engine.snapshot import MachineSnapshot, SNAPSHOT_SCHEMA_VERSION
 from ai_workflow_engine.wait_contract import WaitHandle
-from ai_workflow_engine.workflow import WorkflowDefinition, WorkflowNode, render_machine_card
+from ai_workflow_engine.workflow import WorkflowDefinition, WorkflowNode
 
 class WorkflowState(TypedDict, total=False):
     """LangGraph state schema. Every key is declared so LangGraph propagates it across nodes
@@ -217,17 +216,20 @@ class WorkflowExecutor:
         self.runtime = runtime
         self.subworkflows = subworkflows or {}
         self.runner = WorkflowRunner(config, trace_sink=runtime.trace_sink)
-        # Shared across all runs on this executor so concurrent runs contend for the same backend
-        # slots (single-flight / backpressure are engine-owned, not per-run policy state).
-        self.scheduler = WorkflowScheduler()
         self._bound_loop: Optional[asyncio.AbstractEventLoop] = None
-        self._scheduled_tasks: Dict[str, tuple[str, asyncio.Task[Any]]] = {}
-        self._scheduled_cancellations: Dict[tuple[str, str], str] = {}
         # ModelProfile registry for declarative per-node model binding (set by WorkflowEngine).
         self._model_profiles: Dict[str, Any] = {}
         self._wait_runtime: Any = None
-        # The narrow boundary handed to node handlers (executor internals stay private).
-        self._node_services: NodeExecutionServices = ExecutorNodeServices(self)
+        self._node_scheduling = NodeSchedulingRuntime()
+        self._node_services: ExecutorNodeServices = ExecutorNodeServices(
+            runtime=runtime,
+            subworkflows=self.subworkflows,
+            model_profiles=self._model_profiles,
+            child_run=self._run_inner,
+            node_result_factory=NodeResult,
+            capability_binding_error=CapabilityBindingError,
+            scheduling=self._node_scheduling,
+        )
         # Node-kind handler table. Kinds present here are *implemented*; any valid-but-absent
         # kind fails loudly (never silently downgraded). Phases register more kinds.
         handlers = dict(NODE_HANDLERS)
@@ -249,8 +251,16 @@ class WorkflowExecutor:
     @model_profiles.setter
     def model_profiles(self, profiles: Dict[str, Any]) -> None:
         self._model_profiles = profiles
+        if hasattr(self, "_node_services"):
+            self._node_services.set_model_profiles(profiles)
         if hasattr(self, "_compiler"):
             self._compiler.set_model_profiles(profiles)
+
+    @property
+    def scheduler(self) -> Any:
+        """The shared scheduler, exposed for runtime inspection and policy tests."""
+
+        return self._node_scheduling.scheduler
 
     @property
     def wait_runtime(self) -> Any:
@@ -621,195 +631,8 @@ class WorkflowExecutor:
 
         return self._compiler.compile(definition)
 
-    @staticmethod
-    def _sequential_predecessor(definition: WorkflowDefinition, node_id: str) -> Optional[str]:
-        for t in definition.transitions:
-            if t.target == node_id and t.policy == "always":
-                return t.source
-        return None
-
     def _preflight(self, definition: WorkflowDefinition) -> Optional[str]:
         return self._compiler.preflight(definition)
-
-    # ---------------------------------------------------------------- model binding
-    async def _invoke_bound(
-        self,
-        node: WorkflowNode,
-        capability: str,
-        payload: Any,
-        context: CapabilityContext,
-        state: Dict[str, Any],
-        *,
-        attempt: int = 1,
-        definition: Optional[WorkflowDefinition] = None,
-    ) -> CapabilityResult:
-        """Invoke a capability under the node's declared model profile (if any), traced."""
-
-        context = self._context_for_node(node, context, state, definition=definition)
-        if node.memory is not None:
-            # GoPro R4: node-scoped agent-memory selection rides context metadata; the
-            # planner resolves it per call (validated loudly at graph validation).
-            context = context.model_copy(
-                update={"metadata": {**context.metadata, "agent_memory": node.memory}}
-            )
-        if not node.model_profile:
-            return await self.runtime.invoke(capability, payload, context, attempt=attempt)
-        profile = self.model_profiles.get(node.model_profile)
-        if profile is None:  # defensive: preflight already rejects this
-            raise CapabilityBindingError(
-                f"node '{node.id}' references unknown model profile: {node.model_profile}"
-            )
-        usage = state.get("usage_summary")
-        events_before = len(usage.events) if usage is not None else 0
-        bound_context = context.model_copy(update={"model_profile": profile})
-        with model_profile_scope(profile):
-            result = await self.runtime.invoke(capability, payload, bound_context, attempt=attempt)
-        new_events = usage.events[events_before:] if usage is not None else []
-        model_used = next((event.model for event in reversed(new_events) if event.model), None)
-        self.runtime.trace_sink.record(
-            WorkflowTraceEvent(
-                node=node.id,
-                attempt=attempt,
-                decision="model_binding",
-                metadata={
-                    "model_profile_requested": node.model_profile,
-                    "model_profile_model": profile.model,
-                    "model_used": model_used,
-                },
-            )
-        )
-        return result
-
-    @staticmethod
-    def _context_for_node(
-        node: WorkflowNode,
-        context: CapabilityContext,
-        state: Dict[str, Any],
-        *,
-        plan: Optional[PlanArtifact] = None,
-        definition: Optional[WorkflowDefinition] = None,
-    ) -> CapabilityContext:
-        extra: Dict[str, Any] = {}
-        if node.inject_plan:
-            current_plan = plan or state.get("plan_artifact")
-            if current_plan is not None:
-                if not isinstance(current_plan, PlanArtifact):
-                    current_plan = PlanArtifact.model_validate(current_plan)
-                extra["plan"] = render_plan(current_plan)
-        if node.inject_machine and definition is not None:
-            # The machine describes itself to its navigator: legal moves + LIVE gate budgets.
-            extra["machine"] = render_machine_card(definition, node.id, state)
-        provenance = _ACTIVE_RETRACE_PROVENANCE.get()
-        if provenance is not None:
-            extra_update: Dict[str, Any] = {"retrace_provenance": provenance}
-            if extra:
-                extra_update["metadata"] = {**context.metadata, **extra}
-            return context.model_copy(update=extra_update)
-        if not extra:
-            return context
-        return context.model_copy(update={"metadata": {**context.metadata, **extra}})
-
-    # ---------------------------------------------------------------- node handlers
-    def _child_context(
-        self,
-        parent: CapabilityContext,
-        child_def: WorkflowDefinition,
-        ref: Any,
-    ) -> CapabilityContext:
-        plan = parent.plan
-        if plan is not None and ref is not None and (ref.budget_usd is not None or ref.max_steps is not None):
-            limit_update: Dict[str, Any] = {}
-            if ref.budget_usd is not None:
-                limit_update["max_estimated_usd"] = ref.budget_usd
-            if ref.max_steps is not None:
-                limit_update["max_steps"] = ref.max_steps
-            plan = plan.model_copy(update={"limits": plan.limits.model_copy(update=limit_update)})
-        goal = parent.goal.model_copy(update={"workflow_type": child_def.workflow_id})
-        return CapabilityContext(
-            goal=goal,
-            run_context=parent.run_context,
-            plan=plan,
-            usage_summary=parent.usage_summary,  # shared budget across parent + child
-            limits=plan.limits if plan is not None else parent.limits,
-            metadata=dict(parent.metadata),
-        )
-
-    # -- evaluate helpers ---------------------------------------------------------
-    @staticmethod
-    def _node_input(state: Dict[str, Any], node: WorkflowNode) -> Any:
-        if node.input_key:
-            outputs = state.get("node_outputs", {})
-            if node.input_key not in outputs:
-                raise KeyError(
-                    f"node '{node.id}' input_key '{node.input_key}' has no recorded output on "
-                    "this path — the referenced node has not run yet; a legitimately-None output "
-                    "would be present, so this is a wiring error, not empty data"
-                )
-            return outputs[node.input_key]
-        return state.get(RUNNING_PAYLOAD)
-
-    def _record(
-        self,
-        state: Dict[str, Any],
-        node: WorkflowNode,
-        result: CapabilityResult,
-        *,
-        attempts: int,
-        input_payload: Any = None,
-        branch_label: Optional[str] = None,
-        force_status: Optional[str] = None,
-        error: Optional[str] = None,
-        fallback_reason: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        status = force_status or result.status
-        node_outputs = {**state.get("node_outputs", {}), node.id: result.output}
-        if node.output_key:
-            node_outputs[node.output_key] = result.output
-        node_inputs = {**state.get("node_inputs", {}), node.id: input_payload}
-        node_status = {**state.get("node_status", {}), node.id: status}
-        attempts_map = {**state.get("attempts", {}), node.id: attempts}
-        artifacts = [*state.get("artifacts", []), *result.artifacts]
-        record = NodeResult(
-            node_id=node.id,
-            kind=node.kind,
-            status=status,
-            output=result.output,
-            branch_label=branch_label,
-            error=error or result.error,
-            fallback_reason=fallback_reason,
-            attempts=attempts,
-            artifact_ids=[artifact.artifact_id for artifact in result.artifacts],
-        )
-        node_results = [*state.get("node_results", []), record]
-        # Q4.2/QRF.5: terminal node status is a TYPED trace field (bundles carry how the
-        # node ended; `decision` stays reserved for actual decisions). The failure reason
-        # rides along for failed AND partial — a partial fanout must keep WHY its children
-        # failed without the viewer flipping the whole node to failed.
-        self.runtime.trace_sink.record(
-            WorkflowTraceEvent(
-                node=node.id,
-                attempt=attempts,
-                node_status=status,
-                phase="node:result",
-                error=(error or result.error) if status in ("failed", "partial") else None,
-                metadata={"kind": node.kind, **({"branch_label": branch_label} if branch_label else {})},
-            )
-        )
-        update: Dict[str, Any] = {
-            RUNNING_PAYLOAD: result.output,
-            "node_outputs": node_outputs,
-            "node_inputs": node_inputs,
-            "node_status": node_status,
-            "attempts": attempts_map,
-            "artifacts": artifacts,
-            "node_results": node_results,
-        }
-        if fallback_reason:
-            update["fallback_reason"] = fallback_reason
-        if status == "failed":
-            update["status"] = "failed"
-            update["error"] = error or result.error
-        return update
 
     # ---------------------------------------------------------------- bounds
     def _recursion_limit(self, definition: WorkflowDefinition, context: CapabilityContext) -> int:
