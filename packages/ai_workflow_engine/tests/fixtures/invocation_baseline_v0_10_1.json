@@ -358,12 +358,17 @@
       "status": "partial"
     },
     "usage": {
+      "cached_input_tokens": 0,
+      "estimated_usd": null,
       "events": [],
       "image_call_count": 0,
+      "input_tokens": 0,
       "metered_usd": null,
       "notional_usd": null,
+      "output_tokens": 0,
       "text_call_count": 0,
       "tool_call_count": 0,
+      "tool_character_count": 0,
       "total_tokens": 0,
       "worker_call_count": 0
     }
@@ -409,12 +414,17 @@
       }
     ],
     "usage": {
+      "cached_input_tokens": 0,
+      "estimated_usd": null,
       "events": [],
       "image_call_count": 0,
+      "input_tokens": 0,
       "metered_usd": null,
       "notional_usd": null,
+      "output_tokens": 0,
       "text_call_count": 0,
       "tool_call_count": 0,
+      "tool_character_count": 0,
       "total_tokens": 0,
       "worker_call_count": 0
     }
@@ -702,12 +712,17 @@
       "workflow_id": "dur_flow"
     },
     "usage": {
+      "cached_input_tokens": 0,
+      "estimated_usd": null,
       "events": [],
       "image_call_count": 0,
+      "input_tokens": 0,
       "metered_usd": null,
       "notional_usd": null,
+      "output_tokens": 0,
       "text_call_count": 0,
       "tool_call_count": 0,
+      "tool_character_count": 0,
       "total_tokens": 0,
       "worker_call_count": 0
     },
@@ -1252,6 +1267,8 @@
       }
     ],
     "usage": {
+      "cached_input_tokens": 25,
+      "estimated_usd": 0.0123,
       "events": [
         {
           "attempt": 2,
@@ -1317,7 +1334,9 @@
           "elapsed_ms": 5,
           "error": "tool call failed: quota",
           "estimated_usd": null,
-          "input_token_details": {},
+          "input_token_details": {
+            "characters": 17
+          },
           "input_tokens": 0,
           "metadata": {
             "run_id": "oracle-run",
@@ -1340,10 +1359,13 @@
         }
       ],
       "image_call_count": 0,
+      "input_tokens": 110,
       "metered_usd": 0.0123,
       "notional_usd": 0.002,
+      "output_tokens": 45,
       "text_call_count": 2,
       "tool_call_count": 1,
+      "tool_character_count": 17,
       "total_tokens": 155,
       "worker_call_count": 1
     }
@@ -1391,12 +1413,17 @@
       }
     ],
     "usage": {
+      "cached_input_tokens": 0,
+      "estimated_usd": null,
       "events": [],
       "image_call_count": 0,
+      "input_tokens": 0,
       "metered_usd": null,
       "notional_usd": null,
+      "output_tokens": 0,
       "text_call_count": 0,
       "tool_call_count": 0,
+      "tool_character_count": 0,
       "total_tokens": 0,
       "worker_call_count": 1
     }

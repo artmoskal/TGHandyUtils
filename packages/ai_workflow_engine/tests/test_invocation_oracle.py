@@ -140,7 +140,10 @@ def test_comparator_and_canonicalizer_detect_real_drift():
             ],
             "usage": {
                 "worker_call_count": 1, "text_call_count": 0, "image_call_count": 0,
-                "tool_call_count": 0, "total_tokens": 3, "metered_usd": None, "notional_usd": None,
+                "tool_call_count": 0, "tool_character_count": 0,
+                "input_tokens": 1, "output_tokens": 2, "total_tokens": 3,
+                "cached_input_tokens": 1, "metered_usd": None, "notional_usd": None,
+                "estimated_usd": None,
                 # full semantic event shape (model_dump minus the reviewed volatile drop-list)
                 "events": [{"provider": "openai", "operation": "chat", "cost_class": "metered",
                             "node": "n", "run_id": "oracle-run", "sequence": None, "model": "m",
@@ -185,6 +188,9 @@ def test_comparator_and_canonicalizer_detect_real_drift():
     assert mutated(lambda s: s["result"]["artifacts"][0].__setitem__("kind", "file"))       # artifact kind
     # --- usage (summary + EVERY semantic event field codex flagged as dropped) ---
     assert mutated(lambda s: s["usage"].__setitem__("worker_call_count", 2))               # summary value
+    assert mutated(lambda s: s["usage"].__setitem__("cached_input_tokens", 9))             # derived tokens
+    assert mutated(lambda s: s["usage"].__setitem__("tool_character_count", 9))            # derived tool chars
+    assert mutated(lambda s: s["usage"].__setitem__("estimated_usd", 0.99))                # cost alias
     assert mutated(lambda s: s["usage"]["events"][0].__setitem__("cost_class", "subscription_notional"))  # classification
     assert mutated(lambda s: s["usage"]["events"][0].__setitem__("attempt", 3))            # retry attribution
     assert mutated(lambda s: s["usage"]["events"][0]["input_token_details"].__setitem__("cached_tokens", 9))   # token details
@@ -202,6 +208,31 @@ def test_comparator_and_canonicalizer_detect_real_drift():
     assert compare_records(base, {**base, "extra": {"x": 1}})                      # scenario only one side
     import copy as _c
     assert compare_records(base, _c.deepcopy(base)) == []                          # equal => no mismatches
+
+
+def test_usage_summary_projection_covers_every_public_aggregate():
+    """The P-06 promise includes the summary, not only its source events. Keep every public
+    aggregate visible so a derived-total regression cannot compare equal."""
+
+    from ai_workflow_engine.models import WorkflowUsageSummary
+    from invocation_oracle import _canon_usage_summary
+
+    projected = _canon_usage_summary(WorkflowUsageSummary())
+    assert {
+        "worker_call_count",
+        "text_call_count",
+        "image_call_count",
+        "tool_call_count",
+        "tool_character_count",
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "cached_input_tokens",
+        "metered_usd",
+        "notional_usd",
+        "estimated_usd",
+        "events",
+    } == set(projected)
 
 
 @pytest.mark.asyncio

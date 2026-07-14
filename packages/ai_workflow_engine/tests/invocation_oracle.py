@@ -288,8 +288,8 @@ def _canon_detail(detail: Any, amap: dict[str, str] | None = None) -> dict[str, 
 
 def _canon_usage(context: Any) -> dict[str, Any] | None:
     """Canonical usage summary + events from the ambient usage scope (None when no scope is
-    active). Strips volatile per-event facts (request_id/elapsed_ms/sequence/run_id); keeps the
-    metered classification, call counts, tokens, and cost that invoke's budget admission governs."""
+    active). Drops only each event's generated UUID; all caller-supplied event facts and every
+    public summary aggregate remain part of the preservation contract."""
 
     if context is None:
         return None
@@ -322,9 +322,14 @@ def _canon_usage_summary(summary: Any) -> dict[str, Any] | None:
         "text_call_count": getattr(summary, "text_call_count", None),
         "image_call_count": getattr(summary, "image_call_count", None),
         "tool_call_count": getattr(summary, "tool_call_count", None),
+        "tool_character_count": getattr(summary, "tool_character_count", None),
+        "input_tokens": getattr(summary, "input_tokens", None),
+        "output_tokens": getattr(summary, "output_tokens", None),
         "total_tokens": getattr(summary, "total_tokens", None),
+        "cached_input_tokens": getattr(summary, "cached_input_tokens", None),
         "metered_usd": getattr(summary, "metered_usd", None),
         "notional_usd": getattr(summary, "notional_usd", None),
+        "estimated_usd": getattr(summary, "estimated_usd", None),
         "events": [_canon_usage_event(ev) for ev in events],
     }
 
@@ -768,6 +773,7 @@ async def _sc_usage_event_semantics():
         record_usage_event(WorkflowUsageEvent(
             provider="openai", operation="tool", cost_class="metered", node="metered_worker",
             model="tool-fixed", attempt=1, success=False, error="tool call failed: quota",
+            input_token_details={"characters": 17},
             request_id="req-tool", elapsed_ms=5,
         ))
         return {"ok": 1}

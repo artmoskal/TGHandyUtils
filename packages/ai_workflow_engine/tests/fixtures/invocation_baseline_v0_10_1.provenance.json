@@ -1,15 +1,15 @@
 {
   "baseline_tag": "engine-v0.10.1",
   "differential_result": "EQUAL",
-  "fixture_sha256": "f5ea1601960ca9348c6198e552f152ee6434f484e19e04cd92b634d05862ec4a",
+  "fixture_sha256": "d938f60e3b28237e03a1b67e978c0943828e83e702e77c9540f9eda38e23ddc1",
   "generator_sha256": "099d26a3ba898f49104ac759781cbc84b5f2e7afe590dd3b909563b005a551c2",
   "how_to_verify": "rerun this generator (verify mode) on a host with git: it re-peels the tag, rebuilds both wheels, and re-compares; or unzip the committed wheel and diff its *.py files against `git archive engine-v0.10.1` (zip metadata timestamps differ per build; sources must be identical).",
-  "oracle_sha256": "43cc0707e86b1db9541ac62e1e926fde8382be648017bed849b8f8e437313d22",
+  "oracle_sha256": "9bba3243ac9b8604acb224ef15478782b2020ada38f0c0bd46c455c961d1778c",
   "peeled_commit": "873a109559aface088cffb078bcf288d7cbc76d5",
   "public_surface_sha256": "05372bd976bab6aa7650ad50358011eaf9baede97832793b2aefef32daf22487",
   "pydantic_pin": "2.13.4",
   "python_version": "3.11",
-  "sealed_at": "2026-07-14T07:10:56+00:00",
+  "sealed_at": "2026-07-14T07:21:54+00:00",
   "wheel_filename": "baseline_wheel_v0_10_1.whl",
-  "wheel_sha256": "59b5eb453e27c8ebe090ca8a650b22e656afe8aeccbe9850ef57b89e85470ecf"
+  "wheel_sha256": "b6ca52b91a776a41ff51c91e776c9425a2378360a1b6ea5db61dbfd77fcc3e56"
 }
