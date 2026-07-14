@@ -340,6 +340,17 @@ class CapabilityRuntime:
         *,
         attempt: int = 1,
     ) -> CapabilityResult:
+        """The engine's ONE capability door — visible stage orchestration (v0.11).
+
+        Stage order: registry lookup → input validation (contract) → start projection
+        (observation) → side-effect admission (contract) → pre-call budget admission →
+        window/awaiting supervision → result normalization (contract) → terminal projection
+        (observation) → return. Failure paths keep the frozen inventory: unknown capability is
+        a loud KeyError; an engine deadline is an honest PARTIAL; containment failure and
+        handler errors are FAILED; caller cancellation propagates untranslated. The dicts built
+        here are CONTROL data (they ride on the returned CapabilityResult and are mirrored to
+        the trace), so they belong to the facade, not to the observation projector."""
+
         spec, handler = self.registry.get(name)
         start = time.monotonic()
         try:
