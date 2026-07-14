@@ -1,8 +1,8 @@
 # GoPro Engine Adoption Guide
 
-Status: **ready for consumer validation against the pending `engine-v0.11.0` tag (latest-only line;
-do not re-pin until it is cut).** GoPro should
-pin tag `engine-v0.11.0` once cut, record the source commit and wheel hash, and run its sidecar canary before changing
+Status: **ready for consumer validation against immutable tag `engine-v0.11.0` (latest-only
+line).** GoPro should
+pin tag `engine-v0.11.0`, record the source commit and wheel hash, and run its sidecar canary before changing
 the production image. Do not infer the actual GoPro pin from this document; the consumer repository's
 pin file is authoritative for deployed state.
 
@@ -33,26 +33,16 @@ The engine owns execution and gates. GoPro owns inventory semantics and storage.
 
 ## Package Choice
 
-**Current released set (installable today, tag `engine-v0.10.1`):**
-
-| Package | GoPro use |
-|---|---|
-| `ai-workflow-engine==0.10.1` | Required in the detection/sidecar runtime |
-| `ai-workflow-tools==0.4.1` | Add only when GoPro uses CLI agents or shared media helpers |
-| `ai-workflow-viewer==0.2.3` | Developer/diagnostic service; not required in the detector image |
-
-**Pending v0.11 candidate set (NOT installable until `engine-v0.11.0` is cut — one matrix, all three together):**
-
 | Package | GoPro use |
 |---|---|
 | `ai-workflow-engine==0.11.0` | Required in the detection/sidecar runtime |
 | `ai-workflow-tools==0.5.0` | Add only when GoPro uses CLI agents or shared media helpers |
 | `ai-workflow-viewer==0.3.0` | Developer/diagnostic service; not required in the detector image |
 
-> **One coherent matrix at a time:** `ai-workflow-tools==0.5.0` and `ai-workflow-viewer==0.3.0`
-> require `ai-workflow-engine>=0.11,<0.12` — the three CANDIDATE versions install together only
-> once the pending `engine-v0.11.0` tag exists. Until then, the released coherent set is
-> `engine-v0.10.1` + `ai-workflow-tools==0.4.1` + `ai-workflow-viewer==0.2.3`; never mix the two.
+> **Current matrix:** `engine-v0.11.0` + `ai-workflow-tools==0.5.0` + `ai-workflow-viewer==0.3.0`
+> (tools/viewer require `ai-workflow-engine>=0.11,<0.12`). The previous line
+> (`engine-v0.10.1` + tools `0.4.1` + viewer `0.2.3`) remains available at its historical tag for
+> historical data; the lines never mix in one environment.
 
 
 Vendoring only the engine wheel is the correct lightweight configuration for the current direct-VLM
@@ -175,10 +165,10 @@ second memory, retry, or observation runtime into the sidecar.
 
 ## v0.11 Candidate Note (unreleased — keep the pin above)
 
-`engine-v0.11.0` is the pending release candidate of the **latest-only** line: strict versioned
-persisted contracts (snapshot `v0.11`, bundle meta v2, wait records `wait-v1`), one strict viewer
-loader, and NO migration layer — the sealed current-contract corpus shows 0 behavior deltas vs
-v0.10.1, but old persisted data is rejected loudly naming its historical tag. Until the tag is cut,
-keep your existing pin; adopt by re-pinning fresh (pin tag `engine-v0.11.0` once it exists, rebuild
-wheels: engine `0.11.0`, tools `0.5.0`, viewer `0.3.0`) and re-run your canaries. Historical data
-stays inspectable with its own historical tag.
+`engine-v0.11.0` is the current release of the **latest-only** line: strict versioned persisted
+contracts (snapshot `v0.11`, bundle meta v2, wait records `wait-v1`), one strict viewer loader, and
+NO migration layer — the sealed current-contract corpus shows 0 behavior deltas vs v0.10.1, but old
+persisted data is rejected loudly naming its historical tag. Adopt by re-pinning fresh (pin tag
+`engine-v0.11.0`, rebuild wheels: engine `0.11.0`, tools `0.5.0`, viewer `0.3.0`) and re-run your
+canaries before changing any deployed pin. Historical data stays inspectable with its own
+historical tag.

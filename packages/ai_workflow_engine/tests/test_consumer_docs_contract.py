@@ -274,22 +274,16 @@ def test_documented_package_matrix_is_coherent_and_derived_from_pyproject():
             f"{versions['ai_workflow_engine']} — the documented matrix could never resolve"
         )
 
-    # C2GR-2: the VISIBLE tables are the copyable instruction — every handoff carries TWO
-    # internally coherent sets, and this test binds ALL SIX pins (engine row included).
-    released = {"engine": "0.10.1", "tools": "0.4.1", "viewer": "0.2.3"}  # last released tag set
-    candidate = {
-        "engine": versions["ai_workflow_engine"],
-        "tools": versions["ai_workflow_tools"],
-        "viewer": versions["ai_workflow_viewer"],
-    }
-
-    def _pins(matrix: dict[str, str]) -> list[str]:
-        return [
-            f"ai-workflow-engine=={matrix['engine']}",
-            f"ai-workflow-tools=={matrix['tools']}",
-            f"ai-workflow-viewer=={matrix['viewer']}",
-        ]
-
+    # C2GR-2, released state: the VISIBLE tables are the copyable instruction — every
+    # handoff carries exactly ONE current matrix (all three pins DERIVED from pyproject,
+    # engine row included), and no previous-line pin survives in copyable ``==`` form
+    # (the historical set may be named by tag/version prose only).
+    current_pins = [
+        f"ai-workflow-engine=={versions['ai_workflow_engine']}",
+        f"ai-workflow-tools=={versions['ai_workflow_tools']}",
+        f"ai-workflow-viewer=={versions['ai_workflow_viewer']}",
+    ]
+    previous_pins = ["ai-workflow-engine==0.10.1", "ai-workflow-tools==0.4.1", "ai-workflow-viewer==0.2.3"]
     for name in (
         "gopro-handoff.md",
         "mageqa-handoff.md",
@@ -297,24 +291,17 @@ def test_documented_package_matrix_is_coherent_and_derived_from_pyproject():
         "voice-brain-handoff.md",
     ):
         text = (PACKAGE_ROOT / "docs" / name).read_text(encoding="utf-8")
-        released_at = text.index("Current released set")
-        candidate_at = text.index("Pending v0.11 candidate set")
-        assert released_at < candidate_at, f"{name}: released set must come first"
-        note_at = text.index("One coherent matrix at a time")
-        released_block = text[released_at:candidate_at]
-        candidate_block = text[candidate_at:note_at]
-        for pin in _pins(released):
-            assert pin in released_block, f"{name}: released set is missing {pin}"
-        for pin in _pins(candidate):
-            assert pin in candidate_block, f"{name}: candidate set is missing {pin}"
-        for wrong in _pins(candidate):
-            assert wrong not in released_block, (
-                f"{name}: released set mixes in candidate pin {wrong} — an impossible table"
+        for pin in current_pins:
+            assert pin in text, f"{name}: current matrix is missing {pin}"
+        for stale in previous_pins:
+            assert stale not in text, (
+                f"{name}: copyable previous-line pin {stale} survives — the released state "
+                "carries ONE current matrix; the old line is prose/tag references only"
             )
-        for wrong in _pins(released):
-            assert wrong not in candidate_block, (
-                f"{name}: candidate set mixes in released pin {wrong} — an impossible table"
-            )
+        assert "Pending v0.11 candidate set" not in text, (
+            f"{name}: candidate framing must not survive the release flip"
+        )
+        assert "Current matrix" in text, f"{name}: must label the one current matrix"
 
 
 def test_documented_bundle_schema_version_is_the_engine_truth():

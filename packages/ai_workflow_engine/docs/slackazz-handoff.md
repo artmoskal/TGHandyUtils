@@ -1,8 +1,8 @@
 # SlackAzzCovered Engine Adoption Guide
 
-Status: **ready for consumer validation against the pending `engine-v0.11.0` tag (latest-only
-line; do not re-pin until it is cut).** SlackAzzCovered
-should pin tag `engine-v0.11.0` once cut, implement its Redis coordinator, and pass the engine conformance kit plus product
+Status: **ready for consumer validation against immutable tag `engine-v0.11.0` (latest-only
+line).** SlackAzzCovered
+should pin tag `engine-v0.11.0`, implement its Redis coordinator, and pass the engine conformance kit plus product
 transaction tests before enabling live effects.
 
 This answers the consumer request in
@@ -31,26 +31,16 @@ client event
 
 ## Package Choice
 
-**Current released set (installable today, tag `engine-v0.10.1`):**
-
-| Package | SlackAzzCovered use |
-|---|---|
-| `ai-workflow-engine==0.10.1` | Required workflow/wait runtime |
-| `ai-workflow-tools==0.4.1` | Add for CLI agents/tool catalog if the product uses them |
-| `ai-workflow-viewer==0.2.3` | Developer diagnostics or product-linked run inspection |
-
-**Pending v0.11 candidate set (NOT installable until `engine-v0.11.0` is cut — one matrix, all three together):**
-
 | Package | SlackAzzCovered use |
 |---|---|
 | `ai-workflow-engine==0.11.0` | Required workflow/wait runtime |
 | `ai-workflow-tools==0.5.0` | Add for CLI agents/tool catalog if the product uses them |
 | `ai-workflow-viewer==0.3.0` | Developer diagnostics or product-linked run inspection |
 
-> **One coherent matrix at a time:** `ai-workflow-tools==0.5.0` and `ai-workflow-viewer==0.3.0`
-> require `ai-workflow-engine>=0.11,<0.12` — the three CANDIDATE versions install together only
-> once the pending `engine-v0.11.0` tag exists. Until then, the released coherent set is
-> `engine-v0.10.1` + `ai-workflow-tools==0.4.1` + `ai-workflow-viewer==0.2.3`; never mix the two.
+> **Current matrix:** `engine-v0.11.0` + `ai-workflow-tools==0.5.0` + `ai-workflow-viewer==0.3.0`
+> (tools/viewer require `ai-workflow-engine>=0.11,<0.12`). The previous line
+> (`engine-v0.10.1` + tools `0.4.1` + viewer `0.2.3`) remains available at its historical tag for
+> historical data; the lines never mix in one environment.
 
 
 Build from the immutable tag and record commit/hash. Never copy engine source or track the branch.
@@ -249,10 +239,10 @@ Follow [`operations.md`](operations.md) for production recovery. File missing me
 
 ## v0.11 Candidate Note (unreleased — keep the pin above)
 
-`engine-v0.11.0` is the pending release candidate of the **latest-only** line: strict versioned
-persisted contracts (snapshot `v0.11`, bundle meta v2, wait records `wait-v1`), one strict viewer
-loader, and NO migration layer — the sealed current-contract corpus shows 0 behavior deltas vs
-v0.10.1, but old persisted data is rejected loudly naming its historical tag. Until the tag is cut,
-keep your existing pin; adopt by re-pinning fresh (pin tag `engine-v0.11.0` once it exists, rebuild
-wheels: engine `0.11.0`, tools `0.5.0`, viewer `0.3.0`) and re-run your canaries. Historical data
-stays inspectable with its own historical tag.
+`engine-v0.11.0` is the current release of the **latest-only** line: strict versioned persisted
+contracts (snapshot `v0.11`, bundle meta v2, wait records `wait-v1`), one strict viewer loader, and
+NO migration layer — the sealed current-contract corpus shows 0 behavior deltas vs v0.10.1, but old
+persisted data is rejected loudly naming its historical tag. Adopt by re-pinning fresh (pin tag
+`engine-v0.11.0`, rebuild wheels: engine `0.11.0`, tools `0.5.0`, viewer `0.3.0`) and re-run your
+canaries before changing any deployed pin. Historical data stays inspectable with its own
+historical tag.

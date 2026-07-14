@@ -23,9 +23,9 @@ Are you tired of manually creating tasks in Todoist after every chat with your f
 
 ## AI Workflow Engine Packages
 
-This repository also hosts the reusable AI workflow framework. **Last released tag:
-`engine-v0.10.1`; `engine-v0.11.0` is the pending latest-only release candidate (no migration
-layer — old persisted data is rejected naming its historical tag).** It is one domain-neutral
+This repository also hosts the reusable AI workflow framework. **Current release:
+`engine-v0.11.0` (latest-only line — no migration layer; old persisted data is rejected naming
+its historical tag).** It is one domain-neutral
 state-machine runtime across the complexity gradient:
 simple workflows remain one-step simple; complex consumers opt into planners, bounded fan-out,
 evaluation/retrace, memory, durable waits, evidence, observation, and authored flow without creating

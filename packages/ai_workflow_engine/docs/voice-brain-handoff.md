@@ -1,8 +1,8 @@
 # Voice Brain Engine Integration Guide
 
 Status: **the engine supports the required execution boundary as of the immutable
-pending `engine-v0.11.0` tag (latest-only line; do not re-pin until it is cut); voice
-integration remains product-owned and must pin tag `engine-v0.11.0` once cut before running its own
+`engine-v0.11.0` release (latest-only line); voice
+integration remains product-owned and must pin tag `engine-v0.11.0` before running its own
 latency/cancellation canary.** This replaces
 the historical June request/reply transcript.
 
@@ -26,24 +26,15 @@ transcript + session context
 
 ## Package Choice
 
-Current released set (installable today, tag `engine-v0.10.1`):
-
-- `ai-workflow-engine==0.10.1` for the runtime and custom `LLMCallable`.
-- `ai-workflow-tools==0.4.1` only when using `CliAgentCapability`/console tools. CLI subscription
-  workers are usually unsuitable for a low-latency conversational hot path.
-- `ai-workflow-viewer==0.2.3` in diagnostics, not the real-time audio path.
-
-Pending v0.11 candidate set (NOT installable until `engine-v0.11.0` is cut — one matrix, all three together):
-
 - `ai-workflow-engine==0.11.0` for the runtime and custom `LLMCallable`.
 - `ai-workflow-tools==0.5.0` only when using `CliAgentCapability`/console tools. CLI subscription
   workers are usually unsuitable for a low-latency conversational hot path.
 - `ai-workflow-viewer==0.3.0` in diagnostics, not the real-time audio path.
 
-> **One coherent matrix at a time:** `ai-workflow-tools==0.5.0` and `ai-workflow-viewer==0.3.0`
-> require `ai-workflow-engine>=0.11,<0.12` — the three CANDIDATE versions install together only
-> once the pending `engine-v0.11.0` tag exists. Until then, the released coherent set is
-> `engine-v0.10.1` + `ai-workflow-tools==0.4.1` + `ai-workflow-viewer==0.2.3`; never mix the two.
+> **Current matrix:** `engine-v0.11.0` + `ai-workflow-tools==0.5.0` + `ai-workflow-viewer==0.3.0`
+> (tools/viewer require `ai-workflow-engine>=0.11,<0.12`). The previous line
+> (`engine-v0.10.1` + tools `0.4.1` + viewer `0.2.3`) remains available at its historical tag for
+> historical data; the lines never mix in one environment.
 
 
 ## Streaming Boundary

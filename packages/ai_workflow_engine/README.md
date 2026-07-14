@@ -5,8 +5,7 @@ declare a workflow, register typed capabilities, and call one engine door. The e
 transitions, retries, fan-out, budgets, waits, trace, usage, and observation bundles; products own
 domain models, provider clients, storage adapters, clocks, and side-effect delivery.
 
-> **`engine-v0.11.0` is the release candidate** (no tag exists yet —
-> do not re-pin until it is cut; `engine-v0.10.1` remains the last released tag). Pin immutable tags and build wheels;
+> **`engine-v0.11.0` is the current release.** Pin immutable tags and build wheels;
 > consumer canaries still decide whether each product changes its deployed pin. Never depend on a
 > live branch. The binding contract is the repository-level
 > [`executable-workflow-engine-spec.md`](../../docs/executable-workflow-engine-spec.md).
@@ -50,9 +49,6 @@ python -m pip wheel --no-deps -w ./vendor \
 python -m pip install ./vendor/ai_workflow_engine-0.11.0-py3-none-any.whl
 python -c "import ai_workflow_engine as e; assert e.__version__ == '0.11.0'"
 ```
-
-(Until the `engine-v0.11.0` tag is cut, the commands above name the pending candidate;
-`engine-v0.10.1` is the last tag that exists.)
 
 Optional packages:
 

@@ -9,7 +9,7 @@ Always install `ai-workflow-engine`. Add `ai-workflow-tools` only for reusable C
 `ai-workflow-viewer` only where bundles are rendered. Keeping optional packages out of simple runtime
 images preserves the complexity gradient.
 
-Build from `engine-v0.11.0` (pending tag: do not re-pin until it is cut) and record:
+Build from `engine-v0.11.0` and record:
 
 ```text
 engine_tag=engine-v0.11.0
