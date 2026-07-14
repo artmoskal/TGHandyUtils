@@ -115,6 +115,59 @@ def test_nodes_use_only_the_node_services_surface():
     assert not offenders, "nodes reach past NodeExecutionServices:\n" + "\n".join(offenders)
 
 
+def test_extracted_runtime_owners_never_import_the_executor():
+    """Ownership moves one way: collaborators may not regain the executor as a locator."""
+
+    owner_names = {
+        "machine_compiler.py",
+        "node_replay.py",
+        "node_services.py",
+        "suspension.py",
+        "result_assembly.py",
+    }
+    offenders = []
+    for path in (ENGINE_ROOT / name for name in sorted(owner_names)):
+        if not path.exists():
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                imported = [node.module]
+            elif isinstance(node, ast.Import):
+                imported = [alias.name for alias in node.names]
+            else:
+                continue
+            for module in imported:
+                if module == "ai_workflow_engine.executor" or module.startswith(
+                    "ai_workflow_engine.executor."
+                ):
+                    offenders.append(f"{path.name}:{node.lineno} imports {module}")
+    assert not offenders, "runtime owner imports executor:\n" + "\n".join(offenders)
+
+
+def test_executor_contains_no_compiler_implementation_twins():
+    """The public compile/preflight doors delegate; compiler mechanics have one owner."""
+
+    tree = ast.parse((ENGINE_ROOT / "executor.py").read_text(encoding="utf-8"))
+    executor = next(
+        node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "WorkflowExecutor"
+    )
+    forbidden = {
+        "_evict_compiled",
+        "_wire_edges",
+        "_route_for",
+        "_nested_suspension_error",
+        "_model_profile_error",
+        "_required_capabilities",
+    }
+    present = {
+        node.name
+        for node in executor.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert not (present & forbidden), f"compiler twins remain on executor: {sorted(present & forbidden)}"
+
+
 def test_capability_status_vocabulary_is_closed():
     """G-ext3: the run-state vocabulary is a closed set — widening it is a reviewed act."""
 

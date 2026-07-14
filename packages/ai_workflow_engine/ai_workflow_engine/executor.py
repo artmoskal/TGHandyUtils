@@ -21,7 +21,7 @@ import asyncio
 import logging
 from contextvars import ContextVar
 import uuid
-from typing import Any, Awaitable, Callable, Dict, List, Optional, TypedDict
+from typing import Any, Callable, Dict, List, Optional, TypedDict
 
 from pydantic import field_validator, model_validator, BaseModel, ConfigDict, Field
 
@@ -42,8 +42,10 @@ _AUTHORED_PROVENANCE: ContextVar[Optional[Dict[str, Any]]] = ContextVar(
 )
 from ai_workflow_engine.engine.runner import WorkflowRunner, derive_workflow_result_status
 from ai_workflow_engine.engine.scheduler import WorkflowScheduler
+from ai_workflow_engine.machine_compiler import WorkflowMachineCompiler
 from ai_workflow_engine.model_binding import model_profile_scope
 from ai_workflow_engine.node_services import ExecutorNodeServices, NodeExecutionServices
+from ai_workflow_engine.node_replay import NodeReplayRuntime
 from ai_workflow_engine.nodes import NODE_HANDLERS
 from ai_workflow_engine.run_session import child_trace_slice, WorkflowRunSession
 from ai_workflow_engine._runtime_state import (
@@ -67,14 +69,7 @@ from ai_workflow_engine.models import (
 from ai_workflow_engine.planning import PlanArtifact, PlanTask, render_plan
 from ai_workflow_engine.snapshot import MachineSnapshot, SNAPSHOT_SCHEMA_VERSION
 from ai_workflow_engine.wait_contract import WaitHandle
-from ai_workflow_engine.workflow import (
-    END,
-    KNOWN_NODE_KINDS,
-    BranchDecision,
-    WorkflowDefinition,
-    WorkflowNode,
-    render_machine_card,
-)
+from ai_workflow_engine.workflow import WorkflowDefinition, WorkflowNode, render_machine_card
 
 class WorkflowState(TypedDict, total=False):
     """LangGraph state schema. Every key is declared so LangGraph propagates it across nodes
@@ -205,11 +200,6 @@ class WorkflowRunResult(BaseModel):
         return None
 
 
-# A node handler builds and returns a coroutine function for one node in one workflow.
-# Handlers receive the narrow NodeExecutionServices boundary, never the executor itself.
-NodeHandler = Callable[[NodeExecutionServices, WorkflowDefinition, WorkflowNode], Callable[[Dict[str, Any]], Awaitable[Dict[str, Any]]]]
-
-
 class WorkflowExecutor:
     """Compile + run workflow definitions on a single shared execution backend.
 
@@ -234,29 +224,50 @@ class WorkflowExecutor:
         self._scheduled_tasks: Dict[str, tuple[str, asyncio.Task[Any]]] = {}
         self._scheduled_cancellations: Dict[tuple[str, str], str] = {}
         # ModelProfile registry for declarative per-node model binding (set by WorkflowEngine).
-        self.model_profiles: Dict[str, Any] = {}
-        self._compiled: Dict[str, Any] = {}
+        self._model_profiles: Dict[str, Any] = {}
+        self._wait_runtime: Any = None
         # The narrow boundary handed to node handlers (executor internals stay private).
         self._node_services: NodeExecutionServices = ExecutorNodeServices(self)
         # Node-kind handler table. Kinds present here are *implemented*; any valid-but-absent
         # kind fails loudly (never silently downgraded). Phases register more kinds.
-        self._handlers: Dict[str, NodeHandler] = dict(NODE_HANDLERS)
+        handlers = dict(NODE_HANDLERS)
+        self._compiler = WorkflowMachineCompiler(
+            runtime=runtime,
+            handlers=handlers,
+            node_services=self._node_services,
+            replay_runtime=NodeReplayRuntime(runtime),
+            state_schema=WorkflowState,
+            subworkflows=self.subworkflows,
+            model_profiles=self._model_profiles,
+            unsupported_node_error=UnsupportedNodeError,
+        )
+
+    @property
+    def model_profiles(self) -> Dict[str, Any]:
+        return self._model_profiles
+
+    @model_profiles.setter
+    def model_profiles(self, profiles: Dict[str, Any]) -> None:
+        self._model_profiles = profiles
+        if hasattr(self, "_compiler"):
+            self._compiler.set_model_profiles(profiles)
+
+    @property
+    def wait_runtime(self) -> Any:
+        return self._wait_runtime
+
+    @wait_runtime.setter
+    def wait_runtime(self, wait_runtime: Any) -> None:
+        self._wait_runtime = wait_runtime
+        if hasattr(self, "_compiler"):
+            self._compiler.set_wait_runtime(wait_runtime)
 
     # ---------------------------------------------------------------- public API
     def supported_kinds(self) -> set[str]:
-        return set(self._handlers)
+        return self._compiler.supported_kinds()
 
     def register_subworkflow(self, definition: WorkflowDefinition) -> None:
-        existing = self.subworkflows.get(definition.workflow_id)
-        if existing is not None and existing.definition_digest() != definition.definition_digest():
-            # Same id, different machine: drop every compiled graph for the id so nothing can
-            # keep executing the superseded definition (memory hygiene + correctness).
-            self._evict_compiled(definition.workflow_id)
-        self.subworkflows[definition.workflow_id] = definition
-
-    def _evict_compiled(self, workflow_id: str) -> None:
-        for key in [k for k in self._compiled if k[0] == workflow_id]:
-            self._compiled.pop(key, None)
+        self._compiler.register_subworkflow(definition)
 
     async def run(
         self,
@@ -572,47 +583,6 @@ class WorkflowExecutor:
             )
         return envelope
 
-    def _with_replay(self, node: WorkflowNode, fn: Callable[[Dict[str, Any]], Awaitable[Dict[str, Any]]]):
-        """Resume fast-forward: while a restored run replays, completed nodes no-op (recorded
-        routes steer the graph) until the suspended node, which executes live. Normal runs pass
-        straight through (the resume keys are simply absent)."""
-
-        async def replay_aware(state: Dict[str, Any]) -> Dict[str, Any]:
-            suspended = state.get("resume_suspended_node")
-            if suspended and not state.get("machine_replay_done"):
-                if node.id != suspended:
-                    self.runtime.trace_sink.record(
-                        WorkflowTraceEvent(
-                            node=node.id,
-                            decision="machine:fastforward",
-                            metadata={"status": state.get("node_status", {}).get(node.id)},
-                        )
-                    )
-                    return {}
-                update = await self._run_with_retrace_provenance(node, fn, state)
-                update["machine_replay_done"] = True
-                return update
-            return await self._run_with_retrace_provenance(node, fn, state)
-
-        return replay_aware
-
-    async def _run_with_retrace_provenance(self, node, fn, state):
-        """v0.10 generic retrace delivery: if a retrace routed to THIS node, publish its typed
-        provenance for the invocation boundary (any node kind reads it via
-        ``_context_for_node``) and clear the stamp in the returned update — exactly once, on
-        every path the handler can take."""
-
-        pending = state.get("pending_retrace_provenance")
-        if not (isinstance(pending, dict) and pending.get("target") == node.id):
-            return await fn(state)
-        token = _ACTIVE_RETRACE_PROVENANCE.set(pending.get("provenance"))
-        try:
-            update = await fn(state)
-        finally:
-            _ACTIVE_RETRACE_PROVENANCE.reset(token)
-        update["pending_retrace_provenance"] = None  # consumed
-        return update
-
     def _bind_or_validate_event_loop(self) -> None:
         current = asyncio.get_running_loop()
         if self._bound_loop is None or self._bound_loop.is_closed():
@@ -647,75 +617,9 @@ class WorkflowExecutor:
         }
 
     def compile(self, definition: WorkflowDefinition) -> Any:
-        """Compile a definition into a runnable LangGraph (cached by id + content digest).
+        """Compile through the engine-owned machine compiler."""
 
-        The digest in the key is the B1 fix: a re-registered definition with the same
-        ``workflow_id`` but different content compiles fresh instead of silently executing
-        the stale graph.
-        """
-
-        cache_key = (definition.workflow_id, definition.definition_digest())
-        cached = self._compiled.get(cache_key)
-        if cached is not None:
-            return cached
-
-        from langgraph.graph import END as LG_END, START, StateGraph
-
-        graph = StateGraph(WorkflowState)
-        for node in definition.nodes:
-            handler = self._handlers.get(node.kind)
-            if handler is None:
-                # Defensive: pre-flight already catches this; raise so direct compile is loud.
-                raise UnsupportedNodeError(
-                    f"node '{node.id}' kind '{node.kind}' is not supported by this executor"
-                )
-            graph.add_node(node.id, self._with_replay(node, handler(self._node_services, definition, node)))
-
-        graph.add_edge(START, definition.entry)
-        for node in definition.nodes:
-            self._wire_edges(graph, definition, node, LG_END)
-
-        compiled = graph.compile()
-        self._compiled[cache_key] = compiled
-        return compiled
-
-    # ---------------------------------------------------------------- transition wiring
-    def _wire_edges(self, graph: Any, definition: WorkflowDefinition, node: WorkflowNode, lg_end: Any) -> None:
-        """Wire one node's outgoing transitions — ONE generic path for every node kind, reading
-        the definition's first-class transitions (the machine routes itself from its own data)."""
-
-        outs = definition.outgoing(node.id)
-        if node.kind == "branch":
-            path_map: Dict[str, Any] = {
-                t.label: (lg_end if t.target == END else t.target)
-                for t in outs
-                if t.policy == "decision" and t.label
-            }
-            path_map["__invalid__"] = lg_end
-            path_map["__halt__"] = lg_end
-        elif node.kind == "evaluate":
-            path_map = {"accept": lg_end, "retry": lg_end, "retrace": lg_end, "replan": lg_end, "halt": lg_end}
-            for t in outs:
-                if t.policy in ("on_accept", "on_reject") and t.label in path_map and t.target != END:
-                    path_map[t.label] = t.target
-        else:
-            nxt = next((t for t in outs if t.policy == "always"), None)
-            path_map = {
-                "__next__": lg_end if (nxt is None or nxt.target == END) else nxt.target,
-                "__halt__": lg_end,
-            }
-            timeout_t = next((t for t in outs if t.policy == "on_timeout"), None)
-            if timeout_t is not None:
-                # W3.2: the DECLARED timeout route is executable machine data
-                path_map["__timeout__"] = lg_end if timeout_t.target == END else timeout_t.target
-        graph.add_conditional_edges(node.id, self._route_for(node), path_map)
-
-    @staticmethod
-    def _sequential_successor(definition: WorkflowDefinition, node_id: str) -> Optional[str]:
-        for t in definition.transitions:
-            if t.source == node_id and t.policy == "always":
-                return t.target
-        return None
+        return self._compiler.compile(definition)
 
     @staticmethod
     def _sequential_predecessor(definition: WorkflowDefinition, node_id: str) -> Optional[str]:
@@ -724,39 +628,8 @@ class WorkflowExecutor:
                 return t.source
         return None
 
-    @staticmethod
-    def _route_for(node: WorkflowNode) -> Callable[[Dict[str, Any]], str]:
-        """One routing convention for every node kind: handlers record the taken route under
-        ``routes[node.id]``; the router only reads state (pure, no side effects)."""
-
-        if node.kind == "branch":
-            def route(state: Dict[str, Any]) -> str:
-                label = state.get("routes", {}).get(node.id)
-                if label == "__halt__":
-                    return "__halt__"
-                return label if label in node.branches else "__invalid__"
-        elif node.kind == "evaluate":
-            def route(state: Dict[str, Any]) -> str:
-                routes = state.get("routes", {})
-                if node.id not in routes:
-                    # Engine invariant: the evaluate handler ALWAYS sets a route. A missing
-                    # entry is a plumbing bug — defaulting to "halt" here would end the run
-                    # cleanly and hide it.
-                    raise KeyError(
-                        f"evaluate node '{node.id}' produced no route decision — engine "
-                        "invariant violated"
-                    )
-                return routes[node.id]
-        else:
-            def route(state: Dict[str, Any]) -> str:
-                if state.get("routes", {}).get(node.id) == "halt":
-                    return "__halt__"
-                if state.get("routes", {}).get(node.id) == "__timeout__":
-                    return "__timeout__"
-                if state.get("node_status", {}).get(node.id) == "failed":
-                    return "__halt__"
-                return "__next__"
-        return route
+    def _preflight(self, definition: WorkflowDefinition) -> Optional[str]:
+        return self._compiler.preflight(definition)
 
     # ---------------------------------------------------------------- model binding
     async def _invoke_bound(
@@ -938,115 +811,7 @@ class WorkflowExecutor:
             update["error"] = error or result.error
         return update
 
-    # ---------------------------------------------------------------- pre-flight + bounds
-    def _preflight(self, definition: WorkflowDefinition) -> Optional[str]:
-        structural = definition.validate_graph()
-        if structural:
-            return "; ".join(structural)
-        for node in definition.nodes:
-            if (node.wait_policy or {}).get("mode") == "durable" and (
-                getattr(self, "wait_runtime", None) is None
-            ):
-                # W2.1: durable waits execute ONLY with a configured coordinator — fail
-                # before any capability runs; local/no-wait workflows need zero wait config.
-                return (
-                    f"durable wait '{node.id}' requires a configured WaitCoordinator — "
-                    "compose one via WorkflowEngineBuilder.with_wait_coordinator(...)"
-                )
-        known_caps = set(self.runtime.registry.names())
-        for node in definition.nodes:
-            if node.kind not in KNOWN_NODE_KINDS:
-                return f"node '{node.id}' has unsupported kind: {node.kind}"
-            if node.kind not in self._handlers:
-                return f"node '{node.id}' kind '{node.kind}' is not implemented by this executor"
-            if node.kind == "subworkflow":
-                ref = node.subworkflow
-                if ref is None or ref.workflow_id not in self.subworkflows:
-                    return f"subworkflow node '{node.id}' references unregistered workflow"
-                nested = self._nested_suspension_error(node.id, ref.workflow_id)
-                if nested is not None:
-                    return nested
-                continue
-            for cap in self._required_capabilities(node):
-                if cap not in known_caps:
-                    return f"node '{node.id}' binds to unregistered capability: {cap}"
-            profile_error = self._model_profile_error(node)
-            if profile_error:
-                return profile_error
-        return None
-
-    def _nested_suspension_error(self, node_id: str, child_workflow_id: str) -> Optional[str]:
-        """B2 stage-1: nested suspension is not supported yet — reject it LOUDLY at preflight.
-
-        A child (transitively) containing ``human`` nodes could suspend, but the parent has no
-        representation for a child wait (no nested snapshot / resume dispatch), so accepting the
-        graph would silently break "every wait resumable". Nested snapshots are a future,
-        named-consumer-gated feature.
-        """
-
-        seen: set[str] = set()
-        stack = [child_workflow_id]
-        while stack:
-            workflow_id = stack.pop()
-            if workflow_id in seen:
-                continue
-            seen.add(workflow_id)
-            child = self.subworkflows.get(workflow_id)
-            if child is None:
-                continue  # unregistered child is reported by the caller's check
-            for child_node in child.nodes:
-                if child_node.kind == "human":
-                    return (
-                        f"subworkflow node '{node_id}' -> workflow '{workflow_id}' contains human "
-                        f"node '{child_node.id}': nested suspension is not supported yet — move "
-                        f"the human gate to the top-level workflow"
-                    )
-                if child_node.kind == "subworkflow" and child_node.subworkflow is not None:
-                    stack.append(child_node.subworkflow.workflow_id)
-        return None
-
-    def _model_profile_error(self, node: WorkflowNode) -> Optional[str]:
-        """Validate declarative model binding before any execution (loud, never mid-run)."""
-
-        if not node.model_profile:
-            return None
-        if node.model_profile not in self.model_profiles:
-            return (
-                f"node '{node.id}' references unknown model profile: {node.model_profile} "
-                f"(registered: {sorted(self.model_profiles) or 'none'})"
-            )
-        # RC1 (where statically visible): a capability whose handler advertises a fixed LLM client
-        # cannot honor a model profile — declaring both is a configuration conflict, not a
-        # preference. Handlers that don't expose the attribute are checked loudly at call time.
-        capability = node.effective_capability()
-        if capability:
-            try:
-                _spec, handler = self.runtime.registry.get(capability)
-            except KeyError:
-                return None
-            if getattr(handler, "accepts_model_profile", None) is False:
-                return (
-                    f"node '{node.id}' declares model_profile={node.model_profile!r} but capability "
-                    f"'{capability}' has a fixed llm client; use llm_factory or drop the binding"
-                )
-        return None
-
-    @staticmethod
-    def _required_capabilities(node: WorkflowNode) -> List[str]:
-        caps: List[str] = []
-        if node.kind in ("step", "human", "planner"):
-            caps.append(node.capability or node.id)
-        elif node.kind == "branch":
-            caps.append(node.decider or node.capability or node.id)
-        elif node.kind == "fanout":
-            caps.append(node.item_capability or node.capability or node.id)
-        elif node.kind == "evaluate":
-            if node.evaluator:
-                caps.append(node.evaluator)
-            if node.fallback_capability:
-                caps.append(node.fallback_capability)
-        return [cap for cap in caps if cap]
-
+    # ---------------------------------------------------------------- bounds
     def _recursion_limit(self, definition: WorkflowDefinition, context: CapabilityContext) -> int:
         limits = context.limits
         loops = (limits.max_retries + limits.max_retrace + 1) if limits else 1
