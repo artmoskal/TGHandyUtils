@@ -14,14 +14,24 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+SNAPSHOT_SCHEMA_VERSION = "v0.11"
 
 
 class MachineSnapshot(BaseModel):
-    """Complete, restorable position of a suspended workflow run."""
+    """Complete, restorable position of a suspended workflow run (current line only).
 
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+    v0.11 clean contract (manifest row M6): the schema is versioned and CLOSED — unknown keys are
+    rejected, the capturing run's identity (goal/run_context) is REQUIRED, and pre-v0.11 persisted
+    snapshots fail with an actionable unsupported-version error instead of being half-read.
+    Historical data is inspected with its matching historical tag; the current engine has no
+    importer."""
 
+    model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
+
+    schema_version: str
     workflow_id: str
     suspended_node: str
     reason: str = "requires_user_input"
@@ -41,9 +51,9 @@ class MachineSnapshot(BaseModel):
     fallback_reason: Optional[str] = None
     # B-post3: the run's identity travels with the machine position, so resume continues under
     # the SAME goal/constraints/user/delivery/run-id lineage unless the caller overrides them.
-    # Optional for backward compatibility with older snapshots.
-    goal: Optional[Dict[str, Any]] = None
-    run_context: Optional[Dict[str, Any]] = None
+    # REQUIRED (v0.11): a suspension without identity is not honestly resumable.
+    goal: Dict[str, Any]
+    run_context: Dict[str, Any]
     # W4/R1: the LOGICAL observation position of the run-half that captured this snapshot
     # (segment index within the logical run). Deliberately NOT a physical directory key —
     # physical attempt identity varies per delivery retry, and the machine position must
@@ -60,6 +70,20 @@ class MachineSnapshot(BaseModel):
     # unsafe to persist). Resume rebuilds the run deadline from the remaining active budget,
     # so time spent suspended at the gate does not count against the run timeout.
     active_elapsed_s: float = Field(default=0.0, ge=0, allow_inf_nan=False, strict=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _current_schema_only(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            found = data.get("schema_version")
+            if found != SNAPSHOT_SCHEMA_VERSION:
+                raise ValueError(
+                    f"unsupported machine-snapshot schema: expected "
+                    f"{SNAPSHOT_SCHEMA_VERSION!r}, got {found!r} — this engine reads only "
+                    f"current-line snapshots; inspect or resume older data with its matching "
+                    f"historical engine tag (the current line has no importer)"
+                )
+        return data
 
     def to_json(self) -> str:
         """Serialize for cross-process resume. Raises loudly on non-serializable payloads."""

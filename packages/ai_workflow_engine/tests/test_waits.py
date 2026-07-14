@@ -261,8 +261,11 @@ def test_run_result_never_carries_both_public_wait_doors():
     from ai_workflow_engine.snapshot import MachineSnapshot
 
     snapshot = MachineSnapshot(
+        schema_version="v0.11",
         workflow_id="w", suspended_node="ask", node_status={}, routes={},
         node_results=[], artifacts=[],
+        goal={"workflow_type": "w", "objective": "t"},
+        run_context={"workflow_id": "w-run", "workflow_type": "w"},
     )
     with pytest.raises(ValidationError, match="exactly one public wait door"):
         WorkflowRunResult(
@@ -336,8 +339,11 @@ def test_run_result_wait_door_matrix_is_status_dependent_and_typed():
     from ai_workflow_engine.snapshot import MachineSnapshot
 
     snapshot = MachineSnapshot(
+        schema_version="v0.11",
         workflow_id="w", suspended_node="ask", node_status={}, routes={},
         node_results=[], artifacts=[],
+        goal={"workflow_type": "w", "objective": "t"},
+        run_context={"workflow_id": "w-run", "workflow_type": "w"},
     )
     handle = WaitHandle(
         wait_id="x", run_id="r", workflow_id="w", suspended_node="ask",
@@ -974,8 +980,11 @@ async def test_registration_mechanics_live_in_the_lifecycle_service():
     clock = _clock()
     runtime = DurableWaitRuntime(InMemoryWaitCoordinator(clock=clock), clock=clock)
     snapshot_json = MachineSnapshot(
+        schema_version="v0.11",
         workflow_id="wf", suspended_node="gate", node_status={}, routes={},
         node_results=[], artifacts=[],
+        goal={"workflow_type": "wf", "objective": "t"},
+        run_context={"workflow_id": "wf-run", "workflow_type": "wf"},
     ).model_dump_json()
     request = WaitRegistrationRequest(
         run_id="run-1", workflow_id="wf", definition_digest=_definition_digest(),
@@ -1003,8 +1012,11 @@ def _registration_request(**overrides):
         run_id="run-1", workflow_id="wf", definition_digest=_definition_digest(),
         suspended_node="gate", occurrence=0, policy=DurableWaitPolicy(timeout_s=60),
         snapshot_json=MachineSnapshot(
+            schema_version="v0.11",
             workflow_id="wf", suspended_node="gate", node_status={}, routes={},
             node_results=[], artifacts=[],
+            goal={"workflow_type": "wf", "objective": "t"},
+            run_context={"workflow_id": "wf-run", "workflow_type": "wf"},
         ).model_dump_json(),
         definition_json=_definition_json(),
     )

@@ -1002,3 +1002,19 @@ async def test_conflicting_related_run_identity_is_loud_on_every_event_surface(t
                 occurrence=0, policy=DurableWaitPolicy(timeout_s=1), snapshot_json="{}",
                 definition_json="{}", correlation_id=blank,
             )
+
+
+def test_observation_config_rejects_unknown_keys_loudly():
+    """v0.11 clean contract (manifest row M8): engine-owned config schemas are CLOSED — a
+    misspelled retention knob (or an obsolete key from any earlier line) fails instead of being
+    silently ignored and quietly changing retention behavior."""
+
+    import pytest as _pytest
+    from pydantic import ValidationError as _VE
+
+    from ai_workflow_engine import ObservationConfig
+
+    with _pytest.raises(_VE):
+        ObservationConfig(enabled=True, bundle_dir="x", retention_limt=5)  # typo'd key
+    with _pytest.raises(_VE):
+        ObservationConfig.model_validate({"enabled": True, "keep_bundles": 3})  # obsolete shape

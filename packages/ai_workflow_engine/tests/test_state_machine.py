@@ -614,3 +614,33 @@ async def test_authored_flow_descriptions_flow_to_machine_card():
 
     card = render_machine_card(engine.workflows["authored:polish_loop"], "polish_gate")
     assert "needs more polish" in card
+
+
+def test_machine_snapshot_rejects_non_current_schemas_loudly():
+    """v0.11 clean contract (manifest row M6): the snapshot schema is versioned and CLOSED —
+    pre-v0.11 JSON (no schema_version), wrong versions, unknown keys, and missing run identity
+    all fail with actionable errors; the current engine has no importer for old data."""
+
+    import pytest as _pytest
+    from pydantic import ValidationError as _VE
+    from ai_workflow_engine.snapshot import SNAPSHOT_SCHEMA_VERSION, MachineSnapshot
+
+    current = dict(
+        schema_version=SNAPSHOT_SCHEMA_VERSION, workflow_id="w", suspended_node="g",
+        goal={"workflow_type": "w", "objective": "o"},
+        run_context={"workflow_id": "r", "workflow_type": "w"},
+    )
+    snap = MachineSnapshot(**current)
+    assert MachineSnapshot.model_validate_json(snap.to_json()).schema_version == SNAPSHOT_SCHEMA_VERSION
+
+    old_style = {k: v for k, v in current.items() if k != "schema_version"}
+    with _pytest.raises(_VE, match="unsupported machine-snapshot schema"):
+        MachineSnapshot.model_validate(old_style)          # v0.10-era JSON: no version field
+    with _pytest.raises(_VE, match="unsupported machine-snapshot schema"):
+        MachineSnapshot.model_validate({**current, "schema_version": "v0.10"})
+    with _pytest.raises(_VE):
+        MachineSnapshot.model_validate({**current, "mystery_key": 1})   # closed schema
+    with _pytest.raises(_VE):
+        MachineSnapshot.model_validate({k: v for k, v in current.items() if k != "goal"})
+    with _pytest.raises(_VE):
+        MachineSnapshot.model_validate({k: v for k, v in current.items() if k != "run_context"})

@@ -16,7 +16,7 @@ import re
 from typing import Any, Literal, Optional
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import ConfigDict, BaseModel, Field, ValidationError, field_validator
 
 from ai_workflow_engine.models import ModelProfile, WorkflowProfile
 
@@ -71,11 +71,16 @@ class WorkflowConfigError(ValueError):
 class ObservationConfig(BaseModel):
     """Application-level observation policy (the engine owns the per-run mechanics).
 
+    v0.11 clean contract (manifest row M8): the schema is CLOSED — a misspelled or
+    obsolete key fails loudly instead of being silently ignored.
+
     Configure once in the application config; when ``enabled`` the engine auto-opens a
     per-run observation bundle, routes trace/detail/usage into it, finalizes it with the
     true terminal status, and prunes old finalized bundles to ``retention_limit``.
     Products never call bundle mechanics in the normal path.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     enabled: bool = False
     bundle_dir: str = "data/observations"

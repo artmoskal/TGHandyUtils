@@ -198,7 +198,11 @@ async def test_remaining_finite_run_refuses_uninterruptible_downstream_work_as_t
 async def test_snapshot_active_elapsed_duration_is_strict_finite_and_non_negative():
     from ai_workflow_engine.snapshot import MachineSnapshot
 
-    common = {"workflow_id": "w", "suspended_node": "gate"}
+    common = {
+        "schema_version": "v0.11", "workflow_id": "w", "suspended_node": "gate",
+        "goal": {"workflow_type": "w", "objective": "t"},
+        "run_context": {"workflow_id": "w-run", "workflow_type": "w"},
+    }
     assert MachineSnapshot(**common, active_elapsed_s=1.25).active_elapsed_s == 1.25
     for invalid in (-1.0, float("nan"), float("inf"), True, "1.0"):
         with pytest.raises(ValueError):

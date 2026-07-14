@@ -14,9 +14,12 @@ per-run state; isolation is proven by ``tests/test_run_session.py``.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
+
 import time
 import uuid
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, Iterator, List, Optional
 
 from ai_workflow_engine._runtime_state import current_run_session
 from ai_workflow_engine.models import (
@@ -25,6 +28,25 @@ from ai_workflow_engine.models import (
     WorkflowTraceEvent,
     WorkflowUsageSummary,
 )
+
+
+_ACTIVE_CHILD_TRACE: ContextVar[Optional[List[WorkflowTraceEvent]]] = ContextVar(
+    "workflow_child_trace_slice", default=None
+)
+
+
+@contextmanager
+def child_trace_slice() -> Iterator[List[WorkflowTraceEvent]]:
+    """Session-owned trace slice for ONE child run (v0.11, manifest row M7). Events recorded in
+    this task context while the scope is open are appended to the yielded list — the child
+    envelope's exact trace — replacing the removed sink-``.events`` sniffing fallback."""
+
+    events: List[WorkflowTraceEvent] = []
+    token = _ACTIVE_CHILD_TRACE.set(events)
+    try:
+        yield events
+    finally:
+        _ACTIVE_CHILD_TRACE.reset(token)
 
 
 class SessionScopedTraceSink:
@@ -40,10 +62,6 @@ class SessionScopedTraceSink:
 
     def __init__(self, inner: Any) -> None:
         self.inner = inner
-
-    @property
-    def events(self):  # legacy passthrough: child-run envelopes still sniff in-memory sinks
-        return getattr(self.inner, "events", None)
 
     def record(self, event: WorkflowTraceEvent) -> None:
         session = current_run_session()
@@ -66,6 +84,13 @@ class SessionScopedTraceSink:
             if updates:
                 event = event.model_copy(update=updates)
             session.trace_events.append(event)
+            child_slice = _ACTIVE_CHILD_TRACE.get()
+            if child_slice is not None:
+                # v0.11 (manifest row M7): a child run's envelope trace is an EXPLICIT
+                # session-owned slice — captured here per task (ContextVar), never sniffed
+                # back out of a sink. Exact under concurrency: each child task has its own
+                # slice; sibling events never bleed in.
+                child_slice.append(event)
             if session.bundle is not None:
                 session.bundle.trace_sink.record(event)
         self.inner.record(event)

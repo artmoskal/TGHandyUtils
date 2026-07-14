@@ -34,8 +34,11 @@ def _snapshot_json() -> str:
     from ai_workflow_engine.snapshot import MachineSnapshot
 
     return MachineSnapshot(
+        schema_version="v0.11",
         workflow_id="wf", suspended_node="gate", node_status={"gate": "requires_user_input"},
         routes={}, node_results=[], artifacts=[],
+        goal={"workflow_type": "wf", "objective": "conformance"},
+        run_context={"workflow_id": "wf-run", "workflow_type": "wf"},
     ).model_dump_json()
 
 

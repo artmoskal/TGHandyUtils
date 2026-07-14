@@ -201,3 +201,108 @@ def test_failed_run_closes_its_session_with_failed_status(monkeypatch):
 
     assert result.status == "failed"
     assert closes == ["failed"]
+
+
+async def test_child_envelopes_carry_exact_slices_under_concurrency_without_sink_events():
+    """v0.11 clean contract (manifest row M7): child-run envelope traces are explicit
+    session-owned slices — exact under BARRIER-interleaved concurrent children, with a custom
+    trace sink exposing NO ``.events`` attribute (the removed sniffing fallback would have
+    returned an empty/global list here)."""
+
+    import asyncio
+
+    from ai_workflow_engine import WorkflowBuilder, WorkflowEngineBuilder
+
+    class NoEventsSink:
+        def __init__(self):
+            self.count = 0
+
+        def record(self, event):  # deliberately NO .events attribute
+            self.count += 1
+
+    barrier_a, barrier_b = asyncio.Event(), asyncio.Event()
+
+    async def child_work(ctx, payload):
+        tag = payload["tag"] if isinstance(payload, dict) else getattr(payload, "tag", "?")
+        if tag == "a":
+            barrier_a.set()
+            await asyncio.wait_for(barrier_b.wait(), timeout=5.0)
+        else:
+            barrier_b.set()
+            await asyncio.wait_for(barrier_a.wait(), timeout=5.0)
+        return {"tag": tag}
+
+    builder = WorkflowEngineBuilder().with_trace_sink(NoEventsSink())
+    builder.register_capability("child_work", child_work)
+    builder.register_workflow(WorkflowBuilder("child_flow").step("child_work").build())
+
+    def seed(ctx, p):
+        return {"items": [{"tag": "a"}, {"tag": "b"}]}
+
+    builder.register_capability("seed", seed)
+    builder.register_workflow(
+        WorkflowBuilder("parent_flow")
+        .step("seed")
+        .fanout("kids", capability="run_child_flow", items_key="seed.items",
+                max_parallel=2, output_key="results")
+        .build()
+    )
+    engine = builder.build()
+    engine.register_workflow_capability("run_child_flow", "child_flow")
+
+    result = await engine.run("parent_flow", {})
+    assert result.status == "completed", result.error
+
+    kids = next(n for n in result.node_results if n.node_id == "kids")
+    # fanout committed both interleaved children; the barrier proves true concurrency
+    assert barrier_a.is_set() and barrier_b.is_set()
+    assert kids.status == "accepted", (kids.status, kids.error)
+
+    # the parent envelope's trace is the session buffer (exact, sink-shape independent)
+    assert result.trace, "parent envelope must carry the session's run buffer"
+    child_nodes = {e.node for e in result.trace}
+    assert "child_work" in child_nodes, "children recorded through the session"
+
+
+async def test_child_trace_slice_is_exact_per_task_under_concurrency():
+    """M7 mechanism lock (mutation surface): concurrent tasks each get ONLY their own slice —
+    dropping the slice-append in SessionScopedTraceSink.record leaves these lists empty and
+    fails here. The slice is session-owned; no sink `.events` is consulted (the passthrough
+    property is gone)."""
+
+    import asyncio
+
+    from ai_workflow_engine._runtime_state import run_session_scope
+    from ai_workflow_engine.models import WorkflowTraceEvent
+    from ai_workflow_engine.run_session import SessionScopedTraceSink, WorkflowRunSession, child_trace_slice
+
+    class NoEventsSink:
+        def __init__(self):
+            self.seen = []
+
+        def record(self, event):
+            self.seen.append(event.node)
+
+    sink = SessionScopedTraceSink(NoEventsSink())
+    assert not hasattr(sink, "events"), "the legacy .events passthrough must be gone (M7)"
+
+    barrier_a, barrier_b = asyncio.Event(), asyncio.Event()
+
+    async def child(tag: str, mine: asyncio.Event, other: asyncio.Event) -> list[str]:
+        with child_trace_slice() as events:
+            sink.record(WorkflowTraceEvent(node=f"{tag}-start", decision="start"))
+            mine.set()
+            await asyncio.wait_for(other.wait(), timeout=5.0)  # both children mid-flight
+            sink.record(WorkflowTraceEvent(node=f"{tag}-end", decision="accepted"))
+            return [e.node for e in events]
+
+    session = WorkflowRunSession(workflow_id="wf", context=_context())
+    with run_session_scope(session):
+        slice_a, slice_b = await asyncio.gather(
+            child("a", barrier_a, barrier_b), child("b", barrier_b, barrier_a)
+        )
+        assert slice_a == ["a-start", "a-end"], f"sibling bleed or lost slice: {slice_a}"
+        assert slice_b == ["b-start", "b-end"], f"sibling bleed or lost slice: {slice_b}"
+        # the session run buffer still carries EVERYTHING (parent envelope truth)
+        buffered = [e.node for e in session.trace_events]
+        assert sorted(buffered) == ["a-end", "a-start", "b-end", "b-start"]

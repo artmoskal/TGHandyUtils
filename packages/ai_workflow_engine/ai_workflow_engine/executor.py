@@ -45,7 +45,7 @@ from ai_workflow_engine.engine.scheduler import WorkflowScheduler
 from ai_workflow_engine.model_binding import model_profile_scope
 from ai_workflow_engine.node_services import ExecutorNodeServices, NodeExecutionServices
 from ai_workflow_engine.nodes import NODE_HANDLERS
-from ai_workflow_engine.run_session import WorkflowRunSession
+from ai_workflow_engine.run_session import child_trace_slice, WorkflowRunSession
 from ai_workflow_engine._runtime_state import (
     CONTEXT,
     current_run_session,
@@ -65,7 +65,7 @@ from ai_workflow_engine.models import (
     WorkflowUsageSummary,
 )
 from ai_workflow_engine.planning import PlanArtifact, PlanTask, render_plan
-from ai_workflow_engine.snapshot import MachineSnapshot
+from ai_workflow_engine.snapshot import MachineSnapshot, SNAPSHOT_SCHEMA_VERSION
 from ai_workflow_engine.wait_contract import WaitHandle
 from ai_workflow_engine.workflow import (
     END,
@@ -418,8 +418,9 @@ class WorkflowExecutor:
                 # nested costs look like zero and emitted a false plumbing warning on every run.
                 child_state["usage_summary"] = session.usage_summary
                 child_state["workflow_context"] = session.run_context
-            final_state = await compiled.ainvoke(child_state, config=graph_config)
-        return self._envelope(definition, final_state)
+            with child_trace_slice() as child_events:
+                final_state = await compiled.ainvoke(child_state, config=graph_config)
+        return self._envelope(definition, final_state, child_trace=child_events)
 
     async def resume(
         self,
@@ -1098,10 +1099,22 @@ class WorkflowExecutor:
         plan = final_state.get("plan_artifact")
         if plan is not None and hasattr(plan, "model_dump"):
             plan = plan.model_dump()
-        goal = final_state.get("workflow_goal")
         usage = final_state.get("usage_summary") or WorkflowUsageSummary()
-        snapshot_run_context = final_state.get("workflow_context")
+        # v0.11 (M6): the capturing run's identity is REQUIRED. Top-level/resume runs carry it in
+        # state; a CHILD run's identity lives on its CapabilityContext (goal) while its lineage
+        # keeps the parent's run_context (shared usage/budget scope, B-post3).
+        state_context = final_state.get(CONTEXT)
+        goal = final_state.get("workflow_goal") or getattr(state_context, "goal", None)
+        snapshot_run_context = final_state.get("workflow_context") or getattr(
+            state_context, "run_context", None
+        )
+        if goal is None or snapshot_run_context is None:
+            raise RuntimeError(
+                "suspension without run identity: neither state nor context carries "
+                "workflow_goal/run_context — a v0.11 snapshot requires the capturing run's identity"
+            )
         return MachineSnapshot(
+            schema_version=SNAPSHOT_SCHEMA_VERSION,
             workflow_id=definition.workflow_id,
             suspended_node=suspended,
             payload=final_state.get(RUNNING_PAYLOAD),
@@ -1123,11 +1136,11 @@ class WorkflowExecutor:
             plan_artifact=plan,
             usage=usage.model_dump() if hasattr(usage, "model_dump") else {},
             fallback_reason=final_state.get("fallback_reason"),
-            goal=goal.model_dump() if hasattr(goal, "model_dump") else None,
+            goal=goal.model_dump() if hasattr(goal, "model_dump") else dict(goal),
             run_context=(
                 snapshot_run_context.model_dump()
                 if hasattr(snapshot_run_context, "model_dump")
-                else None
+                else dict(snapshot_run_context)
             ),
             segment_index=getattr(segment, "segment_index", None),
             active_elapsed_s=(
@@ -1283,6 +1296,8 @@ class WorkflowExecutor:
         definition: WorkflowDefinition,
         final_state: Dict[str, Any],
         session: Optional[WorkflowRunSession] = None,
+        *,
+        child_trace: Optional[List[WorkflowTraceEvent]] = None,
     ) -> WorkflowRunResult:
         node_results: List[NodeResult] = list(final_state.get("node_results", []))
         run_context = final_state.get("workflow_context") or getattr(
@@ -1321,9 +1336,10 @@ class WorkflowExecutor:
             node_results=node_results,
             artifacts=list(final_state.get("artifacts", [])),
             usage=usage,
-            # B6/B7: the session's run-scoped buffer is exact and sink-shape independent;
-            # sink sniffing remains only for legacy paths without a session (child runs).
-            trace=list(session.trace_events) if session is not None else self._trace_events(run_id=run_id),
+            # B6/B7 + v0.11 M7: top-level/resume envelopes carry the session's exact run
+            # buffer; CHILD envelopes carry their explicit session-owned slice. The sink-
+            # sniffing fallback is gone — custom sinks need no ``.events``.
+            trace=list(session.trace_events) if session is not None else list(child_trace or []),
             snapshot=snapshot,
         )
 
@@ -1338,10 +1354,3 @@ class WorkflowExecutor:
             trace=[event],
         )
 
-    def _trace_events(self, *, run_id: str | None = None) -> List[WorkflowTraceEvent]:
-        events = getattr(self.runtime.trace_sink, "events", None)
-        if not isinstance(events, list):
-            return []
-        if run_id is None:
-            return list(events)
-        return [event for event in events if event.run_id == run_id]
