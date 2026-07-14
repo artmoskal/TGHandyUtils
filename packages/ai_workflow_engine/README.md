@@ -9,6 +9,12 @@ domain models, provider clients, storage adapters, clocks, and side-effect deliv
 > canaries still decide whether each product changes its deployed pin. Never depend on a
 > live branch. The binding contract is the repository-level
 > [`executable-workflow-engine-spec.md`](../../docs/executable-workflow-engine-spec.md).
+>
+> A v0.11 internal refactor is in progress on the branch and is UNRELEASED (no tag exists — keep
+> pinning `engine-v0.10.1`). It changes no public API, schema, or behavior: `invoke` internals are
+> split into contract/supervision/observation owners, proven behavior-identical by a sealed
+> preservation oracle plus a live differential against the pinned v0.10.1 wheel. Consumer delta
+> when it ships: none required — see [`docs/migration-v0.11.md`](docs/migration-v0.11.md).
 
 ## Start Here
 

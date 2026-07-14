@@ -228,3 +228,13 @@ and reconnect after process loss. The generic kit cannot inspect Redis `MULTI/EX
 
 Follow [`operations.md`](operations.md) for production recovery. File missing mechanics through
 [`extension-lifecycle.md`](extension-lifecycle.md), keeping Slack policy in product capabilities.
+
+
+## v0.11 Candidate Note (unreleased — keep the pin above)
+
+An internal v0.11 refactor of `CapabilityRuntime.invoke` is in progress and UNRELEASED — no
+`engine-v0.11.0` tag exists; keep the pin this document names. Nothing in this handoff changes:
+the public door, statuses, error text, trace/detail/usage shapes, budget rules, and wait behavior
+are locked by a sealed preservation oracle plus a live differential against the pinned v0.10.1
+wheel. When the tag ships, the consumer delta is NONE (see
+[`migration-v0.11.md`](migration-v0.11.md)); re-pin only after your own canary passes.

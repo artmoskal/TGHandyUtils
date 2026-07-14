@@ -555,6 +555,43 @@ Sources:
 - <https://developers.openai.com/api/docs/models>
 - <https://developers.openai.com/api/docs/pricing>
 
+## Invocation Internal Ownership (v0.11 candidate — unreleased)
+
+`CapabilityRuntime.invoke` remains the engine's ONE capability door for every worker family
+(deterministic tools, LLM workers, agents, human steps, external processes, evaluators, fanout
+children, subworkflows). As of the v0.11 refactor candidate its internals are owned by three
+single-purpose collaborators behind that unchanged facade:
+
+- **`engine/capability_contract.py` — pure rules.** Input validation, result normalization,
+  side-effect admission comparison, async-handler detection. Stateless functions over a
+  `CapabilitySpec` and its inputs; imports models + stdlib only.
+- **`engine/invocation_supervision.py` — time and cancellation.** Execution-window resolution
+  (enforcement-first; intersects capability limit, run remaining, per-task request, and the
+  parent's remaining soft budget), the ambient nested-window publish/reset scope, bounded
+  awaiting with cancellation containment (timeout → honest PARTIAL; suppressed cancellation →
+  containment FAILURE; caller cancellation propagates untranslated). Its only engine collaborator
+  is `execution_window.py`, which remains the window-arithmetic owner.
+- **`engine/capability_observation.py` — projection only.** Start/terminal trace events and
+  linked payload/result/error/artifact details. It receives ALREADY-DECIDED facts and resolves
+  the runtime's CURRENT trace sink and observation capture at each record (consumers may replace
+  `runtime.trace_sink`/`runtime.observation` after construction). It never selects a status,
+  branch, timeout, budget decision, or return value — observation is output, never control.
+
+Unchanged ownership: budgets and usage stay in `budget.py`/`usage.py`/`usage_events.py`; node
+result commitment stays in the executor; subprocess settlement stays in `engine/process_io.py`.
+These module names are INTERNAL — consumers keep importing the same public surface and never
+need the owner split as a concept.
+
+Preservation evidence (how "behavior-identical to v0.10.1" is proven, not asserted): a sealed
+27-scenario preservation oracle runs the full behavior inventory through the public door and is
+compared against the immutable `engine-v0.10.1` baseline both as a committed fixture and as a
+LIVE differential — the sha256-pinned v0.10.1 wheel is itself a committed fixture, so
+`./test.sh unit -- packages/ai_workflow_engine/tests/test_invocation_differential_gate.py`
+re-runs baseline-vs-candidate hermetically (no git/network), and a provenance record makes any
+un-resealed edit to the oracle, fixtures, or wheel fail loudly. One-door enforcement is locked by
+AST guards (`tests/test_one_door.py`): a looked-up handler called anywhere outside the facade
+fails the suite.
+
 ## Guidance Propagation
 
 User guidance is not consumed by one early parser.

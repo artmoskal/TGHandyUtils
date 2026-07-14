@@ -40,6 +40,9 @@ def test_contract_imports_nothing_forbidden():
             imported.extend(a.name for a in node.names)
     forbidden = (
         "ai_workflow_engine.engine.capabilities",
+        "ai_workflow_engine.engine.invocation_supervision",
+        "ai_workflow_engine.engine.capability_observation",
+        "ai_workflow_engine.observation_bundle", "ai_workflow_tools",
         "ai_workflow_engine.budget", "ai_workflow_engine.usage",
         "ai_workflow_engine.executor", "ai_workflow_engine.engine.external",
         "ai_workflow_engine.engine.process_io", "ai_workflow_engine.execution_window",

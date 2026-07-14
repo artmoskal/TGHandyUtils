@@ -32,6 +32,10 @@ def test_projector_imports_nothing_forbidden():
             imported.extend(a.name for a in node.names)
     forbidden = (
         "ai_workflow_engine.engine.capabilities",
+        "ai_workflow_engine.engine.invocation_supervision",
+        "ai_workflow_engine.engine.capability_contract",
+        "ai_workflow_engine.observation_bundle",
+        "ai_workflow_tools",
         "ai_workflow_engine.budget",
         "ai_workflow_engine.usage",
         "ai_workflow_engine.executor",
