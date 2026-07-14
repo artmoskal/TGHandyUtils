@@ -77,14 +77,57 @@ class MachineSnapshot(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _current_schema_only(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            found = data.get("schema_version")
-            if found != SNAPSHOT_SCHEMA_VERSION:
+        if not isinstance(data, dict):
+            return data
+        found = data.get("schema_version")
+        if found != SNAPSHOT_SCHEMA_VERSION:
+            raise ValueError(
+                f"unsupported machine-snapshot schema: expected "
+                f"{SNAPSHOT_SCHEMA_VERSION!r}, got {found!r} — this engine reads only "
+                f"current-line snapshots; inspect or resume older data with its matching "
+                f"historical engine tag (the current line has no importer)"
+            )
+
+        # Recheck R1: the PERSISTED identity is sealed at the DECODE boundary — resume under
+        # the exact captured identity or fail before anything executes. The seal applies when
+        # identity arrives as RAW WIRE DATA (dicts from JSON — the only shape resume/deliver
+        # ever decode). Live in-process capture passes typed WorkflowGoal/WorkflowRunContext
+        # instances composed by the engine itself; a discarded CHILD-suspension envelope
+        # legitimately pairs the child's goal with the parent's run lineage (B-post3) and is
+        # never persisted or resumable, so instance-shaped identity is not wire data and is
+        # not re-sealed here. Typed nested models alone cannot provide the wire seal:
+        # WorkflowGoal mints goal_id for NEW live goals (correct for live construction, never
+        # while decoding), run_context.goal_id is optional for live contexts, and the nested
+        # models tolerate unknown keys.
+        goal_raw = data.get("goal")
+        rc_raw = data.get("run_context")
+        if isinstance(goal_raw, dict) and isinstance(rc_raw, dict):
+            def _blank(value: Any) -> bool:
+                return value is None or (isinstance(value, str) and not value.strip())
+
+            problems: list[str] = []
+            if _blank(goal_raw.get("goal_id")):
+                problems.append("goal.goal_id is missing/blank (a snapshot may never mint identity)")
+            if _blank(rc_raw.get("workflow_id")):
+                problems.append("run_context.workflow_id is missing/blank")
+            if _blank(rc_raw.get("goal_id")):
+                problems.append("run_context.goal_id is missing/blank")
+            g_id, rc_id = goal_raw.get("goal_id"), rc_raw.get("goal_id")
+            if not _blank(g_id) and not _blank(rc_id) and g_id != rc_id:
+                problems.append(f"conflicting identities: goal.goal_id={g_id!r} != run_context.goal_id={rc_id!r}")
+            g_wt, rc_wt = goal_raw.get("workflow_type"), rc_raw.get("workflow_type")
+            if not _blank(g_wt) and not _blank(rc_wt) and g_wt != rc_wt:
+                problems.append(f"conflicting workflow_type: goal={g_wt!r} != run_context={rc_wt!r}")
+            unknown = set(goal_raw) - set(WorkflowGoal.model_fields)
+            if unknown:
+                problems.append(f"unknown goal fields: {sorted(unknown)}")
+            unknown = set(rc_raw) - set(WorkflowRunContext.model_fields)
+            if unknown:
+                problems.append(f"unknown run_context fields: {sorted(unknown)}")
+            if problems:
                 raise ValueError(
-                    f"unsupported machine-snapshot schema: expected "
-                    f"{SNAPSHOT_SCHEMA_VERSION!r}, got {found!r} — this engine reads only "
-                    f"current-line snapshots; inspect or resume older data with its matching "
-                    f"historical engine tag (the current line has no importer)"
+                    "unsupported machine-snapshot identity: " + "; ".join(problems)
+                    + " — resume requires the exact captured identity"
                 )
         return data
 

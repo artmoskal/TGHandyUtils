@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from current_contract_seal import load_ledger, partition_deltas
+from current_contract_seal import active_entries, load_ledger, partition_deltas
 
 pytestmark = [pytest.mark.unit]
 
@@ -150,3 +150,49 @@ def test_ledger_entries_are_exact_no_standing_wildcards():
         assert e.get("match", "prefix") == "exact", (
             f"standing wildcard entry found: {e['path_prefix']!r} — use exact paths"
         )
+
+
+def test_committed_ledger_has_no_active_permissions():
+    """Recheck R3: consumed permissions are SPENT after their seal. The committed state must
+    never carry a standing authorization — future intentional changes add a narrow active entry,
+    seal, then consume it before commit."""
+
+    entries = load_ledger(_LEDGER)
+    still_active = [e["path_prefix"] for e in active_entries(entries)]
+    assert not still_active, f"standing ledger permissions found: {still_active}"
+
+
+def test_spent_entries_never_authorize_deltas():
+    """Recheck R3: a spent entry is history, not permission — the exact delta it once approved
+    is refused if it reappears."""
+
+    spent = [{"path_prefix": "public.schemas.WorkflowGoal", "match": "exact",
+              "reason": "r", "manifest_row": "M15", "status": "spent"}]
+    deltas = ["public.schemas.WorkflowGoal: {...} != '<schema-error: X>'"]
+    _, unledgered = partition_deltas(deltas, active_entries(spent))
+    assert unledgered == deltas
+
+
+def test_whole_model_loss_is_unledgered_at_every_sealed_path():
+    """Recheck R3: for EVERY sealed model, whole-model removal AND schema-error replacement
+    produce deltas no committed entry authorizes — the consumed transition can never be reused
+    to drop a public contract."""
+
+    import json as _json
+
+    from current_contract_seal import compare_records
+
+    sealed = _json.loads(_PUBLIC_FIXTURE.read_text(encoding="utf-8"))
+    entries = active_entries(load_ledger(_LEDGER))
+    for model in sealed["schemas"]:
+        removed = _json.loads(_PUBLIC_FIXTURE.read_text(encoding="utf-8"))
+        del removed["schemas"][model]
+        deltas = compare_records({"public": sealed}, {"public": removed})
+        _, unledgered = partition_deltas(deltas, entries)
+        assert unledgered, f"whole-model removal of {model} was ledgered"
+
+        broken = _json.loads(_PUBLIC_FIXTURE.read_text(encoding="utf-8"))
+        broken["schemas"][model] = "<schema-error: Boom>"
+        deltas = compare_records({"public": sealed}, {"public": broken})
+        _, unledgered = partition_deltas(deltas, entries)
+        assert unledgered, f"schema-error replacement of {model} was ledgered"

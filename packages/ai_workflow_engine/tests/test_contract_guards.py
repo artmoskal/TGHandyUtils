@@ -723,27 +723,36 @@ def test_image_input_import_home_is_transport_models():
     from pathlib import Path as _Path
 
     offenders = []
-    for pkg in ("ai_workflow_engine", "../ai_workflow_tools/ai_workflow_tools",
-                "../ai_workflow_viewer/ai_workflow_viewer"):
-        base = (_Path(__file__).parents[1] / pkg).resolve()
+    # REPO-WIDE sweep (codex recheck R2): the first review's stale caller lived in the
+    # repository's own integration tests, outside the three package dirs. Scan every tracked
+    # python source that exists in this checkout (dirs absent in a standalone package checkout
+    # are skipped harmlessly).
+    repo = (_Path(__file__).parents[3]).resolve()
+    roots = [
+        repo / "packages", repo / "services", repo / "core", repo / "handlers",
+        repo / "platforms", repo / "models", repo / "database", repo / "tests",
+    ]
+    for base in roots:
         if not base.exists():
             continue
         for path in base.rglob("*.py"):
-            if "build" in path.parts:
+            if "build" in path.parts or "__pycache__" in path.parts:
                 continue
-            tree = _ast.parse(path.read_text(encoding="utf-8"))
+            try:
+                tree = _ast.parse(path.read_text(encoding="utf-8"))
+            except SyntaxError:
+                continue
             for node in _ast.walk(tree):
                 if (
                     isinstance(node, _ast.ImportFrom)
                     and node.module == "ai_workflow_engine.vision"
                     and any(a.name == "ImageInput" for a in node.names)
                 ):
-                    offenders.append(f"{path.name}:{node.lineno}")
+                    offenders.append(f"{path.relative_to(repo)}:{node.lineno}")
     assert not offenders, f"ImageInput imported from vision (home is transport_models): {offenders}"
 
-    # Runtime half (codex I1 review finding 2): the OLD attribute itself is gone — vision holds
-    # its dependency under a private alias, so `from ai_workflow_engine.vision import ImageInput`
-    # raises ImportError, not just a lint finding.
+    # Runtime half, DYNAMIC so this guard file never contains the offending import shape
+    # itself (the repo-wide AST sweep above must not need to exempt its own probe).
     import importlib
 
     vision = importlib.import_module("ai_workflow_engine.vision")
@@ -751,4 +760,4 @@ def test_image_input_import_home_is_transport_models():
         "vision still binds the public ImageInput name — the old import would keep working"
     )
     with pytest.raises(ImportError):
-        from ai_workflow_engine.vision import ImageInput  # noqa: F401
+        exec("from ai_workflow_engine.vision import ImageInput")

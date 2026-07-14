@@ -200,8 +200,8 @@ async def test_snapshot_active_elapsed_duration_is_strict_finite_and_non_negativ
 
     common = {
         "schema_version": "v0.11", "workflow_id": "w", "suspended_node": "gate",
-        "goal": {"workflow_type": "w", "objective": "t"},
-        "run_context": {"workflow_id": "w-run", "workflow_type": "w"},
+        "goal": {"workflow_type": "w", "objective": "t", "goal_id": "g-w"},
+        "run_context": {"workflow_id": "w-run", "workflow_type": "w", "goal_id": "g-w"},
     }
     assert MachineSnapshot(**common, active_elapsed_s=1.25).active_elapsed_s == 1.25
     for invalid in (-1.0, float("nan"), float("inf"), True, "1.0"):

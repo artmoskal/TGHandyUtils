@@ -37,8 +37,8 @@ def _snapshot_json() -> str:
         schema_version="v0.11",
         workflow_id="wf", suspended_node="gate", node_status={"gate": "requires_user_input"},
         routes={}, node_results=[], artifacts=[],
-        goal={"workflow_type": "wf", "objective": "conformance"},
-        run_context={"workflow_id": "wf-run", "workflow_type": "wf"},
+        goal={"workflow_type": "wf", "objective": "conformance", "goal_id": "g-conf"},
+        run_context={"workflow_id": "wf-run", "workflow_type": "wf", "goal_id": "g-conf"},
     ).model_dump_json()
 
 

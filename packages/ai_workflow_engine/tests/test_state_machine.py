@@ -627,8 +627,8 @@ def test_machine_snapshot_rejects_non_current_schemas_loudly():
 
     current = dict(
         schema_version=SNAPSHOT_SCHEMA_VERSION, workflow_id="w", suspended_node="g",
-        goal={"workflow_type": "w", "objective": "o"},
-        run_context={"workflow_id": "r", "workflow_type": "w"},
+        goal={"workflow_type": "w", "objective": "o", "goal_id": "g-1"},
+        run_context={"workflow_id": "r", "workflow_type": "w", "goal_id": "g-1"},
     )
     snap = MachineSnapshot(**current)
     assert MachineSnapshot.model_validate_json(snap.to_json()).schema_version == SNAPSHOT_SCHEMA_VERSION
@@ -651,6 +651,27 @@ def test_machine_snapshot_rejects_non_current_schemas_loudly():
         MachineSnapshot.model_validate({**current, "run_context": {}})
     with _pytest.raises(_VE):
         MachineSnapshot.model_validate({**current, "goal": {"objective": 42}})
+    # recheck R1: identity is SEALED — no minting, no conflicts, no unknown nested fields
+    with _pytest.raises(_VE, match="goal.goal_id is missing"):
+        MachineSnapshot.model_validate(
+            {**current, "goal": {"workflow_type": "w", "objective": "o"}}  # no goal_id -> no minting
+        )
+    with _pytest.raises(_VE, match="conflicting identities"):
+        MachineSnapshot.model_validate(
+            {**current, "run_context": {"workflow_id": "r", "workflow_type": "w", "goal_id": "OTHER"}}
+        )
+    with _pytest.raises(_VE, match="conflicting workflow_type"):
+        MachineSnapshot.model_validate(
+            {**current, "run_context": {"workflow_id": "r", "workflow_type": "zzz", "goal_id": "g-1"}}
+        )
+    with _pytest.raises(_VE, match="unknown goal fields"):
+        MachineSnapshot.model_validate(
+            {**current, "goal": {**current["goal"], "smuggled_identity": "x"}}
+        )
+    with _pytest.raises(_VE, match="run_context.goal_id is missing"):
+        MachineSnapshot.model_validate(
+            {**current, "run_context": {"workflow_id": "r", "workflow_type": "w"}}
+        )
 
     # JSON-schema truth: typed identity refs, const version, closed schema
     schema = MachineSnapshot.model_json_schema()

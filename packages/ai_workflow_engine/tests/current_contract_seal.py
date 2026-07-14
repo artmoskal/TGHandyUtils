@@ -102,6 +102,10 @@ def compare_records(baseline: dict, candidate: dict) -> list[str]:
 
 
 def load_ledger(path: Path = _LEDGER) -> list[dict]:
+    """Load ALL entries (history included). Only status='active' entries authorize deltas at
+    seal time (recheck R3): a consumed permission is marked status='spent' after its seal and
+    can never authorize a later change — spent entries remain as the 2C accounting record."""
+
     data = json.loads(path.read_text(encoding="utf-8"))
     entries = data.get("entries")
     if not isinstance(entries, list):
@@ -110,7 +114,13 @@ def load_ledger(path: Path = _LEDGER) -> list[dict]:
         if not isinstance(e, dict) or not e.get("path_prefix") or not e.get("reason") \
                 or not e.get("manifest_row"):
             raise SystemExit(f"ledger entry missing path_prefix/reason/manifest_row: {e!r}")
+        if e.get("status", "active") not in ("active", "spent"):
+            raise SystemExit(f"ledger entry has invalid status: {e!r}")
     return entries
+
+
+def active_entries(entries: list[dict]) -> list[dict]:
+    return [e for e in entries if e.get("status", "active") == "active"]
 
 
 def partition_deltas(mismatches: list[str], entries: list[dict]) -> tuple[list[str], list[str]]:
@@ -202,7 +212,7 @@ def main() -> int:
     predecessor, label = _predecessor_fixture()
     if predecessor is not None:
         deltas = compare_records(json.loads(predecessor.read_text(encoding="utf-8")), first)
-        ledgered, unledgered = partition_deltas(deltas, entries)
+        ledgered, unledgered = partition_deltas(deltas, active_entries(entries))
         print(f"deltas vs {label}: {len(deltas)} ({len(ledgered)} ledgered / {len(unledgered)} unledgered)")
         for m in unledgered[:40]:
             print("  UNLEDGERED -", m)
@@ -219,7 +229,7 @@ def main() -> int:
     if prev_public_path is not None:
         pdeltas = compare_records({"public": json.loads(prev_public_path.read_text(encoding="utf-8"))},
                                   {"public": public})
-        pledg, punledg = partition_deltas(pdeltas, entries)
+        pledg, punledg = partition_deltas(pdeltas, active_entries(entries))
         print(f"public deltas vs {prev_public_path.name}: {len(pdeltas)} ({len(pledg)} ledgered / {len(punledg)} unledgered)")
         for m in punledg[:40]:
             print("  UNLEDGERED -", m)

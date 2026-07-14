@@ -245,7 +245,7 @@ async def test_live_staged_vision_cannot_read_outside_inputs(tmp_path):
     import shutil
 
     from ai_workflow_engine.llm_protocol import LLMRequest
-    from ai_workflow_engine.vision import ImageInput
+    from ai_workflow_engine.transport_models import ImageInput
     from ai_workflow_tools.cli_agents import ConsoleLLMClient, claude_p
 
     if shutil.which("claude") is None:
