@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ast
 import json
+from pathlib import Path
 
 import pytest
 
@@ -15,6 +17,65 @@ from ai_workflow_engine import (
 from ai_workflow_viewer import JsonlObservationViewer
 
 pytestmark = pytest.mark.unit
+
+
+def test_viewer_truth_owners_have_one_way_dependencies():
+    """Storage, grouping, projection, and presentation stay separate owners."""
+
+    root = Path(__file__).parents[1] / "ai_workflow_viewer"
+    sources = {
+        name: (root / name).read_text(encoding="utf-8")
+        for name in (
+            "observation_data.py",
+            "grouping.py",
+            "projection.py",
+            "event_source.py",
+            "observability.py",
+        )
+    }
+
+    def imports(source: str) -> set[str]:
+        found: set[str] = set()
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                found.add(node.module)
+            elif isinstance(node, ast.Import):
+                found.update(alias.name for alias in node.names)
+        return found
+
+    data_imports = imports(sources["observation_data.py"])
+    grouping_imports = imports(sources["grouping.py"])
+    projection_imports = imports(sources["projection.py"])
+    source_imports = imports(sources["event_source.py"])
+
+    forbidden_presentation = ("html", "http", "urllib", "ai_workflow_viewer.server")
+
+    def forbidden(found: set[str]) -> set[str]:
+        return {
+            name
+            for name in found
+            if any(name == prefix or name.startswith(f"{prefix}.") for prefix in forbidden_presentation)
+        }
+
+    assert not forbidden(data_imports)
+    assert not forbidden(grouping_imports)
+    assert not forbidden(projection_imports)
+    assert "pathlib" not in grouping_imports, "grouping must consume decoded facts, not storage"
+    assert "ai_workflow_viewer.event_source" not in grouping_imports
+    assert "ai_workflow_viewer.observability" not in grouping_imports
+    assert "ai_workflow_viewer.observability" not in projection_imports
+    assert "ai_workflow_viewer.server" not in source_imports
+
+    event_tree = ast.parse(sources["event_source.py"])
+    render_tree = ast.parse(sources["observability.py"])
+    event_defs = {
+        node.name for node in event_tree.body if isinstance(node, (ast.FunctionDef, ast.ClassDef))
+    }
+    render_defs = {
+        node.name for node in render_tree.body if isinstance(node, (ast.FunctionDef, ast.ClassDef))
+    }
+    assert not {"_canonical_partition", "_usage_totals_from_events"} & event_defs
+    assert not {"_external_outcome", "_next_status", "_add_usage_cost"} & render_defs
 
 
 def _write_bundle(
