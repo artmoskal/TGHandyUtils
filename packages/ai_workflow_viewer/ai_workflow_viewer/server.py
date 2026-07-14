@@ -2,20 +2,20 @@
 
 from __future__ import annotations
 
-import html
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Iterable, Optional
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from ai_workflow_viewer.event_source import EventSource, FileEventSource
-from ai_workflow_viewer.observability import (
+from ai_workflow_viewer.projection import build_observation_graph
+from ai_workflow_viewer.rendering import (
     INLINE_SAFE_MEDIA_TYPES,
-    build_observation_graph,
     load_artifact_manifest,
     observation_graph_to_html,
     observation_group_to_html,
+    observation_index_to_html,
     _encode_artifact_path,
 )
 
@@ -93,46 +93,12 @@ class JsonlObservationViewer:
     def index_html(
         self, runs: Optional[list[dict]] = None, *, related_run_id: Optional[str] = None
     ) -> str:
-        rows = "\n".join(
-            _run_row(run, related_filter=related_run_id)
-            for run in (runs if runs is not None else self.runs(related_run_id=related_run_id))
+        selected = runs if runs is not None else self.runs(related_run_id=related_run_id)
+        return observation_index_to_html(
+            selected,
+            title=self.title or "Workflow observations",
+            related_run_id=related_run_id,
         )
-        title = self.title or "Workflow observations"
-        filter_banner = (
-            f'<p class="muted">Filtered by Related-run ID '
-            f"<code>{html.escape(related_run_id)}</code> — runs stay separate "
-            f'(<a href="?">clear filter</a>)</p>'
-            if related_run_id is not None
-            else ""
-        )
-        empty_message = (
-            f"No runs for Related-run ID <code>{html.escape(related_run_id)}</code>."
-            if related_run_id is not None
-            else "No observation runs found."
-        )
-        return f"""<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>{html.escape(title)}</title>
-<style>
-body {{ font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 24px; color: #1f2933; background: #ffffff; }}
-h1 {{ font-size: 24px; margin: 0 0 16px; }}
-table {{ border-collapse: collapse; width: 100%; background: #fff; }}
-th, td {{ border-bottom: 1px solid #d9e2ec; padding: 8px 10px; text-align: left; vertical-align: top; }}
-th {{ color: #52606d; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }}
-code {{ background: #f0f4f8; border-radius: 4px; padding: 1px 4px; }}
-.muted {{ color: #627d98; }}
-.empty {{ border: 1px solid #d9e2ec; border-radius: 8px; padding: 18px; }}
-</style>
-</head>
-<body>
-<h1>{html.escape(title)}</h1>
-{filter_banner}
-{f'<table><thead><tr><th>Run ID</th><th>Related-run ID</th><th>Workflow</th><th>Status</th><th>Timestamp</th><th>Usage</th><th>Open</th></tr></thead><tbody>{rows}</tbody></table>' if rows else f'<div class="empty muted">{empty_message}</div>'}
-</body>
-</html>
-"""
 
     def runs(self, *, related_run_id: Optional[str] = None) -> list[dict]:
         # R3/F5: one row per LOGICAL run (segments collapse), falling back to the flat
@@ -336,48 +302,6 @@ def _poll_records(
             yield record
         seen = len(records)
         time.sleep(0.5)
-
-
-def _run_row(run: dict, *, related_filter: Optional[str] = None) -> str:
-    run_id = str(run.get("run_id") or "")
-    workflow = str(run.get("workflow_id") or "")
-    status = str(run.get("status") or "")
-    timestamp = str(run.get("timestamp") or "")
-    total_tokens = run.get("total_tokens")
-    metered = run.get("metered_usd")
-    notional = run.get("notional_usd")
-    usage = _usage_label(total_tokens, metered, notional)
-    href = f"?run_id={quote(run_id)}"
-    if related_filter is not None:
-        href += f"&related_run_id={quote(related_filter)}"  # back-navigation keeps the filter
-    related = run.get("related_run_id")
-    related_cell = (
-        f'<a href="?related_run_id={quote(str(related))}"><code>{html.escape(str(related))}</code></a>'
-        if related
-        else "-"
-    )
-    return (
-        "<tr>"
-        f"<td><code>{html.escape(run_id)}</code></td>"
-        f"<td>{related_cell}</td>"
-        f"<td>{html.escape(workflow or '-')}</td>"
-        f"<td>{html.escape(status or '-')}</td>"
-        f"<td>{html.escape(timestamp or '-')}</td>"
-        f"<td>{html.escape(usage)}</td>"
-        f'<td><a href="{href}">open</a></td>'
-        "</tr>"
-    )
-
-
-def _usage_label(total_tokens: object, metered: object, notional: object) -> str:
-    parts = []
-    if total_tokens:
-        parts.append(f"{total_tokens} tokens")
-    if metered is not None:
-        parts.append(f"metered ${float(metered):.4f}")
-    if notional is not None:
-        parts.append(f"notional ${float(notional):.4f}")
-    return " / ".join(parts) if parts else "-"
 
 
 def _request_run_id(path: str, query: dict[str, list[str]]) -> Optional[str]:

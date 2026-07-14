@@ -26,11 +26,15 @@ def test_viewer_truth_owners_have_one_way_dependencies():
     sources = {
         name: (root / name).read_text(encoding="utf-8")
         for name in (
+            "assets.py",
             "observation_data.py",
             "grouping.py",
             "projection.py",
+            "rendering.py",
+            "view_models.py",
             "event_source.py",
             "observability.py",
+            "server.py",
         )
     }
 
@@ -47,6 +51,9 @@ def test_viewer_truth_owners_have_one_way_dependencies():
     grouping_imports = imports(sources["grouping.py"])
     projection_imports = imports(sources["projection.py"])
     source_imports = imports(sources["event_source.py"])
+    asset_imports = imports(sources["assets.py"])
+    view_model_imports = imports(sources["view_models.py"])
+    server_imports = imports(sources["server.py"])
 
     forbidden_presentation = ("html", "http", "urllib", "ai_workflow_viewer.server")
 
@@ -60,22 +67,74 @@ def test_viewer_truth_owners_have_one_way_dependencies():
     assert not forbidden(data_imports)
     assert not forbidden(grouping_imports)
     assert not forbidden(projection_imports)
+    assert not any(name.startswith("ai_workflow_engine") for name in asset_imports)
+    assert not forbidden(view_model_imports)
     assert "pathlib" not in grouping_imports, "grouping must consume decoded facts, not storage"
     assert "ai_workflow_viewer.event_source" not in grouping_imports
     assert "ai_workflow_viewer.observability" not in grouping_imports
     assert "ai_workflow_viewer.observability" not in projection_imports
     assert "ai_workflow_viewer.server" not in source_imports
+    assert "html" not in server_imports, "HTTP transport must delegate HTML rendering"
 
     event_tree = ast.parse(sources["event_source.py"])
     render_tree = ast.parse(sources["observability.py"])
+    rendering_tree = ast.parse(sources["rendering.py"])
     event_defs = {
         node.name for node in event_tree.body if isinstance(node, (ast.FunctionDef, ast.ClassDef))
     }
     render_defs = {
         node.name for node in render_tree.body if isinstance(node, (ast.FunctionDef, ast.ClassDef))
     }
+    rendering_defs = {
+        node.name
+        for node in rendering_tree.body
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef))
+    }
+    server_defs = {
+        node.name
+        for node in ast.parse(sources["server.py"]).body
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef))
+    }
     assert not {"_canonical_partition", "_usage_totals_from_events"} & event_defs
     assert not {"_external_outcome", "_next_status", "_add_usage_cost"} & render_defs
+    assert not {"_external_outcome", "_next_status", "_add_usage_cost"} & rendering_defs
+    assert "ai_workflow_viewer.rendering" in imports(sources["observability.py"])
+    assert "ai_workflow_viewer.observability" not in imports(sources["rendering.py"])
+    assert not {"_run_row", "_usage_label"} & server_defs
+
+
+def test_packaged_assets_are_exactly_inlined_and_view_data_is_closed():
+    from ai_workflow_engine import WorkflowBuilder
+    from ai_workflow_viewer.assets import load_asset_text
+    from ai_workflow_viewer.observability import (
+        _observation_base_css,
+        _observation_view_data,
+        _rich_graph_css,
+        _rich_graph_js,
+        build_observation_graph,
+        observation_graph_to_html,
+    )
+    from ai_workflow_viewer.view_models import ObservationViewData
+
+    assert _observation_base_css() == "\n" + load_asset_text("observation-base.css")
+    assert _rich_graph_css() == "\n" + load_asset_text("rich-graph.css")
+    assert _rich_graph_js() == "\n" + load_asset_text("rich-graph.js")
+    with pytest.raises(ValueError, match="unknown viewer asset"):
+        load_asset_text("../secret")
+
+    definition = WorkflowBuilder("asset-smoke").step("inspect").build()
+    graph = build_observation_graph(definition, [])
+    view_data = _observation_view_data(definition, graph)
+    assert set(view_data) == {"workflow_id", "run_id", "canvas", "nodes", "transitions"}
+    with pytest.raises(ValueError, match="extra_forbidden"):
+        ObservationViewData.model_validate({**view_data, "invented_status": "completed"})
+    page = observation_graph_to_html(definition, graph)
+    assert ".graph-node" in page
+    assert "const dataEl = document.getElementById" in page
+    assert '<link rel="stylesheet"' not in page and '<script src="' not in page
+
+    package_toml = (Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+    assert '"assets/*.css"' in package_toml and '"assets/*.js"' in package_toml
 
 
 def _write_bundle(

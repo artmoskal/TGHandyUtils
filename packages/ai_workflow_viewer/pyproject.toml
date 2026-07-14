@@ -23,7 +23,7 @@ where = ["."]
 include = ["ai_workflow_viewer*"]
 
 [tool.setuptools.package-data]
-ai_workflow_viewer = ["py.typed"]
+ai_workflow_viewer = ["py.typed", "assets/*.css", "assets/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

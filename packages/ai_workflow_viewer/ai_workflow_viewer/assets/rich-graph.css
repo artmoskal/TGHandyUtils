@@ -1,0 +1,61 @@
+.investigation-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, 420px); gap: 16px; align-items: start; }
+.graph-workbench { min-width: 0; }
+.graph-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0 10px; }
+.graph-controls input { min-width: 220px; padding: 7px 9px; border: 1px solid #bcccdc; border-radius: 6px; font: inherit; }
+.graph-hint { font-size: 13px; color: #52606d; margin-bottom: 8px; }
+.rich-graph-scroll { max-height: 72vh; border: 1px solid #cbd5e1; background: #f8fafc; overflow: auto; position: relative; }
+.rich-graph { position: relative; width: var(--canvas-width); height: var(--canvas-height); min-width: 100%; min-height: 520px; }
+/* NEVER stretch this layer: its viewBox is the FIXED canvas coordinate space the
+   absolutely-positioned node cards live in; CSS 100% sizing on a wider window would
+   rescale+center the edges away from the nodes (min-width:100% grows .rich-graph).
+   The width/height ATTRIBUTES set in renderEdges keep it identity-mapped. */
+.rich-edge-layer { position: absolute; left: 0; top: 0; pointer-events: none; overflow: visible; }
+.rich-edge { fill: none; stroke: #7b8794; stroke-width: 1.4; opacity: 0.78; }
+.rich-edge.decision { stroke-dasharray: 4 3; }
+.rich-edge-label { fill: #334e68; font-size: 11px; paint-order: stroke; stroke: #f8fafc; stroke-width: 3px; stroke-linejoin: round; }
+.node-layer { position: absolute; inset: 0; }
+.graph-node { position: absolute; box-sizing: border-box; width: 220px; min-height: 100px; border: 1px solid #9fb3c8; border-radius: 8px; background: #ffffff; box-shadow: 0 3px 10px rgba(31, 41, 55, 0.08); padding: 10px; cursor: grab; user-select: none; transition: box-shadow 120ms ease, border-color 120ms ease, opacity 120ms ease; }
+.graph-node:active { cursor: grabbing; }
+.graph-node:hover, .graph-node.is-selected { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14), 0 8px 18px rgba(31, 41, 55, 0.12); }
+.graph-node.is-hidden { opacity: 0.18; }
+.graph-node.run-status-completed { border-left: 5px solid #16a34a; }
+.graph-node.run-status-running { border-left: 5px solid #d97706; }
+.graph-node.run-status-failed { border-left: 5px solid #dc2626; }
+.graph-node.run-status-not_started { border-left: 5px solid #94a3b8; }
+.graph-node.run-status-partial { border-left: 5px solid #ca8a04; }
+.graph-node.run-status-suspended { border-left: 5px solid #7c3aed; }
+.graph-node.run-status-mixed { border-left: 5px solid #78716c; }
+.graph-node.kind-branch { background: #f0fdf4; }
+.graph-node.kind-terminal { background: #f8fafc; }
+.node-topline { display: flex; gap: 6px; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.node-pill { border-radius: 999px; padding: 2px 7px; font-size: 11px; line-height: 1.4; background: #e0f2fe; color: #075985; text-transform: uppercase; letter-spacing: 0.02em; }
+.node-status { font-size: 11px; color: #52606d; }
+.node-title { font-weight: 700; font-size: 14px; line-height: 1.25; color: #102a43; }
+.node-id { margin-top: 3px; font-size: 11px; color: #627d98; overflow-wrap: anywhere; }
+.node-description { margin-top: 7px; font-size: 12px; line-height: 1.35; color: #334e68; }
+.node-external-note { margin-top: 6px; font-size: 11px; color: #92400e; background: #fef3c7; border-radius: 4px; padding: 2px 6px; display: inline-block; }
+.external-legend { color: #92400e; }
+.node-metrics { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 5px; font-size: 11px; color: #486581; }
+.metric-chip { border: 1px solid #d9e2ec; border-radius: 999px; padding: 1px 6px; background: #f8fafc; }
+.rich-graph[data-mode="overview"] .node-description,
+.rich-graph[data-mode="overview"] .node-id { display: none; }
+.rich-graph[data-mode="overview"] .graph-node { min-height: 76px; }
+.rich-graph[data-mode="raw"] .node-id { color: #0f172a; font-weight: 600; }
+.inspector { position: sticky; top: 92px; max-height: calc(100vh - 112px); overflow: auto; border: 1px solid #cbd5e1; border-radius: 8px; background: #ffffff; padding: 14px; box-shadow: 0 4px 14px rgba(31, 41, 55, 0.08); }
+.inspector h2 { margin-top: 0; }
+.inspector-section { border-top: 1px solid #e4e7eb; padding-top: 10px; margin-top: 12px; }
+.inspector-grid { display: grid; grid-template-columns: auto 1fr; gap: 6px 10px; font-size: 13px; }
+.inspector-grid dt { color: #627d98; }
+.inspector-grid dd { margin: 0; overflow-wrap: anywhere; }
+.detail-card { border: 1px solid #d9e2ec; border-radius: 7px; padding: 9px; margin: 8px 0; background: #f8fafc; }
+.detail-card-header { display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; margin-bottom: 6px; }
+.detail-kind { font-weight: 700; color: #102a43; }
+.detail-summary { color: #334e68; font-size: 13px; line-height: 1.4; }
+.event-list { display: grid; gap: 6px; }
+.event-chip { border: 1px solid #d9e2ec; border-radius: 7px; padding: 7px; background: #ffffff; font-size: 12px; }
+.event-chip.error { border-color: #fecaca; background: #fff1f2; }
+.raw-toggle pre { max-height: 320px; overflow: auto; background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 10px; }
+@media (max-width: 980px) {
+  .investigation-layout { grid-template-columns: 1fr; }
+  .inspector { position: static; max-height: none; }
+}
