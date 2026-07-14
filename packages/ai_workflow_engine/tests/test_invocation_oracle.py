@@ -48,7 +48,7 @@ _ACCEPTED_PLAN_INVENTORY: dict[str, list[str]] = {
     "unknown capability": ["unknown_capability"],
     "invalid input": ["invalid_input"],
     "side effect denied": ["side_effect_denied"],
-    "budget denied": ["budget_denied", "worker_call_accounting"],
+    "budget denied": ["budget_denied", "worker_call_accounting", "usage_event_semantics"],
     "sync success": ["sync_success"],
     "async success": ["async_success"],
     "explicit partial result": ["explicit_partial"],
@@ -126,11 +126,11 @@ def test_comparator_and_canonicalizer_detect_real_drift():
             "handler_calls": 1,
             "trace": [
                 {"node": "n", "attempt": 1, "phase": "tool:request", "decision": "start",
-                 "severity": "info", "error": None, "metadata": {}, "event": "E0",
-                 "detail_refs": ["D0"], "artifacts": []},
+                 "node_status": None, "severity": "info", "error": None, "metadata": {},
+                 "event": "E0", "detail_refs": ["D0"], "artifacts": []},
                 {"node": "n", "attempt": 1, "phase": "tool:result", "decision": "accepted",
-                 "severity": "info", "error": None, "metadata": {}, "event": "E1",
-                 "detail_refs": ["D1"], "artifacts": ["A0"]},
+                 "node_status": None, "severity": "info", "error": None, "metadata": {},
+                 "event": "E1", "detail_refs": ["D1"], "artifacts": ["A0"]},
             ],
             "details": [
                 {"kind": "tool_payload", "privacy": "internal", "redaction_state": "none",
@@ -141,9 +141,15 @@ def test_comparator_and_canonicalizer_detect_real_drift():
             "usage": {
                 "worker_call_count": 1, "text_call_count": 0, "image_call_count": 0,
                 "tool_call_count": 0, "total_tokens": 3, "metered_usd": None, "notional_usd": None,
+                # full semantic event shape (model_dump minus the reviewed volatile drop-list)
                 "events": [{"provider": "openai", "operation": "chat", "cost_class": "metered",
-                            "node": "n", "model": "m", "input_tokens": 1, "output_tokens": 2,
-                            "total_tokens": 3, "success": True, "error": None}],
+                            "node": "n", "run_id": "oracle-run", "sequence": None, "model": "m",
+                            "attempt": 2, "input_tokens": 1, "output_tokens": 2, "total_tokens": 3,
+                            "input_token_details": {"cached_tokens": 1},
+                            "output_token_details": {"reasoning_tokens": 1},
+                            "estimated_usd": 0.01, "notional_usd": None, "request_id": "req-1",
+                            "elapsed_ms": 7, "success": True, "error": None,
+                            "metadata": {"workflow_type": "oracle"}}],
             },
             # schema-shaped block: the SAME comparator walks full JSON schemas in the public-surface
             # lock, so a default/constraint change there fails identically to these leaf mutations.
@@ -177,9 +183,17 @@ def test_comparator_and_canonicalizer_detect_real_drift():
     # --- artifact fields ---
     assert mutated(lambda s: s["result"]["artifacts"][0].__setitem__("path", "b.png"))      # artifact field
     assert mutated(lambda s: s["result"]["artifacts"][0].__setitem__("kind", "file"))       # artifact kind
-    # --- usage ---
+    # --- usage (summary + EVERY semantic event field codex flagged as dropped) ---
     assert mutated(lambda s: s["usage"].__setitem__("worker_call_count", 2))               # summary value
     assert mutated(lambda s: s["usage"]["events"][0].__setitem__("cost_class", "subscription_notional"))  # classification
+    assert mutated(lambda s: s["usage"]["events"][0].__setitem__("attempt", 3))            # retry attribution
+    assert mutated(lambda s: s["usage"]["events"][0]["input_token_details"].__setitem__("cached_tokens", 9))   # token details
+    assert mutated(lambda s: s["usage"]["events"][0].__setitem__("estimated_usd", 0.99))   # per-event cost
+    assert mutated(lambda s: s["usage"]["events"][0]["metadata"].__setitem__("workflow_type", "other"))  # event metadata
+    assert mutated(lambda s: s["usage"]["events"][0].__setitem__("success", False))        # success flip
+    assert mutated(lambda s: s["usage"]["events"][0].__setitem__("error", "quota"))        # event error
+    # --- typed trace lifecycle (codex I1.R finding 2) ---
+    assert mutated(lambda s: s["trace"][1].__setitem__("node_status", "completed"))        # None -> completed
     # --- schema default + constraint ---
     assert mutated(lambda s: s["schema"]["properties"]["x"].__setitem__("default", 1))     # schema default
     assert mutated(lambda s: s["schema"]["properties"]["x"].__setitem__("maximum", 5))     # schema constraint
@@ -226,6 +240,48 @@ def test_canonicalizer_does_not_round_arbitrary_strings():
     assert compare_records({"s": _canon("v=3.141")}, {"s": _canon("v=3.144")}), (
         "decimal drift inside an arbitrary string was silently hidden"
     )
+
+
+def test_deadline_normalizer_is_leaf_and_pattern_scoped():
+    """I1.RR2: the cooperative-deadline normalizer touches ONLY the seconds token of the known
+    deadline message at result.error / trace[*].error. (1) An UNRELATED decimal change in those
+    same leaves still mismatches; (2) genuine sub-10ms jitter in the real message still
+    normalizes equal; (3) an error field NOT at the approved leaves (e.g. a detail payload or
+    exception message) is never touched."""
+
+    from invocation_oracle import _normalize_record
+
+    def rec(err, detail_err="model 3.141"):
+        return {
+            "result": {"error": err},
+            "trace": [{"error": err}],
+            "details": [{"json": {"error": detail_err}}],
+            "exception": None,
+        }
+
+    # (1) unrelated decimal in the SAME approved leaves -> still a mismatch
+    a = _normalize_record("cooperative_deadline", rec("model 3.141"))
+    b = _normalize_record("cooperative_deadline", rec("model 3.144"))
+    assert compare_records({"s": a}, {"s": b}), "unrelated decimal drift was hidden at the leaves"
+
+    # (2) genuine jitter in the real deadline message -> normalized equal
+    msg1 = "capability 'slow_async' exceeded its 0.249988s execution window (work deadline)"
+    msg2 = "capability 'slow_async' exceeded its 0.249981s execution window (work deadline)"
+    assert compare_records(
+        {"s": _normalize_record("cooperative_deadline", rec(msg1))},
+        {"s": _normalize_record("cooperative_deadline", rec(msg2))},
+    ) == [], "sub-10ms deadline jitter must canonicalize equal"
+
+    # (2b) a MATERIAL bound change in the same message (0.25s -> 99s) still mismatches
+    msg99 = "capability 'slow_async' exceeded its 99.000000s execution window (work deadline)"
+    assert compare_records(
+        {"s": _normalize_record("cooperative_deadline", rec(msg1))},
+        {"s": _normalize_record("cooperative_deadline", rec(msg99))},
+    ), "a real bound change must never normalize away"
+
+    # (3) non-leaf error fields (detail payloads) are untouched even in this scenario
+    c = _normalize_record("cooperative_deadline", rec(msg1, detail_err="pi 3.14159"))
+    assert c["details"][0]["json"]["error"] == "pi 3.14159", "normalizer recursed beyond its leaves"
 
 
 def test_exact_path_normalizer_table_is_reviewed_and_minimal():

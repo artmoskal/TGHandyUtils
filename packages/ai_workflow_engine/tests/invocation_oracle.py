@@ -22,38 +22,43 @@ import re
 from typing import Any, Callable
 
 # REVIEWED volatile normalization (the ONLY one). The single genuinely-volatile fact in the whole
-# corpus — proven by running run_corpus() twice — is the cooperative-timeout error string, which
-# embeds the REMAINING soft budget at cancellation (a monotonic-clock wall value with sub-millisecond
-# jitter, e.g. "0.249988s" vs "0.249981s"). It is normalized ONLY at its exact paths (the "error"
-# fields of the cooperative_deadline scenario), NOT globally: 1s vs 99s and 3.141 vs 3.144 now
-# compare UNEQUAL. Rounding to 2 decimals (10ms resolution) collapses the jitter while PRESERVING
-# magnitude, so the bound cannot silently disappear — any real change >= 0.01s still differs.
-_DECIMAL_IN_STRING = re.compile(r"\d+\.\d+")
+# corpus — proven by running run_corpus() twice — is the engine's cooperative-deadline message,
+# whose seconds token is the REMAINING soft budget sampled from the monotonic clock (sub-ms
+# jitter, e.g. "0.249988s" vs "0.249981s"). Rounding (2 decimals = 10ms resolution, magnitude-
+# preserving) applies ONLY to that token inside that exact message shape, at the two observed
+# leaves — an unrelated decimal anywhere (even inside the same error string, e.g. "model 3.141")
+# is a FACT and still mismatches.
+_DEADLINE_JITTER = re.compile(r"(exceeded its )(\d+\.\d+)(s execution window)")
 
 
-def _round_decimals_in_string(text: str) -> str:
-    return _DECIMAL_IN_STRING.sub(lambda m: f"{float(m.group()):.2f}", text)
+def _round_deadline_seconds(text: Any) -> Any:
+    if not isinstance(text, str):
+        return text
+    return _DEADLINE_JITTER.sub(
+        lambda m: f"{m.group(1)}{float(m.group(2)):.2f}{m.group(3)}", text
+    )
 
 
-def _round_error_decimals(value: Any) -> Any:
-    """Round decimals in any string at an 'error' key (recursively). The cooperative-timeout wall
-    jitter lives at result.error and trace[*].error; 2-decimal rounding preserves the magnitude."""
+def _round_cooperative_deadline_leaves(record: Any) -> Any:
+    """Normalize the deadline-jitter token at its two OBSERVED leaves only: ``result.error`` and
+    ``trace[*].error``. No recursion into details/metadata/exception — any other error field that
+    changes is a behavior delta and must fail."""
 
-    if isinstance(value, dict):
-        return {
-            k: (_round_decimals_in_string(v) if k == "error" and isinstance(v, str)
-                else _round_error_decimals(v))
-            for k, v in value.items()
-        }
-    if isinstance(value, list):
-        return [_round_error_decimals(v) for v in value]
-    return value
+    if not isinstance(record, dict):
+        return record
+    result = record.get("result")
+    if isinstance(result, dict) and isinstance(result.get("error"), str):
+        result["error"] = _round_deadline_seconds(result["error"])
+    for event in record.get("trace") or []:
+        if isinstance(event, dict) and isinstance(event.get("error"), str):
+            event["error"] = _round_deadline_seconds(event["error"])
+    return record
 
 
 # Exact-path volatile normalizers, keyed by scenario. Empty for every scenario except the one with
 # proven wall jitter. A new entry is a REVIEWED decision, not a blanket rule.
 _EXACT_PATH_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
-    "cooperative_deadline": _round_error_decimals,
+    "cooperative_deadline": _round_cooperative_deadline_leaves,
 }
 
 
@@ -108,6 +113,7 @@ BEHAVIOR_ROWS = (
     "nested_invocation",
     "concurrent_invocations",
     "worker_call_accounting",
+    "usage_event_semantics",
     "authored_fanout_flow",
     "durable_suspend_resume",
 )
@@ -232,6 +238,9 @@ def _canon_event(event: Any, amap: dict[str, str] | None = None) -> dict[str, An
         "attempt": event.attempt,
         "phase": event.phase,
         "decision": event.decision,
+        # QRF.5 TYPED terminal lifecycle — the viewer reads THIS, so it is a frozen fact
+        # (None on non-terminal events is itself the fact to preserve).
+        "node_status": getattr(event, "node_status", None),
         "severity": event.severity,
         "error": _canon(event.error, amap) if event.error else event.error,
         "metadata": _canon(dict(event.metadata or {}), amap),
@@ -287,8 +296,23 @@ def _canon_usage(context: Any) -> dict[str, Any] | None:
     return _canon_usage_summary(getattr(context, "summary", None))
 
 
+# REVIEWED volatile drop-list for usage events — the inverse of a hand-picked keep-list, so any
+# NEW model field is automatically a compared fact. The only entry is the per-event generated
+# uuid; run_id/metadata enrichment is deterministic under the oracle's fixed run context, and
+# request_id/elapsed_ms/sequence are caller-supplied (fixed) in every scenario.
+_VOLATILE_USAGE_EVENT_FIELDS = frozenset({"event_id"})
+
+
+def _canon_usage_event(event: Any) -> dict[str, Any]:
+    dumped = event.model_dump(mode="json")
+    return _canon({k: v for k, v in dumped.items() if k not in _VOLATILE_USAGE_EVENT_FIELDS})
+
+
 def _canon_usage_summary(summary: Any) -> dict[str, Any] | None:
-    """Canonical form of a WorkflowUsageSummary (engine-run envelopes carry one directly)."""
+    """Canonical form of a WorkflowUsageSummary (engine-run envelopes carry one directly): the
+    full aggregation surface plus EVERY semantic field of every event (model_dump minus the
+    reviewed volatile drop-list) — attempt, token details, per-event costs, metadata, and
+    cost-class classification are all compared facts."""
 
     if summary is None:
         return None
@@ -301,21 +325,7 @@ def _canon_usage_summary(summary: Any) -> dict[str, Any] | None:
         "total_tokens": getattr(summary, "total_tokens", None),
         "metered_usd": getattr(summary, "metered_usd", None),
         "notional_usd": getattr(summary, "notional_usd", None),
-        "events": [
-            {
-                "provider": getattr(ev, "provider", None),
-                "operation": getattr(ev, "operation", None),
-                "cost_class": getattr(ev, "cost_class", None),
-                "node": getattr(ev, "node", None),
-                "model": getattr(ev, "model", None),
-                "input_tokens": getattr(ev, "input_tokens", None),
-                "output_tokens": getattr(ev, "output_tokens", None),
-                "total_tokens": getattr(ev, "total_tokens", None),
-                "success": getattr(ev, "success", None),
-                "error": getattr(ev, "error", None),
-            }
-            for ev in events
-        ],
+        "events": [_canon_usage_event(ev) for ev in events],
     }
 
 
@@ -727,6 +737,49 @@ async def _sc_concurrent_invocations():
     }
 
 
+async def _sc_usage_event_semantics():
+    """P-06 depth: a worker capability that EMITS real usage events through the engine's one
+    usage door (record_usage_event, unchanged since v0.10.1) while inside the invocation scope.
+    Every semantic WorkflowUsageEvent field is deterministic and frozen: metered AND
+    subscription_notional classification, attempt attribution, cached/reasoning token details,
+    per-event estimated/notional USD, request/elapsed facts, a failure event's success/error, and
+    the door's own metadata enrichment (run/workflow identity under the fixed oracle context)."""
+
+    from ai_workflow_engine.budget import WorkflowBudget
+    from ai_workflow_engine.usage import WorkflowUsageContext, workflow_usage_scope
+    from ai_workflow_engine.models import WorkflowUsageEvent, WorkflowUsageSummary
+    from ai_workflow_engine.usage_events import record_usage_event
+
+    def metered_worker(_ctx, _p):
+        record_usage_event(WorkflowUsageEvent(
+            provider="openai", operation="chat", cost_class="metered", node="metered_worker",
+            model="gpt-fixed", attempt=2,
+            input_tokens=100, output_tokens=40, total_tokens=140,
+            input_token_details={"cached_tokens": 25},
+            output_token_details={"reasoning_tokens": 15},
+            estimated_usd=0.0123, request_id="req-fixed", elapsed_ms=7,
+        ))
+        record_usage_event(WorkflowUsageEvent(
+            provider="chatgpt-web", operation="chat", cost_class="subscription_notional",
+            node="metered_worker", model="subscription-fixed", attempt=1,
+            input_tokens=10, output_tokens=5, total_tokens=15,
+            notional_usd=0.002, request_id="req-sub", elapsed_ms=3,
+        ))
+        record_usage_event(WorkflowUsageEvent(
+            provider="openai", operation="tool", cost_class="metered", node="metered_worker",
+            model="tool-fixed", attempt=1, success=False, error="tool call failed: quota",
+            request_id="req-tool", elapsed_ms=5,
+        ))
+        return {"ok": 1}
+
+    ctx = _fixed_context()
+    usage = WorkflowUsageContext(ctx.run_context, WorkflowUsageSummary(), WorkflowBudget(max_worker_calls=5))
+    with workflow_usage_scope(usage):
+        return await capture_invocation(
+            spec=_spec("metered_worker", kind="agent"), handler=metered_worker, payload={}, context=ctx
+        )
+
+
 async def _sc_authored_fanout_flow():
     """Behavior row 'authored flow/fanout' through the public door: an AI-authored FlowArtifact
     containing a bounded fanout node is validated + compiled + run by run_authored_flow. Frozen
@@ -861,6 +914,7 @@ SCENARIOS: dict[str, Callable] = {
     "side_effect_denied": _sc_side_effect_denied,
     "budget_denied": _sc_budget_denied,
     "worker_call_accounting": _sc_worker_call_accounting,
+    "usage_event_semantics": _sc_usage_event_semantics,
     "sync_success": _sc_sync_success,
     "async_success": _sc_async_success,
     "explicit_partial": _sc_explicit_partial,
