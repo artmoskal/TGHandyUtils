@@ -10,6 +10,8 @@ from ai_workflow_engine import WorkflowBuilder
 from ai_workflow_engine.models import (
     CapabilityContext,
     CapabilityResult,
+    RuntimeLimits,
+    RuntimePlan,
     WorkflowGoal,
     WorkflowRunContext,
 )
@@ -18,6 +20,7 @@ from ai_workflow_engine.node_services import (
     ExecutorNodeServices,
     NodeExecutionServices,
     NodeSchedulingRuntime,
+    build_child_context,
 )
 from ai_workflow_engine._runtime_state import CONTEXT, RUNNING_PAYLOAD
 from ai_workflow_engine.workflow import BranchDecision
@@ -169,3 +172,40 @@ async def test_concrete_node_services_uses_only_the_typed_child_run_port():
     assert calls == [("child", {"x": 1}, "run-1")]
     assert isinstance(services.scheduling, NodeSchedulingRuntime)
     assert not hasattr(services, "_executor")
+
+
+def test_subworkflow_builder_caps_are_projected_into_child_plan_limits():
+    child = WorkflowBuilder("bounded_child").step("work").build()
+    parent_definition = (
+        WorkflowBuilder("planned_parent")
+        .subworkflow(
+            "delegate",
+            workflow=child,
+            budget_usd=0.25,
+            max_steps=3,
+        )
+        .build()
+    )
+    reference = parent_definition.node("delegate").subworkflow
+    parent_limits = RuntimeLimits(
+        max_steps=40,
+        max_retries=2,
+        max_estimated_usd=5.0,
+    )
+    parent = _context().model_copy(
+        update={
+            "plan": RuntimePlan(workflow_type="planned_parent", limits=parent_limits),
+            "limits": parent_limits,
+        }
+    )
+
+    child_context = build_child_context(parent, child, reference)
+
+    assert child_context.plan is not None
+    assert child_context.plan.limits.max_estimated_usd == 0.25
+    assert child_context.plan.limits.max_steps == 3
+    assert child_context.plan.limits.max_retries == 2
+    assert child_context.limits == child_context.plan.limits
+    assert parent.plan is not None
+    assert parent.plan.limits.max_estimated_usd == 5.0
+    assert parent.plan.limits.max_steps == 40

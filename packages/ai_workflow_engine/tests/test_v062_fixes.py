@@ -11,7 +11,13 @@ from ai_workflow_engine import (
     WorkflowBuilder,
     WorkflowEngineBuilder,
 )
-from ai_workflow_engine.models import CapabilityResult, EvaluationDecision
+from ai_workflow_engine.models import (
+    CapabilityContext,
+    CapabilityResult,
+    EvaluationDecision,
+    WorkflowGoal,
+    WorkflowRunContext,
+)
 from ai_workflow_engine.observation_bundle import open_observation_run_bundle
 from ai_workflow_engine.run_session import WorkflowRunSession
 from ai_workflow_engine.workflow import WorkflowValidationError  # noqa: F401 (parity with guards)
@@ -53,6 +59,48 @@ def test_reregistered_same_id_definition_executes_the_new_machine():
     # Registries agree about the current machine for the id.
     assert engine.workflows["same_id_flow"].definition_digest() == flow_v2.definition_digest()
     assert engine.executor.subworkflows["same_id_flow"].definition_digest() == flow_v2.definition_digest()
+
+
+def test_direct_executor_cache_separates_same_id_definitions_by_digest():
+    """The exported executor may compile definitions without registry re-registration."""
+
+    calls = []
+    builder = WorkflowEngineBuilder()
+
+    async def first(context, payload):
+        calls.append("first")
+        return {"who": "first"}
+
+    async def second(context, payload):
+        calls.append("second")
+        return {"who": "second"}
+
+    builder.register_capability("first", first, kind="deterministic")
+    builder.register_capability("second", second, kind="deterministic")
+    engine = builder.build()
+
+    flow_v1 = WorkflowBuilder("direct_same_id").step("first").build()
+    flow_v2 = WorkflowBuilder("direct_same_id").step("second").build()
+
+    def context(run_id: str) -> CapabilityContext:
+        return CapabilityContext(
+            goal=WorkflowGoal(workflow_type="direct_same_id", objective="test cache identity"),
+            run_context=WorkflowRunContext(
+                workflow_id=run_id,
+                workflow_type="direct_same_id",
+            ),
+        )
+
+    async def scenario():
+        first_result = await engine.executor.run(flow_v1, {}, context("direct-run-1"))
+        second_result = await engine.executor.run(flow_v2, {}, context("direct-run-2"))
+        return first_result, second_result
+
+    first_result, second_result = asyncio.run(scenario())
+
+    assert first_result.output == {"who": "first"}
+    assert second_result.output == {"who": "second"}
+    assert calls == ["first", "second"]
 
 
 # ---------------------------------------------------------------- B2: nested suspension
