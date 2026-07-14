@@ -43,16 +43,43 @@ def _write_bundle(
         "\n".join(event.model_dump_json() for event in (usage_events or [])) + "\n",
         encoding="utf-8",
     )
+    # Full STRICT v2 meta (M10) — the loader rejects anything less; totals/counts are
+    # derived from the actual inputs, ``meta_extra`` overrides (e.g. segment identity).
+    usage = usage_events or []
+    metered = [
+        float(event.estimated_usd)
+        for event in usage
+        if getattr(event, "cost_class", "metered") == "metered" and event.estimated_usd is not None
+    ]
+    notional = [float(event.notional_usd) for event in usage if event.notional_usd is not None]
     (run_path / "meta.json").write_text(
         json.dumps(
             {
+                "bundle_schema_version": 2,
                 "run_id": run_id,
                 "workflow_id": definition.workflow_id,
+                "status": "completed",
                 "timestamp": "2026-06-21T20:00:00Z",
                 "definition_path": "definition.json",
                 "trace_path": "trace.jsonl",
                 "detail_path": "details.jsonl",
                 "usage_path": "usage.jsonl",
+                "definition_digest": definition.definition_digest(),
+                "artifact_manifest_path": "artifacts.json",
+                "artifact_root": "artifacts",
+                "artifact_count": 0,
+                "artifacts_copied": 0,
+                "trace_count": len(trace_events or []),
+                "detail_count": len(details or []),
+                "usage_count": len(usage),
+                "usage_totals_scope": "run_cumulative_at_finalize",
+                "total_tokens": sum(event.total_tokens for event in usage),
+                "metered_usd": round(sum(metered), 6) if metered else None,
+                "notional_usd": round(sum(notional), 6) if notional else None,
+                "segment_id": dir_name or run_id,
+                "segment_index": 0,
+                "segment_kind": "initial",
+                "attempt": None,
                 **(meta_extra or {}),
             }
         ),
@@ -176,13 +203,14 @@ def test_jsonl_observation_viewer_lists_runs_for_multi_run_bundle_sources(tmp_pa
 # ---------------------------------------------------------------------------
 
 
-def _segment_meta(run_id, segment_id, index, *, kind=None, parent=None, digest="dig-1", status="completed", timestamp=None, attempt=None):
+def _segment_meta(run_id, segment_id, index, *, kind=None, digest="dig-1", status="completed", timestamp=None, attempt=None):
+    # v2 forbids unknown keys — parent_segment_id left the contract with R1 (lineage is
+    # logical), so the helper emits only current segment identity.
     return {
         "run_id": run_id,
         "segment_id": segment_id,
         "segment_index": index,
         "segment_kind": kind or ("initial" if index == 0 else "resume"),
-        "parent_segment_id": parent,  # informational only since R1 (lineage is logical)
         "definition_digest": digest,
         "usage_totals_scope": "run_cumulative_at_finalize",
         "status": status,
@@ -250,7 +278,7 @@ def _write_group(tmp_path, *, duplicate_usage_id=False, second_digest="dig-1"):
         ],
         usage_events=resume_usage,
         meta_extra=_segment_meta(
-            "logical-run", "logical-run--s001", 1, parent="logical-run",
+            "logical-run", "logical-run--s001", 1,
             digest=(real_digest if second_digest == "dig-1" else second_digest),
             status="completed",
         ) | {"total_tokens": 12, "metered_usd": 0.03, "usage_count": 2},
@@ -304,7 +332,7 @@ def test_read_group_aggregates_usage_once_and_labels_cumulative(tmp_path):
     assert group.cumulative_meta_totals["total_tokens"] == 12, (
         "cumulative label comes from the NEWEST segment's meta, never a sum of metas"
     )
-    meta_sum = sum(segment.data.meta["total_tokens"] for segment in group.segments)
+    meta_sum = sum(segment.data.meta.total_tokens for segment in group.segments)
     assert meta_sum == 19 and group.usage_totals["total_tokens"] != meta_sum, (
         "the naive per-segment meta sum (19) double-charges — the reader must not use it"
     )
@@ -388,7 +416,7 @@ def test_read_group_lineage_corruption_is_loud(tmp_path):
     _write_bundle(
         tmp_path, "split-run", other_definition, dir_name="split-run--s001",
         meta_extra=_segment_meta(
-            "split-run", "split-run--s001", 1, parent="split-run",
+            "split-run", "split-run--s001", 1,
             digest=other_definition.definition_digest(),
         ),
     )
@@ -421,76 +449,91 @@ def test_read_group_lineage_corruption_is_loud(tmp_path):
     _write_bundle(
         tmp_path, "kind-run", definition, dir_name="kind-run--s001",
         meta_extra=_segment_meta(
-            "kind-run", "kind-run--s001", 1, parent="kind-run", digest=digest, kind="initial"
+            "kind-run", "kind-run--s001", 1, digest=digest, kind="initial"
         ),
     )
-    with _pytest.raises(ValueError, match="illegal kind|starts with exactly one"):
+    with _pytest.raises(ValueError, match="invalid observation-bundle meta|illegal kind|starts with exactly one"):
         FileEventSource(tmp_path).read_group("kind-run")
 
 
-def test_read_group_handles_legacy_and_mixed_roots(tmp_path):
-    """W4.1/W4R.2 degradation: pure v0.8.1 bundles read as groups of one; the REAL
-    migration shape — a pre-W4 suspension bundle continued by a segmented resume — merges
-    validly (parent = the legacy directory, digests recomputed equal); a continuation with
-    NO recorded lineage is now LOUD (incomplete history is refused, not annotated), while
-    its single bundle stays readable via plain read(). list_groups stays group-per-run."""
+def test_pre_v2_bundles_are_rejected_loudly_on_every_surface(tmp_path):
+    """M10 rejection lock (replaces the legacy/mixed-root tolerance test): the latest-only
+    viewer REFUSES pre-v2 bundles on read(), read_group(), list_groups(), the HTML door,
+    and the served HTTP page — naming the historical tag route — and a MIXED root (one old
+    bundle beside current segments) fails the scan instead of rendering half a story.
+    A v2 meta with an unknown key is a different contract, not extra info."""
+
+    import json as _json
+    import shutil as _shutil
+    import urllib.error
+    import urllib.request
 
     import pytest as _pytest
 
+    from ai_workflow_viewer import FileEventSource, serve_viewer
+
     from ai_workflow_engine import WorkflowBuilder
-    from ai_workflow_viewer import FileEventSource
 
     definition = WorkflowBuilder("legacy").step("gate").build()
-    # pure v0.8.1 bundle: no segment fields at all
-    _write_bundle(
-        tmp_path, "old-run", definition,
-        trace_events=[WorkflowTraceEvent(node="gate", node_status="completed", phase="node:result", run_id="old-run", sequence=1, event_id="o-1")],
-        meta_extra={"status": "completed"},
+    _write_group(tmp_path)  # current-contract group beside the relic
+    # a pre-v2 relic: exactly the v0.10.x shape — identity + paths, NO schema version
+    relic = tmp_path / "old-run"
+    relic.mkdir()
+    (relic / "definition.json").write_text(definition.model_dump_json(), encoding="utf-8")
+    (relic / "trace.jsonl").write_text(
+        WorkflowTraceEvent(
+            node="gate", node_status="completed", phase="node:result",
+            run_id="old-run", sequence=1, event_id="o-1",
+        ).model_dump_json() + "\n",
+        encoding="utf-8",
     )
-    # new-style segmented pair under another logical id
-    _write_group(tmp_path)
-    # the valid MIXED migration shape: legacy suspension + post-upgrade segmented resume
-    _write_bundle(
-        tmp_path, "mixed-run", definition,
-        trace_events=[WorkflowTraceEvent(node="gate", node_status="requires_user_input", phase="node:result", run_id="mixed-run", sequence=1, event_id="m-0")],
-        meta_extra={"status": "requires_user_input"},  # v0.8.1 suspension: no segment meta
-    )
-    _write_bundle(
-        tmp_path, "mixed-run", definition, dir_name="mixed-run--s001-abc",
-        trace_events=[WorkflowTraceEvent(node="gate", node_status="completed", phase="node:result", run_id="mixed-run", sequence=1, event_id="m-1")],
-        meta_extra=_segment_meta(
-            "mixed-run", "mixed-run--s001-abc", 1, parent="mixed-run",
-            digest=definition.definition_digest(),
+    (relic / "meta.json").write_text(
+        _json.dumps(
+            {
+                "run_id": "old-run", "workflow_id": "legacy", "status": "completed",
+                "timestamp": "2026-06-21T20:00:00Z", "definition_path": "definition.json",
+                "trace_path": "trace.jsonl", "detail_path": "details.jsonl",
+                "usage_path": "usage.jsonl",
+            }
         ),
-    )
-    # lineage-less continuation (pre-W4 snapshot): REFUSED as incomplete history
-    _write_bundle(
-        tmp_path, "half-run", definition, dir_name="half-run--s001-abc",
-        trace_events=[WorkflowTraceEvent(node="gate", node_status="completed", phase="node:result", run_id="half-run", sequence=1, event_id="h-1")],
-        meta_extra=_segment_meta("half-run", "half-run--s001-abc", 1, parent=None, digest=None),
+        encoding="utf-8",
     )
 
+    with _pytest.raises(ValueError, match="historical"):
+        FileEventSource(relic).read()
     source = FileEventSource(tmp_path)
-    old_group = source.read_group("old-run")
-    assert len(old_group.segments) == 1 and old_group.segments[0].segment_index == 0
-    assert old_group.segments[0].kind == "initial" and not old_group.non_canonical
-    assert old_group.cumulative_meta_totals["scope"] == "single_bundle"
+    with _pytest.raises(ValueError, match="unsupported observation-bundle schema"):
+        source.read_group("logical-run")  # the relic poisons the SCAN, not just its own run
+    with _pytest.raises(ValueError, match="historical"):
+        source.list_groups()
+    with _pytest.raises(ValueError, match="historical"):
+        JsonlObservationViewer(source).html()
 
-    mixed = source.read_group("mixed-run")
-    assert [segment.segment_index for segment in mixed.segments] == [0, 1]
-    assert mixed.status == "completed", "legacy suspension + segmented resume merge validly"
+    # the served door answers with the loud message — never a plausible page
+    server = serve_viewer(JsonlObservationViewer(source), port=0)
+    import threading
 
-    with _pytest.raises(ValueError, match="contiguous|chain"):
-        source.read_group("half-run")
-    single = FileEventSource(tmp_path / "half-run--s001-abc").read()
-    assert single.run_id == "half-run" and single.records, (
-        "the refused group's single bundle must remain readable on its own"
-    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        root = f"http://127.0.0.1:{server.server_address[1]}"
+        with _pytest.raises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(f"{root}/", timeout=5)
+        assert caught.value.code == 500
+        body = caught.value.read().decode("utf-8")
+        assert "historical" in body and "<html" not in body.lower()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
 
-    groups = {entry["run_id"]: entry for entry in source.list_groups()}
-    assert set(groups) == {"old-run", "logical-run", "mixed-run", "half-run"}
-    assert groups["logical-run"]["segment_count"] == 2
-    assert groups["logical-run"]["status"] == "completed"
+    # malformed v2: an unknown key is REJECTED (extra="forbid"), not carried along
+    _shutil.rmtree(relic)
+    meta_path = tmp_path / "logical-run" / "meta.json"
+    meta = _json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["parent_segment_id"] = "ghost"
+    meta_path.write_text(_json.dumps(meta), encoding="utf-8")
+    with _pytest.raises(ValueError, match="parent_segment_id"):
+        source.read_group("logical-run")
 
 
 def test_group_html_renders_one_truthful_lifecycle(tmp_path):
@@ -573,8 +616,8 @@ def test_read_group_reports_abandoned_attempts_without_merging_them(tmp_path):
             ),
         ],
         meta_extra=_segment_meta(
-            "logical-run", "logical-run--s001-dead", 1, parent="logical-run", digest=digest,
-        ) | {"status": "abandoned", "abandoned_attempt": 1},
+            "logical-run", "logical-run--s001-dead", 1, digest=digest,
+        ) | {"status": "abandoned"},
     )
 
     group = FileEventSource(tmp_path).read_group("logical-run")
@@ -632,7 +675,7 @@ def test_wait_terminal_segment_closes_the_group_and_fake_definitions_are_loud(tm
         tmp_path, "wfail-run", definition, dir_name="wfail-run--s001-wfail",
         trace_events=[WorkflowTraceEvent(node="gate", decision="wait:failed", node_status="failed", phase="node:result", error="digest mismatch", run_id="wfail-run", sequence=1, event_id="w-1")],
         meta_extra=_segment_meta(
-            "wfail-run", "wfail-run--s001-wfail", 1, parent="wfail-run",
+            "wfail-run", "wfail-run--s001-wfail", 1,
             digest=digest, kind="wait_terminal", status="failed",
         ),
     )
@@ -1481,3 +1524,54 @@ def test_single_detail_body_owner_preserves_structured_json_precedence():
 
     assert "structured-json" in page
     assert "legacy-text-must-not-win" not in page
+
+
+def test_decision_text_never_sets_terminal_status(tmp_path):
+    """M11 rejection lock: the deleted old-contract inference stays deleted —
+    (a) a declared node whose events carry ONLY decision text (including the pre-typed
+    ``flow:authored`` announcement shape) reads RUNNING, never completed/failed;
+    (b) the typed ``node_status`` stays the one terminal authority;
+    (c) external activity classifies ONLY the closed CapabilityStatus vocabulary — the
+    old strings (``valid``/``answered``/``provisional``/``denied``) tally nothing."""
+
+    from ai_workflow_engine import WorkflowBuilder
+    from ai_workflow_viewer import build_observation_graph
+
+    definition = WorkflowBuilder("m11").step("plan").step("author").build()
+    graph = build_observation_graph(
+        definition,
+        [
+            WorkflowTraceEvent(node="plan", decision="accepted", run_id="r", sequence=1),
+            WorkflowTraceEvent(node="author", decision="flow:authored", run_id="r", sequence=2),
+            WorkflowTraceEvent(node="ext.tool", decision="valid", run_id="r", sequence=3),
+            WorkflowTraceEvent(node="ext.tool", decision="answered", run_id="r", sequence=4),
+            WorkflowTraceEvent(node="ext.tool", decision="denied", run_id="r", sequence=5),
+            WorkflowTraceEvent(node="ext.ok", decision="accepted", run_id="r", sequence=6),
+        ],
+        run_id="r",
+    )
+    assert graph.nodes["plan"].status == "running", (
+        "decision text alone must never complete a declared node (M11)"
+    )
+    assert graph.nodes["author"].status == "running", (
+        "flow:authored WITHOUT node_status is the pre-typed shape — progress at most"
+    )
+    ext = graph.nodes["ext.tool"]
+    assert (
+        ext.outcome_accepted, ext.outcome_partial, ext.outcome_failed, ext.outcome_suspended
+    ) == (0, 0, 0, 0), "old-contract decision strings are neutral for the external tally"
+    assert ext.status == "running", "neutral activity keeps the folded progress value"
+    assert graph.nodes["ext.ok"].status == "completed"
+    assert graph.nodes["ext.ok"].outcome_accepted == 1
+
+    typed = build_observation_graph(
+        definition,
+        [
+            WorkflowTraceEvent(
+                node="plan", decision="accepted", node_status="completed",
+                phase="node:result", run_id="r", sequence=1,
+            ),
+        ],
+        run_id="r",
+    )
+    assert typed.nodes["plan"].status == "completed", "typed node_status stays authoritative"

@@ -1296,9 +1296,11 @@ async def test_nested_run_inside_authored_flow_does_not_inherit_provenance():
     )
 
 
-async def test_new_flow_authored_events_carry_typed_status_with_legacy_fallback():
-    """QRF follow-up (codex): NEW flow:authored events carry node_status='completed' (typed
-    lifecycle everywhere); decision-text inference remains ONLY for legacy bundles."""
+async def test_flow_authored_events_carry_typed_status_and_text_is_never_terminal():
+    """QRF follow-up, hardened to the v0.11 clean contract (M11): flow:authored events
+    carry node_status='completed' (typed lifecycle everywhere), and the OLD decision-text
+    fallback is a rejection — the bare string without the typed field projects progress
+    at most, never a terminal."""
 
     from ai_workflow_engine.models import WorkflowTraceEvent
     from ai_workflow_viewer import build_observation_graph
@@ -1311,16 +1313,17 @@ async def test_new_flow_authored_events_carry_typed_status_with_legacy_fallback(
     authored_events = [e for e in result.trace if e.decision == "flow:authored"]
     assert authored_events, "authored run must record provenance"
     assert all(e.node_status == "completed" for e in authored_events), (
-        "NEW provenance events must carry the TYPED terminal status"
+        "provenance events must carry the TYPED terminal status"
     )
 
-    # legacy bundle shape: decision only, no typed field — the viewer still completes it
+    # pre-typed shape: decision only, no typed field — REJECTED as terminal evidence (M11)
     definition = WorkflowBuilder("legacy_flow").step("s").build()
     legacy = WorkflowTraceEvent(node="legacy_flow", decision="flow:authored", run_id="r1")
     assert legacy.node_status is None
     graph = build_observation_graph(definition, [legacy], run_id="r1")
-    assert graph.nodes["legacy_flow"].status == "completed", (
-        "legacy bundles without the typed field must still project terminal"
+    assert graph.nodes["legacy_flow"].status == "running", (
+        "decision text without node_status is the pre-v0.11 shape — progress at most, "
+        "never a projected terminal (inspect old bundles with their historical tag)"
     )
 
 

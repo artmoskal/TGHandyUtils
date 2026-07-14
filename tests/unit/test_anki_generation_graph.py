@@ -380,7 +380,7 @@ async def test_observation_bundle_is_finalized_when_engine_run_fails(tmp_path):
     bundle_path = graph.last_observation_bundle_path()
     assert bundle_path
     viewer = JsonlObservationViewer.from_run_bundle(bundle_path, title="Failed Anki observation")
-    assert viewer.source.read().meta["status"] == "failed"
+    assert viewer.source.read().meta.status == "failed"  # typed v2 meta (M10)
 
 
 @pytest.mark.unit

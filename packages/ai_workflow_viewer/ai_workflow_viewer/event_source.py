@@ -8,10 +8,12 @@ from pathlib import Path
 from typing import Protocol
 
 from ai_workflow_engine import (
+    ObservationBundleMetaV2,
     ObservationDetail,
     WorkflowDefinition,
     WorkflowTraceEvent,
     WorkflowUsageEvent,
+    load_bundle_meta_v2,
 )
 from ai_workflow_engine.observation_bundle import (
     ABANDON_MARKER_NAME as _ABANDON_MARKER,
@@ -39,7 +41,9 @@ class ObservationRunData:
     run_id: str
     definition: WorkflowDefinition
     records: list[ObservationRecord]
-    meta: dict
+    # M10: the STRICT v2 meta model — every reader consumes typed fields; there is no
+    # permissive dict fallback anywhere in the viewer.
+    meta: ObservationBundleMetaV2
 
     @property
     def trace_events(self) -> list[WorkflowTraceEvent]:
@@ -136,21 +140,27 @@ class FileEventSource:
 
     def read(self, run_id: str | None = None) -> ObservationRunData:
         run_path = self._run_path(run_id)
-        meta = _load_json(run_path / "meta.json", default={})
-        definition_path = run_path / str(meta.get("definition_path") or "definition.json")
+        # M10: ONE strict loader — pre-v2 or malformed meta fails here naming the
+        # historical tag route; the viewer never renders a plausible page from guesses.
+        meta = load_bundle_meta_v2(run_path)
+        if run_id is not None and meta.run_id != run_id:
+            raise FileNotFoundError(
+                f"Observation bundle at {run_path} belongs to run {meta.run_id!r}, "
+                f"not {run_id!r} — the meta identity is the truth, never the directory name"
+            )
+        definition_path = run_path / meta.definition_path
         if not definition_path.exists():
             raise FileNotFoundError(f"Observation bundle is missing workflow definition: {definition_path}")
         definition = WorkflowDefinition.model_validate_json(definition_path.read_text(encoding="utf-8"))
-        selected_run_id = run_id or str(meta.get("run_id") or run_path.name)
         records = [
-            *_load_records(run_path / str(meta.get("trace_path") or "trace.jsonl"), "trace", WorkflowTraceEvent),
-            *_load_records(run_path / str(meta.get("detail_path") or "details.jsonl"), "detail", ObservationDetail),
-            *_load_records(run_path / str(meta.get("usage_path") or "usage.jsonl"), "usage", WorkflowUsageEvent),
+            *_load_records(run_path / meta.trace_path, "trace", WorkflowTraceEvent),
+            *_load_records(run_path / meta.detail_path, "detail", ObservationDetail),
+            *_load_records(run_path / meta.usage_path, "usage", WorkflowUsageEvent),
         ]
         records.sort(key=_record_sort_key)
         _assert_sequence_sane(records)
         return ObservationRunData(
-            run_id=selected_run_id,
+            run_id=meta.run_id,
             definition=definition,
             records=records,
             meta=meta,
@@ -170,11 +180,11 @@ class FileEventSource:
         """Read ALL finalized segments of one logical run and merge them honestly (W4.3).
 
         Single-bundle ``read()`` semantics are untouched — this is the explicit grouped
-        surface. Pre-segment (v0.8.1) bundles are groups of one. Lineage is LOGICAL (R1):
-        the canonical chain is one committed attempt per contiguous index — physical
-        parent pointers are gone. Corruption is LOUD: a gap in the canonical chain, two
-        committed durable attempts at one ordinal, or definition digests that disagree
-        with the actual files all raise instead of rendering a half-true merge.
+        surface. Lineage is LOGICAL (R1): the canonical chain is one committed attempt per
+        contiguous index — physical parent pointers are gone. Corruption is LOUD: a gap in
+        the canonical chain, two committed durable attempts at one ordinal, or definition
+        digests that disagree with the actual files all raise instead of rendering a
+        half-true merge.
         """
 
         root = self.base_path.parent if _is_run_bundle(self.base_path) else self.base_path
@@ -182,24 +192,22 @@ class FileEventSource:
         for path in sorted(root.iterdir()) if root.exists() else []:
             if not (path.is_dir() and _is_run_bundle(path)):
                 continue
-            meta = _load_json(path / "meta.json", default={})
-            if str(meta.get("run_id") or path.name) != logical_run_id:
+            meta = load_bundle_meta_v2(path)
+            if meta.run_id != logical_run_id:
                 continue
             data = FileEventSource(path).read()  # per-segment sequence sanity runs here
-            kind = str(meta.get("segment_kind") or "initial")
-            attempt = meta.get("attempt")
             entries.append(
                 ObservationSegmentData(
-                    segment_id=str(meta.get("segment_id") or path.name),
-                    segment_index=int(meta.get("segment_index") or 0),
-                    kind=kind,
-                    status=str(meta.get("status") or "unknown"),
+                    segment_id=meta.segment_id,
+                    segment_index=meta.segment_index,
+                    kind=meta.segment_kind,
+                    status=meta.status,
                     path=str(path),
                     data=data,
-                    attempt=int(attempt) if attempt is not None else None,
+                    attempt=meta.attempt,
                     # only DURABLE attempts have a separate commit fact (coordinator
                     # terminalization) — attempt-less segments are committed by finalize
-                    committed=attempt is None or (path / _COMMIT_MARKER).exists(),
+                    committed=meta.attempt is None or (path / _COMMIT_MARKER).exists(),
                 )
             )
         if not entries:
@@ -234,9 +242,9 @@ class FileEventSource:
         ]
         newest_meta = segments[-1].data.meta
         related_values = {
-            segment.data.meta.get("correlation_id")
+            segment.data.meta.correlation_id
             for segment in segments
-            if segment.data.meta.get("correlation_id")
+            if segment.data.meta.correlation_id
         }
         return ObservationGroupData(
             run_id=logical_run_id,
@@ -258,11 +266,11 @@ class FileEventSource:
                 non_canonical_usage, scope="non_canonical_attempts"
             ),
             cumulative_meta_totals={
-                "scope": newest_meta.get("usage_totals_scope") or "single_bundle",
-                "total_tokens": newest_meta.get("total_tokens"),
-                "metered_usd": newest_meta.get("metered_usd"),
-                "notional_usd": newest_meta.get("notional_usd"),
-                "usage_count": newest_meta.get("usage_count"),
+                "scope": newest_meta.usage_totals_scope,
+                "total_tokens": newest_meta.total_tokens,
+                "metered_usd": newest_meta.metered_usd,
+                "notional_usd": newest_meta.notional_usd,
+                "usage_count": newest_meta.usage_count,
             },
             non_canonical=non_canonical,
         )
@@ -279,15 +287,14 @@ class FileEventSource:
                 entry = _run_entry(path)
                 attempt = entry.get("attempt")
                 entry["_row"] = {
-                    "id": str(entry.get("segment_id") or path.name),
-                    "index": int(entry.get("segment_index") or 0),
-                    "attempt": int(attempt) if attempt is not None else None,
+                    "id": entry["segment_id"],
+                    "index": entry["segment_index"],
+                    "attempt": attempt,
                     "committed": attempt is None or (path / _COMMIT_MARKER).exists(),
-                    "abandoned": str(entry.get("status")) == "abandoned"
+                    "abandoned": entry["status"] == "abandoned"
                     or (path / _ABANDON_MARKER).exists(),
-                    "timestamp": entry.get("timestamp"),
+                    "timestamp": entry["timestamp"],
                     "correlation": entry.get("correlation_id"),
-                    "new_contract": "segment_index" in entry,
                     "entry": entry,
                 }
                 grouped.setdefault(str(entry["run_id"]), []).append(entry)
@@ -306,27 +313,24 @@ class FileEventSource:
                         "segment_count": len(entries),
                         "non_canonical_count": 0,
                         "status": "corrupt",
-                        "timestamp": max(str(item.get("timestamp") or "") for item in entries),
-                        "workflow_id": entries[0].get("workflow_id"),
+                        "timestamp": max(str(item["timestamp"]) for item in entries),
+                        "workflow_id": entries[0]["workflow_id"],
                     }
                 )
                 continue
             canonical = [row["entry"] for row in canonical_rows]
             newest = max(
                 canonical or entries,  # all-provisional group: show raw newest, count 0
-                key=lambda item: (
-                    int(item.get("segment_index") or 0),
-                    str(item.get("timestamp") or ""),
-                ),
+                key=lambda item: (item["segment_index"], str(item["timestamp"])),
             )
             groups.append(
                 {
                     "run_id": run_id,
                     "segment_count": len(canonical),
                     "non_canonical_count": len(non_rows),
-                    "status": newest.get("status"),
-                    "timestamp": max(str(item.get("timestamp") or "") for item in entries),
-                    "workflow_id": newest.get("workflow_id"),
+                    "status": newest["status"],
+                    "timestamp": max(str(item["timestamp"]) for item in entries),
+                    "workflow_id": newest["workflow_id"],
                     # human-facing label: Related-run ID — the group's SINGLE validated
                     # identity (drift already raised in the shared partition above)
                     "related_run_id": next(
@@ -415,31 +419,27 @@ def _canonical_partition(
     disagree about what counts as history.
 
     A row is ``{"id", "index", "attempt", "committed", "abandoned", "timestamp",
-    "correlation", "new_contract", ...}``.
+    "correlation", ...}``.
     Dispositions: ``abandoned`` (demoted by the reconciler), ``superseded`` (committed but
     outranked — higher committed ordinal, or newer committed local attempt), ``provisional``
     (finalized, never committed). Two committed durable attempts sharing one ordinal are
     impossible under single-claimant CAS — corruption, raises. One run also has ONE
-    related-run identity: canonical segments that disagree — including present-vs-absent
-    drift between segments written under the segmented contract — are corruption, never a
-    silent first/newest pick (legacy pre-segment bundles are exempt)."""
+    related-run identity: segments that disagree — including present-vs-absent drift —
+    are corruption, never a silent first/newest pick."""
 
     # EVERY disposition participates in identity validation — an abandoned attempt's
     # spend counts in actual economics, so its identity must match the group's too.
-    values = {
-        (row.get("correlation"), bool(row.get("new_contract"))) for row in rows
-    }
-    present = sorted({c for c, _ in values if c})
+    present = sorted({row.get("correlation") for row in rows if row.get("correlation")})
     if len(present) > 1:
         raise ValueError(
             f"Observation group {logical_run_id!r}: segments claim DIFFERENT related-run "
             f"ids {present} — one run has one related-run identity"
         )
-    if present and any(c is None and new for c, new in values):
+    if present and any(row.get("correlation") is None for row in rows):
         raise ValueError(
             f"Observation group {logical_run_id!r}: related-run id {present[0]!r} is "
-            "present on some segments and absent on other same-contract segments — "
-            "identity drift is corruption, not a display choice"
+            "present on some segments and absent on others — identity drift is "
+            "corruption, not a display choice"
         )
 
     canonical: list[dict] = []
@@ -497,9 +497,8 @@ def _select_canonical_attempts(
             "committed": entry.committed,
             "abandoned": entry.status == "abandoned"
             or (Path(entry.path) / _ABANDON_MARKER).exists(),
-            "timestamp": entry.data.meta.get("timestamp"),
-            "correlation": entry.data.meta.get("correlation_id"),
-            "new_contract": "segment_index" in entry.data.meta,
+            "timestamp": entry.data.meta.timestamp,
+            "correlation": entry.data.meta.correlation_id,
             "entry": entry,
         }
         for entry in entries
@@ -528,8 +527,8 @@ def _assert_group_lineage_sane(
     """R1: lineage is LOGICAL — one committed attempt per contiguous index, legal kinds,
     and definition digests RECOMPUTED from each actual ``definition.json`` (a forged or
     stale meta digest cannot bless a changed machine). Physical parent pointers left the
-    contract; the gap check subsumes the old absent-parent check. Pre-segment (v0.8.1)
-    bundles remain valid groups of one. Returns the group's canonical digest."""
+    contract; the gap check subsumes the old absent-parent check. Returns the group's
+    canonical digest."""
 
     def _fail(reason: str) -> None:
         raise ValueError(f"Observation group {logical_run_id!r}: {reason}")
@@ -577,8 +576,8 @@ def _assert_group_lineage_sane(
         )
     group_digest = distinct[0] if distinct else None
     for segment in [*segments, *non_canonical]:
-        claimed = segment.data.meta.get("definition_digest")
-        if claimed and group_digest and str(claimed) != group_digest:
+        claimed = segment.data.meta.definition_digest  # REQUIRED in v2 — never blank
+        if group_digest and claimed != group_digest:
             _fail(
                 f"segment {segment.segment_id} meta claims digest {claimed!r} but the "
                 f"group's actual definition digest is {group_digest!r} — forged or stale "
@@ -616,15 +615,12 @@ def _is_run_bundle(path: Path) -> bool:
 
 
 def _run_entry(path: Path) -> dict:
-    meta = _load_json(path / "meta.json", default={})
-    return {
-        **meta,
-        "run_id": str(meta.get("run_id") or path.name),
-        "path": str(path),
-    }
+    """Index-row dict built from the STRICT v2 meta (M10) — same key shape the writer
+    persists, including absence-not-null for ``correlation_id``."""
 
-
-def _load_json(path: Path, *, default: dict) -> dict:
-    if not path.exists():
-        return dict(default)
-    return json.loads(path.read_text(encoding="utf-8"))
+    meta = load_bundle_meta_v2(path)
+    entry = json.loads(meta.model_dump_json())
+    if entry.get("correlation_id") is None:
+        entry.pop("correlation_id", None)
+    entry["path"] = str(path)
+    return entry

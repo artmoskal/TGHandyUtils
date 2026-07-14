@@ -241,7 +241,17 @@ def serve_viewer(
                 self.end_headers()
                 self.wfile.write(data)
                 return
-            body = viewer.html(run_id=run_id, related_run_id=related).encode("utf-8")
+            try:
+                body = viewer.html(run_id=run_id, related_run_id=related).encode("utf-8")
+            except FileNotFoundError as exc:
+                _write_plain_error(self, 404, exc)
+                return
+            except ValueError as exc:
+                # M10 loud door: an unsupported (pre-v2) or malformed bundle, or corrupt
+                # group lineage, answers with the loader's message — which names the
+                # matching historical tag route — never a plausible partial page.
+                _write_plain_error(self, 500, exc)
+                return
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -252,6 +262,17 @@ def serve_viewer(
             return
 
     return ThreadingHTTPServer((host, port), Handler)
+
+
+def _write_plain_error(handler: BaseHTTPRequestHandler, status: int, exc: Exception) -> None:
+    """The loud non-page: status + the raising contract's own message as plain text."""
+
+    body = str(exc).encode("utf-8")
+    handler.send_response(status)
+    handler.send_header("Content-Type", "text/plain; charset=utf-8")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
 
 
 def _write_sse(handler: BaseHTTPRequestHandler, viewer: JsonlObservationViewer, *, run_id: Optional[str] = None) -> None:
@@ -280,7 +301,7 @@ def _poll_records(viewer: JsonlObservationViewer, *, seconds: int, run_id: Optio
 
 def _run_row(run: dict, *, related_filter: Optional[str] = None) -> str:
     run_id = str(run.get("run_id") or "")
-    workflow = str(run.get("workflow_id") or run.get("workflow") or "")
+    workflow = str(run.get("workflow_id") or "")
     status = str(run.get("status") or "")
     timestamp = str(run.get("timestamp") or "")
     total_tokens = run.get("total_tokens")

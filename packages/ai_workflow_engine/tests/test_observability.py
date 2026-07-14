@@ -254,8 +254,9 @@ def test_observation_graph_projects_trace_usage_details_and_renders_html():
         definition,
         [
             prompt_event,
-            WorkflowTraceEvent(node="plan", decision="accepted", elapsed_ms=7, run_id="run-1"),
-            WorkflowTraceEvent(node="render", decision="accepted", elapsed_ms=5, run_id="run-1"),
+            # current contract: declared-node terminals carry the TYPED node_status (M11)
+            WorkflowTraceEvent(node="plan", decision="accepted", node_status="completed", phase="node:result", elapsed_ms=7, run_id="run-1"),
+            WorkflowTraceEvent(node="render", decision="accepted", node_status="completed", phase="node:result", elapsed_ms=5, run_id="run-1"),
         ],
         [WorkflowUsageEvent(node="plan", operation="chat", total_tokens=42, estimated_usd=0.01)],
         [detail],

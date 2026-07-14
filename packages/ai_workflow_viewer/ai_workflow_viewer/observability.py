@@ -476,7 +476,12 @@ def observation_group_to_html(
 
 
 def _segment_markers(segment: Any) -> str:
-    """Resolution evidence for a segment card: timeout route / durable registration."""
+    """Resolution evidence for a segment card: timeout route / durable registration.
+
+    NOT status inference (M11 keeps this): each marker shows a decision the CURRENT engine
+    records — ``wait:timeout_route`` (nodes/human.py), ``wait:registered``/``_reused``
+    (executor wait registration), ``machine:resumed`` (executor resume) — and the card's
+    status itself comes from the typed v2 meta, never from these strings."""
 
     decisions = {
         event.decision
@@ -1529,6 +1534,11 @@ def _external_outcome(event: WorkflowTraceEvent) -> Optional[str]:
     and an accepted-with-warning event is counted once as ``accepted`` (A4), while a
     typed-``node_status`` success with no decision is still seen (A5). Neutral events
     (start/request) return None and count toward neither bucket.
+
+    M11: the decision sets are EXACTLY the closed ``CapabilityStatus`` vocabulary
+    (``accepted|failed|partial|rejected``) — external activity is capability activity, and
+    its terminal events carry ``decision=output.status`` by construction
+    (engine/capability_observation.py). Old-contract strings map to nothing.
     """
 
     terminal = getattr(event, "node_status", None)
@@ -1543,9 +1553,9 @@ def _external_outcome(event: WorkflowTraceEvent) -> Optional[str]:
     if terminal is not None:
         return None
     decision = event.decision or ""
-    if decision in {"accepted", "valid", "answered", "provisional"}:
+    if decision == "accepted":
         return "accepted"
-    if decision in {"failed", "rejected", "denied"}:
+    if decision in {"failed", "rejected"}:
         return "failed"
     if decision == "partial":
         return "partial"
@@ -1558,6 +1568,10 @@ def _next_status(current: str, event: WorkflowTraceEvent) -> str:
     # QRF.5: the TYPED terminal field is authoritative and is read FIRST — a partial node
     # carrying its children's failure reason stays partial; error text is evidence, not a
     # status override, whenever the engine stated how the node ended.
+    # M11: decision TEXT never maps to a terminal status — the engine stamps typed
+    # ``node_status`` on every declared-node terminal (executor/runner/segment_lifecycle),
+    # so text mapping could only re-introduce old-contract guessing. A decision event is
+    # progress evidence at most; recorded error/severity stay as failure evidence.
     terminal = getattr(event, "node_status", None)
     if terminal is not None:
         if terminal in {"accepted", "completed"}:
@@ -1571,29 +1585,19 @@ def _next_status(current: str, event: WorkflowTraceEvent) -> str:
         return current
     if event.error or event.severity == "error":
         return "failed"
-    decision = event.decision or ""
-    if decision == "flow:authored":
-        # LEGACY BUNDLES ONLY: pre-typed-field events carried no node_status; new engine
-        # events set node_status="completed" and never reach this branch.
-        return "completed"
-    if decision == "start":
+    if event.decision:
         return "running" if current == "not_started" else current
-    if decision in {"accepted", "valid", "answered", "provisional"}:
-        return "completed"
-    if decision in {"failed", "rejected", "denied"}:
-        return "failed"
-    if decision == "partial":
-        return "partial"
-    if decision:
-        return current if current != "not_started" else "running"
     return current
 
 
 def _infer_phase(event: WorkflowTraceEvent) -> Optional[str]:
+    """Display label for events the current engine records WITHOUT a phase (node-level
+    decisions like ``fanout`` or ``wait:registered``). Capability events always carry
+    ``tool:request``/``tool:result`` and never reach this; the pre-typed ``start`` mapping
+    is gone (M11)."""
+
     if event.error:
         return "error"
-    if event.decision == "start":
-        return "node:start"
     if event.decision:
         return "node:decision"
     return None
