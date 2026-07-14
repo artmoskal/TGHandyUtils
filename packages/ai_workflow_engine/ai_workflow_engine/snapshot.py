@@ -99,30 +99,35 @@ class MachineSnapshot(BaseModel):
         # WorkflowGoal mints goal_id for NEW live goals (correct for live construction, never
         # while decoding), run_context.goal_id is optional for live contexts, and the nested
         # models tolerate unknown keys.
+        # Recheck RRR1: each raw side is validated INDEPENDENTLY — a wire-shaped identity gets
+        # its decode rules (no minting, no unknown keys) regardless of how the OTHER side is
+        # represented, so dict/dict and mixed inputs behave identically. Cross-field equality
+        # lives exclusively in the unconditional after-validator.
+        def _blank(value: Any) -> bool:
+            return value is None or (isinstance(value, str) and not value.strip())
+
+        problems: list[str] = []
         goal_raw = data.get("goal")
         rc_raw = data.get("run_context")
-        if isinstance(goal_raw, dict) and isinstance(rc_raw, dict):
-            def _blank(value: Any) -> bool:
-                return value is None or (isinstance(value, str) and not value.strip())
-
-            problems: list[str] = []
+        if isinstance(goal_raw, dict):
             if _blank(goal_raw.get("goal_id")):
                 problems.append("goal.goal_id is missing/blank (a snapshot may never mint identity)")
+            unknown = set(goal_raw) - set(WorkflowGoal.model_fields)
+            if unknown:
+                problems.append(f"unknown goal fields: {sorted(unknown)}")
+        if isinstance(rc_raw, dict):
             if _blank(rc_raw.get("workflow_id")):
                 problems.append("run_context.workflow_id is missing/blank")
             if _blank(rc_raw.get("goal_id")):
                 problems.append("run_context.goal_id is missing/blank")
-            unknown = set(goal_raw) - set(WorkflowGoal.model_fields)
-            if unknown:
-                problems.append(f"unknown goal fields: {sorted(unknown)}")
             unknown = set(rc_raw) - set(WorkflowRunContext.model_fields)
             if unknown:
                 problems.append(f"unknown run_context fields: {sorted(unknown)}")
-            if problems:
-                raise ValueError(
-                    "unsupported machine-snapshot identity: " + "; ".join(problems)
-                    + " — resume requires the exact captured identity"
-                )
+        if problems:
+            raise ValueError(
+                "unsupported machine-snapshot identity: " + "; ".join(problems)
+                + " — resume requires the exact captured identity"
+            )
         return data
 
     @model_validator(mode="after")

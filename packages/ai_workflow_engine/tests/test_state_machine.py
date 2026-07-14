@@ -807,3 +807,38 @@ async def test_public_resume_reseals_already_built_snapshot_objects():
     with _pytest.raises(_VE, match="conflicting identities"):
         await engine.resume(smuggled, "answer")
     assert calls["n"] == 0, "a capability executed under a smuggled identity"
+
+
+def test_mixed_representation_identity_gets_full_decode_rules():
+    """Recheck RRR1: each raw side is validated independently — mixed dict/model input can no
+    longer slip an unknown key or missing ID past the decode rules on the dictionary side."""
+
+    import pytest as _pytest
+    from pydantic import ValidationError as _VE
+    from ai_workflow_engine.models import WorkflowGoal, WorkflowRunContext
+    from ai_workflow_engine.snapshot import MachineSnapshot
+
+    typed_goal = WorkflowGoal(workflow_type="w", objective="o", goal_id="g-1")
+    typed_rc = WorkflowRunContext(workflow_id="r", workflow_type="w", goal_id="g-1")
+
+    # raw goal with unknown key + typed run_context
+    with _pytest.raises(_VE, match="unknown goal fields"):
+        MachineSnapshot(
+            schema_version="v0.11", workflow_id="w", suspended_node="n",
+            goal={"workflow_type": "w", "objective": "o", "goal_id": "g-1", "smuggled": 1},
+            run_context=typed_rc,
+        )
+    # typed goal + raw run_context with unknown key
+    with _pytest.raises(_VE, match="unknown run_context fields"):
+        MachineSnapshot(
+            schema_version="v0.11", workflow_id="w", suspended_node="n",
+            goal=typed_goal,
+            run_context={"workflow_id": "r", "workflow_type": "w", "goal_id": "g-1", "extra": 2},
+        )
+    # mixed with a missing raw ID: the dict side's no-minting rule fires
+    with _pytest.raises(_VE, match="goal.goal_id is missing"):
+        MachineSnapshot(
+            schema_version="v0.11", workflow_id="w", suspended_node="n",
+            goal={"workflow_type": "w", "objective": "o"},
+            run_context=typed_rc,
+        )
