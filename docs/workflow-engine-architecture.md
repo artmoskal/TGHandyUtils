@@ -555,11 +555,11 @@ Sources:
 - <https://developers.openai.com/api/docs/models>
 - <https://developers.openai.com/api/docs/pricing>
 
-## Invocation Internal Ownership (v0.11 candidate — unreleased)
+## Runtime Internal Ownership (v0.11.1)
 
 `CapabilityRuntime.invoke` remains the engine's ONE capability door for every worker family
 (deterministic tools, LLM workers, agents, human steps, external processes, evaluators, fanout
-children, subworkflows). As of the v0.11 refactor candidate its internals are owned by three
+children, subworkflows). Its internals are owned by three
 single-purpose collaborators behind that unchanged facade:
 
 - **`engine/capability_contract.py` — pure rules.** Input validation, result normalization,
@@ -581,6 +581,27 @@ Unchanged ownership: budgets and usage stay in `budget.py`/`usage.py`/`usage_eve
 result commitment stays in the executor; subprocess settlement stays in `engine/process_io.py`.
 These module names are INTERNAL — consumers keep importing the same public surface and never
 need the owner split as a concept.
+
+The workflow and observation runtimes follow the same ownership rule. `WorkflowExecutor` is the
+coordinator; it does not reimplement its collaborators:
+
+| Internal owner | One reason to change | Must not own |
+|---|---|---|
+| `machine_compiler.py` | Validate and compile one definition, including digest-keyed cache and routes | Run lifecycle, node results, observation |
+| `node_services.py` | Supply the narrow node execution/scheduling contract and child-run port | Whole-executor access or product orchestration |
+| `suspension.py` | Build identity-sealed snapshots and register durable waits before exposure | Scheduling clocks or product persistence |
+| `result_assembly.py` | Project final state into the public result envelope | Execute nodes or choose transitions |
+| `observation_contract.py` | Persisted schema and safe path/identity rules | Filesystem sequencing or HTML |
+| `observation_writer.py` / `observation_retention.py` | Write/finalize/archive and prune logical run groups | Runtime control or viewer projection |
+| viewer `event_source.py` / `grouping.py` | Read strict bundle facts and select canonical lifecycle history | Status invention or presentation |
+| viewer `projection.py` | Reduce persisted typed events into graph/view truth | Storage or HTML transport |
+| viewer `rendering.py` / `server.py` | Escape/render projected truth and serve validated resources | Recompute machine status or canonical history |
+
+These are ownership boundaries, not consumer extension points. Product work normally lands as a
+registered capability, declared node/workflow, optional L2/L3 pack, or injected product adapter.
+Change an internal owner only for a universal mechanic that cannot be expressed through those
+public seams. Do not add executor branches for product behavior, a generic event bus, a service
+locator, or a forwarding facade that leaves two implementations alive.
 
 Preservation evidence (v0.11 latest-only line): a sealed 27-scenario CURRENT-contract oracle
 runs the full behavior inventory through the public door and is locked as committed fixtures

@@ -5,7 +5,7 @@ declare a workflow, register typed capabilities, and call one engine door. The e
 transitions, retries, fan-out, budgets, waits, trace, usage, and observation bundles; products own
 domain models, provider clients, storage adapters, clocks, and side-effect delivery.
 
-> **`engine-v0.11.0` is the current release.** Pin immutable tags and build wheels;
+> **`engine-v0.11.1` is the current release.** Pin immutable tags and build wheels;
 > consumer canaries still decide whether each product changes its deployed pin. Never depend on a
 > live branch. The binding contract is the repository-level
 > [`executable-workflow-engine-spec.md`](../../docs/executable-workflow-engine-spec.md).
@@ -17,6 +17,11 @@ domain models, provider clients, storage adapters, clocks, and side-effect deliv
 > matching historical tag (`engine-v0.10.1` and earlier keep working for their own data forever).
 > Adoption is fresh: new consumers start on the current contract; existing consumers re-adopt the
 > current surface rather than migrate state.
+>
+> **v0.11.1 is an architecture-only maintenance release over v0.11.0.** Runtime compilation,
+> node/scheduling, suspension/result, bundle, and viewer responsibilities have focused internal
+> owners; public APIs and persisted schemas are unchanged. The annotated tag is the canonical
+> release manifest for the exact source commit and reference wheel hashes.
 
 ## Start Here
 
@@ -43,20 +48,20 @@ Build from the tag because this monorepo is not published to PyPI:
 
 ```bash
 git clone <TGHandyUtils-repository> /tmp/tghandy-engine
-git -C /tmp/tghandy-engine checkout --detach engine-v0.11.0
+git -C /tmp/tghandy-engine checkout --detach engine-v0.11.1
 python -m pip wheel --no-deps -w ./vendor \
   /tmp/tghandy-engine/packages/ai_workflow_engine
-python -m pip install ./vendor/ai_workflow_engine-0.11.0-py3-none-any.whl
-python -c "import ai_workflow_engine as e; assert e.__version__ == '0.11.0'"
+python -m pip install ./vendor/ai_workflow_engine-0.11.1-py3-none-any.whl
+python -c "import ai_workflow_engine as e; assert e.__version__ == '0.11.1'"
 ```
 
 Optional packages:
 
 | Package | Install when |
 |---|---|
-| `ai-workflow-engine==0.11.0` | Always. Core builder, executor, memory, waits, observation writer. |
+| `ai-workflow-engine==0.11.1` | Always. Core builder, executor, memory, waits, observation writer. |
 | `ai-workflow-tools==0.5.0` | The product uses CLI agents, the tool catalog, or media helpers. |
-| `ai-workflow-viewer==0.3.0` | A developer or product service renders observation bundles. |
+| `ai-workflow-viewer==0.3.1` | A developer or product service renders observation bundles. |
 
 Record the engine tag, source commit, and wheel SHA-256 in the consumer repository. A tag already
 consumed by another repository is frozen; fixes require a new tag.

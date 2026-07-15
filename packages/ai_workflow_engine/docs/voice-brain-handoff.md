@@ -1,8 +1,8 @@
 # Voice Brain Engine Integration Guide
 
 Status: **the engine supports the required execution boundary as of the immutable
-`engine-v0.11.0` release (latest-only line); voice
-integration remains product-owned and must pin tag `engine-v0.11.0` before running its own
+`engine-v0.11.1` release (latest-only line); voice
+integration remains product-owned and must pin tag `engine-v0.11.1` before running its own
 latency/cancellation canary.** This replaces
 the historical June request/reply transcript.
 
@@ -26,15 +26,19 @@ transcript + session context
 
 ## Package Choice
 
-- `ai-workflow-engine==0.11.0` for the runtime and custom `LLMCallable`.
+- `ai-workflow-engine==0.11.1` for the runtime and custom `LLMCallable`.
 - `ai-workflow-tools==0.5.0` only when using `CliAgentCapability`/console tools. CLI subscription
   workers are usually unsuitable for a low-latency conversational hot path.
-- `ai-workflow-viewer==0.3.0` in diagnostics, not the real-time audio path.
+- `ai-workflow-viewer==0.3.1` in diagnostics, not the real-time audio path.
 
-> **Current matrix:** `engine-v0.11.0` + `ai-workflow-tools==0.5.0` + `ai-workflow-viewer==0.3.0`
+> **Current matrix:** `engine-v0.11.1` + `ai-workflow-tools==0.5.0` + `ai-workflow-viewer==0.3.1`
 > (tools/viewer require `ai-workflow-engine>=0.11,<0.12`). The previous line
 > (`engine-v0.10.1` + tools `0.4.1` + viewer `0.2.3`) remains available at its historical tag for
 > historical data; the lines never mix in one environment.
+
+Relative to v0.11.0, v0.11.1 changes internal runtime/viewer ownership only: no public API,
+persisted schema, or voice workflow behavior changes. The annotated tag records the exact source
+commit and reference wheel hashes; the voice repository still owns its pin and canary decision.
 
 
 ## Streaming Boundary
