@@ -471,6 +471,58 @@ def test_read_group_duplicate_event_id_across_segments_is_loud(tmp_path):
         FileEventSource(tmp_path).read_group("logical-run")
 
 
+def test_read_group_uses_highest_committed_durable_attempt_as_canonical(tmp_path):
+    """At-least-once delivery may leave several committed durable attempts at one
+    logical index; the highest attempt ordinal is the canonical machine history."""
+
+    from ai_workflow_viewer import FileEventSource
+
+    definition = _write_group(tmp_path)
+    first_path = tmp_path / "logical-run--s001"
+    first_meta_path = first_path / "meta.json"
+    first_meta = json.loads(first_meta_path.read_text(encoding="utf-8"))
+    first_meta["attempt"] = 1
+    first_meta_path.write_text(json.dumps(first_meta), encoding="utf-8")
+    _mark(first_path, "commit.json")
+
+    second_id = "logical-run--s001-r2"
+    second_path = _write_bundle(
+        tmp_path,
+        "logical-run",
+        definition,
+        dir_name=second_id,
+        trace_events=[
+            WorkflowTraceEvent(
+                node="finish",
+                node_status="completed",
+                phase="node:result",
+                decision="second-attempt-evidence",
+                run_id="logical-run",
+                sequence=1,
+                event_id="second-attempt-event",
+            )
+        ],
+        meta_extra=_segment_meta(
+            "logical-run",
+            second_id,
+            1,
+            digest=definition.definition_digest(),
+            attempt=2,
+        ),
+    )
+    _mark(second_path, "commit.json")
+
+    group = FileEventSource(tmp_path).read_group("logical-run")
+
+    assert [segment.segment_id for segment in group.segments] == ["logical-run", second_id]
+    assert [segment.segment_id for segment in group.non_canonical] == [
+        "logical-run--s001"
+    ]
+    assert [record.event_id for record in group.records if record.type == "trace"][-1] == (
+        "second-attempt-event"
+    )
+
+
 def test_read_group_lineage_corruption_is_loud(tmp_path):
     """W4.3/R1: committed-ordinal collision, a gapped canonical chain, and definition
     splits each refuse loudly — no half-true merge. Physical parent pointers left the
@@ -1342,6 +1394,39 @@ def test_external_mixed_status_is_graph_layer_truth_across_all_views(tmp_path):
     ], [], [])
     assert g5.nodes["ext"].status == "suspended"
     assert (g5.nodes["ext"].outcome_accepted, g5.nodes["ext"].outcome_suspended) == (1, 1)
+
+
+def test_timeline_escapes_hostile_trace_error_markup():
+    """Trace errors can include provider/process/site text and must stay inert in HTML."""
+
+    from ai_workflow_viewer.observability import (
+        build_observation_graph,
+        observation_graph_to_html,
+    )
+
+    definition = WorkflowBuilder("timeline-xss").step("inspect").build()
+    hostile_error = '<script>alert("timeline-xss")</script>'
+    graph = build_observation_graph(
+        definition,
+        [
+            WorkflowTraceEvent(
+                node="inspect",
+                phase="tool:result",
+                decision="failed",
+                severity="error",
+                error=hostile_error,
+                run_id="timeline-run",
+                sequence=1,
+                event_id="timeline-hostile-error",
+            )
+        ],
+    )
+
+    page = observation_graph_to_html(definition, graph)
+    timeline = page.split('<section id="timeline">', 1)[1].split("</section>", 1)[0]
+
+    assert hostile_error not in timeline
+    assert "error: &lt;script&gt;alert(&quot;timeline-xss&quot;)&lt;/script&gt;" in timeline
 
 
 def test_artifact_section_is_robust_and_escapes_untrusted_manifest_fields(tmp_path):
