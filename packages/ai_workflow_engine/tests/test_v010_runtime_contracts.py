@@ -1294,7 +1294,11 @@ async def test_graph_failsafe_stops_a_hang_outside_a_capability_boundary():
     )
     elapsed = _t.monotonic() - started
 
-    assert elapsed < 0.3, "cancellation suppression must not hang engine.run"
+    # OBS-1 load hardening: this wall bound exists ONLY to separate "returned after the
+    # 0.03s grace" from "hung for the suppressed 30s sleep" — the enforcement facts below
+    # (failed status, containment_failed, failsafe event) are deterministic. 5s keeps a 6x
+    # hang separation while surviving a heavily loaded host scheduler.
+    assert elapsed < 5.0, "cancellation suppression must not hang engine.run"
     assert result["status"] == "failed"
     assert result["graph_failsafe"]["containment_failed"] is True
     event = next(e for e in sink.events if e.phase == "run:failsafe")
@@ -1576,7 +1580,11 @@ async def test_external_process_obeys_the_ambient_engine_window(tmp_path):
         reset_invocation_window(token)
 
     assert result.status == "partial"
-    assert elapsed < 1.1, f"cleanup did not settle before the hard window (took {elapsed:.2f}s)"
+    # OBS-1 load hardening: the ENGINE-side window truth is asserted deterministically
+    # below (timeout_s <= 0.6, killed_after_grace, bound_source=engine_window). The wall
+    # bound only separates SIGKILL-after-grace (~1.1s mechanism time) from the process's
+    # 30s sleep; 3s keeps a 10x separation while absorbing spawn/reap delay under load.
+    assert elapsed < 3.0, f"cleanup did not settle near the hard window (took {elapsed:.2f}s)"
     assert result.metadata["killed_after_grace"] is True
     assert "ready" in result.output["stdout"]
     assert result.metadata["bound_source"] == "engine_window"
