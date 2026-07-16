@@ -9,11 +9,11 @@ Always install `ai-workflow-engine`. Add `ai-workflow-tools` only for reusable C
 `ai-workflow-viewer` only where bundles are rendered. Keeping optional packages out of simple runtime
 images preserves the complexity gradient.
 
-Build from `engine-v0.11.1` and record:
+Build from `engine-v0.11.2` and record:
 
 ```text
-engine_tag=engine-v0.11.1
-engine_source_commit=<git rev-parse engine-v0.11.1^{}>
+engine_tag=engine-v0.11.2
+engine_source_commit=<git rev-parse engine-v0.11.2^{}>
 engine_wheel_sha256=<sha256 of vendored wheel>
 ```
 
