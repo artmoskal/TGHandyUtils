@@ -885,6 +885,125 @@
     ],
     "usage": null
   },
+  "human_bound_context": {
+    "binding_trace_per_segment": [
+      1,
+      2,
+      1
+    ],
+    "exception": null,
+    "final_output": {
+      "done": true
+    },
+    "node_results": [
+      [
+        "plan_node",
+        "accepted"
+      ],
+      [
+        "draft",
+        "accepted"
+      ],
+      [
+        "ask",
+        "requires_user_input"
+      ],
+      [
+        "ask",
+        "accepted"
+      ],
+      [
+        "qa",
+        "rejected"
+      ],
+      [
+        "ask",
+        "requires_user_input"
+      ],
+      [
+        "ask",
+        "accepted"
+      ],
+      [
+        "qa",
+        "accepted"
+      ],
+      [
+        "fin",
+        "accepted"
+      ]
+    ],
+    "statuses": [
+      "requires_user_input",
+      "requires_user_input",
+      "completed"
+    ],
+    "usage": {
+      "cached_input_tokens": 0,
+      "estimated_usd": null,
+      "events": [],
+      "image_call_count": 0,
+      "input_tokens": 0,
+      "metered_usd": null,
+      "notional_usd": null,
+      "output_tokens": 0,
+      "text_call_count": 0,
+      "tool_call_count": 0,
+      "tool_character_count": 0,
+      "total_tokens": 0,
+      "worker_call_count": 0
+    },
+    "visit1_cards": {
+      "machine": "state: ask (human)\nabout: bound approval gate\ntransitions:\n- (continue) -> qa",
+      "plan": "Goal: approve the launch brief\nRevision: 0\n- [done] t1: draft the brief -> draft (output: plan_node.t1)"
+    },
+    "visit_matrix": [
+      {
+        "agent_memory": "structured_state",
+        "criticism": false,
+        "has_machine_card": true,
+        "has_plan_card": true,
+        "model_profile": "human_probe",
+        "provenance": null,
+        "resume_event": null
+      },
+      {
+        "agent_memory": "structured_state",
+        "criticism": false,
+        "has_machine_card": true,
+        "has_plan_card": true,
+        "model_profile": "human_probe",
+        "provenance": null,
+        "resume_event": {
+          "answer": "revise"
+        }
+      },
+      {
+        "agent_memory": "structured_state",
+        "criticism": true,
+        "has_machine_card": true,
+        "has_plan_card": true,
+        "model_profile": "human_probe",
+        "provenance": {
+          "evaluator": "qa",
+          "round": 1,
+          "target": "ask"
+        },
+        "resume_event": null
+      },
+      {
+        "agent_memory": "structured_state",
+        "criticism": false,
+        "has_machine_card": true,
+        "has_plan_card": true,
+        "model_profile": "human_probe",
+        "provenance": null,
+        "resume_event": {
+          "answer": "ship"
+        }
+      }
+    ]
+  },
   "invalid_input": {
     "details": [],
     "exception": null,

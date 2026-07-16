@@ -1003,13 +1003,20 @@ class WorkflowBuilder:
         capability: Optional[str] = None,
         inject_plan: bool = False,
         inject_machine: bool = False,
+        memory: Optional[Any] = None,
+        model_profile: Optional[str] = None,
         title: str = "",
         description: str = "",
     ) -> "WorkflowBuilder":
         """Wait-capable node. ``wait_policy`` is REQUIRED (v0.9 breaking change, W1): pass
         ``LocalWaitPolicy()`` for today's in-process snapshot/resume, or
         ``DurableWaitPolicy(timeout_s=...)`` plus ``timeout_to=`` naming the node the
-        declared timeout transition routes to. Local waits must NOT declare timeout_to."""
+        declared timeout transition routes to. Local waits must NOT declare timeout_to.
+
+        Human nodes are declared nodes and carry the same optional decorations as steps:
+        ``memory=`` (agent-memory config delivered as ``context.metadata['agent_memory']``)
+        and ``model_profile=`` (bound at invocation) — one contract whether the definition
+        comes from this builder or is hand-declared."""
 
         from ai_workflow_engine.waits import wait_policy_from  # call-time (leaf discipline)
 
@@ -1030,6 +1037,8 @@ class WorkflowBuilder:
                 capability=capability or node_id,
                 inject_plan=inject_plan,
                 inject_machine=inject_machine,
+                memory=memory,
+                model_profile=model_profile,
                 title=title,
                 description=description,
                 wait_policy=policy.model_dump(),

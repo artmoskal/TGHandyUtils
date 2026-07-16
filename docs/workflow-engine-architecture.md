@@ -582,6 +582,31 @@ result commitment stays in the executor; subprocess settlement stays in `engine/
 These module names are INTERNAL — consumers keep importing the same public surface and never
 need the owner split as a concept.
 
+### Node-Context Binding Tiers
+
+Three invocation tiers, one door underneath — WHICH tier an invocation uses decides what
+context it may receive:
+
+- **Universal door — `CapabilityRuntime.invoke`.** Every capability call ends here (validation,
+  execution windows, budgets, observation). It has no node knowledge.
+- **Declared-node door — `NodeExecutionServices.invoke_bound`.** Node handlers invoke their
+  DECLARED capability through this decorator: it composes the node's context — typed retrace
+  provenance (consumed exactly once, by the retraced invocation), `inject_plan`/`inject_machine`
+  cards, `memory` config (delivered as `context.metadata["agent_memory"]`), and `model_profile`
+  binding (with an honest `model_binding` trace decision) — then uses the universal door. Human
+  nodes are declared nodes and use this door like step/branch/evaluate (v0.11.3 correction: they
+  previously bypassed it, leaving all four decorations silently dead on human targets), with the
+  resume event merged into metadata before decoration so both compose. Decorations bind at
+  INVOCATION time only: resolution paths that perform no invocation — the declared wait-timeout
+  transition — never enter the capability, decorated or not.
+- **Dynamic selection — base/task context BY DESIGN.** A capability selected inside another
+  node's execution (the evaluator's dynamic fallback, planner-task capabilities) is a DIFFERENT
+  capability, not the declaring node: it must not silently inherit that node's model profile,
+  memory, or injection flags. The evaluator fallback therefore runs on the base run context —
+  criticism content still rides its payload — and planner tasks run on their task-specific
+  context. An EXPLICIT fallback-binding schema would be an extension-lifecycle change on a
+  concrete consumer request, not a default.
+
 The workflow and observation runtimes follow the same ownership rule. `WorkflowExecutor` is the
 coordinator; it does not reimplement its collaborators:
 
@@ -603,7 +628,7 @@ Change an internal owner only for a universal mechanic that cannot be expressed 
 public seams. Do not add executor branches for product behavior, a generic event bus, a service
 locator, or a forwarding facade that leaves two implementations alive.
 
-Preservation evidence (v0.11 latest-only line): a sealed 27-scenario CURRENT-contract oracle
+Preservation evidence (v0.11 latest-only line): a sealed 28-scenario CURRENT-contract oracle
 runs the full behavior inventory through the public door and is locked as committed fixtures
 (`invocation_current_contract.json`, `public_surface_current.json`) with a provenance hash chain,
 so `./test.sh unit -- packages/ai_workflow_engine/tests/test_current_contract_gate.py` re-checks

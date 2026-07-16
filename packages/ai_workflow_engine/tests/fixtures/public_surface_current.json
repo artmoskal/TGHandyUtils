@@ -11438,6 +11438,7 @@
   },
   "signatures": {
     "CapabilityRuntime.__init__": "(self, registry: 'CapabilityRegistry', trace_sink: 'TraceSink | None' = None, *, detail_sink: 'DetailSink | None' = None, capture_detail_text: 'bool' = False) -> 'None'",
-    "CapabilityRuntime.invoke": "(self, name: 'str', payload: 'Any', context: 'CapabilityContext', *, attempt: 'int' = 1) -> 'CapabilityResult'"
+    "CapabilityRuntime.invoke": "(self, name: 'str', payload: 'Any', context: 'CapabilityContext', *, attempt: 'int' = 1) -> 'CapabilityResult'",
+    "WorkflowBuilder.human": "(self, node_id: 'str', *, wait_policy: 'Any', timeout_to: 'Optional[str]' = None, capability: 'Optional[str]' = None, inject_plan: 'bool' = False, inject_machine: 'bool' = False, memory: 'Optional[Any]' = None, model_profile: 'Optional[str]' = None, title: 'str' = '', description: 'str' = '') -> \"'WorkflowBuilder'\""
   }
 }

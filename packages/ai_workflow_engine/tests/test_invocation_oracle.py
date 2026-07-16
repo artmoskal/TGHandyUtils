@@ -68,6 +68,9 @@ _ACCEPTED_PLAN_INVENTORY: dict[str, list[str]] = {
     "concurrent invocations": ["concurrent_invocations"],
     "authored flow/fanout": ["authored_fanout_flow"],
     "durable suspend/resume": ["durable_suspend_resume"],
+    # Iteration B / B0 (v0.11.3): human nodes go through the bound door — the row freezes all
+    # four node decorations composed with provenance/criticism/resume across two suspensions.
+    "human bound context": ["human_bound_context"],
 }
 
 

@@ -53,7 +53,13 @@ def build_human_node(services, definition: WorkflowDefinition, node: WorkflowNod
             context = context.model_copy(
                 update={"metadata": {**context.metadata, "resume_event": resume_event}}
             )
-        result = await services.runtime.invoke(capability, payload, context)
+        # Human nodes are DECLARED nodes: invoke through the bound door so retrace
+        # provenance, plan/machine injection, memory config, and model binding compose
+        # with the resume-event metadata merged above (raw runtime.invoke bypassed all
+        # four node decorations — FENCE-1/2).
+        result = await services.invoke_bound(
+            node, capability, payload, context, state, definition=definition
+        )
         response = result.output
         clarification_status = getattr(response, "status", None)
         # answered -> continue with the value; provisional -> continue (partial); pending -> pause.

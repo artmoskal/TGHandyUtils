@@ -215,6 +215,12 @@ async def _apply_eval(
         }
     if action == "fallback":
         target = decision.target_capability or node.fallback_capability
+        # FENCE-3 (settled): the dynamic fallback is a DIFFERENT capability selected at run
+        # time, not the declared evaluator node — it deliberately runs on the base run
+        # context (universal door), never inheriting the evaluator's model profile, memory,
+        # or injection flags. Explicit fallback binding requires an extension-lifecycle
+        # schema change driven by a concrete consumer. See architecture doc
+        # "Node-Context Binding Tiers".
         fb = await services.runtime.invoke(target, _with_criticism(evaluated_payload, decision.criticism), context)
         if fb.status == "failed":
             return {"route": "halt", "status": "failed", "output": evaluated_payload, "error": fb.error or "fallback failed"}

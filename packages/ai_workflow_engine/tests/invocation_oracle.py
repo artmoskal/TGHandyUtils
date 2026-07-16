@@ -118,6 +118,7 @@ BEHAVIOR_ROWS = (
     "usage_event_semantics",
     "authored_fanout_flow",
     "durable_suspend_resume",
+    "human_bound_context",
 )
 
 def _fixed_context(*, allowed_side_effects=None, execution_request=None) -> CapabilityContext:
@@ -979,6 +980,159 @@ async def _sc_durable_suspend_resume():
     }
 
 
+async def _sc_human_bound_context():
+    """Behavior row 'human bound context' (B0, v0.11.3): human nodes are DECLARED nodes — the
+    bound invocation door composes ALL FOUR node decorations (plan card, machine card, agent-
+    memory config, model binding) with retrace provenance, criticism payload, and resume events
+    across two suspend/resume cycles. Frozen facts: the per-visit decoration/provenance/resume
+    matrix (4 visits: ask, answer, retraced re-ask, answer), the verbatim visit-1 cards, the
+    per-segment model_binding trace counts, all three segment statuses, final node results, the
+    terminal output, and the cumulative usage summary."""
+
+    from pydantic import BaseModel as _AskBM
+
+    from ai_workflow_engine import (
+        CapabilityResult,
+        CapabilitySpec,
+        LocalWaitPolicy,
+        PlanArtifact,
+        PlanTask,
+        WorkflowBuilder,
+        WorkflowEngineBuilder,
+    )
+    from ai_workflow_engine.models import (
+        ModelProfile,
+        RuntimeLimits,
+        SafetyPolicy,
+        WorkflowProfile,
+    )
+    from ai_workflow_engine.workflow import Retrace
+
+    class Ask(_AskBM):
+        status: str
+        value: Any = None
+
+    visits: list[dict[str, Any]] = []
+    visit1_cards: dict[str, Any] = {}
+
+    def make_plan(_ctx, _p):
+        return PlanArtifact(
+            goal="approve the launch brief",
+            tasks=[
+                PlanTask(
+                    task_id="t1",
+                    description="draft the brief",
+                    capability="draft",
+                    payload={"value": 1},
+                )
+            ],
+        )
+
+    def draft(_ctx, p):
+        return {"brief": "launch brief v1"}
+
+    def ask(ctx, payload):
+        prov = getattr(ctx, "retrace_provenance", None)
+        if not visits:
+            # verbatim visit-1 cards: pure deterministic functions of the definition + plan
+            visit1_cards["plan"] = ctx.metadata.get("plan")
+            visit1_cards["machine"] = ctx.metadata.get("machine")
+        visits.append(
+            {
+                "provenance": None
+                if prov is None
+                else {
+                    "round": prov.round,
+                    "evaluator": prov.evaluator_node,
+                    "target": prov.target_node,
+                },
+                "criticism": isinstance(payload, dict) and "_criticism" in payload,
+                "resume_event": ctx.metadata.get("resume_event"),
+                "agent_memory": ctx.metadata.get("agent_memory"),
+                "model_profile": getattr(ctx.model_profile, "name", None),
+                "has_plan_card": isinstance(ctx.metadata.get("plan"), str),
+                "has_machine_card": isinstance(ctx.metadata.get("machine"), str),
+            }
+        )
+        event = ctx.metadata.get("resume_event")
+        if event is None:
+            return Ask(status="pending")
+        return Ask(status="answered", value=event)
+
+    gate_calls = {"n": 0}
+
+    def gate(_ctx, _p):
+        gate_calls["n"] += 1
+        return CapabilityResult(
+            status="accepted" if gate_calls["n"] > 1 else "rejected",
+            error="needs one more round",
+        )
+
+    def fin(_ctx, _p):
+        return {"done": True}
+
+    builder = WorkflowEngineBuilder()
+    builder.with_profile(
+        WorkflowProfile(
+            workflow_type="human_bound",
+            limits=RuntimeLimits(timeout_s=None),
+            safety=SafetyPolicy(allowed_side_effects=[]),
+        )
+    )
+    builder.with_model_profile(
+        ModelProfile(name="human_probe", provider="ollama", model="probe-1", temperature=0.0)
+    )
+    builder.register_capability(
+        "make_plan", make_plan, spec=CapabilitySpec(name="make_plan", kind="llm", is_planner=True)
+    )
+    builder.register_capability("draft", draft)
+    builder.register_capability("ask", ask)
+    builder.register_capability("gate", gate)
+    builder.register_capability("fin", fin)
+    builder.register_workflow(
+        WorkflowBuilder("human_bound")
+        .plan("plan_node", capability="make_plan")
+        .step("draft")
+        .human(
+            "ask",
+            wait_policy=LocalWaitPolicy(),
+            inject_plan=True,
+            inject_machine=True,
+            memory="structured_state",
+            model_profile="human_probe",
+            description="bound approval gate",
+        )
+        .evaluate("qa", target="ask", evaluator="gate", on_reject=Retrace("ask"))
+        .step("fin")
+        .build()
+    )
+    engine = builder.build()
+
+    first = await engine.run("human_bound", {"question": "approve?"})
+    second = await engine.resume(first.snapshot, {"answer": "revise"})
+    third = await engine.resume(second.snapshot, {"answer": "ship"})
+
+    def _bindings(result) -> int:
+        return sum(
+            1
+            for e in result.trace
+            if e.decision == "model_binding"
+            and e.node == "ask"
+            and e.metadata.get("model_profile_requested") == "human_probe"
+        )
+
+    return {
+        "statuses": [first.status, second.status, third.status],
+        "visit_matrix": visits,
+        "visit1_cards": visit1_cards,
+        "binding_trace_per_segment": [_bindings(first), _bindings(second), _bindings(third)],
+        "node_results": [[n.node_id, n.status] for n in third.node_results],
+        "final_output": third.output,
+        "usage": _canon_usage_summary(third.usage),
+        "exception": None,
+    }
+
+
 SCENARIOS: dict[str, Callable] = {
     "unknown_capability": _sc_unknown_capability,
     "invalid_input": _sc_invalid_input,
@@ -1007,6 +1161,7 @@ SCENARIOS: dict[str, Callable] = {
     "concurrent_invocations": _sc_concurrent_invocations,
     "authored_fanout_flow": _sc_authored_fanout_flow,
     "durable_suspend_resume": _sc_durable_suspend_resume,
+    "human_bound_context": _sc_human_bound_context,
 }
 
 
@@ -1052,6 +1207,9 @@ def public_surface_snapshot() -> dict[str, Any]:
         "signatures": {
             "CapabilityRuntime.__init__": _sig(CapabilityRuntime.__init__),
             "CapabilityRuntime.invoke": _sig(CapabilityRuntime.invoke),
+            # B0 (v0.11.3): the human-node builder contract is sealed so future signature
+            # drift (decorations added/removed/renamed) is a visible public delta.
+            "WorkflowBuilder.human": _sig(pkg.WorkflowBuilder.human),
         },
         "schemas": schemas,
     }
