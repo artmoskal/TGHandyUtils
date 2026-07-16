@@ -1,0 +1,198 @@
+{
+  "comment": "Iteration B / B1: lifecycle state-algebra inventory. Derived from OWNERS and WRITE SITES (not grep estimates): node_services.ExecutorNodeServices.record is the central committer; handlers merge routing/counter keys; the runner injects per-segment context; suspension/result_assembly project. Rules: accumulate = prior entries survive the declared scope (by key or append); replace = latest value wins; reset = re-initialized at the named boundary; derive = pure projection of other state. The guard test (test_contract_guards.py::test_lifecycle_algebra_inventory_is_complete) locks this table to RESERVED_STATE_KEYS both ways, so a planted state channel fails BY NAME.",
+  "version": "B1-2026-07-16",
+  "channels": {
+    "payload": {
+      "rule": "replace",
+      "scope": "every node completion (latest node output; branch passes payload through unchanged by design)",
+      "write_sites": ["node_services.py::record (RUNNING_PAYLOAD)", "nodes/branch.py (pass-through override)", "executor.py::_initial_state"],
+      "snapshot_persisted": true,
+      "boundaries": ["attempt", "retrace", "resume", "segment"]
+    },
+    "engine_context": {
+      "rule": "reset(segment)",
+      "scope": "injected per run/resume segment by the executor; never persisted",
+      "write_sites": ["executor.py (run/resume state construction)"],
+      "snapshot_persisted": false,
+      "boundaries": ["segment"]
+    },
+    "node_outputs": {
+      "rule": "accumulate(key=node_id)",
+      "scope": "run (cumulative across retrace/resume); a REVISIT replaces only that node's key — sibling keys must survive; '__input__' pinned at start; output_key aliases written alongside",
+      "write_sites": ["node_services.py::record", "executor.py::_initial_state", "executor.py (resume restore)"],
+      "snapshot_persisted": true,
+      "boundaries": ["attempt", "retrace", "resume", "segment"]
+    },
+    "node_inputs": {
+      "rule": "accumulate(key=node_id)",
+      "scope": "run; latest input per node id",
+      "write_sites": ["node_services.py::record", "executor.py (resume restore)"],
+      "snapshot_persisted": true,
+      "boundaries": ["attempt", "retrace", "resume", "segment"]
+    },
+    "node_results": {
+      "rule": "accumulate(append)",
+      "scope": "run; ONE entry per node visit — full history, never collapsed to latest-per-node",
+      "write_sites": ["node_services.py::record", "executor.py (resume restore revalidates)"],
+      "snapshot_persisted": true,
+      "boundaries": ["attempt", "retrace", "resume", "segment"]
+    },
+    "node_status": {
+      "rule": "accumulate(key=node_id)",
+      "scope": "run; latest status per node id",
+      "write_sites": ["node_services.py::record", "executor.py (resume restore)"],
+      "snapshot_persisted": true,
+      "boundaries": ["attempt", "retrace", "resume", "segment"]
+    },
+    "branch_decisions": {
+      "rule": "accumulate(key=node_id)",
+      "scope": "run; latest decision label per branch node",
+      "write_sites": ["nodes/branch.py", "executor.py (resume restore)"],
+      "snapshot_persisted": true,
+      "boundaries": ["retrace", "resume", "segment"]
+    },
+    "routes": {
+      "rule": "accumulate(key=node_id)",
+      "scope": "run; latest route per node id (continue/halt/__timeout__/decision labels)",
+      "write_sites": ["nodes/branch.py", "nodes/human.py", "nodes/evaluate.py", "node_replay.py (fast-forward)", "executor.py (resume restore)"],
+      "snapshot_persisted": true,
+      "boundaries": ["attempt", "retrace", "resume", "segment"]
+    },
+    "transition_counts": {
+      "rule": "accumulate(counter)",
+      "scope": "run; per 'source|label' traversal counter, increment-only — pre-set loop gates read the LIVE value",
+      "write_sites": ["nodes/branch.py (increment)", "executor.py (resume restore)"],
+      "snapshot_persisted": true,
+      "boundaries": ["retrace", "resume", "segment"]
+    },
+    "eval_counters": {
+      "rule": "accumulate(counter)",
+      "scope": "run; nested per-evaluator counters (retry/retrace rounds), increment-only",
+      "write_sites": ["nodes/evaluate.py", "executor.py (resume restore)"],
+      "snapshot_persisted": true,
+      "boundaries": ["retrace", "resume", "segment"]
+    },
+    "attempts": {
+      "rule": "accumulate(key=node_id)",
+      "scope": "run; latest attempt count per node id",
+      "write_sites": ["node_services.py::record", "executor.py (resume restore)"],
+      "snapshot_persisted": true,
+      "boundaries": ["attempt", "retrace", "resume", "segment"]
+    },
+    "artifacts": {
+      "rule": "accumulate(append)",
+      "scope": "run; append-only across attempts/rounds/segments — evidence never shrinks",
+      "write_sites": ["node_services.py::record (list concat)", "executor.py (resume restore revalidates)"],
+      "snapshot_persisted": true,
+      "boundaries": ["attempt", "retrace", "resume", "segment"]
+    },
+    "status": {
+      "rule": "replace",
+      "scope": "run; running -> failed/requires_user_input at commit sites; terminal envelope status derived by result assembly",
+      "write_sites": ["node_services.py::record (failed)", "nodes/human.py (requires_user_input)", "executor.py::_initial_state"],
+      "snapshot_persisted": false,
+      "boundaries": ["attempt", "retrace", "resume", "segment"],
+      "note": "snapshot carries 'reason' instead; wait-record status lifecycle is coordinator-owned (waits.py), not this channel"
+    },
+    "error": {
+      "rule": "replace",
+      "scope": "run; latest failure message (set on failed commits)",
+      "write_sites": ["node_services.py::record", "executor.py::_initial_state"],
+      "snapshot_persisted": false,
+      "boundaries": ["attempt", "retrace", "resume"]
+    },
+    "fallback_reason": {
+      "rule": "replace",
+      "scope": "run; set when an evaluator fallback accepted; last fallback wins",
+      "write_sites": ["node_services.py::record (when provided)", "executor.py (resume restore)"],
+      "snapshot_persisted": true,
+      "boundaries": ["retrace", "resume", "segment"]
+    },
+    "workflow_context": {
+      "rule": "reset(segment)",
+      "scope": "injected by WorkflowRunner per segment (observability identity)",
+      "write_sites": ["engine/runner.py"],
+      "snapshot_persisted": false,
+      "boundaries": ["segment"]
+    },
+    "workflow_goal": {
+      "rule": "reset(segment)",
+      "scope": "injected by WorkflowRunner per segment; goal identity itself is sealed in the snapshot envelope (typed WorkflowGoal), not in this channel",
+      "write_sites": ["engine/runner.py"],
+      "snapshot_persisted": false,
+      "boundaries": ["segment"]
+    },
+    "usage_summary": {
+      "rule": "accumulate(append)",
+      "scope": "cumulative across ALL segments of a run (H2: resume rebuilds the session from snapshot.usage so budgets stay cumulative); events append via usage_events",
+      "write_sites": ["engine/runner.py (inject)", "executor.py (child/session rebuild)", "usage_events.py (event append)"],
+      "snapshot_persisted": true,
+      "boundaries": ["attempt", "retrace", "resume", "segment"]
+    },
+    "plan_artifact": {
+      "rule": "replace(object) with internal merge contract",
+      "scope": "run; the OBJECT is replaced per planner completion, but its retained content must MERGE: replan keeps prior tasks (_merge_replanned_plan) and metadata.task_outputs accumulates by task key across rounds (GAP-1 fix, both fold surfaces)",
+      "write_sites": ["nodes/planner.py (post-execution fold + _merge_replanned_plan)", "executor.py (resume restore)"],
+      "snapshot_persisted": true,
+      "boundaries": ["retrace", "resume", "segment"],
+      "note": "nested PlanTask.status/output_ref/error are per-task replace; accepted-None tasks carry no dangling output_ref"
+    },
+    "resume_suspended_node": {
+      "rule": "reset(segment)",
+      "scope": "set only when a segment starts from a snapshot; identifies THE suspension being resumed; replay consumes it",
+      "write_sites": ["executor.py (resume restore)"],
+      "snapshot_persisted": false,
+      "boundaries": ["segment"]
+    },
+    "resume_event": {
+      "rule": "reset(segment)",
+      "scope": "set at resume; delivered to the suspended node exactly once (machine_replay_done gates re-delivery); later nodes/waits in the same segment must never see it",
+      "write_sites": ["executor.py (resume restore)"],
+      "snapshot_persisted": false,
+      "boundaries": ["segment"]
+    },
+    "machine_replay_done": {
+      "rule": "reset(segment)",
+      "scope": "False at segment start from snapshot; True once the suspended node re-executed (or timeout-routed) — the one-shot latch for resume_event delivery",
+      "write_sites": ["executor.py (resume restore)", "nodes/human.py (timeout route)", "node_replay.py"],
+      "snapshot_persisted": false,
+      "boundaries": ["segment"]
+    },
+    "pending_retrace_provenance": {
+      "rule": "reset(consumption)",
+      "scope": "set by the evaluate retrace route; consumed exactly once when the target node re-runs (cleared on every return path); segment-local BY DESIGN — consumption happens at the retraced invocation before any suspension, so it is deliberately not snapshot-persisted (B0 regression asserts visit 4 sees None)",
+      "write_sites": ["nodes/evaluate.py (set)", "node_replay.py (clear)"],
+      "snapshot_persisted": false,
+      "boundaries": ["retrace"]
+    }
+  },
+  "projections": {
+    "MachineSnapshot": {
+      "rule": "derive",
+      "scope": "identity-sealed projection of the accumulate-class channels at suspension time; wire-validated on resume (decode boundary re-seals); segment-local reset-class channels deliberately excluded",
+      "owner": "suspension.py"
+    },
+    "WorkflowRunResult": {
+      "rule": "derive",
+      "scope": "terminal envelope projected from final state + session aggregates; never a second source of truth",
+      "owner": "result_assembly.py"
+    },
+    "observation_bundle": {
+      "rule": "derive(append-only persistence)",
+      "scope": "trace/usage/details/artifacts appended per segment under one logical run group; sealed by the bundle contract (meta v2)",
+      "owner": "observation_writer.py / observation_contract.py"
+    }
+  },
+  "run_session_aggregates": {
+    "trace": {
+      "rule": "accumulate(append)",
+      "scope": "per segment result envelope; grouped reader recomposes the full lifecycle; child runs slice via ancestor-chain scopes",
+      "owner": "run_session.py (trace sink), executor.py (child_trace_slice)"
+    },
+    "usage_events": {
+      "rule": "accumulate(append)",
+      "scope": "append per capability call; cumulative across segments through snapshot.usage restore",
+      "owner": "usage_events.py / run_session.py"
+    }
+  }
+}

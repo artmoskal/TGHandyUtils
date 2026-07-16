@@ -7,6 +7,7 @@ THIS file, never a silent drift.
 """
 
 import ast
+import re
 from pathlib import Path
 import tomllib
 from typing import get_args
@@ -331,6 +332,72 @@ def test_reserved_state_keys_match_the_workflow_state_schema():
     from ai_workflow_engine.executor import WorkflowState
 
     assert set(WorkflowState.__annotations__) == set(RESERVED_STATE_KEYS)
+
+
+def test_lifecycle_algebra_inventory_is_complete():
+    """B1: every engine state channel is classified in the lifecycle algebra inventory —
+    adding a state key without declaring its write rule fails BY NAME here (and the A5
+    schema guard above keeps the key set itself honest). Rules are a closed vocabulary so
+    an ambiguous classification cannot hide as free text."""
+
+    import json
+
+    from ai_workflow_engine._runtime_state import RESERVED_STATE_KEYS
+
+    inventory = json.loads(
+        (Path(__file__).parent / "fixtures" / "lifecycle_state_algebra.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    channels = inventory["channels"]
+
+    unclassified = set(RESERVED_STATE_KEYS) - set(channels)
+    assert not unclassified, (
+        f"state channels without a declared write rule (add them to "
+        f"lifecycle_state_algebra.json): {sorted(unclassified)}"
+    )
+    phantom = set(channels) - set(RESERVED_STATE_KEYS)
+    assert not phantom, f"inventory rows for non-existent state channels: {sorted(phantom)}"
+
+    allowed_rules = re.compile(
+        r"^(accumulate\((append|counter|key=node_id)\)"
+        r"|replace(\(object\) with internal merge contract)?"
+        r"|reset\((segment|consumption)\)"
+        r"|derive)"
+    )
+    for name, row in channels.items():
+        assert allowed_rules.match(row["rule"]), (
+            f"channel {name!r} has a rule outside the closed vocabulary: {row['rule']!r}"
+        )
+        assert row.get("scope", "").strip(), f"channel {name!r} must declare its scope"
+        assert row.get("write_sites"), f"channel {name!r} must name at least one write site"
+        assert isinstance(row.get("snapshot_persisted"), bool), (
+            f"channel {name!r} must state snapshot persistence explicitly"
+        )
+        for site in row["write_sites"]:
+            source = site.split("::", 1)[0].split(" ", 1)[0]
+            assert (ENGINE_ROOT / source).exists() or (
+                ENGINE_ROOT.parent / source
+            ).exists(), f"channel {name!r} names a write site that does not exist: {site!r}"
+
+    # Snapshot persistence must agree with the REAL MachineSnapshot schema: an accumulate-
+    # class channel claimed as persisted must be a snapshot field, and vice versa.
+    from ai_workflow_engine.snapshot import MachineSnapshot
+
+    snapshot_fields = set(MachineSnapshot.model_fields)
+    alias = {"payload": "payload", "usage_summary": "usage"}
+    for name, row in channels.items():
+        field = alias.get(name, name)
+        if row["snapshot_persisted"]:
+            assert field in snapshot_fields, (
+                f"channel {name!r} claims snapshot persistence but MachineSnapshot has no "
+                f"field {field!r}"
+            )
+        else:
+            assert field not in snapshot_fields or name == "status", (
+                f"channel {name!r} claims NO snapshot persistence but MachineSnapshot "
+                f"carries {field!r}"
+            )
 
 
 def test_node_handlers_write_only_reserved_state_keys():

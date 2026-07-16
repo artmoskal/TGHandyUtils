@@ -462,6 +462,263 @@ async def test_decorated_human_timeout_route_never_invokes_the_capability():
 
 
 # ======================================================================================
+# B2 — lifecycle state-algebra fences (per-rule, distinct sentinels, 4 segments)
+# ======================================================================================
+
+
+async def test_state_algebra_rules_hold_across_retrace_and_three_suspensions():
+    """One lifecycle-rich run proves each declared write rule (lifecycle_state_algebra.json)
+    with DISTINCT sentinels — 4 segments (3 local waits), one retrace round:
+
+    - accumulate(key=node_id): a retraced node's key is replaced; SIBLING keys survive
+    - accumulate(append): node_results keeps one entry PER VISIT; artifacts from BOTH
+      rounds survive the retrace (the GAP-1 loss class, fenced at the state level)
+    - replace: the running payload is the LATEST completed output
+    - reset(segment) one-shot latch: a resume event reaches ONLY the suspension it answers —
+      never the retraced re-ask, never a later wait in the same run
+    """
+
+    from ai_workflow_engine import WorkflowArtifact
+
+    review_events: list[Any] = []
+    signoff_events: list[Any] = []
+    collect_rounds = {"n": 0}
+
+    def collect(_context, _payload):
+        collect_rounds["n"] += 1
+        n = collect_rounds["n"]
+        return CapabilityResult(
+            status="accepted",
+            output={"round": n},
+            artifacts=[
+                WorkflowArtifact(path=f"/evidence/round-{n}.txt", kind="reference", owner_node="collect")
+            ],
+        )
+
+    def review(context, _payload):
+        review_events.append(context.metadata.get("resume_event"))
+        return _answer_or_pend(context)
+
+    def signoff(context, _payload):
+        signoff_events.append(context.metadata.get("resume_event"))
+        return _answer_or_pend(context)
+
+    gate_calls = {"n": 0}
+
+    def gate(_context, _payload):
+        gate_calls["n"] += 1
+        return CapabilityResult(
+            status="accepted" if gate_calls["n"] > 1 else "rejected",
+            error="deepen the evidence",
+        )
+
+    def fin(_context, payload):
+        # input_key="collect": reads the ACTUAL node_outputs channel — the only public
+        # observer of the accumulate(key=node_id) rule. If a wrong-rule write clobbers
+        # sibling keys, this read returns None, not round-2 evidence.
+        return {"shipped": True, "evidence": payload}
+
+    def audit(_context, payload):
+        # input_key="__input__": the pinned original input must survive every merge.
+        return {"original": payload, "audited": True}
+
+    engine = (
+        WorkflowEngineBuilder()
+        .register_capability("collect", collect, kind="deterministic")
+        .register_capability("review", review, kind="deterministic")
+        .register_capability("signoff", signoff, kind="deterministic")
+        .register_capability("gate", gate, kind="llm")
+        .register_capability("fin", fin, kind="deterministic")
+        .register_capability("audit", audit, kind="deterministic")
+        .register_workflow(
+            WorkflowBuilder("algebra_flow")
+            .step("collect")
+            .human("review", wait_policy=LocalWaitPolicy())
+            .evaluate("qa", target="collect", evaluator="gate", on_reject=Retrace("collect"))
+            .human("signoff", wait_policy=LocalWaitPolicy())
+            .step("fin", input_key="collect")
+            .step("audit", input_key="__input__")
+            .build()
+        )
+        .build()
+    )
+
+    seg1 = await engine.run("algebra_flow", {"goal": "ship it"})
+    assert seg1.status == "requires_user_input"
+    seg2 = await engine.resume(seg1.snapshot, "review-round-1")
+    assert seg2.status == "requires_user_input", "retrace must re-suspend at the review gate"
+    seg3 = await engine.resume(seg2.snapshot, "review-round-2")
+    assert seg3.status == "requires_user_input", "the accepted round must reach the signoff gate"
+    final = await engine.resume(seg3.snapshot, "signoff-final")
+    assert final.status == "completed"
+
+    # reset(segment) one-shot latch — each event reaches exactly its own suspension
+    assert review_events == [None, "review-round-1", None, "review-round-2"], (
+        "review must see its ask/answer pairs only: no event on the initial ask, no LEAKED "
+        "event on the retraced re-ask"
+    )
+    assert signoff_events == [None, "signoff-final"], (
+        "a later wait must never see an earlier wait's resume event"
+    )
+
+    # accumulate(append): one node_results entry per VISIT, in causal order
+    visits = [(r.node_id, r.status) for r in final.node_results]
+    per_node = {}
+    for node_id, status in visits:
+        per_node.setdefault(node_id, []).append(status)
+    assert per_node["collect"] == ["accepted", "accepted"], "one entry per collect round"
+    assert per_node["review"] == [
+        "requires_user_input",
+        "accepted",
+        "requires_user_input",
+        "accepted",
+    ], "review history keeps all four visits, not latest-per-node"
+    assert per_node["signoff"] == ["requires_user_input", "accepted"]
+    assert per_node["fin"] == ["accepted"]
+    assert per_node["audit"] == ["accepted"]
+    order = [node_id for node_id, _ in visits]
+    collect_visits = [i for i, n in enumerate(order) if n == "collect"]
+    assert len(collect_visits) == 2, "exactly two collect rounds"
+    assert collect_visits[0] < order.index("review"), "history preserves causal order"
+    assert collect_visits[1] < order.index("signoff"), (
+        "the retraced second collect round happens before signoff ever runs"
+    )
+
+    # accumulate(append): artifacts from BOTH rounds survive the retrace
+    artifact_paths = sorted(a.path for a in final.artifacts)
+    assert artifact_paths == ["/evidence/round-1.txt", "/evidence/round-2.txt"], (
+        "evidence must accumulate across retrace rounds — losing round-1 artifacts is the "
+        "GAP-1 loss class at the artifact channel"
+    )
+
+    # replace: the terminal payload is the LATEST completed output; its 'original' field
+    # proves the pinned '__input__' key survived every merge, and fin's 'evidence' field
+    # proves cross-node input_key reads see the retraced node's ROUND-2 value while the
+    # sibling keys stayed alive (accumulate(key=node_id) through the public door)
+    assert final.output == {
+        "original": {"goal": "ship it"},
+        "audited": True,
+    }
+    fin_output = [r.output for r in final.node_results if r.node_id == "fin"][-1]
+    assert fin_output == {"shipped": True, "evidence": {"round": 2}}, (
+        "input_key readers must see the retraced node's latest value — a wrong-rule write "
+        "that clobbers sibling node_outputs keys breaks exactly this"
+    )
+
+    # accumulate(key=node_id) with sibling survival, proven through the node results the
+    # engine exposes: the retraced collect key was REPLACED (its terminal record is round 2)
+    # while the untouched sibling outputs survived alongside it.
+    collect_final = [r.output for r in final.node_results if r.node_id == "collect"][-1]
+    assert collect_final == {"round": 2}, "revisit replaces the retraced node's own value"
+    review_final = [r.output for r in final.node_results if r.node_id == "review"][-1]
+    review_value = (
+        review_final.get("value") if isinstance(review_final, dict)
+        else getattr(review_final, "value", None)
+    )  # pre-suspension records cross the snapshot as wire data (dicts), later ones stay typed
+    assert review_value == "review-round-2", (
+        "sibling channel values from other nodes survive the retrace"
+    )
+
+
+async def test_stale_retrace_provenance_never_redelivers_on_loop_revisit():
+    """reset(consumption) fence for pending_retrace_provenance: after the retraced
+    invocation consumed it, a LATER same-segment revisit of the same node (loop-back via a
+    branch, not a retrace) must see None — stale round-1 provenance re-delivered to an
+    unrelated visit would misinform the capability about WHY it is running. Found by a
+    surviving mutation (consumption-clear removal was unobservable in suspension flows)."""
+
+    provenance_per_visit: list[Any] = []
+
+    def draft(context, _payload):
+        prov = getattr(context, "retrace_provenance", None)
+        provenance_per_visit.append(None if prov is None else prov.round)
+        return {"draft": len(provenance_per_visit)}
+
+    gate_calls = {"n": 0}
+
+    def gate(_context, _payload):
+        gate_calls["n"] += 1
+        return CapabilityResult(
+            status="accepted" if gate_calls["n"] > 1 else "rejected",
+            error="one more retrace round",
+        )
+
+    script = ["again", "done"]
+
+    engine_builder = WorkflowEngineBuilder()
+    engine_builder.register_capability("draft", draft, kind="deterministic")
+    engine_builder.register_capability("gate", gate, kind="llm")
+    engine_builder.register_capability("fin", lambda _c, _p: "fin", kind="deterministic")
+    engine_builder.register_guard("loop", lambda _p: script.pop(0) if script else "done")
+    engine_builder.register_workflow(
+        WorkflowBuilder("loop_after_retrace")
+        .step("draft")
+        .evaluate("qa", target="draft", evaluator="gate", on_reject=Retrace("draft"))
+        .branch("loop", {"again": "draft", "done": "fin"}, bounds={"again": 1})
+        .step("fin")
+        .build()
+    )
+    engine = engine_builder.build()
+
+    result = await engine.run("loop_after_retrace", {"seed": 1})
+    assert result.status == "completed"
+    assert provenance_per_visit == [None, 1, None], (
+        "provenance is consumed by the retraced visit ONLY — the loop-back third visit must "
+        "not receive the stale round-1 provenance"
+    )
+
+
+async def test_retrace_rounds_accumulate_until_the_cap_trips_on_a_later_rejection():
+    """accumulate(counter) fence for eval_counters, owner nodes/evaluate.py: with
+    max_retrace=1 and an ALWAYS-rejecting gate, round 1 must retrace and the SECOND
+    rejection must exhaust (counter 1+1 > 1) — terminating with the eval-exhaustion error
+    after exactly two target executions. If rounds never persist, the machine keeps
+    retracing until the recursion policy stops it: more executions, different error. Found
+    by a surviving mutation — existing exhaustion tests all used caps of 0, which trip on
+    the FIRST rejection and never need the persisted counter."""
+
+    draft_runs = {"n": 0}
+
+    def draft(_context, _payload):
+        draft_runs["n"] += 1
+        return {"attempt": draft_runs["n"]}
+
+    def gate(_context, _payload):
+        return CapabilityResult(status="rejected", error="never good enough")
+
+    engine = (
+        WorkflowEngineBuilder()
+        .register_capability("draft", draft, kind="deterministic")
+        .register_capability("gate", gate, kind="llm")
+        .register_capability("fin", lambda _c, _p: "fin", kind="deterministic")
+        .register_workflow(
+            WorkflowBuilder("bounded_retrace")
+            .step("draft")
+            .evaluate(
+                "qa",
+                target="draft",
+                evaluator="gate",
+                on_reject=Retrace("draft", max_retrace=1),
+            )
+            .step("fin")
+            .build()
+        )
+        .build()
+    )
+
+    result = await engine.run("bounded_retrace", {"seed": 1})
+    assert result.status == "failed"
+    assert "evaluation policy exhausted" in (result.error or ""), (
+        "the SECOND rejection must exhaust the persisted retrace counter — not loop into "
+        "the recursion backstop"
+    )
+    assert draft_runs["n"] == 2, (
+        "exactly one original + one retraced execution: a non-persisting round counter "
+        "would keep re-executing the target"
+    )
+
+
+# ======================================================================================
 # FENCE-3 (settled): fallback stays on base run context — documented + source-locked
 # ======================================================================================
 
