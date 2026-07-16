@@ -1,0 +1,198 @@
+{
+  "comment": "Iteration B / B3: normative adopter-contract promises mapped to behavioral evidence. GAP-1's root cause was a documented AC (mageqa AC-7) with NO observing test. Every numbered AC in every consumer handoff is classified here: engine-enforceable rows name the algebra rows, VERIFIED engine tests, sealed oracle rows, and mutation evidence that observe the promise; consumer-repo-obligation rows carry an explicit waiver naming who proves them and what engine mechanics support them. The guard (test_contract_guards.py::test_adopter_promises_map_to_evidence) parses the real docs: a NEW AC without a registry row fails by doc+number, a reworded anchor fails by doc+anchor, and dangling test/oracle/algebra references fail by name. The guard checks EXISTENCE of the referenced evidence, not its semantics — the semantic proof lives in the named tests and mutation kills themselves.",
+  "version": "B3-2026-07-16",
+  "sources": {
+    "mageqa-handoff.md": {
+      "1": {"anchor": "Pin integrity", "class": "consumer-repo-obligation", "waiver": "MageQA proves pins in its repo; engine supplies immutable tags + wheel hashes at release gates."},
+      "2": {"anchor": "One provider door", "class": "consumer-repo-obligation", "waiver": "Product-module discipline proven in MageQA; the engine's own one-door rule is AST-locked by test_one_door.py."},
+      "3": {"anchor": "No product orchestration loop", "class": "consumer-repo-obligation", "waiver": "Consumer proves no wrapper loop; engine-side fan-out/retry/wait mechanics are engine-suite fenced."},
+      "4": {"anchor": "Scenario planning", "class": "consumer-repo-obligation", "waiver": "Bounded structured strategies are MageQA fixtures over its own planners."},
+      "5": {"anchor": "Grounding", "class": "consumer-repo-obligation", "waiver": "Image-evidence grounding is a MageQA workflow property; engine supplies EvidenceRef mechanics."},
+      "6": {"anchor": "Fact ledger", "class": "consumer-repo-obligation", "waiver": "Refuted/inconclusive claim handling is MageQA domain logic."},
+      "7": {
+        "anchor": "without erasing successful evidence",
+        "class": "engine-enforceable",
+        "algebra_rows": ["plan_artifact", "artifacts", "node_results", "node_outputs"],
+        "tests": [
+          "test_planner_retrace_preserves_prior_and_follow_up_task_outputs",
+          "test_state_algebra_rules_hold_across_retrace_and_three_suspensions"
+        ],
+        "oracle_rows": ["human_bound_context"],
+        "mutation": "GAP-1 clobber revert (RED pre-f54b604) + M5/M6/M7 wrong-rule kills"
+      },
+      "8": {
+        "anchor": "Cost honesty",
+        "class": "engine-enforceable",
+        "algebra_rows": ["usage_summary"],
+        "tests": ["test_subscription_notional_is_never_priced_as_metered"],
+        "oracle_rows": ["usage_event_semantics", "worker_call_accounting"],
+        "mutation": "sealed oracle rows: any cost-class drift is an unledgered corpus delta"
+      },
+      "9": {
+        "anchor": "denied before handler spawn",
+        "class": "engine-enforceable",
+        "algebra_rows": ["status"],
+        "tests": [
+          "test_capability_runtime_denies_disallowed_side_effect_before_handler_call",
+          "test_forbidden_side_effect_denied_before_handler_runs"
+        ],
+        "oracle_rows": ["side_effect_denied"],
+        "mutation": "sealed oracle row: admission drift is an unledgered corpus delta"
+      },
+      "10": {"anchor": "Observation/dashboard", "class": "consumer-repo-obligation", "waiver": "The real-audit dashboard is MageQA's; engine bundle/read mechanics are fenced by the observation suites and sealed rows capture_off/capture_full."},
+      "11": {"anchor": "Report order", "class": "consumer-repo-obligation", "waiver": "Pitch/media derivation order is MageQA report logic."},
+      "12": {"anchor": "Replay", "class": "consumer-repo-obligation", "waiver": "Known-flow no-LLM replay fixtures are MageQA-side."},
+      "13": {
+        "anchor": "stopped and reaped inside the engine window",
+        "class": "engine-enforceable",
+        "algebra_rows": ["status", "node_results"],
+        "tests": [
+          "test_run_timeout_actually_bounds_slow_async_work",
+          "test_inline_capability_with_declared_window_is_rejected_before_running",
+          "test_external_process_capability_salvages_timeout_output"
+        ],
+        "oracle_rows": ["process_timeout", "cooperative_deadline", "handler_owned_timeout"],
+        "mutation": "sealed oracle rows: window/settlement drift is an unledgered corpus delta"
+      }
+    },
+    "gopro-handoff.md": {
+      "1": {"anchor": "Pin integrity", "class": "consumer-repo-obligation", "waiver": "GoPro proves pins in its repo."},
+      "2": {"anchor": "One provider door", "class": "consumer-repo-obligation", "waiver": "Product discipline; engine one-door AST-locked by test_one_door.py."},
+      "3": {"anchor": "No product orchestration loop", "class": "consumer-repo-obligation", "waiver": "Consumer proves; engine machine mechanics engine-fenced."},
+      "4": {
+        "anchor": "Byte safety",
+        "class": "engine-enforceable",
+        "algebra_rows": ["node_outputs", "node_results"],
+        "tests": [
+          "test_byte_safety_rejects_raw_transport_payloads_in_prompt_and_persist_modes",
+          "test_byte_safety_validates_mapping_keys_values_and_subclass_attributes",
+          "test_byte_safety_rejects_non_replayable_and_array_like_state"
+        ],
+        "oracle_rows": [],
+        "mutation": "byte_safety guard tests are the named killers for admission-drop edits"
+      },
+      "5": {"anchor": "Evidence grounding", "class": "consumer-repo-obligation", "waiver": "Resolvable-reference retention proven in GoPro; engine supplies EvidenceRef."},
+      "6": {"anchor": "Memory behavior", "class": "consumer-repo-obligation", "waiver": "Weak-model regression is a GoPro product experiment; engine agent-memory mechanics fenced by test_memory.py and the human bound-context delivery fences."},
+      "7": {
+        "anchor": "Budget/concurrency",
+        "class": "engine-enforceable",
+        "algebra_rows": ["usage_summary", "status"],
+        "tests": [
+          "test_budget_exhaustion_denies_metered_capability",
+          "test_fanout_gather_isolates_partial_failure",
+          "test_inline_capability_with_declared_window_is_rejected_before_running"
+        ],
+        "oracle_rows": ["budget_denied", "concurrent_invocations"],
+        "mutation": "sealed oracle rows: cap/isolation drift is an unledgered corpus delta"
+      },
+      "8": {"anchor": "Observation", "class": "consumer-repo-obligation", "waiver": "The real-frame run is GoPro's canary; engine bundle write/read fenced by observation suites + sealed capture rows."},
+      "9": {"anchor": "Failure honesty", "class": "consumer-repo-obligation", "waiver": "Blocked/inconclusive vs accepted inventory is GoPro domain policy."},
+      "10": {"anchor": "Deployment", "class": "consumer-repo-obligation", "waiver": "Mac Mini/sidecar canary is GoPro operations."}
+    },
+    "voice-brain-handoff.md": {
+      "1": {"anchor": "Pinned engine wheel", "class": "consumer-repo-obligation", "waiver": "Voice product proves pins."},
+      "2": {"anchor": "correct session sinks", "class": "consumer-repo-obligation", "waiver": "Session sink routing is product streaming code."},
+      "3": {"anchor": "no spoken content", "class": "consumer-repo-obligation", "waiver": "Tool-turn TTS suppression is product logic."},
+      "4": {"anchor": "same provider response", "class": "consumer-repo-obligation", "waiver": "Cross-artifact correspondence proven product-side."},
+      "5": {"anchor": "Barge-in", "class": "consumer-repo-obligation", "waiver": "Provider stream cancellation is product transport."},
+      "6": {"anchor": "idempotency", "class": "consumer-repo-obligation", "waiver": "Tool cancellation semantics proven product-side over engine cancellation mechanics (sealed cancellation rows)."},
+      "7": {"anchor": "Session history", "class": "consumer-repo-obligation", "waiver": "History bounds are product-owned by design."},
+      "8": {"anchor": "audio bytes stay outside state", "class": "consumer-repo-obligation", "waiver": "Product retention policy; engine side is byte-safety-fenced (see gopro-handoff AC-4 tests)."},
+      "9": {"anchor": "latency canary", "class": "consumer-repo-obligation", "waiver": "Latency budgets are product SLOs."}
+    },
+    "slackazz-handoff.md": {
+      "1": {"anchor": "Pin integrity", "class": "consumer-repo-obligation", "waiver": "SlackAzz proves pins."},
+      "2": {"anchor": "One provider door", "class": "consumer-repo-obligation", "waiver": "Product discipline; engine door AST-locked."},
+      "3": {"anchor": "never chooses nodes", "class": "consumer-repo-obligation", "waiver": "Celery delivery-only is consumer architecture."},
+      "4": {
+        "anchor": "Coordinator conformance",
+        "class": "engine-enforceable",
+        "algebra_rows": ["status"],
+        "tests": ["test_builder_rejects_sync_impostor_coordinators", "test_reference_adapter_is_async_and_alias_free"],
+        "oracle_rows": [],
+        "mutation": "conformance kit (ai_workflow_engine.testing.run_wait_registration_conformance) is the reusable killer; the real-Redis half is the consumer's obligation"
+      },
+      "5": {
+        "anchor": "Fresh suspension",
+        "class": "engine-enforceable",
+        "algebra_rows": ["node_outputs", "node_results", "transition_counts"],
+        "tests": ["test_snapshot_json_roundtrip_resumes_on_a_fresh_engine"],
+        "oracle_rows": ["durable_suspend_resume"],
+        "mutation": "sealed row + snapshot identity suite: restore drift is an unledgered delta"
+      },
+      "6": {
+        "anchor": "declared transition once per accepted event",
+        "class": "engine-enforceable",
+        "algebra_rows": ["routes", "machine_replay_done"],
+        "tests": [
+          "test_timeout_delivery_takes_the_declared_transition_without_reentering_the_gate",
+          "test_decorated_human_timeout_route_never_invokes_the_capability"
+        ],
+        "oracle_rows": [],
+        "mutation": "B0 timeout zero-call fence + M8 latch-removal kill"
+      },
+      "7": {
+        "anchor": "Crash recovery",
+        "class": "engine-enforceable",
+        "algebra_rows": ["status"],
+        "tests": [
+          "test_lease_expiry_allows_reclaim_and_attempts_are_bounded",
+          "test_external_write_is_idempotent_across_crash_and_reclaim"
+        ],
+        "oracle_rows": [],
+        "mutation": "W3-series conformance negatives (stale-claimant CAS) are the named killers"
+      },
+      "8": {"anchor": "Outbox idempotency", "class": "consumer-repo-obligation", "waiver": "The outbox is consumer persistence; the engine's wait_id:event_id idempotency context it keys on is sealed in the durable_suspend_resume row."},
+      "9": {
+        "anchor": "Cancellation",
+        "class": "engine-enforceable",
+        "algebra_rows": ["status"],
+        "tests": [
+          "test_duplicate_and_late_events_are_idempotent_reports_not_reexecution",
+          "test_stale_claimant_cannot_terminalize_after_reclaim"
+        ],
+        "oracle_rows": [],
+        "mutation": "duplicate/late-event negatives in the waits suite are the named killers"
+      },
+      "10": {"anchor": "Provider outage", "class": "consumer-repo-obligation", "waiver": "Cooldown/alert policy is SlackAzz product behavior."},
+      "11": {
+        "anchor": "Health",
+        "class": "engine-enforceable",
+        "algebra_rows": ["status"],
+        "tests": ["test_wait_failures_without_continuation_are_observable_and_prunable"],
+        "oracle_rows": [],
+        "mutation": "conformance kit health-honesty negative (R10.1 hidden-overdue impostor) is the named killer"
+      },
+      "12": {
+        "anchor": "denied before spawn",
+        "class": "engine-enforceable",
+        "algebra_rows": ["status"],
+        "tests": [
+          "test_capability_runtime_denies_disallowed_side_effect_before_handler_call",
+          "test_forbidden_side_effect_denied_before_handler_runs"
+        ],
+        "oracle_rows": ["side_effect_denied"],
+        "mutation": "sealed oracle row: admission drift is an unledgered corpus delta"
+      },
+      "13": {
+        "anchor": "one logical run",
+        "class": "engine-enforceable",
+        "algebra_rows": ["node_results", "usage_summary"],
+        "tests": ["test_chained_waits_survive_crash_reclaim_with_observation"],
+        "oracle_rows": ["durable_suspend_resume", "human_bound_context"],
+        "mutation": "sealed rows freeze grouped statuses/usage; drift is an unledgered delta"
+      },
+      "14": {
+        "anchor": "Execution window",
+        "class": "engine-enforceable",
+        "algebra_rows": ["status", "error"],
+        "tests": [
+          "test_resolved_window_enforcement_is_truthful_on_the_context",
+          "test_nested_capability_invocation_receives_a_parent_clamped_window"
+        ],
+        "oracle_rows": ["swallowed_cancellation", "unacknowledged_cancellation", "process_timeout"],
+        "mutation": "sealed cancellation/window rows: suppression-visibility drift is an unledgered delta"
+      }
+    }
+  }
+}

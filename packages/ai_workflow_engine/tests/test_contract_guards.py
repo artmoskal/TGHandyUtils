@@ -400,6 +400,82 @@ def test_lifecycle_algebra_inventory_is_complete():
             )
 
 
+def test_adopter_promises_map_to_evidence():
+    """B3 (GAP-1 root-cause class): every numbered promise in every consumer handoff's
+    'Adopter Contract AC' section is classified in promise_evidence_registry.json. A NEW
+    AC without a registry row fails by doc+number; a reworded promise fails by its anchor;
+    engine-enforceable rows must reference algebra rows, tests, and oracle rows that EXIST.
+    This guard proves the evidence LINKS resolve — the semantic proof itself lives in the
+    named tests and their mutation kills, never in name matching."""
+
+    import json
+
+    registry = json.loads(
+        (Path(__file__).parent / "fixtures" / "promise_evidence_registry.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    algebra = json.loads(
+        (Path(__file__).parent / "fixtures" / "lifecycle_state_algebra.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    algebra_rows = set(algebra["channels"])
+
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).parent))
+    try:
+        from invocation_oracle import BEHAVIOR_ROWS
+    finally:
+        sys.path.pop(0)
+
+    tests_text = "\n".join(
+        p.read_text(encoding="utf-8") for p in (Path(__file__).parent).glob("test_*.py")
+    )
+
+    for doc_name, promises in registry["sources"].items():
+        doc = (DOCS_ROOT / doc_name).read_text(encoding="utf-8")
+        section = doc.split("## Adopter Contract AC", 1)[1].split("\n## ", 1)[0]
+        documented = set(re.findall(r"^(\d+)\.\s", section, re.M))
+        registered = set(promises)
+        assert documented == registered, (
+            f"{doc_name}: adopter promises drifted from the evidence registry — "
+            f"unregistered ACs {sorted(documented - registered, key=int)}, "
+            f"stale registry rows {sorted(registered - documented, key=int)}"
+        )
+        for number, row in promises.items():
+            assert row["anchor"] in section, (
+                f"{doc_name} AC-{number}: anchor {row['anchor']!r} no longer appears — the "
+                f"promise wording changed; re-verify its evidence mapping"
+            )
+            if row["class"] == "consumer-repo-obligation":
+                assert row.get("waiver", "").strip(), (
+                    f"{doc_name} AC-{number}: consumer obligations need an explicit waiver"
+                )
+                continue
+            assert row["class"] == "engine-enforceable", (
+                f"{doc_name} AC-{number}: unknown class {row['class']!r}"
+            )
+            assert row.get("algebra_rows"), f"{doc_name} AC-{number}: name the algebra rows"
+            for algebra_row in row["algebra_rows"]:
+                assert algebra_row in algebra_rows, (
+                    f"{doc_name} AC-{number}: unknown algebra row {algebra_row!r}"
+                )
+            assert row.get("tests"), f"{doc_name} AC-{number}: name at least one test"
+            for test_name in row["tests"]:
+                assert f"def {test_name}(" in tests_text, (
+                    f"{doc_name} AC-{number}: referenced test does not exist: {test_name}"
+                )
+            for oracle_row in row.get("oracle_rows", []):
+                assert oracle_row in BEHAVIOR_ROWS, (
+                    f"{doc_name} AC-{number}: unknown sealed oracle row {oracle_row!r}"
+                )
+            assert row.get("mutation", "").strip(), (
+                f"{doc_name} AC-{number}: state the mutation evidence"
+            )
+
+
 def test_node_handlers_write_only_reserved_state_keys():
     """A5: a typo'd control key in a node's state update must fail the build, not no-op."""
 
