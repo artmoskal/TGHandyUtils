@@ -86,8 +86,16 @@ def build_planner_node(services, definition: WorkflowDefinition, node: WorkflowN
             state=state,
         )
         if task_outputs:
+            retained_outputs = _merge_task_outputs(
+                executed_plan.metadata.get("task_outputs"), task_outputs
+            )
             executed_plan = executed_plan.model_copy(
-                update={"metadata": {**executed_plan.metadata, "task_outputs": task_outputs}}
+                update={
+                    "metadata": {
+                        **executed_plan.metadata,
+                        "task_outputs": retained_outputs,
+                    }
+                }
             )
         partial_count = sum(1 for task in executed_plan.tasks if task.status == "partial")
         status = "partial" if (task_failures or partial_count) else "accepted"
@@ -187,9 +195,22 @@ def _merge_replanned_plan(prior: PlanArtifact, proposed: PlanArtifact) -> PlanAr
         merged.append(task.model_copy(update={"status": status, "error": None, "output_ref": None}))
         seen.add(task.task_id)
     metadata = {**proposed.metadata}
-    if "task_outputs" in prior.metadata and "task_outputs" not in metadata:
-        metadata["task_outputs"] = prior.metadata["task_outputs"]
+    if "task_outputs" in prior.metadata:
+        metadata["task_outputs"] = _merge_task_outputs(
+            prior.metadata.get("task_outputs"),
+            proposed.metadata.get("task_outputs"),
+        )
     return proposed.model_copy(update={"tasks": merged, "revision": prior.revision + 1, "metadata": metadata})
+
+
+def _merge_task_outputs(*sources: Any) -> Dict[str, Any]:
+    """Merge round output maps in order; later evidence replaces the same key once."""
+
+    merged: Dict[str, Any] = {}
+    for source in sources:
+        if isinstance(source, dict):
+            merged.update(source)
+    return merged
 
 def _validate_plan(
     services,
@@ -512,7 +533,7 @@ def _finish_plan_task(
         "result_metadata": metadata,
     }
     if result.status == "accepted":
-        output_key = f"{node.id}.{task.task_id}"
+        output_key = f"{node.id}.{task.task_id}" if result.output is not None else None
         return (
             task.model_copy(
                 update={"status": "done", "error": None, "output_ref": output_key, **evidence}

@@ -561,6 +561,211 @@ async def test_retrace_targeting_a_planner_node_delivers_provenance_generically(
     assert result.status == "completed"
 
 
+async def test_planner_retrace_preserves_prior_and_follow_up_task_outputs(tmp_path):
+    """GAP-1: a deepening round adds evidence; it must not erase the first round."""
+
+    import json
+    from pathlib import Path
+
+    from ai_workflow_engine import ObservationConfig, Retrace
+    from ai_workflow_engine.models import (
+        CriticismEnvelope,
+        EvaluationDecision,
+        WorkflowUsageEvent,
+    )
+    from ai_workflow_engine.usage_events import record_usage_event
+
+    def planner(context, _payload):
+        provenance = getattr(context, "retrace_provenance", None)
+        round_no = int(getattr(provenance, "round", 0) or 0)
+        task_id = "initial" if round_no == 0 else "follow_up"
+        return PlanArtifact(
+            goal="retain evidence across deepening",
+            tasks=[
+                PlanTask(
+                    task_id=task_id,
+                    description=task_id,
+                    capability="observe",
+                    payload={"value": task_id},
+                )
+            ],
+        )
+
+    def coverage(_context, plan):
+        if plan.revision == 0:
+            return EvaluationDecision(
+                action="retrace_to",
+                retrace_to="plan",
+                rationale="one gap remains",
+                criticism=CriticismEnvelope(
+                    observed="follow-up missing",
+                    expected="run one follow-up",
+                    target_capability="observe",
+                ),
+            )
+        return EvaluationDecision(action="accept", rationale="both rounds present")
+
+    def observe(_context, payload):
+        marker = payload["value"]
+        record_usage_event(
+            WorkflowUsageEvent(
+                provider="fixture",
+                operation="tool",
+                node="observe",
+                model=marker,
+                total_tokens=1,
+                estimated_usd=0.001,
+                metadata={"round_marker": marker},
+            )
+        )
+        return payload
+
+    engine = (
+        WorkflowEngineBuilder()
+        .with_observation(ObservationConfig(enabled=True, bundle_dir=str(tmp_path)))
+        .register_capability("planner", planner, kind="llm")
+        .register_capability("observe", observe, kind="deterministic")
+        .register_capability("coverage", coverage, kind="deterministic")
+        .register_workflow(
+            WorkflowBuilder("retrace_outputs")
+            .plan("plan", capability="planner", execution="fanout")
+            .evaluate(
+                "coverage",
+                target="plan",
+                evaluator="coverage",
+                on_reject=Retrace("plan", max_retrace=1),
+            )
+            .build()
+        )
+        .build()
+    )
+
+    result = await engine.run("retrace_outputs", {})
+
+    assert result.status == "completed"
+    plan = result.node("plan").output
+    assert [task.task_id for task in plan.tasks] == ["initial", "follow_up"]
+    assert plan.metadata["task_outputs"] == {
+        "plan.initial": {"value": "initial"},
+        "plan.follow_up": {"value": "follow_up"},
+    }
+    terminal_tasks = [
+        event.metadata["task_id"]
+        for event in result.trace
+        if event.decision == "plan:task_done"
+    ]
+    assert terminal_tasks == ["initial", "follow_up"]
+    assert [event.metadata["round_marker"] for event in result.usage.events] == [
+        "initial",
+        "follow_up",
+    ]
+
+    bundle = Path(result.observation_bundle_path)
+    trace_rows = [json.loads(line) for line in (bundle / "trace.jsonl").read_text().splitlines()]
+    usage_rows = [json.loads(line) for line in (bundle / "usage.jsonl").read_text().splitlines()]
+    assert [
+        row["metadata"]["task_id"]
+        for row in trace_rows
+        if row.get("decision") == "plan:task_done"
+    ] == ["initial", "follow_up"]
+    assert [row["metadata"]["round_marker"] for row in usage_rows] == [
+        "initial",
+        "follow_up",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("follow_up_status", "follow_up_output", "expected_status", "has_follow_up_output"),
+    [
+        ("accepted", None, "done", False),
+        ("failed", None, "failed", False),
+        ("partial", {"value": "partial"}, "partial", True),
+    ],
+)
+async def test_planner_retrace_retains_outputs_across_non_successful_follow_up_edges(
+    follow_up_status,
+    follow_up_output,
+    expected_status,
+    has_follow_up_output,
+):
+    """GAP-1 edges: no-output/failure/partial rounds retain prior evidence."""
+
+    from ai_workflow_engine import Retrace
+    from ai_workflow_engine.models import EvaluationDecision
+
+    def planner(context, _payload):
+        provenance = getattr(context, "retrace_provenance", None)
+        is_follow_up = int(getattr(provenance, "round", 0) or 0) > 0
+        task_id = "follow_up" if is_follow_up else "initial"
+        return PlanArtifact(
+            goal="retain edge evidence",
+            tasks=[
+                PlanTask(
+                    task_id=task_id,
+                    description=task_id,
+                    capability="observe",
+                    payload={"round": task_id},
+                )
+            ],
+            metadata={"task_outputs": {"shared": task_id}},
+        )
+
+    def observe(_context, payload):
+        if payload["round"] == "initial":
+            return {"value": "initial"}
+        return CapabilityResult(
+            status=follow_up_status,
+            output=follow_up_output,
+            error="follow-up did not complete" if follow_up_status != "accepted" else None,
+        )
+
+    gate_calls = {"count": 0}
+
+    def coverage(_context, _plan):
+        gate_calls["count"] += 1
+        if gate_calls["count"] == 1:
+            return EvaluationDecision(
+                action="retrace_to",
+                retrace_to="plan",
+                rationale="deepen once",
+            )
+        return EvaluationDecision(action="accept", rationale="done")
+
+    engine = (
+        WorkflowEngineBuilder()
+        .register_capability("planner", planner, kind="llm")
+        .register_capability("observe", observe, kind="deterministic")
+        .register_capability("coverage", coverage, kind="deterministic")
+        .register_workflow(
+            WorkflowBuilder("retrace_output_edges")
+            .plan("plan", capability="planner")
+            .evaluate(
+                "coverage",
+                target="plan",
+                evaluator="coverage",
+                on_reject=Retrace("plan", max_retrace=1),
+            )
+            .build()
+        )
+        .build()
+    )
+
+    result = await engine.run("retrace_output_edges", {})
+    plan = result.node("plan").output
+    tasks = {task.task_id: task for task in plan.tasks}
+
+    assert tasks["initial"].status == "done"
+    assert tasks["follow_up"].status == expected_status
+    assert plan.metadata["task_outputs"]["plan.initial"] == {"value": "initial"}
+    assert plan.metadata["task_outputs"]["shared"] == "follow_up"
+    assert ("plan.follow_up" in plan.metadata["task_outputs"]) is has_follow_up_output
+    if has_follow_up_output:
+        assert plan.metadata["task_outputs"]["plan.follow_up"] == follow_up_output
+        assert tasks["follow_up"].output_ref == "plan.follow_up"
+    else:
+        assert tasks["follow_up"].output_ref is None
+
+
 async def test_retrace_provenance_never_leaks_across_barrier_interleaved_runs():
     """F2 (codex): TRUE concurrency isolation — two runs interleave at an asyncio barrier
     while one is mid-retrace; every provenance observation is associated with ITS run's
