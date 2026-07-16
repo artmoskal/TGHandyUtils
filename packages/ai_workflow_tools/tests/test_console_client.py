@@ -498,6 +498,39 @@ async def test_console_stages_images_and_allows_read_tool(fake_cli_path, monkeyp
     assert "--tools" not in record["argv"]
 
 
+async def test_console_codex_attaches_staged_images_after_prompt(
+    fake_cli_path, monkeypatch, tmp_path
+):
+    record_path = _configure_fake_cli(monkeypatch, tmp_path, mode="result_file")
+    client = ConsoleLLMClient(_fake_flavor(codex_exec, fake_cli_path))
+
+    await client(
+        LLMRequest(
+            user="Inspect both images.",
+            images=[
+                ImageInput(source="base64", data="aGVsbG8=", media_type="image/png"),
+                ImageInput(source="base64", data="d29ybGQ=", media_type="image/jpeg"),
+            ],
+        )
+    )
+
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert "inputs/img-1.png" in record["cwd_files"]
+    assert "inputs/img-2.jpg" in record["cwd_files"]
+    prompt_index = next(
+        index
+        for index, value in enumerate(record["argv"])
+        if value.startswith("First read and inspect these image file(s)")
+    )
+    assert record["argv"][prompt_index + 1 :] == [
+        "--image",
+        "inputs/img-1.png",
+        "inputs/img-2.jpg",
+    ]
+    assert record["argv"].count("--image") == 1
+    assert record["stdin"] == ""
+
+
 async def test_console_stages_path_source_images_by_copy(fake_cli_path, monkeypatch, tmp_path):
     record_path = _configure_fake_cli(monkeypatch, tmp_path, mode="envelope")
     source_image = tmp_path / "card.png"

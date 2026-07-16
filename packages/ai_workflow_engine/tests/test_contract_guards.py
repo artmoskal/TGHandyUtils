@@ -23,6 +23,7 @@ pytestmark = pytest.mark.unit
 ENGINE_ROOT = Path(__file__).resolve().parents[1] / "ai_workflow_engine"
 DOCS_ROOT = Path(__file__).resolve().parents[1] / "docs"
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 # G-int1: the engine is product-neutral — importing any of these repo-level product
 # packages from engine code breaks the boundary.
@@ -48,6 +49,7 @@ ALLOWED_NODE_SERVICE_ATTRS = {
     "node_input",
     "record",
     "invoke_bound",
+    "gather_bound",
     "context_for_node",
     "sequential_predecessor",
     "child_context",
@@ -84,7 +86,7 @@ def test_engine_imports_no_product_code():
 def test_release_version_matches_current_pin():
     """Release guard: a pinned tag must not build a wheel that reports the previous version."""
 
-    expected = "0.11.2"
+    expected = "0.11.3"
     pyproject = tomllib.loads((PACKAGE_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert pyproject["project"]["version"] == expected
     assert ai_workflow_engine.__version__ == expected
@@ -375,10 +377,19 @@ def test_lifecycle_algebra_inventory_is_complete():
             f"channel {name!r} must state snapshot persistence explicitly"
         )
         for site in row["write_sites"]:
-            source = site.split("::", 1)[0].split(" ", 1)[0]
-            assert (ENGINE_ROOT / source).exists() or (
-                ENGINE_ROOT.parent / source
-            ).exists(), f"channel {name!r} names a write site that does not exist: {site!r}"
+            source, separator, owner_text = site.partition("::")
+            source = source.split(" ", 1)[0]
+            path = ENGINE_ROOT / source
+            if not path.exists():
+                path = ENGINE_ROOT.parent / source
+            assert path.exists(), (
+                f"channel {name!r} names a write-site file that does not exist: {site!r}"
+            )
+            if separator:
+                owner = owner_text.split(" ", 1)[0]
+                assert _python_owner_exists(path, owner), (
+                    f"channel {name!r} names a Python owner that does not exist: {site!r}"
+                )
 
     # Snapshot persistence must agree with the REAL MachineSnapshot schema: an accumulate-
     # class channel claimed as persisted must be a snapshot field, and vice versa.
@@ -398,6 +409,40 @@ def test_lifecycle_algebra_inventory_is_complete():
                 f"channel {name!r} claims NO snapshot persistence but MachineSnapshot "
                 f"carries {field!r}"
             )
+
+
+def _python_owner_exists(path: Path, owner: str) -> bool:
+    """Resolve ``function`` or ``Class.method`` against one module's real AST."""
+
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    parts = owner.split(".")
+    if len(parts) == 1:
+        return any(
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == parts[0]
+            for node in tree.body
+        )
+    if len(parts) != 2:
+        return False
+    class_name, method_name = parts
+    return any(
+        isinstance(node, ast.ClassDef)
+        and node.name == class_name
+        and any(
+            isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and child.name == method_name
+            for child in node.body
+        )
+        for node in tree.body
+    )
+
+
+def test_lifecycle_owner_guard_rejects_invented_symbols(tmp_path):
+    module = tmp_path / "owner.py"
+    module.write_text("class RealOwner:\n    def commit(self):\n        return None\n")
+
+    assert _python_owner_exists(module, "RealOwner.commit")
+    assert not _python_owner_exists(module, "RealOwner.invented")
+    assert not _python_owner_exists(module, "Invented.commit")
 
 
 def test_adopter_promises_map_to_evidence():
@@ -430,13 +475,35 @@ def test_adopter_promises_map_to_evidence():
     finally:
         sys.path.pop(0)
 
+    test_roots = [
+        Path(__file__).parent,
+        REPO_ROOT / "packages" / "ai_workflow_tools" / "tests",
+        REPO_ROOT / "packages" / "ai_workflow_viewer" / "tests",
+    ]
     tests_text = "\n".join(
-        p.read_text(encoding="utf-8") for p in (Path(__file__).parent).glob("test_*.py")
+        path.read_text(encoding="utf-8")
+        for root in test_roots
+        for path in root.glob("test_*.py")
     )
 
-    for doc_name, promises in registry["sources"].items():
-        doc = (DOCS_ROOT / doc_name).read_text(encoding="utf-8")
-        section = doc.split("## Adopter Contract AC", 1)[1].split("\n## ", 1)[0]
+    sources = [
+        (doc_name, DOCS_ROOT / doc_name, "## Adopter Contract AC", promises)
+        for doc_name, promises in registry["sources"].items()
+    ]
+    sources.extend(
+        (
+            source_name,
+            REPO_ROOT / spec["path"],
+            spec["section"],
+            spec["promises"],
+        )
+        for source_name, spec in registry.get("normative_sources", {}).items()
+    )
+
+    for doc_name, path, section_heading, promises in sources:
+        doc = path.read_text(encoding="utf-8")
+        assert section_heading in doc, f"{doc_name}: missing contract section {section_heading!r}"
+        section = doc.split(section_heading, 1)[1].split("\n## ", 1)[0]
         documented = set(re.findall(r"^(\d+)\.\s", section, re.M))
         registered = set(promises)
         assert documented == registered, (
@@ -457,8 +524,7 @@ def test_adopter_promises_map_to_evidence():
             assert row["class"] == "engine-enforceable", (
                 f"{doc_name} AC-{number}: unknown class {row['class']!r}"
             )
-            assert row.get("algebra_rows"), f"{doc_name} AC-{number}: name the algebra rows"
-            for algebra_row in row["algebra_rows"]:
+            for algebra_row in row.get("algebra_rows", []):
                 assert algebra_row in algebra_rows, (
                     f"{doc_name} AC-{number}: unknown algebra row {algebra_row!r}"
                 )

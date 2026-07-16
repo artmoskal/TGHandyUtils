@@ -184,6 +184,27 @@ consent around the engine:
 
 Never silently re-cut a tag already consumed by another repository.
 
+## Normative Contract AC
+
+These are the operational promises covered by the engine evidence registry. Product scheduling,
+databases, outboxes, provider credentials, and deployment remain consumer-owned obligations.
+
+1. **Execution-window truth.** A finite run/task/capability/parent window is intersected once,
+   recorded, and enforced according to declared interruptibility; timeout and cancellation
+   containment cannot be reported as successful completion.
+2. **Process settlement.** Process-backed work is stopped and reaped inside its represented hard
+   boundary; stream/result settlement is bounded, unsafe result paths fail loudly, and salvage plus
+   truncation remain observable.
+3. **Durable-wait mechanics.** Registration precedes handle exposure; accepted events are
+   deduplicated and leased; crash recovery is bounded; `due()` and `health()` expose timeout and
+   scheduler-health truth. The engine never self-fires the product clock.
+4. **Observation truth.** A logical run's canonical segments, abandoned spend, terminal status,
+   artifacts, and related-run identity are read through the strict current-schema group reader;
+   corrupt or historical shapes fail loudly rather than rendering a plausible page.
+5. **Release identity.** A consumable release has one coherent engine/tools/viewer matrix, exact
+   source/tag identity, wheel hashes, clean installed-wheel smoke, consumer-shaped qualification,
+   and counterpart review. Consumer adoption is a separate pin-and-canary gate.
+
 ## Release Qualification
 
 An engine release is ready only when:

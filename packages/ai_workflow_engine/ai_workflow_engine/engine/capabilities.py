@@ -7,7 +7,7 @@ import inspect
 import logging
 from pathlib import Path
 import time
-from typing import Any, Callable, Iterable, NamedTuple, Optional, Protocol
+from typing import Any, Awaitable, Callable, Iterable, NamedTuple, Optional, Protocol
 
 
 from ai_workflow_engine.models import (
@@ -518,11 +518,29 @@ async def gather_capabilities(
 ) -> list[CapabilityResult]:
     """Run multiple capability calls with bounded parallelism and failure isolation."""
 
+    async def invoke_call(call: CapabilityCall) -> CapabilityResult:
+        return await runtime.invoke(call.name, call.payload, context, attempt=call.attempt)
+
+    return await gather_capability_calls(
+        calls,
+        max_parallel=max_parallel,
+        invoke_call=invoke_call,
+    )
+
+
+async def gather_capability_calls(
+    calls: Iterable[CapabilityCall],
+    *,
+    max_parallel: int,
+    invoke_call: Callable[[CapabilityCall], Awaitable[CapabilityResult]],
+) -> list[CapabilityResult]:
+    """Shared concurrency owner for public and node-bound fanout calls."""
+
     semaphore = asyncio.Semaphore(max(1, max_parallel))
 
     async def invoke(call: CapabilityCall) -> CapabilityResult:
         async with semaphore:
-            return await runtime.invoke(call.name, call.payload, context, attempt=call.attempt)
+            return await invoke_call(call)
 
     return await asyncio.gather(*(invoke(call) for call in calls))
 

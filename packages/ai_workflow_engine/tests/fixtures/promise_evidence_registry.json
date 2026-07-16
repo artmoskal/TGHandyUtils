@@ -108,7 +108,11 @@
         "anchor": "Coordinator conformance",
         "class": "engine-enforceable",
         "algebra_rows": ["status"],
-        "tests": ["test_builder_rejects_sync_impostor_coordinators", "test_reference_adapter_is_async_and_alias_free"],
+        "tests": [
+          "test_builder_rejects_sync_impostor_coordinators",
+          "test_reference_adapter_is_async_and_alias_free",
+          "test_broken_adapters_fail_conformance_by_named_invariant"
+        ],
         "oracle_rows": [],
         "mutation": "conformance kit (ai_workflow_engine.testing.run_wait_registration_conformance) is the reusable killer; the real-Redis half is the consumer's obligation"
       },
@@ -159,7 +163,11 @@
         "anchor": "Health",
         "class": "engine-enforceable",
         "algebra_rows": ["status"],
-        "tests": ["test_wait_failures_without_continuation_are_observable_and_prunable"],
+        "tests": [
+          "test_in_memory_coordinator_is_deterministic_and_never_self_fires",
+          "test_broken_adapters_fail_conformance_by_named_invariant",
+          "test_wait_failures_without_continuation_are_observable_and_prunable"
+        ],
         "oracle_rows": [],
         "mutation": "conformance kit health-honesty negative (R10.1 hidden-overdue impostor) is the named killer"
       },
@@ -192,6 +200,126 @@
         ],
         "oracle_rows": ["swallowed_cancellation", "unacknowledged_cancellation", "process_timeout"],
         "mutation": "sealed cancellation/window rows: suppression-visibility drift is an unledgered delta"
+      }
+    }
+  },
+  "normative_sources": {
+    "binding-spec": {
+      "path": "docs/executable-workflow-engine-spec.md",
+      "section": "### Normative Contract AC",
+      "promises": {
+        "1": {
+          "anchor": "Universal invocation door",
+          "class": "engine-enforceable",
+          "algebra_rows": ["status", "usage_summary"],
+          "tests": [
+            "test_every_engine_caller_family_routes_through_the_facade",
+            "test_fanout_applies_all_declared_context_bindings_per_item"
+          ],
+          "oracle_rows": ["side_effect_denied", "concurrent_invocations"],
+          "mutation": "ordinary direct-handler bypass shapes fail test_one_door; fanout bound-door bypass drops the per-item context/model-binding assertions"
+        },
+        "2": {
+          "anchor": "Cumulative accepted state",
+          "class": "engine-enforceable",
+          "algebra_rows": ["node_outputs", "node_results", "artifacts", "usage_summary", "plan_artifact"],
+          "tests": [
+            "test_planner_retrace_preserves_prior_and_follow_up_task_outputs",
+            "test_state_algebra_rules_hold_across_retrace_and_three_suspensions"
+          ],
+          "oracle_rows": ["human_bound_context", "usage_event_semantics"],
+          "mutation": "GAP-1 clobber and state-algebra replace/clear mutations are killed by the named cumulative-state tests"
+        },
+        "3": {
+          "anchor": "Explicit node-context binding",
+          "class": "engine-enforceable",
+          "algebra_rows": ["plan_artifact", "pending_retrace_provenance"],
+          "tests": [
+            "test_retraced_human_target_receives_provenance_and_criticism_once",
+            "test_fanout_applies_all_declared_context_bindings_per_item",
+            "test_subworkflow_applies_plan_and_machine_cards_to_child_context",
+            "test_subworkflow_rejects_capability_only_context_bindings"
+          ],
+          "oracle_rows": ["human_bound_context"],
+          "mutation": "raw-invoke, dropped fanout binding, and unsupported-subworkflow acceptance each remove a named observable assertion"
+        },
+        "4": {
+          "anchor": "Complexity gradient",
+          "class": "engine-enforceable",
+          "algebra_rows": ["status"],
+          "tests": [
+            "test_simple_tier_run_loads_no_advanced_facility_modules",
+            "test_complexity_gradient_matrix_contract",
+            "test_same_executor_runs_all_example_workflows"
+          ],
+          "oracle_rows": ["sync_success", "durable_suspend_resume"],
+          "mutation": "advanced-module eager import and executor-substitution mutations are killed by the simple-tier and same-executor fences"
+        }
+      }
+    },
+    "operations": {
+      "path": "packages/ai_workflow_engine/docs/operations.md",
+      "section": "## Normative Contract AC",
+      "promises": {
+        "1": {
+          "anchor": "Execution-window truth",
+          "class": "engine-enforceable",
+          "algebra_rows": ["status", "error", "node_results"],
+          "tests": [
+            "test_run_timeout_actually_bounds_slow_async_work",
+            "test_graph_failsafe_stops_a_hang_outside_a_capability_boundary",
+            "test_cooperative_cancellation_suppression_is_a_containment_failure"
+          ],
+          "oracle_rows": ["cooperative_deadline", "swallowed_cancellation", "unacknowledged_cancellation"],
+          "mutation": "a 2s post-containment delay fails the wall fence; cancellation-suppression and timeout-classification mutations fail named tests"
+        },
+        "2": {
+          "anchor": "Process settlement",
+          "class": "engine-enforceable",
+          "algebra_rows": ["status", "error", "artifacts"],
+          "tests": [
+            "test_external_process_obeys_the_ambient_engine_window",
+            "test_fifo_result_file_cannot_block_the_engine_past_its_deadline",
+            "test_stdout_flood_is_drained_bounded_with_truthful_truncation"
+          ],
+          "oracle_rows": ["process_timeout"],
+          "mutation": "a 2s post-settlement delay, unsafe result acceptance, and unbounded stream retention each fail a named attack-shaped test"
+        },
+        "3": {
+          "anchor": "Durable-wait mechanics",
+          "class": "engine-enforceable",
+          "algebra_rows": ["status", "routes", "node_results"],
+          "tests": [
+            "test_broken_adapters_fail_conformance_by_named_invariant",
+            "test_lease_expiry_allows_reclaim_and_attempts_are_bounded",
+            "test_timeout_delivery_takes_the_declared_transition_without_reentering_the_gate"
+          ],
+          "oracle_rows": ["durable_suspend_resume"],
+          "mutation": "the conformance negative matrix kills due/health/dedup/lease/terminal-revival lies by named invariant"
+        },
+        "4": {
+          "anchor": "Observation truth",
+          "class": "engine-enforceable",
+          "algebra_rows": ["node_results", "usage_summary", "artifacts", "status"],
+          "tests": [
+            "test_pre_v2_bundles_are_rejected_loudly_on_every_surface",
+            "test_read_group_reports_abandoned_attempts_without_merging_them",
+            "test_group_html_renders_one_truthful_lifecycle"
+          ],
+          "oracle_rows": ["durable_suspend_resume"],
+          "mutation": "legacy acceptance, abandoned-spend omission, and canonical-status projection changes are killed at grouped reader/viewer boundaries"
+        },
+        "5": {
+          "anchor": "Release identity",
+          "class": "engine-enforceable",
+          "tests": [
+            "test_release_docs_name_the_current_tag_consistently",
+            "test_documented_package_matrix_is_coherent_and_derived_from_pyproject",
+            "test_current_contract_provenance_is_sealed_and_matches"
+          ],
+          "oracle_rows": [],
+          "mutation": "tag/version/package-matrix and seal provenance drift fail the derived release-contract tests"
+        }
       }
     }
   }

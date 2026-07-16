@@ -1,9 +1,8 @@
 # Voice Brain Engine Integration Guide
 
-Status: **the engine supports the required execution boundary as of the immutable
-`engine-v0.11.2` release (latest-only line); voice
-integration remains product-owned and must pin tag `engine-v0.11.2` before running its own
-latency/cancellation canary.** This replaces
+Status: **`engine-v0.11.3` is a release candidate; voice integrations must not re-pin until it is
+cut.** After release, the product must pin tag `engine-v0.11.3` before running its own
+latency/cancellation canary. The current immutable release remains `engine-v0.11.2`. This replaces
 the historical June request/reply transcript.
 
 Read first: [getting started](getting-started.md), [framework concepts](concepts.md), and
@@ -26,20 +25,20 @@ transcript + session context
 
 ## Package Choice
 
-- `ai-workflow-engine==0.11.2` for the runtime and custom `LLMCallable`.
-- `ai-workflow-tools==0.5.0` only when using `CliAgentCapability`/console tools. CLI subscription
+- `ai-workflow-engine==0.11.3` for the runtime and custom `LLMCallable`.
+- `ai-workflow-tools==0.5.1` only when using `CliAgentCapability`/console tools. CLI subscription
   workers are usually unsuitable for a low-latency conversational hot path.
 - `ai-workflow-viewer==0.3.1` in diagnostics, not the real-time audio path.
 
-> **Current matrix:** `engine-v0.11.2` + `ai-workflow-tools==0.5.0` + `ai-workflow-viewer==0.3.1`
+> **Current matrix candidate:** `engine-v0.11.3` + `ai-workflow-tools==0.5.1` + `ai-workflow-viewer==0.3.1`
 > (tools/viewer require `ai-workflow-engine>=0.11,<0.12`). The previous line
 > (`engine-v0.10.1` + tools `0.4.1` + viewer `0.2.3`) remains available at its historical tag for
 > historical data; the lines never mix in one environment.
 
-Relative to v0.11.1, v0.11.2 corrects planner retrace output accumulation and removes dangling
-output references for successful no-output tasks. Public APIs, persisted schemas, and voice
-workflow behavior are unchanged. The annotated tag records the exact source commit and reference
-wheel hashes; the voice repository still owns its pin and canary decision.
+The candidate makes node-context binding explicit for every node kind and advances the optional
+tools wheel for native Codex image attachment. Persisted schemas and voice workflow behavior are
+unchanged. Once cut, the annotated tag records the exact source commit and reference wheel hashes;
+the voice repository still owns its pin and canary decision.
 
 
 ## Streaming Boundary

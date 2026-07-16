@@ -5,7 +5,7 @@
     "payload": {
       "rule": "replace",
       "scope": "every node completion (latest node output; branch passes payload through unchanged by design)",
-      "write_sites": ["node_services.py::record (RUNNING_PAYLOAD)", "nodes/branch.py (pass-through override)", "executor.py::_initial_state"],
+      "write_sites": ["node_services.py::ExecutorNodeServices.record (RUNNING_PAYLOAD)", "nodes/branch.py (pass-through override)", "executor.py::WorkflowExecutor._initial_state"],
       "snapshot_persisted": true,
       "boundaries": ["attempt", "retrace", "resume", "segment"]
     },
@@ -19,28 +19,28 @@
     "node_outputs": {
       "rule": "accumulate(key=node_id)",
       "scope": "run (cumulative across retrace/resume); a REVISIT replaces only that node's key — sibling keys must survive; '__input__' pinned at start; output_key aliases written alongside",
-      "write_sites": ["node_services.py::record", "executor.py::_initial_state", "executor.py (resume restore)"],
+      "write_sites": ["node_services.py::ExecutorNodeServices.record", "executor.py::WorkflowExecutor._initial_state", "executor.py (resume restore)"],
       "snapshot_persisted": true,
       "boundaries": ["attempt", "retrace", "resume", "segment"]
     },
     "node_inputs": {
       "rule": "accumulate(key=node_id)",
       "scope": "run; latest input per node id",
-      "write_sites": ["node_services.py::record", "executor.py (resume restore)"],
+      "write_sites": ["node_services.py::ExecutorNodeServices.record", "executor.py (resume restore)"],
       "snapshot_persisted": true,
       "boundaries": ["attempt", "retrace", "resume", "segment"]
     },
     "node_results": {
       "rule": "accumulate(append)",
       "scope": "run; ONE entry per node visit — full history, never collapsed to latest-per-node",
-      "write_sites": ["node_services.py::record", "executor.py (resume restore revalidates)"],
+      "write_sites": ["node_services.py::ExecutorNodeServices.record", "executor.py (resume restore revalidates)"],
       "snapshot_persisted": true,
       "boundaries": ["attempt", "retrace", "resume", "segment"]
     },
     "node_status": {
       "rule": "accumulate(key=node_id)",
       "scope": "run; latest status per node id",
-      "write_sites": ["node_services.py::record", "executor.py (resume restore)"],
+      "write_sites": ["node_services.py::ExecutorNodeServices.record", "executor.py (resume restore)"],
       "snapshot_persisted": true,
       "boundaries": ["attempt", "retrace", "resume", "segment"]
     },
@@ -75,21 +75,21 @@
     "attempts": {
       "rule": "accumulate(key=node_id)",
       "scope": "run; latest attempt count per node id",
-      "write_sites": ["node_services.py::record", "executor.py (resume restore)"],
+      "write_sites": ["node_services.py::ExecutorNodeServices.record", "executor.py (resume restore)"],
       "snapshot_persisted": true,
       "boundaries": ["attempt", "retrace", "resume", "segment"]
     },
     "artifacts": {
       "rule": "accumulate(append)",
       "scope": "run; append-only across attempts/rounds/segments — evidence never shrinks",
-      "write_sites": ["node_services.py::record (list concat)", "executor.py (resume restore revalidates)"],
+      "write_sites": ["node_services.py::ExecutorNodeServices.record (list concat)", "executor.py (resume restore revalidates)"],
       "snapshot_persisted": true,
       "boundaries": ["attempt", "retrace", "resume", "segment"]
     },
     "status": {
       "rule": "replace",
       "scope": "run; running -> failed/requires_user_input at commit sites; terminal envelope status derived by result assembly",
-      "write_sites": ["node_services.py::record (failed)", "nodes/human.py (requires_user_input)", "executor.py::_initial_state"],
+      "write_sites": ["node_services.py::ExecutorNodeServices.record (failed)", "nodes/human.py (requires_user_input)", "executor.py::WorkflowExecutor._initial_state"],
       "snapshot_persisted": false,
       "boundaries": ["attempt", "retrace", "resume", "segment"],
       "note": "snapshot carries 'reason' instead; wait-record status lifecycle is coordinator-owned (waits.py), not this channel"
@@ -97,14 +97,14 @@
     "error": {
       "rule": "replace",
       "scope": "run; latest failure message (set on failed commits)",
-      "write_sites": ["node_services.py::record", "executor.py::_initial_state"],
+      "write_sites": ["node_services.py::ExecutorNodeServices.record", "executor.py::WorkflowExecutor._initial_state"],
       "snapshot_persisted": false,
       "boundaries": ["attempt", "retrace", "resume"]
     },
     "fallback_reason": {
       "rule": "replace",
       "scope": "run; set when an evaluator fallback accepted; last fallback wins",
-      "write_sites": ["node_services.py::record (when provided)", "executor.py (resume restore)"],
+      "write_sites": ["node_services.py::ExecutorNodeServices.record (when provided)", "executor.py (resume restore)"],
       "snapshot_persisted": true,
       "boundaries": ["retrace", "resume", "segment"]
     },

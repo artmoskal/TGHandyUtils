@@ -778,3 +778,184 @@ def test_unknown_model_profile_on_hand_declared_human_fails_loudly_at_build():
     builder.register_workflow(definition)
     with pytest.raises(ValueError, match="ghost_profile"):
         builder.build()
+
+
+# ======================================================================================
+# IBR-1 — every node kind consumes or rejects the same context-binding fields explicitly
+# ======================================================================================
+
+
+async def test_fanout_applies_all_declared_context_bindings_per_item():
+    """Fanout's item capability is declared by the node, so every item crosses the bound
+    door independently. Concurrency/gather stays shared, while context and model-binding
+    trace attribution remain per item."""
+
+    visits: list[dict[str, Any]] = []
+
+    def seed(_context, _payload):
+        return {"items": [1, 2]}
+
+    def make_plan(_context, _payload):
+        return PlanArtifact(
+            goal="inspect every frame",
+            tasks=[
+                PlanTask(
+                    task_id="prepare",
+                    description="prepare fanout inputs",
+                    capability="prepare",
+                    payload={"ready": True},
+                )
+            ],
+        )
+
+    def prepare(_context, payload):
+        return payload
+
+    def inspect_item(context, item):
+        visits.append(
+            {
+                "item": item,
+                "plan": context.metadata.get("plan"),
+                "machine": context.metadata.get("machine"),
+                "memory": context.metadata.get("agent_memory"),
+                "profile": None if context.model_profile is None else context.model_profile.name,
+            }
+        )
+        return {"item": item}
+
+    definition = (
+        WorkflowBuilder("fanout_context")
+        .step("seed")
+        .plan("plan_node", capability="make_plan")
+        .fanout(
+            "inspect",
+            capability="inspect_item",
+            items_key="seed.items",
+            max_parallel=2,
+            inject_plan=True,
+            inject_machine=True,
+            memory="structured_state",
+            model_profile="fanout_probe",
+            description="inspect every declared item",
+        )
+        .build()
+    )
+    engine = (
+        WorkflowEngineBuilder()
+        .with_profile(_profile("fanout_context"))
+        .with_model_profile(
+            ModelProfile(name="fanout_probe", provider="ollama", model="probe-1", temperature=0.0)
+        )
+        .register_capability("seed", seed, kind="deterministic")
+        .register_capability(
+            "make_plan",
+            make_plan,
+            spec=CapabilitySpec(name="make_plan", kind="llm", is_planner=True),
+        )
+        .register_capability("prepare", prepare, kind="deterministic")
+        .register_capability("inspect_item", inspect_item, kind="deterministic")
+        .register_workflow(definition)
+        .build()
+    )
+
+    result = await engine.run("fanout_context", {})
+
+    assert result.status == "completed"
+    assert sorted(row["item"] for row in visits) == [1, 2]
+    for row in visits:
+        assert "inspect every frame" in row["plan"]
+        assert "state: inspect (fanout)" in row["machine"]
+        assert "inspect every declared item" in row["machine"]
+        assert row["memory"] == "structured_state"
+        assert row["profile"] == "fanout_probe"
+    bindings = [
+        event
+        for event in result.trace
+        if event.node == "inspect" and event.decision == "model_binding"
+    ]
+    assert len(bindings) == 2, "model binding must be attributed once per fanout item"
+
+
+async def test_subworkflow_applies_plan_and_machine_cards_to_child_context():
+    """A subworkflow binds machine metadata to the child run, but is not itself a
+    capability and therefore has no capability-only memory/model binding."""
+
+    seen: list[dict[str, Any]] = []
+
+    def make_plan(_context, _payload):
+        return PlanArtifact(
+            goal="delegate the approved slice",
+            tasks=[
+                PlanTask(
+                    task_id="prepare",
+                    description="prepare child input",
+                    capability="prepare",
+                    payload={"ready": True},
+                )
+            ],
+        )
+
+    def prepare(_context, payload):
+        return payload
+
+    def child_step(context, payload):
+        seen.append(
+            {
+                "plan": context.metadata.get("plan"),
+                "machine": context.metadata.get("machine"),
+            }
+        )
+        return payload
+
+    child = WorkflowBuilder("child_context").step("child_step").build()
+    parent = (
+        WorkflowBuilder("parent_context")
+        .plan("plan_node", capability="make_plan")
+        .subworkflow(
+            "delegate",
+            workflow=child,
+            inject_plan=True,
+            inject_machine=True,
+            description="delegate into the child machine",
+        )
+        .build()
+    )
+    engine = (
+        WorkflowEngineBuilder()
+        .with_profile(_profile("parent_context"))
+        .register_capability(
+            "make_plan",
+            make_plan,
+            spec=CapabilitySpec(name="make_plan", kind="llm", is_planner=True),
+        )
+        .register_capability("prepare", prepare, kind="deterministic")
+        .register_capability("child_step", child_step, kind="deterministic")
+        .register_workflow(child)
+        .register_workflow(parent)
+        .build()
+    )
+
+    result = await engine.run("parent_context", {"value": 1})
+
+    assert result.status == "completed"
+    assert len(seen) == 1
+    assert "delegate the approved slice" in seen[0]["plan"]
+    assert "state: delegate (subworkflow)" in seen[0]["machine"]
+    assert "delegate into the child machine" in seen[0]["machine"]
+
+
+@pytest.mark.parametrize("field,value", [("memory", "structured_state"), ("model_profile", "x")])
+def test_subworkflow_rejects_capability_only_context_bindings(field, value):
+    base = (
+        WorkflowBuilder("bad_parent")
+        .subworkflow("delegate", workflow="child")
+        .build()
+    )
+    invalid = _with_decoration(base, "delegate", **{field: value})
+
+    errors = invalid.validate_graph()
+
+    assert any(
+        "subworkflow" in error and field in error and "does not support" in error
+        for error in errors
+    ), f"{field} must fail at graph validation instead of being silently ignored: {errors}"

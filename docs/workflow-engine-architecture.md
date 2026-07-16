@@ -558,8 +558,9 @@ Sources:
 ## Runtime Internal Ownership (v0.11.1)
 
 `CapabilityRuntime.invoke` remains the engine's ONE capability door for every worker family
-(deterministic tools, LLM workers, agents, human steps, external processes, evaluators, fanout
-children, subworkflows). Its internals are owned by three
+(deterministic tools, LLM workers, agents, human steps, external processes, evaluators, and fanout
+children). A subworkflow delegates to the same executor; its child nodes cross this door when they
+invoke capabilities. Its internals are owned by three
 single-purpose collaborators behind that unchanged facade:
 
 - **`engine/capability_contract.py` — pure rules.** Input validation, result normalization,
@@ -589,13 +590,13 @@ context it may receive:
 
 - **Universal door — `CapabilityRuntime.invoke`.** Every capability call ends here (validation,
   execution windows, budgets, observation). It has no node knowledge.
-- **Declared-node door — `NodeExecutionServices.invoke_bound`.** Node handlers invoke their
+- **Declared-node door — `NodeExecutionServices.invoke_bound` / `gather_bound`.** Node handlers invoke their
   DECLARED capability through this decorator: it composes the node's context — typed retrace
   provenance (consumed exactly once, by the retraced invocation), `inject_plan`/`inject_machine`
   cards, `memory` config (delivered as `context.metadata["agent_memory"]`), and `model_profile`
   binding (with an honest `model_binding` trace decision) — then uses the universal door. Human
-  nodes are declared nodes and use this door like step/branch/evaluate (v0.11.3 correction: they
-  previously bypassed it, leaving all four decorations silently dead on human targets), with the
+  nodes are declared nodes and use this door like step/branch/evaluate (corrected in the
+  `engine-v0.11.3` release candidate), with the
   resume event merged into metadata before decoration so both compose. Decorations bind at
   INVOCATION time only: resolution paths that perform no invocation — the declared wait-timeout
   transition — never enter the capability, decorated or not.
@@ -606,6 +607,21 @@ context it may receive:
   criticism content still rides its payload — and planner tasks run on their task-specific
   context. An EXPLICIT fallback-binding schema would be an extension-lifecycle change on a
   concrete consumer request, not a default.
+
+The binding matrix is closed and graph-validated; configuring an unsupported field fails instead
+of silently doing nothing:
+
+| Node kind | Plan card | Machine card | Memory | Model profile | Invocation shape |
+|---|---:|---:|---:|---:|---|
+| `step`, `branch`, `evaluate`, `human`, `planner` | yes | yes | yes | yes | one bound capability call |
+| `fanout` | yes | yes | yes | yes | every item independently crosses `gather_bound` |
+| `subworkflow` | yes | yes | rejected | rejected | cards enter the child context; child nodes bind their own capability settings |
+| evaluator dynamic fallback | no inheritance | no inheritance | no inheritance | no inheritance | base run context by design |
+| planner-created task | task context | task context | task declaration | task binding | planner-task execution contract |
+
+`WorkflowDefinition.validate_graph()` consumes the same `NODE_CONTEXT_BINDINGS` matrix used by
+the builder-facing contract tests. Adding a node kind or binding field requires updating the
+matrix, its handler, and one public execution test together.
 
 The workflow and observation runtimes follow the same ownership rule. `WorkflowExecutor` is the
 coordinator; it does not reimplement its collaborators:

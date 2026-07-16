@@ -22,6 +22,7 @@ from ai_workflow_engine._runtime_state import (
     RUNNING_PAYLOAD,
 )
 from ai_workflow_engine.engine.scheduler import WorkflowScheduler
+from ai_workflow_engine.engine.capabilities import CapabilityCall, gather_capability_calls
 from ai_workflow_engine.model_binding import model_profile_scope
 from ai_workflow_engine.models import CapabilityContext, CapabilityResult, WorkflowTraceEvent
 from ai_workflow_engine.planning import PlanArtifact, render_plan
@@ -93,6 +94,17 @@ class NodeExecutionServices(Protocol):
         attempt: int = 1,
         definition: Optional[WorkflowDefinition] = None,
     ) -> CapabilityResult: ...
+
+    async def gather_bound(
+        self,
+        node: WorkflowNode,
+        calls: list[CapabilityCall],
+        context: CapabilityContext,
+        state: Dict[str, Any],
+        *,
+        max_parallel: int,
+        definition: Optional[WorkflowDefinition] = None,
+    ) -> list[CapabilityResult]: ...
 
     def context_for_node(
         self,
@@ -349,6 +361,35 @@ class ExecutorNodeServices:
             )
         )
         return result
+
+    async def gather_bound(
+        self,
+        node: WorkflowNode,
+        calls: list[CapabilityCall],
+        context: CapabilityContext,
+        state: Dict[str, Any],
+        *,
+        max_parallel: int,
+        definition: Optional[WorkflowDefinition] = None,
+    ) -> list[CapabilityResult]:
+        """Run fanout items concurrently while every item crosses the bound node door."""
+
+        async def invoke_call(call: CapabilityCall) -> CapabilityResult:
+            return await self.invoke_bound(
+                node,
+                call.name,
+                call.payload,
+                context,
+                state,
+                attempt=call.attempt,
+                definition=definition,
+            )
+
+        return await gather_capability_calls(
+            calls,
+            max_parallel=max_parallel,
+            invoke_call=invoke_call,
+        )
 
     def context_for_node(
         self,

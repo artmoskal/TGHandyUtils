@@ -5,9 +5,10 @@ declare a workflow, register typed capabilities, and call one engine door. The e
 transitions, retries, fan-out, budgets, waits, trace, usage, and observation bundles; products own
 domain models, provider clients, storage adapters, clocks, and side-effect delivery.
 
-> **`engine-v0.11.2` is the current release.** Pin immutable tags and build wheels;
-> consumer canaries still decide whether each product changes its deployed pin. Never depend on a
-> live branch. The binding contract is the repository-level
+> **`engine-v0.11.3` is the release candidate; do not re-pin until it is cut.** The current
+> immutable release remains `engine-v0.11.2`. Pin immutable tags and build wheels; consumer
+> canaries still decide whether each product changes its deployed pin. Never depend on a live
+> branch. The binding contract is the repository-level
 > [`executable-workflow-engine-spec.md`](../../docs/executable-workflow-engine-spec.md).
 >
 > **v0.11 is a latest-only line.** The engine supports exactly one current contract: current code,
@@ -18,7 +19,12 @@ domain models, provider clients, storage adapters, clocks, and side-effect deliv
 > Adoption is fresh: new consumers start on the current contract; existing consumers re-adopt the
 > current surface rather than migrate state.
 >
-> **v0.11.2 is a corrective release over v0.11.1.** Planner retrace now retains task outputs from
+> **v0.11.3 candidate delta.** Every declared capability node now applies the same explicit
+> plan/machine/memory/model-profile binding contract, fan-out applies it per item, and subworkflows
+> apply plan/machine cards while rejecting capability-only bindings. `ai-workflow-tools==0.5.1`
+> also attaches staged images to `codex exec` through native `--image`; Claude keeps its separate
+> path-scoped Read transport. The sealed behavior corpus is unchanged. **v0.11.2 is the current
+> corrective release over v0.11.1.** Planner retrace retains task outputs from
 > earlier rounds when later work is merged, and successful tasks with no output no longer publish
 > dangling output references. Public APIs and persisted schemas are unchanged. v0.11.1 introduced
 > the runtime ownership decomposition: runtime compilation,
@@ -51,19 +57,19 @@ Build from the tag because this monorepo is not published to PyPI:
 
 ```bash
 git clone <TGHandyUtils-repository> /tmp/tghandy-engine
-git -C /tmp/tghandy-engine checkout --detach engine-v0.11.2
+git -C /tmp/tghandy-engine checkout --detach engine-v0.11.3
 python -m pip wheel --no-deps -w ./vendor \
   /tmp/tghandy-engine/packages/ai_workflow_engine
-python -m pip install ./vendor/ai_workflow_engine-0.11.2-py3-none-any.whl
-python -c "import ai_workflow_engine as e; assert e.__version__ == '0.11.2'"
+python -m pip install ./vendor/ai_workflow_engine-0.11.3-py3-none-any.whl
+python -c "import ai_workflow_engine as e; assert e.__version__ == '0.11.3'"
 ```
 
 Optional packages:
 
 | Package | Install when |
 |---|---|
-| `ai-workflow-engine==0.11.2` | Always. Core builder, executor, memory, waits, observation writer. |
-| `ai-workflow-tools==0.5.0` | The product uses CLI agents, the tool catalog, or media helpers. |
+| `ai-workflow-engine==0.11.3` | Always. Core builder, executor, memory, waits, observation writer. |
+| `ai-workflow-tools==0.5.1` | The product uses CLI agents, the tool catalog, or media helpers. |
 | `ai-workflow-viewer==0.3.1` | A developer or product service renders observation bundles. |
 
 Record the engine tag, source commit, and wheel SHA-256 in the consumer repository. A tag already

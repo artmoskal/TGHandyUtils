@@ -238,7 +238,10 @@ def test_every_engine_caller_family_routes_through_the_facade():
 
     for path in families:
         source = path.read_text(encoding="utf-8")
-        uses_door = ".invoke(" in source or "gather_capabilities(" in source
+        uses_door = any(
+            door in source
+            for door in (".invoke(", "gather_capabilities(", ".gather_bound(")
+        )
         executes_anything = "registry.get(" in source or uses_door
         if executes_anything:
             assert uses_door or not _scan_file(path), (

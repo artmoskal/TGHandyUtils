@@ -1,6 +1,7 @@
 # AI Workflow Engine Documentation
 
-This directory is the consumer documentation home for `engine-v0.11.2` (latest-only line). It is written for both
+This directory describes the pending `engine-v0.11.3` candidate (latest-only line); the current
+immutable release remains `engine-v0.11.2` until the candidate is tagged. It is written for both
 engineers and coding agents: each file has one responsibility, links to the next action, and avoids
 embedding release history in current instructions.
 

@@ -1,9 +1,9 @@
 # GoPro Engine Adoption Guide
 
-Status: **ready for consumer validation against immutable tag `engine-v0.11.2` (latest-only
-line).** GoPro should
-pin tag `engine-v0.11.2`, record the source commit and wheel hash, and run its sidecar canary before changing
-the production image. Do not infer the actual GoPro pin from this document; the consumer repository's
+Status: **`engine-v0.11.3` is a release candidate; GoPro must not re-pin until it is cut.** After
+release, GoPro should pin tag `engine-v0.11.3`, record the source commit and wheel hash, and run its
+sidecar canary before changing the production image. The current immutable release remains
+`engine-v0.11.2`. Do not infer the actual GoPro pin from this document; the consumer repository's
 pin file is authoritative for deployed state.
 
 Read first: [getting started](getting-started.md), [framework concepts](concepts.md), and
@@ -35,11 +35,11 @@ The engine owns execution and gates. GoPro owns inventory semantics and storage.
 
 | Package | GoPro use |
 |---|---|
-| `ai-workflow-engine==0.11.2` | Required in the detection/sidecar runtime |
-| `ai-workflow-tools==0.5.0` | Add only when GoPro uses CLI agents or shared media helpers |
+| `ai-workflow-engine==0.11.3` | Required in the detection/sidecar runtime |
+| `ai-workflow-tools==0.5.1` | Add only when GoPro uses CLI agents or shared media helpers |
 | `ai-workflow-viewer==0.3.1` | Developer/diagnostic service; not required in the detector image |
 
-> **Current matrix:** `engine-v0.11.2` + `ai-workflow-tools==0.5.0` + `ai-workflow-viewer==0.3.1`
+> **Current matrix candidate:** `engine-v0.11.3` + `ai-workflow-tools==0.5.1` + `ai-workflow-viewer==0.3.1`
 > (tools/viewer require `ai-workflow-engine>=0.11,<0.12`). The previous line
 > (`engine-v0.10.1` + tools `0.4.1` + viewer `0.2.3`) remains available at its historical tag for
 > historical data; the lines never mix in one environment.
@@ -165,13 +165,13 @@ second memory, retry, or observation runtime into the sidecar.
 
 ## v0.11 Release Contract
 
-`engine-v0.11.2` is the current release of the **latest-only** line: strict versioned persisted
+`engine-v0.11.3` is the release candidate for the **latest-only** line; `engine-v0.11.2` remains
+the immutable release until the candidate is cut. The line uses strict versioned persisted
 contracts (snapshot `v0.11`, bundle meta v2, wait records `wait-v1`), one strict viewer loader, and
 NO migration layer — the sealed current-contract corpus shows 0 behavior deltas vs v0.10.1, but old
-persisted data is rejected loudly naming its historical tag. Adopt by re-pinning fresh (pin tag
-`engine-v0.11.2`, rebuild wheels: engine `0.11.2`, tools `0.5.0`, viewer `0.3.1`) and re-run your
-canaries before changing any deployed pin. Historical data stays inspectable with its own
-historical tag. Relative to v0.11.1, v0.11.2 corrects planner retrace output accumulation and
-removes dangling output references for successful no-output tasks. Public APIs, persisted schemas,
-and GoPro workflow behavior are unchanged. Read the annotated tag for the exact source commit and
-reference wheel hashes.
+persisted data is rejected loudly naming its historical tag. Once cut, adopt by re-pinning fresh
+(pin tag `engine-v0.11.3`, rebuild wheels: engine `0.11.3`, tools `0.5.1`, viewer `0.3.1`) and
+re-run your canaries before changing any deployed pin. The candidate makes node-context binding
+explicit for every node kind and adds native Codex image attachment in the optional tools wheel;
+persisted schemas and the sealed behavior corpus are unchanged. Read the future annotated tag for
+the exact source commit and reference wheel hashes.

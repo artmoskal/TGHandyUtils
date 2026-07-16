@@ -5,7 +5,7 @@ Mechanical split of the executor god-file (spec §2c#5). Handlers receive a narr
 """
 from __future__ import annotations
 from typing import Any, Dict
-from ai_workflow_engine.engine.capabilities import CapabilityCall, gather_capabilities
+from ai_workflow_engine.engine.capabilities import CapabilityCall
 from ai_workflow_engine.models import CapabilityContext, CapabilityResult, RuntimeLimits, WorkflowTraceEvent
 
 _DEFAULT_LIMITS = RuntimeLimits()
@@ -18,12 +18,6 @@ def build_fanout_node(services, definition: WorkflowDefinition, node: WorkflowNo
 
     async def fanout_fn(state: Dict[str, Any]) -> Dict[str, Any]:
         context: CapabilityContext = state[CONTEXT]
-        # Fanout invokes the runtime directly for each item, so it must cross the same generic
-        # node-context boundary as step/branch/planner nodes. This carries retrace provenance
-        # and declared plan/machine injection without a fanout-specific approximation.
-        context = services.context_for_node(
-            node, context, state, definition=definition
-        )
         items = _resolve_items(state, node)
         if not isinstance(items, list):
             failed = CapabilityResult(
@@ -53,7 +47,15 @@ def build_fanout_node(services, definition: WorkflowDefinition, node: WorkflowNo
         else:
             limit = _DEFAULT_LIMITS.max_parallel_children
         calls = [CapabilityCall(item_capability, item) for item in items]
-        results = await gather_capabilities(services.runtime, calls, context, max_parallel=limit)
+
+        results = await services.gather_bound(
+            node,
+            calls,
+            context,
+            state,
+            max_parallel=limit,
+            definition=definition,
+        )
         outputs = [r.output for r in results if r.status in ("accepted", "partial") and r.output is not None]
         accepted = [r for r in results if r.status == "accepted"]
         partials = [r for r in results if r.status == "partial"]

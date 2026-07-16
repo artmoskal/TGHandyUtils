@@ -24,6 +24,11 @@ def build_subworkflow_node(services, definition: WorkflowDefinition, node: Workf
             )
             return services.record(state, node, failed, attempts=1, input_payload=payload)
 
+        # Subworkflows bind parent-machine cards, not capability-only memory/model settings.
+        # Validation rejects the latter; child_context copies the decorated metadata below.
+        context = services.context_for_node(
+            node, context, state, definition=definition
+        )
         child_context = services.child_context(context, child_def, ref)
         child_result = await services.run_child(child_def, payload, child_context)
         if child_result.status == "requires_user_input":

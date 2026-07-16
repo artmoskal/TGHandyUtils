@@ -1,9 +1,9 @@
 # SlackAzzCovered Engine Adoption Guide
 
-Status: **ready for consumer validation against immutable tag `engine-v0.11.2` (latest-only
-line).** SlackAzzCovered
-should pin tag `engine-v0.11.2`, implement its Redis coordinator, and pass the engine conformance kit plus product
-transaction tests before enabling live effects.
+Status: **`engine-v0.11.3` is a release candidate; SlackAzzCovered must not re-pin until it is
+cut.** After release, SlackAzzCovered should pin tag `engine-v0.11.3`, implement its Redis
+coordinator, and pass the engine conformance kit plus product transaction tests before enabling
+live effects. The current immutable release remains `engine-v0.11.2`.
 
 This answers the consumer request in
 `SlackAzzCovered/docs/_discussion/2026-07-10-engine-developer-request.md`. Shared mechanics live in
@@ -33,11 +33,11 @@ client event
 
 | Package | SlackAzzCovered use |
 |---|---|
-| `ai-workflow-engine==0.11.2` | Required workflow/wait runtime |
-| `ai-workflow-tools==0.5.0` | Add for CLI agents/tool catalog if the product uses them |
+| `ai-workflow-engine==0.11.3` | Required workflow/wait runtime |
+| `ai-workflow-tools==0.5.1` | Add for CLI agents/tool catalog if the product uses them |
 | `ai-workflow-viewer==0.3.1` | Developer diagnostics or product-linked run inspection |
 
-> **Current matrix:** `engine-v0.11.2` + `ai-workflow-tools==0.5.0` + `ai-workflow-viewer==0.3.1`
+> **Current matrix candidate:** `engine-v0.11.3` + `ai-workflow-tools==0.5.1` + `ai-workflow-viewer==0.3.1`
 > (tools/viewer require `ai-workflow-engine>=0.11,<0.12`). The previous line
 > (`engine-v0.10.1` + tools `0.4.1` + viewer `0.2.3`) remains available at its historical tag for
 > historical data; the lines never mix in one environment.
@@ -239,13 +239,12 @@ Follow [`operations.md`](operations.md) for production recovery. File missing me
 
 ## v0.11 Release Contract
 
-`engine-v0.11.2` is the current release of the **latest-only** line: strict versioned persisted
+`engine-v0.11.3` is the release candidate for the **latest-only** line; `engine-v0.11.2` remains
+the immutable release until the candidate is cut. The line uses strict versioned persisted
 contracts (snapshot `v0.11`, bundle meta v2, wait records `wait-v1`), one strict viewer loader, and
 NO migration layer — the sealed current-contract corpus shows 0 behavior deltas vs v0.10.1, but old
-persisted data is rejected loudly naming its historical tag. Adopt by re-pinning fresh (pin tag
-`engine-v0.11.2`, rebuild wheels: engine `0.11.2`, tools `0.5.0`, viewer `0.3.1`) and re-run your
-canaries before changing any deployed pin. Historical data stays inspectable with its own
-historical tag. Relative to v0.11.1, v0.11.2 corrects planner retrace output accumulation and
-removes dangling output references for successful no-output tasks. Public APIs, persisted schemas,
-and SlackAzzCovered workflow behavior are unchanged. Read the annotated tag for the exact source
-commit and reference wheel hashes.
+persisted data is rejected loudly naming its historical tag. Once cut, adopt by re-pinning fresh
+(pin tag `engine-v0.11.3`, rebuild wheels: engine `0.11.3`, tools `0.5.1`, viewer `0.3.1`) and
+re-run your canaries before changing any deployed pin. The candidate makes node-context binding
+explicit for every node kind; wait contracts and persisted schemas are unchanged. Read the future
+annotated tag for the exact source commit and reference wheel hashes.

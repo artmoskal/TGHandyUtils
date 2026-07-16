@@ -172,6 +172,7 @@ class ConsoleLLMClient:
         prompt = _flatten_request(request)
         images = [*request.images, *(img for m in request.messages for img in m.images)]
         with tempfile.TemporaryDirectory(prefix="ai-workflow-console-") as workspace:
+            staged: list[str] = []
             extra_argv = list(self.extra_argv)
             if images:
                 # Staged vision: images become FILES in the CLI's working directory and the
@@ -201,7 +202,13 @@ class ConsoleLLMClient:
                 raise ValueError(
                     f"{self.flavor.name} does not support cli_max_budget_usd (no CLI budget flag)"
                 )
-            invocation = _build_console_invocation(self.flavor, prompt, Path(workspace), extra_argv)
+            invocation = _build_console_invocation(
+                self.flavor,
+                prompt,
+                Path(workspace),
+                extra_argv,
+                image_paths=staged if self.flavor.name == codex_exec.name else (),
+            )
             # 5R: inside an engine run the ambient invocation window bounds this call — the
             # client's own timeout_s may only NARROW it; standalone calls keep it as-is.
             process_bound = _console_effective_bound(
@@ -447,6 +454,8 @@ def _build_console_invocation(
     prompt: str,
     workspace: Path,
     extra_argv: list[str],
+    *,
+    image_paths: Sequence[str] = (),
 ) -> CliAgentInvocation:
     workspace.mkdir(parents=True, exist_ok=True)
     if flavor.name == claude_p.name:
@@ -472,6 +481,7 @@ def _build_console_invocation(
                 str(result_file),
                 *extra_argv,
                 prompt,
+                *(["--image", *image_paths] if image_paths else []),
             ],
             result_file=str(result_file),
         )

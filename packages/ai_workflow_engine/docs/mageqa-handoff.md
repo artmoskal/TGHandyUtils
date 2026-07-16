@@ -1,13 +1,13 @@
 # MageQA Engine Adoption Guide
 
-Status: **ready for consumer validation against immutable tag `engine-v0.11.2` (latest-only
-line); deployed adoption
-remains blocked until MageQA's own E0 canaries pass.** The five historical E0 blockers (planned
+Status: **`engine-v0.11.3` is a release candidate; MageQA must not re-pin or delete its fork until
+the candidate is cut and its E0 canaries pass.** The current immutable release remains
+`engine-v0.11.2`. The five historical E0 blockers (planned
 `partial` rewritten to `done`, unenforced `RuntimeLimits.timeout_s`, hidden retrace provenance,
 the CLI 600s default, and the reused tools wheel identity) are addressed and carried forward;
 v0.11 additionally hardens every persisted contract (strict versioned snapshot, bundle meta v2,
-wait records) with NO migration layer. MageQA must
-pin tag `engine-v0.11.2` from a clean checkout, rebuild wheels, and pass its E0 canaries before
+wait records) with NO migration layer. Once released, MageQA must pin tag `engine-v0.11.3` from a
+clean checkout, rebuild wheels, and pass its E0 canaries before
 adopting; it stays on its existing pin until those canaries pass.
 Do not infer the actual MageQA pin from this document; the consumer repository's pin file is
 authoritative for deployed state.
@@ -46,11 +46,11 @@ a defect.
 
 | Package | MageQA use |
 |---|---|
-| `ai-workflow-engine==0.11.2` | Required orchestration/runtime |
-| `ai-workflow-tools==0.5.0` | CLI agents, `claude -p`/`codex exec`, tool catalog, media helpers |
+| `ai-workflow-engine==0.11.3` | Required orchestration/runtime |
+| `ai-workflow-tools==0.5.1` | CLI agents, `claude -p`/`codex exec`, tool catalog, media helpers |
 | `ai-workflow-viewer==0.3.1` | Low-level engine run investigation and bundle rendering |
 
-> **Current matrix:** `engine-v0.11.2` + `ai-workflow-tools==0.5.0` + `ai-workflow-viewer==0.3.1`
+> **Current matrix candidate:** `engine-v0.11.3` + `ai-workflow-tools==0.5.1` + `ai-workflow-viewer==0.3.1`
 > (tools/viewer require `ai-workflow-engine>=0.11,<0.12`). The previous line
 > (`engine-v0.10.1` + tools `0.4.1` + viewer `0.2.3`) remains available at its historical tag for
 > historical data; the lines never mix in one environment.
@@ -196,15 +196,19 @@ with a scenario and acceptance proof. Upgrade via [`operations.md`](operations.m
 
 ## v0.11 Release Contract
 
-`engine-v0.11.2` is the current release of the **latest-only** line: strict versioned persisted
+`engine-v0.11.3` is the release candidate for the **latest-only** line; `engine-v0.11.2` remains
+the immutable release until the candidate is cut. The line uses strict versioned persisted
 contracts (snapshot `v0.11`, bundle meta v2, wait records `wait-v1`), one strict viewer loader, and
 NO migration layer — the sealed current-contract corpus shows 0 behavior deltas vs v0.10.1, but old
-persisted data is rejected loudly naming its historical tag. Adopt by re-pinning fresh (pin tag
-`engine-v0.11.2`, rebuild wheels: engine `0.11.2`, tools `0.5.0`, viewer `0.3.1`) and re-run your
-canaries before changing any deployed pin. Historical data stays inspectable with its own
-historical tag. Relative to v0.11.1, v0.11.2 corrects planner-round bookkeeping: retrace/replan
-retains earlier task outputs while current outputs replace colliding keys deterministically, and a
-successful task returning no output has no dangling `output_ref`. Public APIs, persisted schemas,
-provider behavior, and process behavior are unchanged. MageQA should remove its downstream
-retrace-output patch only after its E0 canary passes against the unmodified v0.11.2 wheel. Read the
-annotated tag for the exact source commit and reference wheel hashes.
+persisted data is rejected loudly naming its historical tag. Once cut, adopt by re-pinning fresh
+(pin tag `engine-v0.11.3`, rebuild wheels: engine `0.11.3`, tools `0.5.1`, viewer `0.3.1`) and
+re-run your canaries before changing any deployed pin.
+
+The candidate supersedes exactly the two changes declared in MageQA's v0.11.1 fork. Engine
+`0.11.3` carries the stronger planner-output merge at both loss surfaces. Tools `0.5.1` attaches
+staged `ImageInput` files to `codex exec` with native `--image`; Claude keeps the separate
+path-scoped `Read(./inputs/**)` transport. It also closes context-binding parity: human and fan-out
+capability invocations consume all four declared bindings, while subworkflows consume plan/machine
+cards and reject capability-only memory/model settings. MageQA removes its patch only after the
+annotated tag, source commit, wheel hashes, engine canaries, Codex image semantic proof, and E0 gate
+are recorded.

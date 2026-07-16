@@ -28,6 +28,7 @@ from ai_workflow_engine.engine.external import ExternalProcessCapability, Extern
 from ai_workflow_engine.models import (
     CapabilityResult,
     CapabilitySpec,
+    ModelProfile,
     ObservationDetail,
     SafetyPolicy,
     WorkflowArtifact,
@@ -364,6 +365,11 @@ async def test_mageqa_shape_human_approval_retrace_with_injected_plan(tmp_path):
             {
                 "round": None if prov is None else prov.round,
                 "plan_card": ctx.metadata.get("plan"),
+                "machine_card": ctx.metadata.get("machine"),
+                "memory": ctx.metadata.get("agent_memory"),
+                "model_profile": (
+                    None if ctx.model_profile is None else ctx.model_profile.name
+                ),
                 "criticism": isinstance(payload, dict) and "_criticism" in payload,
                 "resume_event": ctx.metadata.get("resume_event"),
             }
@@ -395,6 +401,14 @@ async def test_mageqa_shape_human_approval_retrace_with_injected_plan(tmp_path):
             )
         )
         .with_observation(ObservationConfig(enabled=True, bundle_dir=str(bundle_root)))
+        .with_model_profile(
+            ModelProfile(
+                name="approval_probe",
+                provider="ollama",
+                model="approval-probe-1",
+                temperature=0.0,
+            )
+        )
         .register_capability(
             "make_plan",
             make_plan,
@@ -411,6 +425,9 @@ async def test_mageqa_shape_human_approval_retrace_with_injected_plan(tmp_path):
                 "approve",
                 wait_policy=LocalWaitPolicy(),
                 inject_plan=True,
+                inject_machine=True,
+                memory="structured_state",
+                model_profile="approval_probe",
                 description="human approval of the audit plan",
             )
             .evaluate("qa", target="approve", evaluator="coverage", on_reject=Retrace("approve"))
@@ -437,6 +454,14 @@ async def test_mageqa_shape_human_approval_retrace_with_injected_plan(tmp_path):
         isinstance(v["plan_card"], str) and "audit the storefront" in v["plan_card"]
         for v in ask_visits
     ), "inject_plan must deliver the LIVE plan card on every approval visit"
+    assert all(
+        isinstance(v["machine_card"], str)
+        and "state: approve (human)" in v["machine_card"]
+        and "human approval of the audit plan" in v["machine_card"]
+        for v in ask_visits
+    ), "inject_machine must describe the live approval state on every visit"
+    assert [v["memory"] for v in ask_visits] == ["structured_state"] * 4
+    assert [v["model_profile"] for v in ask_visits] == ["approval_probe"] * 4
     assert [v["criticism"] for v in ask_visits] == [False, False, True, False]
     assert [v["resume_event"] for v in ask_visits] == [
         None,
@@ -450,7 +475,6 @@ async def test_mageqa_shape_human_approval_retrace_with_injected_plan(tmp_path):
     assert plan_records, "planner truth must be in the final envelope"
     outputs = [r.output for r in final.node_results if r.node_id == "report"]
     assert outputs and outputs[-1]["approved_with"] == {"approve": "round-2"}
-
     # one logical run across all three segments in the persisted bundle
     group = FileEventSource(bundle_root).read_group("qual-mageqa-b0")
     assert [s.segment_index for s in group.segments] == [0, 1, 2]
@@ -459,3 +483,11 @@ async def test_mageqa_shape_human_approval_retrace_with_injected_plan(tmp_path):
         "requires_user_input",
         "completed",
     ]
+    bindings = [
+        event
+        for event in group.trace_events
+        if event.node == "approve" and event.decision == "model_binding"
+    ]
+    assert len(bindings) == 4, (
+        "the grouped run must retain one model-binding decision per approval invocation"
+    )

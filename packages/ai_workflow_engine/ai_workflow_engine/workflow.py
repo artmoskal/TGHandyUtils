@@ -31,6 +31,15 @@ KNOWN_NODE_KINDS = frozenset(
     {"step", "branch", "fanout", "evaluate", "subworkflow", "human", "planner"}
 )
 
+# Authoritative node-kind contract for the four context decorations. Graph validation
+# consumes this matrix so hand-authored definitions cannot configure a field that its node
+# handler will silently ignore.
+NODE_CONTEXT_BINDINGS = {
+    kind: frozenset({"inject_plan", "inject_machine", "memory", "model_profile"})
+    for kind in ("step", "branch", "fanout", "evaluate", "human", "planner")
+}
+NODE_CONTEXT_BINDINGS["subworkflow"] = frozenset({"inject_plan", "inject_machine"})
+
 
 class WorkflowValidationError(ValueError):
     """Raised when a :class:`WorkflowDefinition` is structurally invalid."""
@@ -368,6 +377,7 @@ class WorkflowDefinition(BaseModel):
 
         errors: List[str] = []
         errors.extend(_validate_graph_identity(ids, self.entry, known))
+        errors.extend(_validate_node_binding_contracts(self.nodes))
         errors.extend(_validate_node_memory_configs(self.nodes))
         errors.extend(_validate_wait_policies(self.nodes, self.transitions))
         errors.extend(_validate_node_shapes(self.nodes, known, nodes_by_id))
@@ -390,6 +400,31 @@ def _validate_input_keys(nodes: List["WorkflowNode"], known: set[str]) -> List[s
             errors.append(
                 f"node '{node.id}' input_key '{node.input_key}' references no known node id, "
                 f"output_key alias, or '__input__' — it would silently read None at run time"
+            )
+    return errors
+
+
+def _validate_node_binding_contracts(nodes: List["WorkflowNode"]) -> List[str]:
+    """Reject context settings a node kind cannot consume instead of dropping them."""
+
+    errors: List[str] = []
+    for node in nodes:
+        supported = NODE_CONTEXT_BINDINGS.get(node.kind)
+        if supported is None:
+            continue
+        configured = {
+            "inject_plan": node.inject_plan,
+            "inject_machine": node.inject_machine,
+            "memory": node.memory is not None,
+            "model_profile": node.model_profile is not None,
+        }
+        rejected = sorted(
+            name for name, enabled in configured.items() if enabled and name not in supported
+        )
+        if rejected:
+            errors.append(
+                f"node '{node.id}' ({node.kind}) does not support context binding(s): "
+                f"{', '.join(rejected)}"
             )
     return errors
 
@@ -824,6 +859,7 @@ class WorkflowBuilder:
         exhausted: Optional[Dict[str, str]] = None,
         describe: Optional[Dict[str, str]] = None,
         model_profile: Optional[str] = None,
+        memory: Optional[Any] = None,
         inject_plan: bool = False,
         inject_machine: bool = False,
         title: str = "",
@@ -839,6 +875,7 @@ class WorkflowBuilder:
             decider=decider or node_id,
             branches=dict(branches),
             model_profile=model_profile,
+            memory=memory,
             inject_plan=inject_plan,
             inject_machine=inject_machine,
             title=title,
@@ -868,6 +905,8 @@ class WorkflowBuilder:
         max_parallel: Optional[int] = None,
         max_items: Optional[int] = None,
         output_key: Optional[str] = None,
+        model_profile: Optional[str] = None,
+        memory: Optional[Any] = None,
         inject_plan: bool = False,
         inject_machine: bool = False,
         title: str = "",
@@ -882,6 +921,8 @@ class WorkflowBuilder:
                 max_parallel=max_parallel,
                 max_items=max_items,
                 output_key=output_key,
+                model_profile=model_profile,
+                memory=memory,
                 inject_plan=inject_plan,
                 inject_machine=inject_machine,
                 title=title,
@@ -899,6 +940,7 @@ class WorkflowBuilder:
         on_reject: Optional[ControlDirective] = None,
         fallback: Optional[str] = None,
         model_profile: Optional[str] = None,
+        memory: Optional[Any] = None,
         inject_plan: bool = False,
         inject_machine: bool = False,
         title: str = "",
@@ -919,6 +961,7 @@ class WorkflowBuilder:
                 on_reject=on_reject,
                 fallback_capability=fallback or (on_reject.capability if isinstance(on_reject, Fallback) else None),
                 model_profile=model_profile,
+                memory=memory,
                 inject_plan=inject_plan,
                 inject_machine=inject_machine,
                 title=title,
@@ -940,6 +983,7 @@ class WorkflowBuilder:
         max_plan_depth: int = 1,
         max_total_planned_tasks: int = 32,
         model_profile: Optional[str] = None,
+        memory: Optional[Any] = None,
         inject_plan: bool = False,
         inject_machine: bool = False,
         title: str = "",
@@ -958,6 +1002,7 @@ class WorkflowBuilder:
                 max_plan_depth=max_plan_depth,
                 max_total_planned_tasks=max_total_planned_tasks,
                 model_profile=model_profile,
+                memory=memory,
                 inject_plan=inject_plan,
                 inject_machine=inject_machine,
                 title=title,

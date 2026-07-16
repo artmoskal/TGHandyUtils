@@ -882,11 +882,12 @@ def test_tools_wheel_identity_advanced_for_changed_code():
     (cli_agents assembly/console/models) while both tags shipped as 0.3.0 — two different
     wheels must never share name+version. v0.10 advanced to 0.4.0; v0.10.1 changed the tools
     process-I/O surfacing again (0.4.1); the v0.11 latest-only line changed the tools surface
-    again, advancing the identity to 0.5.0."""
+    again, advancing the identity to 0.5.0; native Codex image attachment advances the
+    next distinguishable tools wheel to 0.5.1."""
 
     import ai_workflow_tools
 
-    assert ai_workflow_tools.__version__ == "0.5.0", (
+    assert ai_workflow_tools.__version__ == "0.5.1", (
         "tools code changed since the last released wheel identity; the version must "
         f"advance (found {ai_workflow_tools.__version__})"
     )
@@ -1285,20 +1286,22 @@ async def test_graph_failsafe_stops_a_hang_outside_a_capability_boundary():
 
     sink = InMemoryTraceSink()
     runner = WorkflowRunner(trace_sink=sink)
-    runner._GRAPH_CANCELLATION_GRACE_S = 0.03
+    work_timeout_s = 0.25
+    cancellation_grace_s = 0.25
+    runner._GRAPH_CANCELLATION_GRACE_S = cancellation_grace_s
     started = _t.monotonic()
     result = await runner.run(
         _SuppressingGraph(),
-        {"engine_context": SimpleNamespace(limits=RuntimeLimits(timeout_s=0.03))},
+        {"engine_context": SimpleNamespace(limits=RuntimeLimits(timeout_s=work_timeout_s))},
         workflow_type="hang",
     )
     elapsed = _t.monotonic() - started
 
-    # OBS-1 load hardening: this wall bound exists ONLY to separate "returned after the
-    # 0.03s grace" from "hung for the suppressed 30s sleep" — the enforcement facts below
-    # (failed status, containment_failed, failsafe event) are deterministic. 5s keeps a 6x
-    # hang separation while surviving a heavily loaded host scheduler.
-    assert elapsed < 5.0, "cancellation suppression must not hang engine.run"
+    # The represented mechanism owns 0.50s. The extra second is scheduler/runner overhead,
+    # not permission to settle arbitrarily late: a 2s delay after containment must fail.
+    assert elapsed < work_timeout_s + cancellation_grace_s + 1.0, (
+        f"cancellation suppression settled outside its represented window: {elapsed:.2f}s"
+    )
     assert result["status"] == "failed"
     assert result["graph_failsafe"]["containment_failed"] is True
     event = next(e for e in sink.events if e.phase == "run:failsafe")
@@ -1554,8 +1557,8 @@ async def test_external_process_obeys_the_ambient_engine_window(tmp_path):
     cap = ExternalProcessCapability()
     now = _t.monotonic()
     token = publish_invocation_window(
-        soft_deadline_monotonic=now + 0.6,
-        hard_deadline_monotonic=now + 1.1,
+        soft_deadline_monotonic=now + 1.0,
+        hard_deadline_monotonic=now + 2.0,
     )
     try:
         started = _t.monotonic()
@@ -1580,18 +1583,16 @@ async def test_external_process_obeys_the_ambient_engine_window(tmp_path):
         reset_invocation_window(token)
 
     assert result.status == "partial"
-    # OBS-1 load hardening: the ENGINE-side window truth is asserted deterministically
-    # below (timeout_s <= 0.6, killed_after_grace, bound_source=engine_window). The wall
-    # bound only separates SIGKILL-after-grace (~1.1s mechanism time) from the process's
-    # 30s sleep; 3s keeps a 10x separation while absorbing spawn/reap delay under load.
+    # The engine represents a 2s hard boundary. One additional second covers process spawn
+    # and runner scheduling, while a 2s settlement regression still fails this fence.
     assert elapsed < 3.0, f"cleanup did not settle near the hard window (took {elapsed:.2f}s)"
     assert result.metadata["killed_after_grace"] is True
     assert "ready" in result.output["stdout"]
     assert result.metadata["bound_source"] == "engine_window"
-    assert result.metadata["timeout_s"] <= 0.6
+    assert result.metadata["timeout_s"] <= 1.0
     assert result.metadata["requested_timeout_s"] == 300.0
     bound = result.metadata["process_execution_bound"]
-    assert bound["engine_hard_s"] <= 1.1
+    assert bound["engine_hard_s"] <= 2.0
     assert bound["settle_reserve_s"] > 0
     assert (
         bound["work_timeout_s"]
