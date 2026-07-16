@@ -317,3 +317,145 @@ async def test_slackazz_shape_durable_suspend_resume_grouped_bundle(tmp_path):
         f"rendered gate card must be run-status-completed, got run-status-{gate_card.group(1)} — "
         "the grouped page presents the resumed run as still suspended"
     )
+
+
+# ------------------------------------------- MageQA shape (approval gate + coverage retrace, B0)
+
+async def test_mageqa_shape_human_approval_retrace_with_injected_plan(tmp_path):
+    """MageQA's canonical deepening loop through the PUBLIC doors, post-B0: a planner plans the
+    audit, an approval gate (human node with inject_plan) suspends, and the coverage evaluator
+    retraces to the GATE once — the retraced re-ask must receive typed provenance AND the live
+    plan card, the criticism payload, and no leaked resume event; evidence from round 1 survives;
+    the grouped bundle shows the whole three-segment lifecycle as ONE logical run."""
+
+    from ai_workflow_engine import LocalWaitPolicy, PlanArtifact, PlanTask
+    from ai_workflow_engine.models import RuntimeLimits
+    from ai_workflow_engine.workflow import Retrace
+    from ai_workflow_viewer import FileEventSource
+    from pydantic import BaseModel
+
+    bundle_root = tmp_path / "bundles"
+
+    class Approval(BaseModel):
+        status: str
+        value: object = None
+
+    ask_visits: list[dict] = []
+
+    def make_plan(_ctx, _p):
+        return PlanArtifact(
+            goal="audit the storefront",
+            tasks=[
+                PlanTask(
+                    task_id="observe",
+                    description="collect storefront facts",
+                    capability="observe",
+                    payload={"page": "home"},
+                )
+            ],
+        )
+
+    def observe(_ctx, p):
+        return {"facts": ["banner present"], "page": (p or {}).get("page")}
+
+    def approve(ctx, payload):
+        prov = getattr(ctx, "retrace_provenance", None)
+        ask_visits.append(
+            {
+                "round": None if prov is None else prov.round,
+                "plan_card": ctx.metadata.get("plan"),
+                "criticism": isinstance(payload, dict) and "_criticism" in payload,
+                "resume_event": ctx.metadata.get("resume_event"),
+            }
+        )
+        event = ctx.metadata.get("resume_event")
+        if event is None:
+            return Approval(status="pending")
+        return Approval(status="answered", value=event)
+
+    gate_rounds = {"n": 0}
+
+    def coverage(_ctx, _p):
+        gate_rounds["n"] += 1
+        return CapabilityResult(
+            status="accepted" if gate_rounds["n"] > 1 else "rejected",
+            error="coverage too shallow — one more approval round",
+        )
+
+    def report(_ctx, p):
+        return {"report": "final", "approved_with": getattr(p, "value", None)}
+
+    engine = (
+        WorkflowEngineBuilder()
+        .with_profile(
+            WorkflowProfile(
+                workflow_type="audit_approval",
+                limits=RuntimeLimits(timeout_s=None),
+                safety=SafetyPolicy(allowed_side_effects=[]),
+            )
+        )
+        .with_observation(ObservationConfig(enabled=True, bundle_dir=str(bundle_root)))
+        .register_capability(
+            "make_plan",
+            make_plan,
+            spec=CapabilitySpec(name="make_plan", kind="llm", is_planner=True),
+        )
+        .register_capability("observe", observe)
+        .register_capability("approve", approve)
+        .register_capability("coverage", coverage, kind="llm")
+        .register_capability("report", report)
+        .register_workflow(
+            WorkflowBuilder("audit_approval")
+            .plan("plan_node", capability="make_plan")
+            .human(
+                "approve",
+                wait_policy=LocalWaitPolicy(),
+                inject_plan=True,
+                description="human approval of the audit plan",
+            )
+            .evaluate("qa", target="approve", evaluator="coverage", on_reject=Retrace("approve"))
+            .step("report")
+            .build()
+        )
+        .build()
+    )
+
+    goal = WorkflowGoal(
+        workflow_type="audit_approval", objective="audit", metadata={"run_id": "qual-mageqa-b0"}
+    )
+    first = await engine.run("audit_approval", {"target": "storefront"}, goal=goal)
+    assert first.status == "requires_user_input"
+    second = await engine.resume(first.snapshot, {"approve": "round-1"})
+    assert second.status == "requires_user_input", "the coverage retrace must re-ask the human"
+    final = await engine.resume(second.snapshot, {"approve": "round-2"})
+    assert final.status == "completed"
+
+    assert [v["round"] for v in ask_visits] == [None, None, 1, None], (
+        "typed provenance belongs to the retraced re-ask exactly once"
+    )
+    assert all(
+        isinstance(v["plan_card"], str) and "audit the storefront" in v["plan_card"]
+        for v in ask_visits
+    ), "inject_plan must deliver the LIVE plan card on every approval visit"
+    assert [v["criticism"] for v in ask_visits] == [False, False, True, False]
+    assert [v["resume_event"] for v in ask_visits] == [
+        None,
+        {"approve": "round-1"},
+        None,
+        {"approve": "round-2"},
+    ]
+
+    # round-1 evidence survives the deepening round (the GAP-1 promise, consumer-shaped)
+    plan_records = [r for r in final.node_results if r.node_id == "plan_node"]
+    assert plan_records, "planner truth must be in the final envelope"
+    outputs = [r.output for r in final.node_results if r.node_id == "report"]
+    assert outputs and outputs[-1]["approved_with"] == {"approve": "round-2"}
+
+    # one logical run across all three segments in the persisted bundle
+    group = FileEventSource(bundle_root).read_group("qual-mageqa-b0")
+    assert [s.segment_index for s in group.segments] == [0, 1, 2]
+    assert [s.status for s in group.segments] == [
+        "requires_user_input",
+        "requires_user_input",
+        "completed",
+    ]
