@@ -2094,7 +2094,11 @@ async def test_parent_scope_restores_after_child_failure_and_no_residue_remains(
     def exploding_child(context, _payload):
         prov = getattr(context, "retrace_provenance", None)
         child_prov.append(None if prov is None else {"round": prov.round})
-        raise RuntimeError("child blows up")
+        if len(child_prov) == 1:
+            return {"first_round": "fine"}
+        # the SECOND visit is the parent-retraced one: fail exactly while the parent's
+        # provenance is active, so the restore claim is actually exercised
+        raise RuntimeError("child blows up on the retraced visit")
 
     def probe(context, _payload):
         prov = getattr(context, "retrace_provenance", None)
@@ -2109,6 +2113,8 @@ async def test_parent_scope_restores_after_child_failure_and_no_residue_remains(
         )
 
     child = WorkflowBuilder("boom_child").step("exploding_child").build()
+    # flow shape: child run 1 succeeds -> qa rejects -> parent retrace -> child run 2 fails
+    # WHILE the parent subworkflow node is the active retrace target
     engine = (
         WorkflowEngineBuilder()
         .register_capability("exploding_child", exploding_child, kind="deterministic")
@@ -2127,8 +2133,9 @@ async def test_parent_scope_restores_after_child_failure_and_no_residue_remains(
 
     first = await engine.run("boom_parent", {"seed": 1})
     assert first.status == "failed"
-    assert all(entry is None for entry in child_prov), (
-        f"even a failing child must never see parent provenance: {child_prov}"
+    assert child_prov == [None, None], (
+        "the child must run twice (initial + parent-retraced) and the RETRACED visit — "
+        f"failing while parent provenance is active — must still be shielded: {child_prov}"
     )
 
     followup = await engine.run("residue_probe", {"seed": 2})
@@ -2149,10 +2156,19 @@ async def test_concurrent_retraced_parents_do_not_cross_leak_provenance():
 
     from ai_workflow_engine import Retrace
 
-    def build_engine(bucket: list):
-        def child_probe(context, _payload):
+    mine_here = asyncio.Event()
+    other_here = asyncio.Event()
+
+    def build_engine(bucket: list, arrive: "asyncio.Event", wait_for: "asyncio.Event"):
+        async def child_probe(context, _payload):
             prov = getattr(context, "retrace_provenance", None)
             bucket.append(None if prov is None else {"round": prov.round})
+            if len(bucket) == 2:
+                # REAL overlap barrier: both runs' RETRACED child visits must be alive
+                # at the same time before either may finish — a serialized execution
+                # deadlocks here and the timeout fails the test loudly.
+                arrive.set()
+                await asyncio.wait_for(wait_for.wait(), timeout=10)
             return {"child_run": len(bucket)}
 
         gate_calls = {"n": 0}
@@ -2182,8 +2198,8 @@ async def test_concurrent_retraced_parents_do_not_cross_leak_provenance():
 
     bucket_one: list = []
     bucket_two: list = []
-    engine_one = build_engine(bucket_one)
-    engine_two = build_engine(bucket_two)
+    engine_one = build_engine(bucket_one, mine_here, other_here)
+    engine_two = build_engine(bucket_two, other_here, mine_here)
 
     result_one, result_two = await asyncio.gather(
         engine_one.run("conc_parent", {"seed": 1}),
@@ -2232,3 +2248,49 @@ def test_retrace_provenance_scope_owner_restores_on_every_exit_path():
         if "_ACTIVE_RETRACE_PROVENANCE.set(" in source or "_ACTIVE_RETRACE_PROVENANCE.reset(" in source:
             offenders.append(str(path))
     assert not offenders, f"provenance publication has ONE owner; direct set/reset in: {offenders}"
+
+
+async def test_run_inner_boundary_sanitizes_explicit_context_provenance():
+    """CXR-1: the universal child boundary owns BOTH provenance surfaces — the ambient
+    ContextVar AND an explicit stale `retrace_provenance` already carried by the incoming
+    CapabilityContext. The built-in doors sanitize via build_child_context today, but the
+    boundary must not rely on caller discipline: a direct child run with a provenance-
+    carrying context must still deliver None to child capabilities."""
+
+    from ai_workflow_engine.models import (
+        CapabilityContext,
+        RetraceProvenance,
+        WorkflowGoal,
+        WorkflowRunContext,
+    )
+
+    seen: list = []
+
+    def child_probe(context, _payload):
+        prov = getattr(context, "retrace_provenance", None)
+        seen.append(None if prov is None else {"round": prov.round, "target": prov.target_node})
+        return {"ok": True}
+
+    child = WorkflowBuilder("boundary_child").step("child_probe").build()
+    engine = (
+        WorkflowEngineBuilder()
+        .register_capability("child_probe", child_probe, kind="deterministic")
+        .register_workflow(child)
+        .build()
+    )
+
+    stale = CapabilityContext(
+        goal=WorkflowGoal(workflow_type="boundary_child", objective="probe"),
+        run_context=WorkflowRunContext(workflow_id="boundary-run", workflow_type="boundary_child"),
+        retrace_provenance=RetraceProvenance(
+            round=1,
+            evaluator_node="parent_qa",
+            source_node="parent_delegate",
+            target_node="parent_delegate",
+        ),
+    )
+    result = await engine.executor._run_inner(child, {"seed": 1}, stale)
+    assert result.status == "completed"
+    assert seen == [None], (
+        f"the child boundary must sanitize explicit context provenance, got {seen}"
+    )

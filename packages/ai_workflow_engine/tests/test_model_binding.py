@@ -415,52 +415,81 @@ async def test_concurrent_fanout_items_attribute_their_own_models():
 
 
 async def test_nested_bound_invocation_contributes_to_inner_and_outer_captures_once():
-    """Nesting is INCLUSIVE for observation and single-count for accounting: an outer bound
-    step whose capability internally runs a nested bound invocation sees the nested model in
-    ITS OWN binding truth, the nested binding names itself, and the global summary counts
-    the event exactly once."""
+    """A REAL nested bound invocation (CXR-2): a bound fanout runs a workflow-capability
+    whose child contains its own model-BOUND step. The child binding names the model IT
+    invoked, the outer fanout binding's capture INCLUDES the nested provider work, item
+    identity stays deterministic, and the global summary counts each provider event exactly
+    once — no duplicate accounting through two capture layers."""
 
     from ai_workflow_engine.models import WorkflowUsageEvent
     from ai_workflow_engine.usage_events import record_usage_event
 
-    engine_holder = {}
-
-    async def inner(_context, _payload):
+    def emit(_context, item):
+        model = (item or {}).get("model", "unknown")
         record_usage_event(
-            WorkflowUsageEvent(node="inner", operation="chat", model="nested-model", total_tokens=3)
+            WorkflowUsageEvent(node="emit", operation="chat", model=model, total_tokens=1)
         )
-        return {"inner": True}
+        return {"emitted": model}
 
-    async def outer(context, _payload):
-        # a real nested BOUND invocation through the same public runtime door
-        result = await engine_holder["engine"].runtime.invoke("inner", {}, context)
-        return {"outer": True, "nested": result.output}
+    def seed(_context, _payload):
+        return [{"model": "model-a"}, {"model": "model-b"}]
 
     builder = WorkflowEngineBuilder()
     builder.with_model_profile(
-        ModelProfile(name="outer_profile", provider="custom", model="outer-model", temperature=0.0)
+        ModelProfile(name="outer_profile", provider="custom", model="outer-x", temperature=0.0)
     )
-    builder.register_capability("inner", inner, kind="llm")
-    builder.register_capability("outer", outer, kind="llm")
+    builder.with_model_profile(
+        ModelProfile(name="inner_profile", provider="custom", model="inner-x", temperature=0.0)
+    )
+    builder.register_capability("emit", emit, kind="llm")
+    builder.register_capability("seed", seed, kind="deterministic")
+    child = (
+        WorkflowBuilder("nested_child").step("emit", model_profile="inner_profile").build()
+    )
+    builder.register_workflow(child)
     builder.register_workflow(
-        WorkflowBuilder("nested_capture").step("outer", model_profile="outer_profile").build()
+        WorkflowBuilder("nested_fan")
+        .step("seed")
+        .fanout(
+            "fan",
+            capability="run_child",
+            items_key="seed",
+            max_parallel=2,
+            model_profile="outer_profile",
+        )
+        .build()
     )
     engine = builder.build()
-    engine_holder["engine"] = engine
+    engine.register_workflow_capability("run_child", "nested_child")
 
-    result = await engine.run("nested_capture", {})
+    result = await engine.run("nested_fan", {})
     assert result.status == "completed"
 
-    bindings = {e.node: e.metadata for e in result.trace if e.decision == "model_binding"}
-    assert bindings["outer"]["model_used"] == "nested-model", (
-        "the outer capture must include nested provider work (inclusive nesting)"
+    outer = {
+        e.metadata["fanout_item_index"]: e.metadata.get("model_used")
+        for e in result.trace
+        if e.decision == "model_binding" and e.node == "fan"
+    }
+    assert outer == {0: "model-a", 1: "model-b"}, (
+        "the OUTER capture must include nested bound provider work per item (inclusive "
+        f"nesting through a real child workflow): {outer}"
     )
-    assert "fanout_item_index" not in bindings["outer"], (
-        "ordinary sequential bindings must not fabricate an item index"
+    inner = sorted(
+        e.metadata.get("model_used")
+        for e in result.trace
+        if e.decision == "model_binding" and e.node == "emit"
     )
-    nested_events = [e for e in result.usage.events if e.model == "nested-model"]
-    assert len(nested_events) == 1, "capture observes; it must never double-account"
-    assert result.usage.total_tokens == 3
+    assert inner == ["model-a", "model-b"], (
+        f"the INNER bound step must name the model IT invoked: {inner}"
+    )
+    assert all(
+        "fanout_item_index" not in e.metadata
+        for e in result.trace
+        if e.decision == "model_binding" and e.node == "emit"
+    ), "nested sequential bindings must not fabricate an item index"
+    assert len(result.usage.events) == 2 and result.usage.total_tokens == 2, (
+        "two capture layers observe; the canonical summary still counts each event once"
+    )
 
 
 async def test_concurrent_workflows_do_not_cross_attribute_models():

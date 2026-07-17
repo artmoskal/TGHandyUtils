@@ -423,6 +423,12 @@ class WorkflowExecutor:
 
         self._bind_or_validate_event_loop()
         with retrace_provenance_scope(None):
+            # CXR-1: the boundary owns BOTH provenance surfaces — the ambient scope above
+            # AND any explicit stale value already carried by the incoming context. The
+            # built-in doors build fresh child contexts, but the universal owner must not
+            # depend on caller discipline.
+            if getattr(context, "retrace_provenance", None) is not None:
+                context = context.model_copy(update={"retrace_provenance": None})
             binding_error = self._preflight(definition)
             if binding_error is not None:
                 return self._results.failed(definition, binding_error)
