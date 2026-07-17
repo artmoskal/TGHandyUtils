@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Awaitable, Callable, Dict
 
-from ai_workflow_engine._runtime_state import _ACTIVE_RETRACE_PROVENANCE
+from ai_workflow_engine._runtime_state import retrace_provenance_scope
 from ai_workflow_engine.models import WorkflowTraceEvent
 from ai_workflow_engine.workflow import WorkflowNode
 
@@ -47,10 +47,7 @@ class NodeReplayRuntime:
         pending = state.get("pending_retrace_provenance")
         if not (isinstance(pending, dict) and pending.get("target") == node.id):
             return await fn(state)
-        token = _ACTIVE_RETRACE_PROVENANCE.set(pending.get("provenance"))
-        try:
+        with retrace_provenance_scope(pending.get("provenance")):
             update = await fn(state)
-        finally:
-            _ACTIVE_RETRACE_PROVENANCE.reset(token)
         update["pending_retrace_provenance"] = None
         return update

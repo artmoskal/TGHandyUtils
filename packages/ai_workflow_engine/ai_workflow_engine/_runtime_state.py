@@ -61,6 +61,25 @@ _ACTIVE_RETRACE_PROVENANCE: ContextVar[Optional[Any]] = ContextVar(
 
 
 @contextmanager
+def retrace_provenance_scope(provenance: Optional[Any]) -> Iterator[None]:
+    """ONE owner for publishing/clearing the ambient retrace provenance (C1, FENCE-4).
+
+    The node replay wrapper enters it with the target's provenance; the universal child
+    boundary (``WorkflowExecutor._run_inner``) enters it with ``None`` so a retraced parent
+    can never smear its provenance into child-workflow node invocations. Token-based reset
+    restores the PREVIOUS value on every exit path — success, exception, timeout,
+    cancellation — and nesting composes (a child may run its own retrace inside the shield).
+    Never set/reset the ContextVar directly outside this owner.
+    """
+
+    token = _ACTIVE_RETRACE_PROVENANCE.set(provenance)
+    try:
+        yield
+    finally:
+        _ACTIVE_RETRACE_PROVENANCE.reset(token)
+
+
+@contextmanager
 def workflow_run_context_scope(context: Any) -> Iterator[Any]:
     token = _ACTIVE_WORKFLOW_CONTEXT.set(context)
     try:

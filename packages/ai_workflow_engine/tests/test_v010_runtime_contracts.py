@@ -1902,3 +1902,333 @@ async def test_external_process_dict_request_validates_nested_io_limits(tmp_path
     process_io = settled.metadata["process_io"]
     assert process_io["stdout"]["limit_bytes"] == 64
     assert process_io["stdout"]["truncated"] is True
+
+
+# ======================================================================================
+# FENCE-4 (C1): retrace provenance is TARGET-ONLY — child workflows never see the parent's
+# ======================================================================================
+
+
+async def test_parent_retraced_subworkflow_keeps_child_capabilities_provenance_free():
+    """C0 reproducer (FENCE-4, door 1 — declared subworkflow node): when the PARENT
+    subworkflow node is the retrace target, the ambient provenance belongs to that parent
+    invocation only. Child node capabilities must see None on every child run — a child
+    planner keying on provenance.round would otherwise mistake its first local run for a
+    follow-up round."""
+
+    from ai_workflow_engine import Retrace
+
+    child_prov: list = []
+
+    def child_probe(context, _payload):
+        prov = getattr(context, "retrace_provenance", None)
+        child_prov.append(
+            None
+            if prov is None
+            else {"round": prov.round, "evaluator": prov.evaluator_node, "target": prov.target_node}
+        )
+        return {"child_run": len(child_prov)}
+
+    gate_calls = {"n": 0}
+
+    def gate(_context, _payload):
+        gate_calls["n"] += 1
+        return CapabilityResult(
+            status="accepted" if gate_calls["n"] > 1 else "rejected", error="one more round"
+        )
+
+    child = WorkflowBuilder("iso_child").step("child_probe").build()
+    engine = (
+        WorkflowEngineBuilder()
+        .register_capability("child_probe", child_probe, kind="deterministic")
+        .register_capability("gate", gate, kind="llm")
+        .register_capability("fin", lambda _c, _p: "fin", kind="deterministic")
+        .register_workflow(child)
+        .register_workflow(
+            WorkflowBuilder("iso_parent")
+            .subworkflow("delegate", workflow=child)
+            .evaluate("qa", target="delegate", evaluator="gate", on_reject=Retrace("delegate"))
+            .step("fin")
+            .build()
+        )
+        .build()
+    )
+
+    result = await engine.run("iso_parent", {"seed": 1})
+    assert result.status == "completed"
+    assert gate_calls["n"] == 2 and len(child_prov) == 2
+    assert child_prov == [None, None], (
+        f"child capabilities must never see the parent's retrace provenance: {child_prov}"
+    )
+
+
+async def test_parent_retraced_workflow_capability_keeps_child_capabilities_provenance_free():
+    """C0 reproducer (FENCE-4, door 2 — workflow registered as an ordinary capability):
+    the SAME isolation must hold when the child enters through
+    register_workflow_capability -> _run_inner. The step's own capability (the workflow
+    capability) legitimately receives typed provenance as the retrace target; the nodes
+    INSIDE the child must not."""
+
+    from ai_workflow_engine import Retrace
+
+    child_prov: list = []
+
+    def child_probe(context, _payload):
+        prov = getattr(context, "retrace_provenance", None)
+        child_prov.append(None if prov is None else {"round": prov.round})
+        return {"child_run": len(child_prov)}
+
+    gate_calls = {"n": 0}
+
+    def gate(_context, _payload):
+        gate_calls["n"] += 1
+        return CapabilityResult(
+            status="accepted" if gate_calls["n"] > 1 else "rejected", error="one more round"
+        )
+
+    child = WorkflowBuilder("iso_child_cap").step("child_probe").build()
+    engine = (
+        WorkflowEngineBuilder()
+        .register_capability("child_probe", child_probe, kind="deterministic")
+        .register_capability("gate", gate, kind="llm")
+        .register_capability("fin", lambda _c, _p: "fin", kind="deterministic")
+        .register_workflow(child)
+        .register_workflow(
+            WorkflowBuilder("iso_parent_cap")
+            .step("delegate_cap", capability="child_cap")
+            .evaluate("qa", target="delegate_cap", evaluator="gate", on_reject=Retrace("delegate_cap"))
+            .step("fin")
+            .build()
+        )
+        .build()
+    )
+    engine.register_workflow_capability("child_cap", "iso_child_cap")
+
+    result = await engine.run("iso_parent_cap", {"seed": 1})
+    assert result.status == "completed"
+    assert len(child_prov) == 2
+    assert child_prov == [None, None], (
+        f"the second child door must be shielded exactly like the first: {child_prov}"
+    )
+
+
+async def test_child_internal_retrace_still_delivers_child_local_provenance():
+    """The _run_inner shield must not disable retrace INSIDE the child: a child-internal
+    evaluator retrace delivers the child's OWN provenance (child node ids, round 1) exactly
+    once, while the parent's ambient provenance stays invisible throughout."""
+
+    from ai_workflow_engine import Retrace
+
+    child_prov: list = []
+
+    def child_draft(context, _payload):
+        prov = getattr(context, "retrace_provenance", None)
+        child_prov.append(
+            None
+            if prov is None
+            else {"round": prov.round, "evaluator": prov.evaluator_node, "target": prov.target_node}
+        )
+        return {"draft": len(child_prov)}
+
+    child_gate_calls = {"n": 0}
+
+    def child_gate(_context, _payload):
+        child_gate_calls["n"] += 1
+        return CapabilityResult(
+            status="accepted" if child_gate_calls["n"] > 1 else "rejected", error="deepen"
+        )
+
+    parent_gate_calls = {"n": 0}
+
+    def parent_gate(_context, _payload):
+        parent_gate_calls["n"] += 1
+        return CapabilityResult(
+            status="accepted" if parent_gate_calls["n"] > 1 else "rejected", error="again"
+        )
+
+    child = (
+        WorkflowBuilder("nested_retrace_child")
+        .step("child_draft")
+        .evaluate("child_qa", target="child_draft", evaluator="child_gate", on_reject=Retrace("child_draft"))
+        .build()
+    )
+    engine = (
+        WorkflowEngineBuilder()
+        .register_capability("child_draft", child_draft, kind="deterministic")
+        .register_capability("child_gate", child_gate, kind="llm")
+        .register_capability("parent_gate", parent_gate, kind="llm")
+        .register_capability("fin", lambda _c, _p: "fin", kind="deterministic")
+        .register_workflow(child)
+        .register_workflow(
+            WorkflowBuilder("nested_retrace_parent")
+            .subworkflow("delegate", workflow=child)
+            .evaluate("qa", target="delegate", evaluator="parent_gate", on_reject=Retrace("delegate"))
+            .step("fin")
+            .build()
+        )
+        .build()
+    )
+
+    result = await engine.run("nested_retrace_parent", {"seed": 1})
+    assert result.status == "completed"
+    assert parent_gate_calls["n"] == 2 and child_gate_calls["n"] == 3
+    # Parent round 1: child draft (None) + child-internal retraced draft (child provenance).
+    # Parent round 2 (parent retrace of the whole subworkflow): the child gate's third call
+    # accepts immediately, so ONE more child draft — and it must see None: the shield holds
+    # even while the PARENT node itself is the active retrace target.
+    assert child_prov == [
+        None,
+        {"round": 1, "evaluator": "child_qa", "target": "child_draft"},
+        None,
+    ], f"child-local retrace must survive the shield with child ids only: {child_prov}"
+
+
+async def test_parent_scope_restores_after_child_failure_and_no_residue_remains():
+    """The shield's token reset must restore on the FAILURE path too: a failing child leaves
+    no ambient provenance residue for later runs in the same task."""
+
+    from ai_workflow_engine import Retrace
+
+    child_prov: list = []
+
+    def exploding_child(context, _payload):
+        prov = getattr(context, "retrace_provenance", None)
+        child_prov.append(None if prov is None else {"round": prov.round})
+        raise RuntimeError("child blows up")
+
+    def probe(context, _payload):
+        prov = getattr(context, "retrace_provenance", None)
+        return {"residue": None if prov is None else {"round": prov.round}}
+
+    gate_calls = {"n": 0}
+
+    def gate(_context, _payload):
+        gate_calls["n"] += 1
+        return CapabilityResult(
+            status="accepted" if gate_calls["n"] > 1 else "rejected", error="retry it"
+        )
+
+    child = WorkflowBuilder("boom_child").step("exploding_child").build()
+    engine = (
+        WorkflowEngineBuilder()
+        .register_capability("exploding_child", exploding_child, kind="deterministic")
+        .register_capability("probe", probe, kind="deterministic")
+        .register_capability("gate", gate, kind="llm")
+        .register_workflow(child)
+        .register_workflow(
+            WorkflowBuilder("boom_parent")
+            .subworkflow("delegate", workflow=child)
+            .evaluate("qa", target="delegate", evaluator="gate", on_reject=Retrace("delegate"))
+            .build()
+        )
+        .register_workflow(WorkflowBuilder("residue_probe").step("probe").build())
+        .build()
+    )
+
+    first = await engine.run("boom_parent", {"seed": 1})
+    assert first.status == "failed"
+    assert all(entry is None for entry in child_prov), (
+        f"even a failing child must never see parent provenance: {child_prov}"
+    )
+
+    followup = await engine.run("residue_probe", {"seed": 2})
+    assert followup.status == "completed"
+    assert followup.output == {"residue": None}, (
+        "the failure path must restore the ambient scope — no provenance residue may leak "
+        "into later runs in the same task"
+    )
+
+
+async def test_concurrent_retraced_parents_do_not_cross_leak_provenance():
+    """Two retraced parent runs executing concurrently in one event loop must each keep
+    their children provenance-free — ContextVar task isolation plus the shield make
+    cross-run leakage structurally impossible, and this fence would catch any global-state
+    replacement of either."""
+
+    import asyncio
+
+    from ai_workflow_engine import Retrace
+
+    def build_engine(bucket: list):
+        def child_probe(context, _payload):
+            prov = getattr(context, "retrace_provenance", None)
+            bucket.append(None if prov is None else {"round": prov.round})
+            return {"child_run": len(bucket)}
+
+        gate_calls = {"n": 0}
+
+        def gate(_context, _payload):
+            gate_calls["n"] += 1
+            return CapabilityResult(
+                status="accepted" if gate_calls["n"] > 1 else "rejected", error="again"
+            )
+
+        child = WorkflowBuilder("conc_child").step("child_probe").build()
+        return (
+            WorkflowEngineBuilder()
+            .register_capability("child_probe", child_probe, kind="deterministic")
+            .register_capability("gate", gate, kind="llm")
+            .register_capability("fin", lambda _c, _p: "fin", kind="deterministic")
+            .register_workflow(child)
+            .register_workflow(
+                WorkflowBuilder("conc_parent")
+                .subworkflow("delegate", workflow=child)
+                .evaluate("qa", target="delegate", evaluator="gate", on_reject=Retrace("delegate"))
+                .step("fin")
+                .build()
+            )
+            .build()
+        )
+
+    bucket_one: list = []
+    bucket_two: list = []
+    engine_one = build_engine(bucket_one)
+    engine_two = build_engine(bucket_two)
+
+    result_one, result_two = await asyncio.gather(
+        engine_one.run("conc_parent", {"seed": 1}),
+        engine_two.run("conc_parent", {"seed": 2}),
+    )
+    assert result_one.status == "completed" and result_two.status == "completed"
+    assert bucket_one == [None, None] and bucket_two == [None, None], (
+        f"concurrent retraced parents leaked provenance: {bucket_one} / {bucket_two}"
+    )
+
+
+def test_retrace_provenance_scope_owner_restores_on_every_exit_path():
+    """The single scope owner: nesting restores the previous value exactly, and the reset
+    happens on exception paths too. No set/reset of the ContextVar exists outside it."""
+
+    from pathlib import Path
+
+    from ai_workflow_engine._runtime_state import (
+        _ACTIVE_RETRACE_PROVENANCE,
+        retrace_provenance_scope,
+    )
+
+    assert _ACTIVE_RETRACE_PROVENANCE.get() is None
+    with retrace_provenance_scope("outer"):
+        assert _ACTIVE_RETRACE_PROVENANCE.get() == "outer"
+        with retrace_provenance_scope(None):
+            assert _ACTIVE_RETRACE_PROVENANCE.get() is None
+            with retrace_provenance_scope("inner"):
+                assert _ACTIVE_RETRACE_PROVENANCE.get() == "inner"
+            assert _ACTIVE_RETRACE_PROVENANCE.get() is None
+        assert _ACTIVE_RETRACE_PROVENANCE.get() == "outer"
+    assert _ACTIVE_RETRACE_PROVENANCE.get() is None
+
+    with pytest.raises(RuntimeError):
+        with retrace_provenance_scope("explodes"):
+            raise RuntimeError("boom")
+    assert _ACTIVE_RETRACE_PROVENANCE.get() is None, "exception path must restore"
+
+    # One owner: no direct .set(/.reset( on the provenance var outside _runtime_state.py.
+    package_root = Path(__file__).resolve().parents[1] / "ai_workflow_engine"
+    offenders = []
+    for path in package_root.rglob("*.py"):
+        if path.name == "_runtime_state.py":
+            continue
+        source = path.read_text(encoding="utf-8")
+        if "_ACTIVE_RETRACE_PROVENANCE.set(" in source or "_ACTIVE_RETRACE_PROVENANCE.reset(" in source:
+            offenders.append(str(path))
+    assert not offenders, f"provenance publication has ONE owner; direct set/reset in: {offenders}"

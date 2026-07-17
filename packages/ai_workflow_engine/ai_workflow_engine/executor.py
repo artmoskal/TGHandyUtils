@@ -44,6 +44,7 @@ from ai_workflow_engine._runtime_state import (
     current_run_session,
     RUNNING_PAYLOAD,
     observation_capture_scope,
+    retrace_provenance_scope,
     run_session_scope,
 )
 from ai_workflow_engine.models import (
@@ -411,25 +412,34 @@ class WorkflowExecutor:
 
         Used by subworkflow nodes so child metered calls aggregate into the parent's usage
         summary (shared budget) instead of opening a fresh scope.
+
+        This is the UNIVERSAL child-workflow boundary (declared subworkflow nodes AND
+        workflows registered as ordinary capabilities), so it also owns retrace isolation
+        (C1, FENCE-4): a retraced PARENT's ambient provenance is shielded to ``None`` for
+        the entire child preflight/compile/run/envelope path — child node invocations never
+        see parent provenance, while a child-internal retrace still publishes its own inside
+        the shield. The parent's value is restored on every exit path by the scope owner.
         """
 
         self._bind_or_validate_event_loop()
-        binding_error = self._preflight(definition)
-        if binding_error is not None:
-            return self._results.failed(definition, binding_error)
-        compiled = self.compile(definition)
-        graph_config = {"recursion_limit": self._recursion_limit(definition, context)}
-        with observation_capture_scope(self.runtime.observation):
-            child_state = self._initial_state(payload, context)
-            if (session := current_run_session()) is not None:
-                # Child workflows share the parent's usage/budget scope. Carry that same
-                # summary into the child envelope too; an empty fabricated summary would make
-                # nested costs look like zero and emit a false plumbing warning on every run.
-                child_state["usage_summary"] = session.usage_summary
-                child_state["workflow_context"] = session.run_context
-            with child_trace_slice() as child_events:
-                final_state = await compiled.ainvoke(child_state, config=graph_config)
-        return self._results.envelope(definition, final_state, child_trace=child_events)
+        with retrace_provenance_scope(None):
+            binding_error = self._preflight(definition)
+            if binding_error is not None:
+                return self._results.failed(definition, binding_error)
+            compiled = self.compile(definition)
+            graph_config = {"recursion_limit": self._recursion_limit(definition, context)}
+            with observation_capture_scope(self.runtime.observation):
+                child_state = self._initial_state(payload, context)
+                if (session := current_run_session()) is not None:
+                    # Child workflows share the parent's usage/budget scope. Carry that same
+                    # summary into the child envelope too; an empty fabricated summary would
+                    # make nested costs look like zero and emit a false plumbing warning on
+                    # every run.
+                    child_state["usage_summary"] = session.usage_summary
+                    child_state["workflow_context"] = session.run_context
+                with child_trace_slice() as child_events:
+                    final_state = await compiled.ainvoke(child_state, config=graph_config)
+            return self._results.envelope(definition, final_state, child_trace=child_events)
 
     async def resume(
         self,
