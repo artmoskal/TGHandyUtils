@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Protocol
+from typing import Iterator, Protocol
 
 from ai_workflow_engine.budget import (
     _enforce_per_call_budget,
@@ -16,6 +18,40 @@ from ai_workflow_engine.budget import (
 from ai_workflow_engine.models import WorkflowUsageEvent
 
 logger = logging.getLogger(__name__)
+
+
+# C2 (invocation-local attribution): a PRIVATE stack of capture buckets. Capture OBSERVES,
+# it never accounts: every active bucket in the current task receives each enriched event
+# exactly once, while the canonical path (summary aggregation, sink fanout, log, budgets)
+# runs unchanged exactly once. The stack is a tuple ContextVar, so asyncio task copies
+# isolate sibling fanout items and concurrent runs; nesting is INCLUSIVE (an outer
+# capability's bucket also sees nested provider work). Buckets store only the already-
+# existing usage event object — no prompt/result payload is retained.
+_ACTIVE_USAGE_CAPTURES: ContextVar[tuple[list[WorkflowUsageEvent], ...]] = ContextVar(
+    "workflow_usage_captures",
+    default=(),
+)
+
+
+@contextmanager
+def capture_usage_events() -> Iterator[list[WorkflowUsageEvent]]:
+    """Collect the usage events recorded by the CURRENT task while the scope is active.
+
+    The single supported consumer is invocation-local attribution (``invoke_bound``'s
+    ``model_binding`` truth). Token reset restores the previous stack on every exit path —
+    success, exception, budget refusal, timeout, cancellation."""
+
+    bucket: list[WorkflowUsageEvent] = []
+    token = _ACTIVE_USAGE_CAPTURES.set((*_ACTIVE_USAGE_CAPTURES.get(), bucket))
+    try:
+        yield bucket
+    finally:
+        _ACTIVE_USAGE_CAPTURES.reset(token)
+
+
+def _publish_to_captures(event: WorkflowUsageEvent) -> None:
+    for bucket in _ACTIVE_USAGE_CAPTURES.get():
+        bucket.append(event)
 
 
 class UsageSink(Protocol):
@@ -105,6 +141,9 @@ def record_usage_event(event: WorkflowUsageEvent) -> None:
             surface="usage",
             event_id=event.event_id,
         ) or event.metadata
+        # C2: captures observe the SAME semantic event the ledger persists — published after
+        # run/correlation enrichment, before canonical aggregation; never accounted twice.
+        _publish_to_captures(event)
         context.summary.add_event(event)
         if context.usage_sink is not None:
             context.usage_sink.record(event)
@@ -112,5 +151,6 @@ def record_usage_event(event: WorkflowUsageEvent) -> None:
         _enforce_per_call_budget(event, context)
         _enforce_usd_budget(context)
         return
+    _publish_to_captures(event)
     logger.info("workflow_usage %s", json.dumps(event.model_dump(), sort_keys=True, default=str))
 

@@ -219,3 +219,106 @@ def test_removed_usage_facade_names_fail_loudly():
             f"ai_workflow_engine.usage still exposes removed facade name {name!r}"
         )
     assert hasattr(module, "invoke_metered_chat") and hasattr(module, "record_image_usage")
+
+
+# ======================================================================================
+# C2 — invocation-local usage capture (observation-only; canonical path unchanged)
+# ======================================================================================
+
+
+def _capture_event(model: str = "m", tokens: int = 1) -> "WorkflowUsageEvent":
+    from ai_workflow_engine.models import WorkflowUsageEvent
+
+    return WorkflowUsageEvent(node="n", operation="chat", model=model, total_tokens=tokens)
+
+
+def test_capture_scope_sees_each_event_once_and_nested_scopes_are_inclusive():
+    from ai_workflow_engine.usage_events import capture_usage_events, record_usage_event
+
+    with capture_usage_events() as outer:
+        record_usage_event(_capture_event("outer-1"))
+        with capture_usage_events() as inner:
+            record_usage_event(_capture_event("nested"))
+        record_usage_event(_capture_event("outer-2"))
+
+    assert [e.model for e in inner] == ["nested"], "inner sees exactly its own window"
+    assert [e.model for e in outer] == ["outer-1", "nested", "outer-2"], (
+        "outer capture is INCLUSIVE of nested work and sees each event exactly once"
+    )
+
+
+def test_capture_reset_survives_exceptions_and_no_capture_is_a_no_op():
+    from ai_workflow_engine.usage_events import (
+        _ACTIVE_USAGE_CAPTURES,
+        capture_usage_events,
+        record_usage_event,
+    )
+
+    assert _ACTIVE_USAGE_CAPTURES.get() == ()
+    with pytest.raises(RuntimeError):
+        with capture_usage_events():
+            raise RuntimeError("boom")
+    assert _ACTIVE_USAGE_CAPTURES.get() == (), "exception path must restore the stack"
+
+    # no active capture: recording is exactly the pre-C2 path (no error, nothing retained)
+    record_usage_event(_capture_event("uncaptured"))
+    assert _ACTIVE_USAGE_CAPTURES.get() == ()
+
+
+def test_capture_works_without_an_active_usage_context_and_with_one():
+    """Events on BOTH record_usage_event branches (with/without WorkflowUsageContext) reach
+    an active capture — and the canonical summary still counts each exactly once."""
+
+    from ai_workflow_engine.budget import (
+        WorkflowBudget,
+        WorkflowUsageContext,
+        workflow_usage_scope,
+    )
+    from ai_workflow_engine.models import WorkflowRunContext, WorkflowUsageSummary
+    from ai_workflow_engine.usage_events import capture_usage_events, record_usage_event
+
+    # branch 1: no ambient usage context (log-only path)
+    with capture_usage_events() as bucket:
+        record_usage_event(_capture_event("contextless"))
+    assert [e.model for e in bucket] == ["contextless"]
+
+    # branch 2: full context path — capture AND canonical aggregation, each once
+    summary = WorkflowUsageSummary()
+    context = WorkflowUsageContext(
+        run_context=WorkflowRunContext(workflow_id="cap-run", workflow_type="cap"),
+        summary=summary,
+        budget=WorkflowBudget(),
+    )
+    with workflow_usage_scope(context):
+        with capture_usage_events() as bucket_two:
+            record_usage_event(_capture_event("contextful", tokens=5))
+    assert [e.model for e in bucket_two] == ["contextful"]
+    assert len(summary.events) == 1 and summary.total_tokens == 5, (
+        "capture observes; canonical accounting still records exactly once"
+    )
+    assert bucket_two[0] is summary.events[0], (
+        "the capture and the persisted ledger must reference the SAME semantic event"
+    )
+
+
+async def test_sibling_tasks_never_see_each_others_captured_events():
+    import asyncio
+
+    from ai_workflow_engine.usage_events import capture_usage_events, record_usage_event
+
+    first_emitted = asyncio.Event()
+
+    async def sibling(model: str, wait_first: bool) -> list:
+        with capture_usage_events() as bucket:
+            if wait_first:
+                await asyncio.wait_for(first_emitted.wait(), timeout=10)
+            record_usage_event(_capture_event(model))
+            if not wait_first:
+                first_emitted.set()
+                await asyncio.sleep(0)  # yield so the sibling interleaves inside our scope
+        return [e.model for e in bucket]
+
+    seen_a, seen_b = await asyncio.gather(sibling("task-a", False), sibling("task-b", True))
+    assert seen_a == ["task-a"] and seen_b == ["task-b"], (
+        f"ContextVar task isolation must hold under interleaving: {seen_a} / {seen_b}"
+    )

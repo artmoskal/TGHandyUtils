@@ -518,7 +518,7 @@ async def gather_capabilities(
 ) -> list[CapabilityResult]:
     """Run multiple capability calls with bounded parallelism and failure isolation."""
 
-    async def invoke_call(call: CapabilityCall) -> CapabilityResult:
+    async def invoke_call(call: CapabilityCall, _index: int) -> CapabilityResult:
         return await runtime.invoke(call.name, call.payload, context, attempt=call.attempt)
 
     return await gather_capability_calls(
@@ -532,17 +532,21 @@ async def gather_capability_calls(
     calls: Iterable[CapabilityCall],
     *,
     max_parallel: int,
-    invoke_call: Callable[[CapabilityCall], Awaitable[CapabilityResult]],
+    invoke_call: Callable[[CapabilityCall, int], Awaitable[CapabilityResult]],
 ) -> list[CapabilityResult]:
-    """Shared concurrency owner for public and node-bound fanout calls."""
+    """Shared concurrency owner for public and node-bound fanout calls.
+
+    The callback receives the ENUMERATED input index (deterministic item identity for
+    bound fanout attribution) — result order stays input order regardless of completion
+    order, as before."""
 
     semaphore = asyncio.Semaphore(max(1, max_parallel))
 
-    async def invoke(call: CapabilityCall) -> CapabilityResult:
+    async def invoke(call: CapabilityCall, index: int) -> CapabilityResult:
         async with semaphore:
-            return await invoke_call(call)
+            return await invoke_call(call, index)
 
-    return await asyncio.gather(*(invoke(call) for call in calls))
+    return await asyncio.gather(*(invoke(call, index) for index, call in enumerate(calls)))
 
 
 def format_trace_events(

@@ -326,3 +326,215 @@ async def test_plain_callable_receives_resolved_profile_on_request_metadata():
 
     assert result.status == "completed"
     assert seen_requests[0].metadata["model_profile"]["model"] == "qwen2.5vl:3b"
+
+
+# ======================================================================================
+# C2 reproducer: model_binding must attribute the invocation's OWN usage events
+# ======================================================================================
+
+
+async def test_concurrent_fanout_items_attribute_their_own_models():
+    """C0 reproducer (attribution): two concurrent fanout items under ONE bound profile
+    emit usage events for DIFFERENT actual models (barrier-forced order: B emits first,
+    A second, B returns last). Each item's model_binding trace must claim ITS OWN model.
+    The shared-summary index-window inference cannot represent this interleaving: the
+    late-returning B item reads the shared tail and claims model-a."""
+
+    import asyncio
+
+    from ai_workflow_engine.models import WorkflowUsageEvent
+    from ai_workflow_engine.usage_events import record_usage_event
+
+    a_done = asyncio.Event()
+    b_emitted = asyncio.Event()
+
+    async def worker(_context, item):
+        role = item["role"]
+        if role == "b":
+            record_usage_event(
+                WorkflowUsageEvent(node="fan", operation="chat", model="model-b", total_tokens=1)
+            )
+            b_emitted.set()
+            await asyncio.wait_for(a_done.wait(), timeout=10)
+            return {"ran": "b"}
+        await asyncio.wait_for(b_emitted.wait(), timeout=10)
+        record_usage_event(
+            WorkflowUsageEvent(node="fan", operation="chat", model="model-a", total_tokens=1)
+        )
+        a_done.set()
+        return {"ran": "a"}
+
+    def seed(_context, _payload):
+        return [{"role": "a"}, {"role": "b"}]
+
+    builder = WorkflowEngineBuilder()
+    builder.with_model_profile(
+        ModelProfile(name="shared_router", provider="custom", model="router-default", temperature=0.0)
+    )
+    builder.register_capability("seed", seed, kind="deterministic")
+    builder.register_capability("worker", worker, kind="llm")
+    builder.register_workflow(
+        WorkflowBuilder("attr_flow")
+        .step("seed")
+        .fanout(
+            "fan",
+            capability="worker",
+            items_key="seed",
+            max_parallel=2,
+            model_profile="shared_router",
+        )
+        .build()
+    )
+    engine = builder.build()
+
+    result = await engine.run("attr_flow", {})
+    assert result.status == "completed"
+
+    bindings = [
+        event
+        for event in result.trace
+        if event.decision == "model_binding" and event.node == "fan"
+    ]
+    assert len(bindings) == 2, "one binding decision per fanout item"
+    by_index = {
+        event.metadata["fanout_item_index"]: event.metadata.get("model_used")
+        for event in bindings
+    }
+    assert by_index == {0: "model-a", 1: "model-b"}, (
+        "each item's binding must attribute the model IT invoked, keyed by deterministic "
+        f"input-order identity — got {by_index}"
+    )
+    # reversed completion order (b returns last) must not disturb input-order results
+    fan_output = [r.output for r in result.node_results if r.node_id == "fan"][-1]
+    assert [entry["ran"] for entry in fan_output] == ["a", "b"], (
+        "fanout outputs stay input-ordered regardless of completion order"
+    )
+    # aggregate money/usage truth is capture-independent: both events counted exactly once
+    assert len(result.usage.events) == 2 and result.usage.total_tokens == 2
+    assert sorted(e.model for e in result.usage.events) == ["model-a", "model-b"]
+
+
+async def test_nested_bound_invocation_contributes_to_inner_and_outer_captures_once():
+    """Nesting is INCLUSIVE for observation and single-count for accounting: an outer bound
+    step whose capability internally runs a nested bound invocation sees the nested model in
+    ITS OWN binding truth, the nested binding names itself, and the global summary counts
+    the event exactly once."""
+
+    from ai_workflow_engine.models import WorkflowUsageEvent
+    from ai_workflow_engine.usage_events import record_usage_event
+
+    engine_holder = {}
+
+    async def inner(_context, _payload):
+        record_usage_event(
+            WorkflowUsageEvent(node="inner", operation="chat", model="nested-model", total_tokens=3)
+        )
+        return {"inner": True}
+
+    async def outer(context, _payload):
+        # a real nested BOUND invocation through the same public runtime door
+        result = await engine_holder["engine"].runtime.invoke("inner", {}, context)
+        return {"outer": True, "nested": result.output}
+
+    builder = WorkflowEngineBuilder()
+    builder.with_model_profile(
+        ModelProfile(name="outer_profile", provider="custom", model="outer-model", temperature=0.0)
+    )
+    builder.register_capability("inner", inner, kind="llm")
+    builder.register_capability("outer", outer, kind="llm")
+    builder.register_workflow(
+        WorkflowBuilder("nested_capture").step("outer", model_profile="outer_profile").build()
+    )
+    engine = builder.build()
+    engine_holder["engine"] = engine
+
+    result = await engine.run("nested_capture", {})
+    assert result.status == "completed"
+
+    bindings = {e.node: e.metadata for e in result.trace if e.decision == "model_binding"}
+    assert bindings["outer"]["model_used"] == "nested-model", (
+        "the outer capture must include nested provider work (inclusive nesting)"
+    )
+    assert "fanout_item_index" not in bindings["outer"], (
+        "ordinary sequential bindings must not fabricate an item index"
+    )
+    nested_events = [e for e in result.usage.events if e.model == "nested-model"]
+    assert len(nested_events) == 1, "capture observes; it must never double-account"
+    assert result.usage.total_tokens == 3
+
+
+async def test_concurrent_workflows_do_not_cross_attribute_models():
+    """Two whole engine runs interleaving in one loop keep attribution run-local."""
+
+    import asyncio
+
+    from ai_workflow_engine.models import WorkflowUsageEvent
+    from ai_workflow_engine.usage_events import record_usage_event
+
+    gate_one = asyncio.Event()
+    gate_two = asyncio.Event()
+
+    def build(model_name: str, wait_for: asyncio.Event, then_set: asyncio.Event):
+        async def worker(_context, _payload):
+            record_usage_event(
+                WorkflowUsageEvent(node="w", operation="chat", model=model_name, total_tokens=1)
+            )
+            then_set.set()
+            await asyncio.wait_for(wait_for.wait(), timeout=10)
+            return {"m": model_name}
+
+        builder = WorkflowEngineBuilder()
+        builder.with_model_profile(
+            ModelProfile(name="p", provider="custom", model="p-default", temperature=0.0)
+        )
+        builder.register_capability("w", worker, kind="llm")
+        builder.register_workflow(WorkflowBuilder("conc").step("w", model_profile="p").build())
+        return builder.build()
+
+    engine_one = build("model-one", gate_one, gate_two)   # emits, then waits for run 2
+    engine_two = build("model-two", gate_two, gate_one)   # emits after run 1, releases it
+
+    result_one, result_two = await asyncio.gather(
+        engine_one.run("conc", {}), engine_two.run("conc", {})
+    )
+    assert result_one.status == "completed" and result_two.status == "completed"
+
+    used_one = [e.metadata["model_used"] for e in result_one.trace if e.decision == "model_binding"]
+    used_two = [e.metadata["model_used"] for e in result_two.trace if e.decision == "model_binding"]
+    assert used_one == ["model-one"] and used_two == ["model-two"], (
+        f"cross-run attribution leak: {used_one} / {used_two}"
+    )
+
+
+async def test_bound_invocation_with_no_usage_events_reports_model_used_none():
+    """No event means model_used=None — profile.model is never substituted as observed
+    truth, and failed capability results keep today's binding behavior."""
+
+    def silent(_context, _payload):
+        return {"quiet": True}
+
+    def failing(_context, _payload):
+        return CapabilityResult(status="failed", error="worker down", output=None)
+
+    builder = WorkflowEngineBuilder()
+    builder.with_model_profile(
+        ModelProfile(name="p", provider="custom", model="p-default", temperature=0.0)
+    )
+    builder.register_capability("silent", silent, kind="llm")
+    builder.register_capability("failing", failing, kind="llm")
+    builder.register_workflow(WorkflowBuilder("quiet_flow").step("silent", model_profile="p").build())
+    builder.register_workflow(
+        WorkflowBuilder("fail_flow").step("failing", model_profile="p").build()
+    )
+    engine = builder.build()
+
+    quiet = await engine.run("quiet_flow", {})
+    assert quiet.status == "completed"
+    quiet_binding = next(e for e in quiet.trace if e.decision == "model_binding")
+    assert quiet_binding.metadata["model_used"] is None
+    assert quiet_binding.metadata["model_profile_model"] == "p-default"
+
+    failed = await engine.run("fail_flow", {})
+    assert failed.status == "failed"
+    failed_binding = next(e for e in failed.trace if e.decision == "model_binding")
+    assert failed_binding.metadata["model_profile_requested"] == "p"

@@ -24,6 +24,7 @@ from ai_workflow_engine._runtime_state import (
 from ai_workflow_engine.engine.scheduler import WorkflowScheduler
 from ai_workflow_engine.engine.capabilities import CapabilityCall, gather_capability_calls
 from ai_workflow_engine.model_binding import model_profile_scope
+from ai_workflow_engine.usage_events import capture_usage_events
 from ai_workflow_engine.models import CapabilityContext, CapabilityResult, WorkflowTraceEvent
 from ai_workflow_engine.planning import PlanArtifact, render_plan
 from ai_workflow_engine.workflow import (
@@ -93,6 +94,7 @@ class NodeExecutionServices(Protocol):
         *,
         attempt: int = 1,
         definition: Optional[WorkflowDefinition] = None,
+        fanout_item_index: Optional[int] = None,
     ) -> CapabilityResult: ...
 
     async def gather_bound(
@@ -323,6 +325,7 @@ class ExecutorNodeServices:
         *,
         attempt: int = 1,
         definition: Optional[WorkflowDefinition] = None,
+        fanout_item_index: Optional[int] = None,
     ) -> CapabilityResult:
         context = self.context_for_node(node, context, state, definition=definition)
         if node.memory is not None:
@@ -336,28 +339,34 @@ class ExecutorNodeServices:
             raise self._capability_binding_error(
                 f"node '{node.id}' references unknown model profile: {node.model_profile}"
             )
-        usage = state.get("usage_summary")
-        events_before = len(usage.events) if usage is not None else 0
         bound_context = context.model_copy(update={"model_profile": profile})
-        with model_profile_scope(profile):
-            result = await self._runtime.invoke(
-                capability,
-                payload,
-                bound_context,
-                attempt=attempt,
-            )
-        new_events = usage.events[events_before:] if usage is not None else []
-        model_used = next((event.model for event in reversed(new_events) if event.model), None)
+        # C2: model_used derives from the events THIS invocation emitted (task-local capture
+        # at the usage-event owner) — never from an index window over the shared summary,
+        # which concurrent fanout siblings interleave.
+        with capture_usage_events() as captured:
+            with model_profile_scope(profile):
+                result = await self._runtime.invoke(
+                    capability,
+                    payload,
+                    bound_context,
+                    attempt=attempt,
+                )
+        model_used = next((event.model for event in reversed(captured) if event.model), None)
+        binding_metadata: Dict[str, Any] = {
+            "model_profile_requested": node.model_profile,
+            "model_profile_model": profile.model,
+            "model_used": model_used,
+        }
+        if fanout_item_index is not None:
+            # Deterministic input-order identity for fanout items only; never fabricated
+            # for ordinary sequential bindings and never leaked into payload/context.
+            binding_metadata["fanout_item_index"] = fanout_item_index
         self._runtime.trace_sink.record(
             WorkflowTraceEvent(
                 node=node.id,
                 attempt=attempt,
                 decision="model_binding",
-                metadata={
-                    "model_profile_requested": node.model_profile,
-                    "model_profile_model": profile.model,
-                    "model_used": model_used,
-                },
+                metadata=binding_metadata,
             )
         )
         return result
@@ -374,7 +383,7 @@ class ExecutorNodeServices:
     ) -> list[CapabilityResult]:
         """Run fanout items concurrently while every item crosses the bound node door."""
 
-        async def invoke_call(call: CapabilityCall) -> CapabilityResult:
+        async def invoke_call(call: CapabilityCall, index: int) -> CapabilityResult:
             return await self.invoke_bound(
                 node,
                 call.name,
@@ -383,6 +392,7 @@ class ExecutorNodeServices:
                 state,
                 attempt=call.attempt,
                 definition=definition,
+                fanout_item_index=index,
             )
 
         return await gather_capability_calls(
