@@ -1,8 +1,7 @@
 # Voice Brain Engine Integration Guide
 
-Status: **`engine-v0.11.3` is a release candidate; voice integrations must not re-pin until it is
-cut.** After release, the product must pin tag `engine-v0.11.3` before running its own
-latency/cancellation canary. The current immutable release remains `engine-v0.11.2`. This replaces
+Status: **`engine-v0.11.3` is released.** The product must pin tag `engine-v0.11.3` before running
+its own latency/cancellation canary. This replaces
 the historical June request/reply transcript.
 
 Read first: [getting started](getting-started.md), [framework concepts](concepts.md), and
@@ -30,14 +29,14 @@ transcript + session context
   workers are usually unsuitable for a low-latency conversational hot path.
 - `ai-workflow-viewer==0.3.1` in diagnostics, not the real-time audio path.
 
-> **Current matrix candidate:** `engine-v0.11.3` + `ai-workflow-tools==0.5.1` + `ai-workflow-viewer==0.3.1`
+> **Current matrix:** `engine-v0.11.3` + `ai-workflow-tools==0.5.1` + `ai-workflow-viewer==0.3.1`
 > (tools/viewer require `ai-workflow-engine>=0.11,<0.12`). The previous line
 > (`engine-v0.10.1` + tools `0.4.1` + viewer `0.2.3`) remains available at its historical tag for
 > historical data; the lines never mix in one environment.
 
-The candidate makes node-context binding explicit for every node kind and advances the optional
+The release makes node-context binding explicit for every node kind and advances the optional
 tools wheel for native Codex image attachment. Persisted schemas and voice workflow behavior are
-unchanged. Once cut, the annotated tag records the exact source commit and reference wheel hashes;
+unchanged. The annotated tag records the exact source commit and reference wheel hashes;
 the voice repository still owns its pin and canary decision.
 
 

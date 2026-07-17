@@ -596,7 +596,7 @@ context it may receive:
   cards, `memory` config (delivered as `context.metadata["agent_memory"]`), and `model_profile`
   binding (with an honest `model_binding` trace decision) — then uses the universal door. Human
   nodes are declared nodes and use this door like step/branch/evaluate (corrected in the
-  `engine-v0.11.3` release candidate), with the
+  `engine-v0.11.3` release), with the
   resume event merged into metadata before decoration so both compose. Decorations bind at
   INVOCATION time only: resolution paths that perform no invocation — the declared wait-timeout
   transition — never enter the capability, decorated or not.

@@ -5,8 +5,7 @@ declare a workflow, register typed capabilities, and call one engine door. The e
 transitions, retries, fan-out, budgets, waits, trace, usage, and observation bundles; products own
 domain models, provider clients, storage adapters, clocks, and side-effect delivery.
 
-> **`engine-v0.11.3` is the release candidate; do not re-pin until it is cut.** The current
-> immutable release remains `engine-v0.11.2`. Pin immutable tags and build wheels; consumer
+> **`engine-v0.11.3` is the current release.** Pin immutable tags and build wheels; consumer
 > canaries still decide whether each product changes its deployed pin. Never depend on a live
 > branch. The binding contract is the repository-level
 > [`executable-workflow-engine-spec.md`](../../docs/executable-workflow-engine-spec.md).
@@ -19,7 +18,7 @@ domain models, provider clients, storage adapters, clocks, and side-effect deliv
 > Adoption is fresh: new consumers start on the current contract; existing consumers re-adopt the
 > current surface rather than migrate state.
 >
-> **v0.11.3 candidate delta.** Every declared capability node now applies the same explicit
+> **v0.11.3 release delta.** Every declared capability node now applies the same explicit
 > plan/machine/memory/model-profile binding contract, fan-out applies it per item, and subworkflows
 > apply plan/machine cards while rejecting capability-only bindings. Retrace provenance is
 > target-only: a retraced parent's provenance never reaches child-workflow invocations through
@@ -28,8 +27,9 @@ domain models, provider clients, storage adapters, clocks, and side-effect deliv
 > carry a deterministic `fanout_item_index`), never from shared-summary windows that concurrent
 > siblings interleave — aggregate accounting is untouched. `ai-workflow-tools==0.5.1`
 > also attaches staged images to `codex exec` through native `--image`; Claude keeps its separate
-> path-scoped Read transport. The sealed behavior corpus is unchanged. **v0.11.2 is the current
-> corrective release over v0.11.1.** Planner retrace retains task outputs from
+> path-scoped Read transport. A live two-image canary consumed both attachments in order and
+> recorded exactly one engine usage event. The sealed behavior corpus is unchanged. **v0.11.2 was
+> the corrective release over v0.11.1.** Planner retrace retains task outputs from
 > earlier rounds when later work is merged, and successful tasks with no output no longer publish
 > dangling output references. Public APIs and persisted schemas are unchanged. v0.11.1 introduced
 > the runtime ownership decomposition: runtime compilation,
