@@ -322,3 +322,90 @@ async def test_sibling_tasks_never_see_each_others_captured_events():
     assert seen_a == ["task-a"] and seen_b == ["task-b"], (
         f"ContextVar task isolation must hold under interleaving: {seen_a} / {seen_b}"
     )
+
+
+# ======================================================================================
+# Iteration P / P1 — cross-task usage-capture fence (direct, not incidental)
+# ======================================================================================
+
+
+async def test_parent_capture_observes_spawned_child_task_event_exactly_once():
+    """P1.1: a capture opened in ONE task must observe an event recorded by a task CREATED
+    inside that scope (ContextVar copies share the same bucket objects). This is the exact
+    assumption invocation-local attribution rests on for windowed handlers, locked directly
+    instead of via incidental suite coverage — unbounded handlers never cross a task
+    boundary, so nothing else guarantees this."""
+
+    import asyncio
+
+    from ai_workflow_engine.budget import (
+        WorkflowBudget,
+        WorkflowUsageContext,
+        workflow_usage_scope,
+    )
+    from ai_workflow_engine.models import WorkflowRunContext, WorkflowUsageSummary
+    from ai_workflow_engine.usage_events import capture_usage_events, record_usage_event
+
+    summary = WorkflowUsageSummary()
+    context = WorkflowUsageContext(
+        run_context=WorkflowRunContext(workflow_id="xtask-run", workflow_type="xtask"),
+        summary=summary,
+        budget=WorkflowBudget(),
+    )
+
+    child_started = asyncio.Event()
+    release_child = asyncio.Event()
+
+    async def child_worker():
+        child_started.set()
+        await asyncio.wait_for(release_child.wait(), timeout=10)
+        with capture_usage_events() as nested:
+            record_usage_event(_capture_event("spawned-child", tokens=7))
+        return [e.model for e in nested]
+
+    with workflow_usage_scope(context):
+        with capture_usage_events() as parent_bucket:
+            task = asyncio.get_running_loop().create_task(child_worker())
+            await asyncio.wait_for(child_started.wait(), timeout=10)
+            release_child.set()  # event is recorded while the parent scope is OPEN
+            nested_seen = await asyncio.wait_for(task, timeout=10)
+
+    assert nested_seen == ["spawned-child"], "nested child capture sees its own event once"
+    assert [e.model for e in parent_bucket] == ["spawned-child"], (
+        "the parent capture must observe the spawned task's event exactly once"
+    )
+    assert len(summary.events) == 1 and summary.total_tokens == 7, (
+        "canonical accounting stays exactly once regardless of capture layers"
+    )
+    assert parent_bucket[0] is summary.events[0], "capture and ledger share the semantic event"
+    assert parent_bucket[0].metadata.get("workflow_id") == "xtask-run", (
+        "the captured event carries run enrichment (published post-enrichment)"
+    )
+
+
+async def test_concurrent_parent_captures_do_not_see_each_others_child_task_events():
+    """P1.2: two parent captures with spawned children, barrier-forced to overlap — each
+    parent sees only ITS child's event. Serialized execution deadlocks into the timeout;
+    a global-bucket or copied-new-list implementation fails the ownership assertions."""
+
+    import asyncio
+
+    from ai_workflow_engine.usage_events import capture_usage_events, record_usage_event
+
+    both_children_alive = asyncio.Barrier(2)
+
+    async def parent(tag: str) -> list:
+        async def child():
+            await asyncio.wait_for(both_children_alive.wait(), timeout=10)
+            record_usage_event(_capture_event(tag))
+
+        with capture_usage_events() as bucket:
+            await asyncio.wait_for(
+                asyncio.get_running_loop().create_task(child()), timeout=10
+            )
+        return [e.model for e in bucket]
+
+    seen_one, seen_two = await asyncio.gather(parent("child-one"), parent("child-two"))
+    assert seen_one == ["child-one"] and seen_two == ["child-two"], (
+        f"cross-parent leak through spawned tasks: {seen_one} / {seen_two}"
+    )
