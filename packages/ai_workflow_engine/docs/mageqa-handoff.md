@@ -209,6 +209,10 @@ The candidate supersedes exactly the two changes declared in MageQA's v0.11.1 fo
 staged `ImageInput` files to `codex exec` with native `--image`; Claude keeps the separate
 path-scoped `Read(./inputs/**)` transport. It also closes context-binding parity: human and fan-out
 capability invocations consume all four declared bindings, while subworkflows consume plan/machine
-cards and reject capability-only memory/model settings. MageQA removes its patch only after the
+cards and reject capability-only memory/model settings. The corrected candidate additionally makes
+retrace provenance target-only (a retraced parent never leaks round data into child-workflow
+capabilities — a child planner cannot mistake its first local run for a follow-up round) and makes
+`model_binding` trace truth invocation-local (concurrent fan-out items each attribute the model
+THEY invoked, keyed by `fanout_item_index`; aggregate billing/budget behavior is unchanged). MageQA removes its patch only after the
 annotated tag, source commit, wheel hashes, engine canaries, Codex image semantic proof, and E0 gate
 are recorded.

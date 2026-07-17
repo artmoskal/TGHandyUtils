@@ -21,7 +21,12 @@ domain models, provider clients, storage adapters, clocks, and side-effect deliv
 >
 > **v0.11.3 candidate delta.** Every declared capability node now applies the same explicit
 > plan/machine/memory/model-profile binding contract, fan-out applies it per item, and subworkflows
-> apply plan/machine cards while rejecting capability-only bindings. `ai-workflow-tools==0.5.1`
+> apply plan/machine cards while rejecting capability-only bindings. Retrace provenance is
+> target-only: a retraced parent's provenance never reaches child-workflow invocations through
+> either child door, while child-internal retrace keeps its own. Model-binding trace truth is
+> invocation-local: `model_used` comes from the invocation's own usage events (bound fan-out items
+> carry a deterministic `fanout_item_index`), never from shared-summary windows that concurrent
+> siblings interleave — aggregate accounting is untouched. `ai-workflow-tools==0.5.1`
 > also attaches staged images to `codex exec` through native `--image`; Claude keeps its separate
 > path-scoped Read transport. The sealed behavior corpus is unchanged. **v0.11.2 is the current
 > corrective release over v0.11.1.** Planner retrace retains task outputs from

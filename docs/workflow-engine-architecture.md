@@ -608,6 +608,21 @@ context it may receive:
   context. An EXPLICIT fallback-binding schema would be an extension-lifecycle change on a
   concrete consumer request, not a default.
 
+Two boundary rules complete the tier contract (v0.11.3):
+
+- **Retrace provenance is TARGET-ONLY.** The ambient provenance belongs to the retraced node's
+  own invocations and never crosses a child-workflow boundary: `WorkflowExecutor._run_inner` —
+  the universal child door used by declared `subworkflow` nodes AND workflows registered as
+  ordinary capabilities — shields the child run, while a child-INTERNAL retrace still delivers
+  its own child-local provenance inside the shield. Publication has one owner
+  (`retrace_provenance_scope`); nothing else may set or reset the ambient value.
+- **Model-binding truth is INVOCATION-LOCAL.** `model_used` derives from the usage events the
+  bound invocation itself emitted (a private task-local capture at the usage-event owner),
+  never from an index window over the shared summary that concurrent fanout siblings
+  interleave. Bound fanout items carry a deterministic `fanout_item_index` in their
+  `model_binding` trace; capture observes and never accounts — aggregation, sinks, logging,
+  and budget enforcement run exactly once regardless.
+
 The binding matrix is closed and graph-validated; configuring an unsupported field fails instead
 of silently doing nothing:
 
