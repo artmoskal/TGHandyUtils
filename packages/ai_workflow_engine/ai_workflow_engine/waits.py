@@ -273,6 +273,18 @@ class WaitHealth(BaseModel):
     # unrecoverable by any other event (frozen acceptance), so they MUST be surfaced for
     # the product to redeliver the accepted event or cancel().
     stalled: int = Field(default=0, ge=0)
+    # v0.11.5 (U1, SlackAzz AC-11): REQUIRED, deliberately no defaults — an adapter that has
+    # not implemented the current health contract must fail loudly constructing this model,
+    # never present a healthy-looking zero (latest-only line).
+    # ``failed``: current count of records with status=="failed" (any failure_kind;
+    # cancellations are a distinct status and never counted here).
+    failed: int = Field(ge=0)
+    # ``integrity_errors``: current count of persisted entries the adapter can enumerate but
+    # cannot decode/validate as the current WaitRecord contract. Such entries are EXCLUDED
+    # from every other count and counted here exactly once; the count clears when the entry
+    # is repaired or removed. If the backend cannot be enumerated at all, ``health()`` must
+    # RAISE — an outage must never be reported as integrity_errors=0.
+    integrity_errors: int = Field(ge=0)
     oldest_pending_deadline: Optional[AwareDatetime] = None
 
 
@@ -566,13 +578,28 @@ class InMemoryWaitCoordinator:
             return self._health_locked()
 
     def _health_locked(self) -> WaitHealth:
-        pending = [r for r in self._records.values() if r.status == "pending"]
-        claimed = [r for r in self._records.values() if r.status == "claimed"]
+        # v0.11.5: integrity-aware enumeration (reference behavior for the adapter contract):
+        # entries that cannot be validated as the CURRENT WaitRecord contract are excluded
+        # from every status count and reported once as integrity_errors. The dict itself is
+        # the backend; if it were unreadable this method would raise, never report zeros.
+        valid: Dict[str, WaitRecord] = {}
+        integrity_errors = 0
+        for wait_id, entry in self._records.items():
+            if isinstance(entry, WaitRecord):
+                valid[wait_id] = entry
+                continue
+            try:
+                valid[wait_id] = WaitRecord.model_validate(entry)
+            except Exception:
+                integrity_errors += 1
+        pending = [r for r in valid.values() if r.status == "pending"]
+        claimed = [r for r in valid.values() if r.status == "claimed"]
+        failed = [r for r in valid.values() if r.status == "failed"]
         now = self._clock()
         overdue = [r for r in pending if r.deadline_at <= now]
         stalled = [
             wait_id
-            for wait_id, record in self._records.items()
+            for wait_id, record in valid.items()
             if record.status == "claimed"
             and (lease := self._leases.get(wait_id)) is not None
             and lease <= now
@@ -583,5 +610,7 @@ class InMemoryWaitCoordinator:
             claimed=len(claimed),
             overdue=len(overdue),
             stalled=len(stalled),
+            failed=len(failed),
+            integrity_errors=integrity_errors,
             oldest_pending_deadline=oldest,
         )

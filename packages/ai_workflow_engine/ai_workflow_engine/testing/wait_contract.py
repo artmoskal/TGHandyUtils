@@ -15,7 +15,10 @@ from typing import Any, Callable
 
 from ai_workflow_engine.waits import DurableWaitPolicy, WaitRecord
 
-__all__ = ["run_wait_registration_conformance"]  # name kept: it now covers the FULL lifecycle
+__all__ = [
+    "run_wait_registration_conformance",  # name kept: it covers the FULL lifecycle
+    "run_wait_integrity_conformance",  # v0.11.5: adapter-specific corruption reporting
+]
 
 
 def _record(now: datetime, wait_id: str = "w-1", *, timeout_s: float = 60.0) -> WaitRecord:
@@ -293,12 +296,41 @@ async def run_wait_registration_conformance(
         "due(t) before a wait's deadline must not return it — the engine must never fire early"
     )
 
+    # v0.11.5 (U1): the failed count must cover BOTH producers — the public fail() door and
+    # bounded-recovery attempts exhaustion — and the store must report a zero-integrity shape.
+    fail_door = _record(now, wait_id="w-surface-fail")
+    await surface.register(fail_door, snapshot_json, definition_json)
+    surface_fail_claim = await surface.claim_event("w-surface-fail", signal, lease_until=live_lease)
+    await surface.fail(
+        "w-surface-fail", surface_fail_claim.claim, error="surface failure", failure_kind="resume_failed"
+    )
+    exhaust = _record(now, wait_id="w-surface-exhaust")
+    await surface.register(exhaust, snapshot_json, definition_json)
+    exhausted_outcome = None
+    for _ in range(exhaust.policy.max_resume_attempts + 1):
+        exhausted_outcome = await surface.claim_event(
+            "w-surface-exhaust", signal, lease_until=expired_lease
+        )
+    assert exhausted_outcome is not None and exhausted_outcome.kind == "attempts_exhausted", (
+        "bounded recovery must terminalize as attempts_exhausted after max_resume_attempts"
+    )
+    assert exhausted_outcome.record.status == "failed"
+
     after = await surface.health()
     # DELTA invariants: w-due(+pending), w-notdue(+pending), w-surface-stall(net +claimed),
-    # w-term(register->claim->complete = net 0). Robust to any pre-existing records in the store.
+    # w-term(register->claim->complete = net 0), w-surface-fail + w-surface-exhaust (+2 failed).
+    # Robust to any pre-existing records in the store.
     assert after.pending - before.pending == 2, (
         f"health.pending must rise by exactly the 2 new pending waits: {before.pending}->{after.pending}"
     )
+    assert after.failed - before.failed == 2, (
+        "health.failed must count every status=='failed' record from BOTH producers — the "
+        f"public fail() door and attempts exhaustion: {before.failed}->{after.failed}"
+    )
+    assert after.integrity_errors == before.integrity_errors, (
+        "an uncorrupted store must not invent integrity errors"
+    )
+    assert after.integrity_errors >= 0 and after.failed >= 0  # required fields, present and sane
     assert after.claimed - before.claimed == 1, (
         f"health.claimed must rise by the 1 stalled (claimed) wait: {before.claimed}->{after.claimed}"
     )
@@ -325,3 +357,80 @@ async def run_wait_registration_conformance(
         assert record.wait_id not in {r.wait_id for r in await fresh_surface.due(now)}, (
             "the reconnected w-1 (deadline in the future) must not be due at now"
         )
+
+
+async def run_wait_integrity_conformance(
+    make_coordinator: Callable[[], Any],
+    *,
+    inject_corruption: Callable[[], Any],
+    repair_corruption: Callable[[], Any],
+    clock: Callable[[], datetime] | None = None,
+    reconnect: Callable[[], Any] | None = None,
+) -> None:
+    """v0.11.5 (U1): adapter-specific corruption-reporting conformance — TESTING ONLY.
+
+    Corruption injection cannot be generic: only the adapter's own tests know how to write a
+    malformed entry into their backend. Products supply ``inject_corruption`` (write one
+    persisted entry that can be enumerated but not decoded/validated as the current
+    ``WaitRecord`` contract) and ``repair_corruption`` (remove or fix that entry). Both may
+    be sync or async. The runtime ``WaitCoordinator`` protocol gains NO corruption controls.
+
+    Contract proven here: baseline zero; one malformed entry reports EXACTLY one
+    ``integrity_errors`` while every other count stays truthful and valid records stay
+    retrievable; a reconnected adapter observes the same condition; repair/removal returns
+    the count to zero. Separately (documented on ``WaitHealth``): if the backend cannot be
+    enumerated at all, ``health()`` must RAISE — an outage is never ``integrity_errors=0``.
+    """
+
+    import inspect
+
+    async def _call(hook: Callable[[], Any]) -> None:
+        result = hook()
+        if inspect.isawaitable(result):
+            await result
+
+    now = (clock or (lambda: datetime.now(timezone.utc)))()
+    snapshot_json = _snapshot_json()
+    definition_json = _definition_json()
+
+    coordinator = make_coordinator()
+    baseline = await coordinator.health()
+    assert baseline.integrity_errors == 0, (
+        "an uncorrupted backend must report integrity_errors == 0 at baseline"
+    )
+
+    valid = _record(now, wait_id="w-intact")
+    await coordinator.register(valid, snapshot_json, definition_json)
+
+    await _call(inject_corruption)
+    corrupted = await coordinator.health()
+    assert corrupted.integrity_errors == 1, (
+        "exactly ONE malformed persisted entry must report exactly ONE integrity error — "
+        f"got {corrupted.integrity_errors}"
+    )
+    assert corrupted.pending == baseline.pending + 1, (
+        "the malformed entry must be EXCLUDED from status counts; the valid pending wait "
+        "still counts"
+    )
+    assert corrupted.failed == baseline.failed, (
+        "corruption is an integrity condition, never silently reclassified as 'failed'"
+    )
+    still = await coordinator.get(valid.wait_id)
+    assert still is not None and still == valid, (
+        "valid records must remain retrievable while a sibling entry is corrupt"
+    )
+
+    if reconnect is not None:
+        fresh = reconnect()
+        observed = await fresh.health()
+        assert observed.integrity_errors == 1, (
+            "a reconnected adapter must observe the SAME current integrity condition"
+        )
+
+    await _call(repair_corruption)
+    repaired = await coordinator.health()
+    assert repaired.integrity_errors == 0, (
+        "repairing/removing the malformed entry must return integrity_errors to zero — "
+        "the field is CURRENT state, not a cumulative alert counter"
+    )
+    assert repaired.pending == baseline.pending + 1, "valid counts must survive the repair"

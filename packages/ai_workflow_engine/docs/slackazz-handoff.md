@@ -1,6 +1,8 @@
 # SlackAzzCovered Engine Adoption Guide
 
-Status: **`engine-v0.11.4` is released.** SlackAzzCovered should pin tag `engine-v0.11.4`,
+Status: **`engine-v0.11.5` is the release candidate carrying the wait-health contract this
+handoff requires; `engine-v0.11.4` remains the current release until it is cut.**
+SlackAzzCovered should then pin tag `engine-v0.11.5`,
 implement its Redis coordinator, and pass the engine conformance kit plus product transaction
 tests before enabling live effects.
 
@@ -32,11 +34,11 @@ client event
 
 | Package | SlackAzzCovered use |
 |---|---|
-| `ai-workflow-engine==0.11.4` | Required workflow/wait runtime |
+| `ai-workflow-engine==0.11.5` | Required workflow/wait runtime |
 | `ai-workflow-tools==0.5.1` | Add for CLI agents/tool catalog if the product uses them |
 | `ai-workflow-viewer==0.3.1` | Developer diagnostics or product-linked run inspection |
 
-> **Current matrix:** `engine-v0.11.4` + `ai-workflow-tools==0.5.1` + `ai-workflow-viewer==0.3.1`
+> **Current matrix (candidate):** `engine-v0.11.5` + `ai-workflow-tools==0.5.1` + `ai-workflow-viewer==0.3.1`
 > (tools/viewer require `ai-workflow-engine>=0.11,<0.12`). The previous line
 > (`engine-v0.10.1` + tools `0.4.1` + viewer `0.2.3`) remains available at its historical tag for
 > historical data; the lines never mix in one environment.
@@ -125,7 +127,9 @@ async def deliver_due(coordinator, engine, now):
         ...
 ```
 
-Monitor scheduler heartbeat and `WaitHealth`. A broken Celery loop must become an alert, not an
+Monitor your scheduler heartbeat (product-owned: the engine never schedules or self-fires)
+and engine `WaitHealth` — including `failed` and `integrity_errors`, both required
+current-state counts. A broken Celery loop must become an alert, not an
 infinite collection of invisible pending waits.
 
 ## Outbox And Atomicity
@@ -226,7 +230,12 @@ and reconnect after process loss. The generic kit cannot inspect Redis `MULTI/EX
 8. **Outbox idempotency:** duplicate/redelivered events create one action intent.
 9. **Cancellation:** answer/ack closes future escalation; late timeout is terminal/no-op.
 10. **Provider outage:** bounded fast retry routes to recoverable cooldown and alert proposal.
-11. **Health:** pending/overdue/claimed/stalled/failed and scheduler heartbeat are observable.
+11. **Health:** engine `WaitHealth` exposes required current-state `pending`, `overdue`,
+    `claimed`, `stalled`, `failed`, and `integrity_errors` (plus `oldest_pending_deadline`);
+    the Redis adapter passes BOTH conformance kits (`run_wait_registration_conformance` and
+    `run_wait_integrity_conformance` with adapter-supplied corruption inject/repair). If the
+    backend cannot be enumerated, `health()` raises — never `integrity_errors=0`. Scheduler
+    heartbeat is product-monitored per Operations (the engine never schedules or self-fires).
 12. **Safety:** external Slack action is denied before spawn in shadow/read-only mode.
 13. **Observation:** suspension and resume render as one logical run with honest costs.
 14. **Execution window:** provider/CLI work inherits the engine bound; cancellation suppression is a
@@ -238,11 +247,13 @@ Follow [`operations.md`](operations.md) for production recovery. File missing me
 
 ## v0.11 Release Contract
 
-`engine-v0.11.4` is the current immutable release for the **latest-only** line. The line uses strict versioned persisted
+`engine-v0.11.5` is the release candidate for the **latest-only** line; `engine-v0.11.4`
+remains the current immutable release until the candidate is cut. The line uses strict versioned persisted
 contracts (snapshot `v0.11`, bundle meta v2, wait records `wait-v1`), one strict viewer loader, and
 NO migration layer — the sealed current-contract corpus shows 0 behavior deltas vs v0.10.1, but old
 persisted data is rejected loudly naming its historical tag. Adopt by re-pinning fresh
-(pin tag `engine-v0.11.4`, rebuild wheels: engine `0.11.4`, tools `0.5.1`, viewer `0.3.1`) and
+(pin tag `engine-v0.11.5`, rebuild wheels: engine `0.11.5`, tools `0.5.1`, viewer `0.3.1`) and
 re-run your canaries before changing any deployed pin. The release makes node-context binding
-explicit for every node kind; wait contracts and persisted schemas are unchanged. Read the
-annotated tag for the exact source commit and reference wheel hashes.
+explicit for every node kind; wait contracts and persisted schemas are unchanged. The
+`engine-v0.11.4` tag records no distributable wheel evidence; consume artifacts only from a
+release whose manifest records the published wheel SHA-256 (v0.11.5 onward).

@@ -50,7 +50,7 @@ def test_wait_models_are_strict_and_round_trip():
             wait_id="w1", run_id="r1", workflow_id="wf",
             suspended_node="approval", deadline_at="2026-07-11T13:00:00+00:00",
         ),
-        WaitHealth(pending=1, claimed=0, overdue=0),
+        WaitHealth(pending=1, claimed=0, overdue=0, failed=0, integrity_errors=0),
     ):
         dumped = _json.loads(model.model_dump_json())
         assert type(model).model_validate(dumped) == model, type(model).__name__
@@ -329,7 +329,10 @@ def test_wait_timestamps_must_be_timezone_aware_datetimes():
             registration_id="x", wait_id="w", wait_version=1,
             accepted_deadline="tomorrow-ish", adapter_id="a",
         )
-    assert WaitHealth(pending=0, claimed=0, overdue=0, oldest_pending_deadline=None)
+    assert WaitHealth(
+        pending=0, claimed=0, overdue=0, failed=0, integrity_errors=0,
+        oldest_pending_deadline=None,
+    )
 
 
 def test_run_result_wait_door_matrix_is_status_dependent_and_typed():
@@ -2778,3 +2781,159 @@ def test_wait_record_rejects_non_current_schema_versions():
         WaitRecord.model_validate({**base, "record_schema_version": "wait-v0"})
     ok = WaitRecord.model_validate({**base, "record_schema_version": "wait-v1"})
     assert ok.record_schema_version == "wait-v1"
+
+
+# ======================================================================================
+# v0.11.5 (U1) — failed / integrity_errors health contract
+# ======================================================================================
+
+
+def test_wait_health_new_fields_are_required_not_defaulted():
+    """Latest-only loudness: an adapter that has not implemented the current health contract
+    must fail CONSTRUCTING the model — silently-defaulted zeros would report damaged or
+    failing storage as healthy."""
+
+    with pytest.raises(ValidationError):
+        WaitHealth(pending=0, claimed=0, overdue=0)  # missing failed + integrity_errors
+    with pytest.raises(ValidationError):
+        WaitHealth(pending=0, claimed=0, overdue=0, failed=0)  # missing integrity_errors
+    with pytest.raises(ValidationError):
+        WaitHealth(pending=0, claimed=0, overdue=0, failed=-1, integrity_errors=0)
+
+
+async def test_inmemory_reference_passes_integrity_conformance():
+    """The reference adapter proves the corruption-reporting contract end to end: injection
+    is adapter-specific (here: a raw undecodable entry in the shared backing store), the
+    malformed entry is counted exactly once and excluded from status counts, a reconnected
+    adapter observes the same condition, and repair clears the CURRENT-state count."""
+
+    from ai_workflow_engine import InMemoryWaitCoordinator
+    from ai_workflow_engine.testing import run_wait_integrity_conformance
+
+    shared: dict = {}
+    clock = _clock()
+
+    def make():
+        return InMemoryWaitCoordinator(clock=clock, shared_state=shared)
+
+    # ensure the backing sub-dicts exist before injection targets them
+    make()
+
+    def inject():
+        shared["records"]["corrupt-entry"] = {"garbage": True, "status": "pending"}
+
+    def repair():
+        del shared["records"]["corrupt-entry"]
+
+    await run_wait_integrity_conformance(
+        make,
+        clock=clock,
+        inject_corruption=inject,
+        repair_corruption=repair,
+        reconnect=make,
+    )
+
+
+async def test_health_failed_count_covers_both_producers_directly():
+    """Direct reference check mirroring the kit: fail() door + attempts exhaustion both land
+    in health.failed; cancelled waits never do."""
+
+    from datetime import timedelta
+
+    from ai_workflow_engine import InMemoryWaitCoordinator
+    from ai_workflow_engine.testing.wait_contract import _record as _kit_record
+    from ai_workflow_engine.testing.wait_contract import _snapshot_json as _kit_snapshot
+
+    clock = _clock()
+    now = clock()
+    coordinator = InMemoryWaitCoordinator(clock=clock, shared_state={})
+    snapshot, definition = _kit_snapshot(), _definition_json()
+
+    from ai_workflow_engine.waits import WaitEvent
+
+    signal = WaitEvent(kind="signal", event_id="evt-h", payload="ok")
+    live = now + timedelta(days=1)
+    expired = now - timedelta(seconds=1)
+
+    await coordinator.register(_kit_record(now, wait_id="h-fail"), snapshot, definition)
+    claim = await coordinator.claim_event("h-fail", signal, lease_until=live)
+    await coordinator.fail("h-fail", claim.claim, error="x", failure_kind="digest_mismatch")
+
+    await coordinator.register(_kit_record(now, wait_id="h-exhaust"), snapshot, definition)
+    outcome = None
+    for _ in range(4):
+        outcome = await coordinator.claim_event("h-exhaust", signal, lease_until=expired)
+    assert outcome is not None and outcome.kind == "attempts_exhausted"
+
+    await coordinator.register(_kit_record(now, wait_id="h-cancel"), snapshot, definition)
+    await coordinator.cancel("h-cancel", reason="operator")
+
+    health = await coordinator.health()
+    assert health.failed == 2, "both failed producers count; nothing else does"
+    assert health.integrity_errors == 0
+
+
+# ======================================================================================
+# v0.11.5 — release-manifest identity (changed bytes must be rejected)
+# ======================================================================================
+
+
+def test_release_manifest_round_trip_and_byte_flip_rejection(tmp_path):
+    """The manifest's whole-wheel SHA-256 is the authoritative artifact identity: a valid
+    round-trip verifies; a SINGLE flipped byte, a size change, a missing required field, or
+    an unknown schema version are all rejected loudly by name."""
+
+    import json
+    import sys
+    from pathlib import Path as _P
+
+    sys.path.insert(0, str(_P(__file__).parent))
+    try:
+        from release_manifest import ManifestError, build_manifest, verify_manifest
+    finally:
+        sys.path.pop(0)
+
+    wheel = tmp_path / "ai_workflow_engine-9.9.9-py3-none-any.whl"
+    wheel.write_bytes(b"PK\x03\x04 deterministic-not-a-real-wheel payload")
+
+    manifest = build_manifest(
+        [wheel],
+        tag="engine-v9.9.9",
+        tag_object_id="t" * 40,
+        source_commit="c" * 40,
+        build_command="test",
+        source_date_epoch="1700000000",
+    )
+    verify_manifest(manifest, [wheel])  # clean round-trip
+
+    flipped = bytearray(wheel.read_bytes())
+    flipped[-1] ^= 0x01
+    wheel.write_bytes(bytes(flipped))
+    try:
+        verify_manifest(manifest, [wheel])
+        raise AssertionError("a flipped byte must be rejected")
+    except ManifestError as exc:
+        assert "SHA-256 mismatch" in str(exc)
+
+    wheel.write_bytes(b"PK\x03\x04 deterministic-not-a-real-wheel payload longer")
+    try:
+        verify_manifest(manifest, [wheel])
+        raise AssertionError("a size change must be rejected")
+    except ManifestError as exc:
+        assert "size mismatch" in str(exc)
+
+    broken = dict(manifest)
+    del broken["source_commit"]
+    try:
+        verify_manifest(broken, [])
+        raise AssertionError("missing required fields must be rejected")
+    except ManifestError as exc:
+        assert "source_commit" in str(exc)
+
+    alien = json.loads(json.dumps(manifest))
+    alien["manifest_schema_version"] = "release-manifest-v999"
+    try:
+        verify_manifest(alien, [])
+        raise AssertionError("unknown schema versions must be rejected")
+    except ManifestError as exc:
+        assert "unknown manifest schema" in str(exc)

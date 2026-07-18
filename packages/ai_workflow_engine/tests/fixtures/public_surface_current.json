@@ -7384,6 +7384,16 @@
           "title": "Claimed",
           "type": "integer"
         },
+        "failed": {
+          "minimum": 0,
+          "title": "Failed",
+          "type": "integer"
+        },
+        "integrity_errors": {
+          "minimum": 0,
+          "title": "Integrity Errors",
+          "type": "integer"
+        },
         "oldest_pending_deadline": {
           "anyOf": [
             {
@@ -7417,7 +7427,9 @@
       "required": [
         "pending",
         "claimed",
-        "overdue"
+        "overdue",
+        "failed",
+        "integrity_errors"
       ],
       "title": "WaitHealth",
       "type": "object"

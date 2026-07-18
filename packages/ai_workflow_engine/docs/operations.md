@@ -226,3 +226,34 @@ An engine release is ready only when:
 
 Framework requests and post-adoption feedback close through
 [`extension-lifecycle.md`](extension-lifecycle.md).
+
+## Release Artifacts And Verification (v0.11.5)
+
+Releases are consumed as **exact published bytes**, never as rebuilt source. The engine owner
+builds from a detached clean checkout of the annotated tag with a reproducible environment:
+
+```bash
+umask 022
+export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct <tag>)
+python3 -m pip wheel --no-deps -w ./wheels packages/ai_workflow_engine  # + tools/viewer as needed
+python3 packages/ai_workflow_engine/tests/release_manifest.py build \
+  --tag <tag> --out release-manifest.json ./wheels/*.whl
+```
+
+Two independent clean-checkout builds must produce identical wheel SHA-256 values before the
+release may claim reproducibility. The manifest (schema `release-manifest-v1`) records the tag and
+tag-object id, peeled source commit, package matrix with per-wheel filename/size/SHA-256 and which
+wheels were actually published, the build command and reproducibility environment, and the
+test/smoke results. The **whole-wheel SHA-256 of the published artifact is the authoritative
+identity**; `dist-info/RECORD` is diagnostic content evidence only (it lives inside the artifact
+and cannot serve as a supply-chain identity).
+
+Consumers verify BEFORE installing:
+
+```bash
+python3 release_manifest.py verify --manifest release-manifest.json <downloaded>.whl
+```
+
+A SHA mismatch means the bytes are not the published artifact — stop, never install. Delivery
+channels (artifact cache vs pushed tag) are chosen per release by the owner; agents never push or
+upload without that explicit choice.

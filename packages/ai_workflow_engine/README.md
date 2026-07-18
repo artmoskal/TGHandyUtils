@@ -5,7 +5,8 @@ declare a workflow, register typed capabilities, and call one engine door. The e
 transitions, retries, fan-out, budgets, waits, trace, usage, and observation bundles; products own
 domain models, provider clients, storage adapters, clocks, and side-effect delivery.
 
-> **`engine-v0.11.4` is the current release.** Pin immutable tags and build wheels; consumer
+> **`engine-v0.11.5` is the release candidate; do not re-pin until it is cut.** `engine-v0.11.4` remains the current
+> release. Pin immutable tags and build wheels; consumer
 > canaries still decide whether each product changes its deployed pin. Never depend on a live
 > branch. The binding contract is the repository-level
 > [`executable-workflow-engine-spec.md`](../../docs/executable-workflow-engine-spec.md).
@@ -17,6 +18,13 @@ domain models, provider clients, storage adapters, clocks, and side-effect deliv
 > matching historical tag (`engine-v0.10.1` and earlier keep working for their own data forever).
 > Adoption is fresh: new consumers start on the current contract; existing consumers re-adopt the
 > current surface rather than migrate state.
+>
+> **v0.11.5 candidate delta.** `WaitHealth` gains REQUIRED current-state `failed` and
+> `integrity_errors` counts (no defaults — adapters without the current health contract fail
+> loudly, and a backend outage must raise rather than report zero); the conformance kit asserts
+> the failed count through both producers, and the new `run_wait_integrity_conformance` helper
+> proves adapter-specific corruption reporting. Releases now ship a `release-manifest-v1` with
+> reproducible-build identity (published-wheel SHA-256 is authoritative).
 >
 > **v0.11.4 release delta.** `RunExecutionRequest` gives callers a typed, invocation-local
 > deadline for the complete graph. It narrows configured limits without mutating cached profiles,
@@ -66,18 +74,18 @@ Build from the tag because this monorepo is not published to PyPI:
 
 ```bash
 git clone <TGHandyUtils-repository> /tmp/tghandy-engine
-git -C /tmp/tghandy-engine checkout --detach engine-v0.11.4
+git -C /tmp/tghandy-engine checkout --detach engine-v0.11.5
 python -m pip wheel --no-deps -w ./vendor \
   /tmp/tghandy-engine/packages/ai_workflow_engine
-python -m pip install ./vendor/ai_workflow_engine-0.11.4-py3-none-any.whl
-python -c "import ai_workflow_engine as e; assert e.__version__ == '0.11.4'"
+python -m pip install ./vendor/ai_workflow_engine-0.11.5-py3-none-any.whl
+python -c "import ai_workflow_engine as e; assert e.__version__ == '0.11.5'"
 ```
 
 Optional packages:
 
 | Package | Install when |
 |---|---|
-| `ai-workflow-engine==0.11.4` | Always. Core builder, executor, memory, waits, observation writer. |
+| `ai-workflow-engine==0.11.5` | Always. Core builder, executor, memory, waits, observation writer. |
 | `ai-workflow-tools==0.5.1` | The product uses CLI agents, the tool catalog, or media helpers. |
 | `ai-workflow-viewer==0.3.1` | A developer or product service renders observation bundles. |
 

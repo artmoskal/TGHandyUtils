@@ -86,7 +86,7 @@ def test_engine_imports_no_product_code():
 def test_release_version_matches_current_pin():
     """Release guard: a pinned tag must not build a wheel that reports the previous version."""
 
-    expected = "0.11.4"
+    expected = "0.11.5"
     pyproject = tomllib.loads((PACKAGE_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert pyproject["project"]["version"] == expected
     assert ai_workflow_engine.__version__ == expected
@@ -540,6 +540,18 @@ def test_adopter_promises_map_to_evidence():
             assert row.get("mutation", "").strip(), (
                 f"{doc_name} AC-{number}: state the mutation evidence"
             )
+
+    # v0.11.5 hardening (codex-settled): the SlackAzz health promise regressed once by being
+    # mapped to bundle evidence while the PUBLIC WaitHealth model lacked the promised fields.
+    # Its evidence must always include the health-model surface directly.
+    slackazz_health = registry["sources"]["slackazz-handoff.md"]["11"]
+    assert slackazz_health.get("surface") == "WaitHealth", (
+        "slackazz AC-11 must bind to the WaitHealth model surface explicitly"
+    )
+    assert any(
+        "health" in test_name or "integrity" in test_name
+        for test_name in slackazz_health["tests"]
+    ), "slackazz AC-11 evidence must include a WaitHealth-surface test, never bundle-only"
 
 
 def test_node_handlers_write_only_reserved_state_keys():

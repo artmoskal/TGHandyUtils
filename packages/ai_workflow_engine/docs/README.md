@@ -1,6 +1,6 @@
 # AI Workflow Engine Documentation
 
-This directory describes the current `engine-v0.11.4` release (latest-only line). It is written for both
+This directory describes the `engine-v0.11.5` release candidate (`engine-v0.11.4` is the current release) (latest-only line). It is written for both
 engineers and coding agents: each file has one responsibility, links to the next action, and avoids
 embedding release history in current instructions.
 

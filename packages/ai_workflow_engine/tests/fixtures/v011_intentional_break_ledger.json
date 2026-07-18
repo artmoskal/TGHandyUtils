@@ -632,6 +632,14 @@
    "reason": "M16 (v0.11.4): nested public result schema carries the same persisted effective run deadline",
    "manifest_row": "M16",
    "consumed_by_seal": "2026-07-18 v0.11.4 invocation-local run deadline seal"
+  },
+  {
+   "path_prefix": "public.schemas.WaitHealth",
+   "match": "prefix",
+   "status": "spent",
+   "reason": "v0.11.5 (U1, SlackAzz AC-11): WaitHealth gains REQUIRED failed + integrity_errors current-state counts (no defaults - an adapter without the current health contract must fail loudly). Subtree-scoped for this ONE seal.",
+   "manifest_row": "U1",
+   "consumed_by_seal": "2026-07-18 v0.11.5 WaitHealth failed/integrity_errors seal (3 subtree deltas; corpus 0)"
   }
  ]
 }

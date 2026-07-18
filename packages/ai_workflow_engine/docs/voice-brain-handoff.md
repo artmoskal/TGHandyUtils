@@ -1,6 +1,7 @@
 # Voice Brain Engine Integration Guide
 
-Status: **`engine-v0.11.4` is released.** The product must pin tag `engine-v0.11.4` before running
+Status: **`engine-v0.11.5` is the release candidate; `engine-v0.11.4` remains the current
+release until it is cut.** The product must pin tag `engine-v0.11.5` before running
 its own latency/cancellation canary. This replaces
 the historical June request/reply transcript.
 
@@ -24,12 +25,12 @@ transcript + session context
 
 ## Package Choice
 
-- `ai-workflow-engine==0.11.4` for the runtime and custom `LLMCallable`.
+- `ai-workflow-engine==0.11.5` for the runtime and custom `LLMCallable`.
 - `ai-workflow-tools==0.5.1` only when using `CliAgentCapability`/console tools. CLI subscription
   workers are usually unsuitable for a low-latency conversational hot path.
 - `ai-workflow-viewer==0.3.1` in diagnostics, not the real-time audio path.
 
-> **Current matrix:** `engine-v0.11.4` + `ai-workflow-tools==0.5.1` + `ai-workflow-viewer==0.3.1`
+> **Current matrix (candidate):** `engine-v0.11.5` + `ai-workflow-tools==0.5.1` + `ai-workflow-viewer==0.3.1`
 > (tools/viewer require `ai-workflow-engine>=0.11,<0.12`). The previous line
 > (`engine-v0.10.1` + tools `0.4.1` + viewer `0.2.3`) remains available at its historical tag for
 > historical data; the lines never mix in one environment.
