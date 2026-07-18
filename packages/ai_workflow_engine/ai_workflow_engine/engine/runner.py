@@ -28,12 +28,18 @@ def derive_workflow_result_status(state: Dict[str, Any]) -> WorkflowResultStatus
     """Derive terminal machine truth once for both the result envelope and lifecycle log."""
 
     explicit = state.get("status")
-    if explicit == "failed":
+    current = list(state.get("node_status", {}).values())
+    # A graph-level failure has no node whose later successful retry can supersede it.
+    if explicit == "failed" and state.get("graph_failsafe") is not None:
         return "failed"
-    if explicit == "requires_user_input":
+    if explicit == "requires_user_input" or "requires_user_input" in current:
         return "requires_user_input"
-    if any(getattr(record, "status", None) == "partial" for record in state.get("node_results", [])):
+    if "failed" in current:
+        return "failed"
+    if "partial" in current:
         return "partial"
+    if not current and explicit == "failed":
+        return "failed"
     return "completed"
 
 
@@ -83,11 +89,21 @@ def derive_graph_failsafe_window(
             "graph cancellation_grace_s must be a finite non-negative number, "
             f"got {cancellation_grace_s!r}"
         )
-    remaining = session.run_remaining_s() if session is not None else None
-    work_timeout_s = remaining if remaining is not None else run_timeout_s
+    if session is not None and hasattr(session, "run_hard_remaining_s"):
+        work_timeout_s = session.run_remaining_s()
+        hard_remaining_s = session.run_hard_remaining_s()
+        effective_grace_s = min(
+            cancellation_grace_s,
+            session.run_completion_reserve_s(),
+            hard_remaining_s,
+        )
+    else:
+        hard_remaining_s = run_timeout_s
+        effective_grace_s = min(cancellation_grace_s, hard_remaining_s / 4.0)
+        work_timeout_s = hard_remaining_s - effective_grace_s
     return GraphFailsafeWindow(
         work_timeout_s=max(0.0, work_timeout_s),
-        cancellation_grace_s=cancellation_grace_s,
+        cancellation_grace_s=effective_grace_s,
     )
 
 
@@ -183,6 +199,10 @@ class WorkflowRunner:
         self.trace_sink = trace_sink
 
     _GRAPH_CANCELLATION_GRACE_S = 2.0
+
+    @property
+    def graph_cancellation_grace_s(self) -> float:
+        return self._GRAPH_CANCELLATION_GRACE_S
 
     async def run(
         self,

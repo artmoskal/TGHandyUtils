@@ -73,6 +73,11 @@ class MachineSnapshot(BaseModel):
     # unsafe to persist). Resume rebuilds the run deadline from the remaining active budget,
     # so time spent suspended at the gate does not count against the run timeout.
     active_elapsed_s: float = Field(default=0.0, ge=0, allow_inf_nan=False, strict=True)
+    # Effective total active-run timeout after profile/request intersection. Local resume
+    # continues this contract even when the caller omits the original invocation request.
+    run_timeout_s: Optional[float] = Field(
+        default=None, gt=0, allow_inf_nan=False, strict=True
+    )
 
     @model_validator(mode="before")
     @classmethod

@@ -600,6 +600,38 @@
    "reason": "B0 (Iteration B, v0.11.3): WorkflowBuilder.human signature newly added to the sealed public-signature inventory (gains optional memory=/model_profile= for builder/hand-declared parity). Additive signature key; future drift becomes a visible delta.",
    "manifest_row": "B0",
    "consumed_by_seal": "2026-07-16 B0 human-bound-context seal (1 corpus row + 1 public signature; all existing rows zero-delta)"
+  },
+  {
+   "path_prefix": "public.exports.RunExecutionRequest",
+   "match": "exact",
+   "status": "spent",
+   "reason": "M16 (v0.11.4): public invocation-local run deadline request; narrows configured limits without mutating cached profiles",
+   "manifest_row": "M16",
+   "consumed_by_seal": "2026-07-18 v0.11.4 invocation-local run deadline seal"
+  },
+  {
+   "path_prefix": "public.schemas.RunExecutionRequest",
+   "match": "exact",
+   "status": "spent",
+   "reason": "M16 (v0.11.4): sealed schema for the new strict invocation-local run deadline request",
+   "manifest_row": "M16",
+   "consumed_by_seal": "2026-07-18 v0.11.4 invocation-local run deadline seal"
+  },
+  {
+   "path_prefix": "public.schemas.MachineSnapshot.properties.run_timeout_s",
+   "match": "exact",
+   "status": "spent",
+   "reason": "M16 (v0.11.4): persist the effective run deadline across local suspend/resume",
+   "manifest_row": "M16",
+   "consumed_by_seal": "2026-07-18 v0.11.4 invocation-local run deadline seal"
+  },
+  {
+   "path_prefix": "public.schemas.WorkflowRunResult.$defs.MachineSnapshot.properties.run_timeout_s",
+   "match": "exact",
+   "status": "spent",
+   "reason": "M16 (v0.11.4): nested public result schema carries the same persisted effective run deadline",
+   "manifest_row": "M16",
+   "consumed_by_seal": "2026-07-18 v0.11.4 invocation-local run deadline seal"
   }
  ]
 }

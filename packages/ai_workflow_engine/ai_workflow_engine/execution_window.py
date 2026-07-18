@@ -22,6 +22,7 @@ __all__ = [
     "ExecutionWindowBoundSource",
     "ExecutionWindowClamp",
     "TimeoutEnforcement",
+    "RunExecutionRequest",
     "TaskExecutionRequest",
     "ExecutionWindowInputs",
     "ExecutionWindowDecision",
@@ -163,6 +164,39 @@ class TaskExecutionRequest(BaseModel):
     @classmethod
     def _source_non_blank(cls, value: str) -> str:
         return _validated_source_label(value, label="execution-request source")
+
+
+class RunExecutionRequest(BaseModel):
+    """Invocation-local wall-clock limit for one complete engine run.
+
+    This request narrows, but can never widen, the configured workflow/profile timeout.
+    It is separate from :class:`TaskExecutionRequest`, which bounds one capability call.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    timeout_s: float
+    source: StrictStr = Field(default="run_caller", max_length=128)
+
+    @field_validator("timeout_s", mode="before")
+    @classmethod
+    def _timeout_positive_finite(cls, value: object) -> object:
+        if isinstance(value, bool):
+            raise ValueError(f"timeout_s must be a finite positive number, got {value!r}")
+        try:
+            numeric = float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"timeout_s must be a finite positive number, got {value!r}"
+            ) from None
+        if not math.isfinite(numeric) or numeric <= 0:
+            raise ValueError(f"timeout_s must be a finite positive number, got {value!r}")
+        return value
+
+    @field_validator("source")
+    @classmethod
+    def _source_non_blank(cls, value: str) -> str:
+        return _validated_source_label(value, label="run-execution-request source")
 
 
 class ExecutionWindowInputs(BaseModel):

@@ -7,7 +7,7 @@
 from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
-__version__ = "0.11.3"
+__version__ = "0.11.4"
 
 
 # F-C1 (typed public surface): the SAME export map, statically visible. Type checkers
@@ -98,6 +98,7 @@ if TYPE_CHECKING:
         WorkflowExecutor,
         WorkflowRunResult,
     )
+    from ai_workflow_engine.execution_window import RunExecutionRequest
     from ai_workflow_engine.flow_authoring import (
         BranchFlowNode,
         DEFAULT_FLOW_AUTHOR_PROMPT,
@@ -328,6 +329,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "Retrace": ("ai_workflow_engine.workflow", "Retrace"),
     "Retry": ("ai_workflow_engine.workflow", "Retry"),
     "RuntimePlan": ("ai_workflow_engine.models", "RuntimePlan"),
+    "RunExecutionRequest": ("ai_workflow_engine.execution_window", "RunExecutionRequest"),
     "RuntimePlanCompiler": ("ai_workflow_engine.engine", "RuntimePlanCompiler"),
     "SchedulingDecision": ("ai_workflow_engine.engine", "SchedulingDecision"),
     "SequencedDetailSink": ("ai_workflow_engine.observation_bundle", "SequencedDetailSink"),
@@ -511,6 +513,7 @@ __all__ = [
     "ObservationSegment",
     "ObservationSequence",
     "RuntimePlan",
+    "RunExecutionRequest",
     "RuntimePlanCompiler",
     "SessionState",
     "WorkflowArtifact",

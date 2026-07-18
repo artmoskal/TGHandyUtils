@@ -17,6 +17,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar
 
+import math
 import time
 import uuid
 from typing import Any, Callable, Iterator, List, Optional
@@ -192,6 +193,7 @@ class WorkflowRunSession:
         self._run_timeout_s: Optional[float] = None
         self._deadline_monotonic: Optional[float] = None
         self._active_elapsed_s: float = 0.0
+        self._completion_reserve_s: float = 0.0
 
     def start_execution_window(
         self,
@@ -199,6 +201,7 @@ class WorkflowRunSession:
         run_timeout_s: Optional[float],
         clock: Optional[Callable[[], float]] = None,
         prior_active_elapsed_s: float = 0.0,
+        completion_reserve_s: float = 0.0,
     ) -> None:
         """Open (or reopen on resume) the run's active execution window. ``run_timeout_s`` is
         the TOTAL active budget; ``prior_active_elapsed_s`` is what a resumed run already
@@ -208,10 +211,14 @@ class WorkflowRunSession:
             self._clock = clock
         self._run_timeout_s = run_timeout_s
         self._active_elapsed_s = prior_active_elapsed_s
+        self._completion_reserve_s = 0.0
         if run_timeout_s is None:
             self._deadline_monotonic = None
             return
+        if not math.isfinite(completion_reserve_s) or completion_reserve_s < 0:
+            raise ValueError("completion_reserve_s must be finite and non-negative")
         remaining = max(0.0, run_timeout_s - prior_active_elapsed_s)
+        self._completion_reserve_s = min(completion_reserve_s, remaining / 4.0)
         self._deadline_monotonic = self._clock() + remaining
 
     def run_remaining_s(self) -> Optional[float]:
@@ -219,7 +226,22 @@ class WorkflowRunSession:
 
         if self._deadline_monotonic is None:
             return None
+        return max(
+            0.0,
+            self._deadline_monotonic - self._clock() - self._completion_reserve_s,
+        )
+
+    def run_hard_remaining_s(self) -> Optional[float]:
+        """Remaining active wall-clock budget including final cleanup containment."""
+
+        if self._deadline_monotonic is None:
+            return None
         return max(0.0, self._deadline_monotonic - self._clock())
+
+    def run_completion_reserve_s(self) -> float:
+        """Run-owned cleanup reserve included inside the hard wall-clock budget."""
+
+        return self._completion_reserve_s
 
     def active_elapsed_s(self) -> float:
         """Cumulative active time consumed so far (for snapshot persistence). Suspended
@@ -227,7 +249,9 @@ class WorkflowRunSession:
 
         if self._deadline_monotonic is None or self._run_timeout_s is None:
             return self._active_elapsed_s
-        consumed = self._run_timeout_s - max(0.0, self._deadline_monotonic - self._clock())
+        consumed = self._run_timeout_s - max(
+            0.0, self._deadline_monotonic - self._clock()
+        )
         return min(self._run_timeout_s, max(self._active_elapsed_s, consumed))
 
     @staticmethod

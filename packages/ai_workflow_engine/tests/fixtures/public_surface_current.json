@@ -97,6 +97,7 @@
     "Replan": "export",
     "Retrace": "export",
     "Retry": "export",
+    "RunExecutionRequest": "export",
     "RuntimePlan": "export",
     "RuntimePlanCompiler": "export",
     "SchedulingDecision": "export",
@@ -3782,6 +3783,19 @@
         "run_context": {
           "$ref": "#/$defs/WorkflowRunContext"
         },
+        "run_timeout_s": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Run Timeout S"
+        },
         "schema_version": {
           "const": "v0.11",
           "title": "Schema Version",
@@ -6503,6 +6517,27 @@
         }
       },
       "title": "Retry",
+      "type": "object"
+    },
+    "RunExecutionRequest": {
+      "additionalProperties": false,
+      "description": "Invocation-local wall-clock limit for one complete engine run.\n\nThis request narrows, but can never widen, the configured workflow/profile timeout.\nIt is separate from :class:`TaskExecutionRequest`, which bounds one capability call.",
+      "properties": {
+        "source": {
+          "default": "run_caller",
+          "maxLength": 128,
+          "title": "Source",
+          "type": "string"
+        },
+        "timeout_s": {
+          "title": "Timeout S",
+          "type": "number"
+        }
+      },
+      "required": [
+        "timeout_s"
+      ],
+      "title": "RunExecutionRequest",
       "type": "object"
     },
     "RuntimePlan": {
@@ -10091,6 +10126,19 @@
             },
             "run_context": {
               "$ref": "#/$defs/WorkflowRunContext"
+            },
+            "run_timeout_s": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Run Timeout S"
             },
             "schema_version": {
               "const": "v0.11",

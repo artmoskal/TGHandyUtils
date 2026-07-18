@@ -1,11 +1,11 @@
 # MageQA Engine Adoption Guide
 
-Status: **`engine-v0.11.3` is released; MageQA must not re-pin or delete its fork until its E0
+Status: **`engine-v0.11.4` is released; MageQA must not re-pin or delete its fork until its E0
 canaries pass against the immutable tag.** The five historical E0 blockers (planned
 `partial` rewritten to `done`, unenforced `RuntimeLimits.timeout_s`, hidden retrace provenance,
 the CLI 600s default, and the reused tools wheel identity) are addressed and carried forward;
 v0.11 additionally hardens every persisted contract (strict versioned snapshot, bundle meta v2,
-wait records) with NO migration layer. MageQA must pin tag `engine-v0.11.3` from a clean checkout,
+wait records) with NO migration layer. MageQA must pin tag `engine-v0.11.4` from a clean checkout,
 rebuild wheels, and pass its E0 canaries before
 adopting; it stays on its existing pin until those canaries pass.
 Do not infer the actual MageQA pin from this document; the consumer repository's pin file is
@@ -45,11 +45,11 @@ a defect.
 
 | Package | MageQA use |
 |---|---|
-| `ai-workflow-engine==0.11.3` | Required orchestration/runtime |
+| `ai-workflow-engine==0.11.4` | Required orchestration/runtime |
 | `ai-workflow-tools==0.5.1` | CLI agents, `claude -p`/`codex exec`, tool catalog, media helpers |
 | `ai-workflow-viewer==0.3.1` | Low-level engine run investigation and bundle rendering |
 
-> **Current matrix:** `engine-v0.11.3` + `ai-workflow-tools==0.5.1` + `ai-workflow-viewer==0.3.1`
+> **Current matrix:** `engine-v0.11.4` + `ai-workflow-tools==0.5.1` + `ai-workflow-viewer==0.3.1`
 > (tools/viewer require `ai-workflow-engine>=0.11,<0.12`). The previous line
 > (`engine-v0.10.1` + tools `0.4.1` + viewer `0.2.3`) remains available at its historical tag for
 > historical data; the lines never mix in one environment.
@@ -195,15 +195,20 @@ with a scenario and acceptance proof. Upgrade via [`operations.md`](operations.m
 
 ## v0.11 Release Contract
 
-`engine-v0.11.3` is the current immutable release for the **latest-only** line. The line uses strict versioned persisted
+`engine-v0.11.4` is the current immutable release for the **latest-only** line. The line uses strict versioned persisted
 contracts (snapshot `v0.11`, bundle meta v2, wait records `wait-v1`), one strict viewer loader, and
 NO migration layer — the sealed current-contract corpus shows 0 behavior deltas vs v0.10.1, but old
 persisted data is rejected loudly naming its historical tag. Adopt by re-pinning fresh
-(pin tag `engine-v0.11.3`, rebuild wheels: engine `0.11.3`, tools `0.5.1`, viewer `0.3.1`) and
+(pin tag `engine-v0.11.4`, rebuild wheels: engine `0.11.4`, tools `0.5.1`, viewer `0.3.1`) and
 re-run your canaries before changing any deployed pin.
 
 The release supersedes exactly the two changes declared in MageQA's v0.11.1 fork. Engine
-`0.11.3` carries the stronger planner-output merge at both loss surfaces. Tools `0.5.1` attaches
+`0.11.4` retains the stronger planner-output merge at both loss surfaces from `0.11.3` and adds
+the public `RunExecutionRequest`: callers can narrow one complete run without mutating cached
+profiles, the effective limit survives local suspend/resume, retraces share the same monotonic
+deadline, and graph cleanup is contained inside the declared wall time. Terminal run status and
+errors now follow the latest attempt per node while preserving all attempts in history. Tools
+`0.5.1` attaches
 staged `ImageInput` files to `codex exec` with native `--image`; Claude keeps the separate
 path-scoped `Read(./inputs/**)` transport. It also closes context-binding parity: human and fan-out
 capability invocations consume all four declared bindings, while subworkflows consume plan/machine

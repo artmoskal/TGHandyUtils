@@ -125,6 +125,11 @@ class SuspensionCoordinator:
                 if (active_session := current_run_session()) is not None
                 else 0.0
             ),
+            run_timeout_s=(
+                state_context.limits.timeout_s
+                if state_context is not None and state_context.limits is not None
+                else None
+            ),
             durable_wait_id=durable_wait_id,
         )
 
@@ -141,14 +146,20 @@ class SuspensionCoordinator:
                 final_state,
             )
         except Exception as registration_error:
-            failed_node = next(
+            suspended_record = next(
                 (
-                    result.node_id
+                    result
                     for result in reversed(final_state.get("node_results", []))
                     if result.status == "requires_user_input"
                 ),
-                definition.workflow_id,
+                None,
             )
+            failed_node = (
+                suspended_record.node_id
+                if suspended_record is not None
+                else definition.workflow_id
+            )
+            failure_error = f"durable wait registration failed: {registration_error}"
             self._runtime.trace_sink.record(
                 WorkflowTraceEvent(
                     node=definition.workflow_id,
@@ -170,7 +181,26 @@ class SuspensionCoordinator:
             return None, {
                 **final_state,
                 "status": "failed",
-                "error": f"durable wait registration failed: {registration_error}",
+                "error": failure_error,
+                "node_status": {
+                    **final_state.get("node_status", {}),
+                    failed_node: "failed",
+                },
+                "node_results": [
+                    *final_state.get("node_results", []),
+                    *(
+                        [
+                            suspended_record.model_copy(
+                                update={
+                                    "status": "failed",
+                                    "error": failure_error,
+                                }
+                            )
+                        ]
+                        if suspended_record is not None
+                        else []
+                    ),
+                ],
             }
 
     async def _register_durable_wait(

@@ -323,7 +323,10 @@ class WorkflowExecutor:
         try:
             with observation_capture_scope(self.runtime.observation), run_session_scope(session):
                 session.start_execution_window(
-                    run_timeout_s=context.limits.timeout_s if context.limits else None
+                    run_timeout_s=context.limits.timeout_s if context.limits else None,
+                    completion_reserve_s=getattr(
+                        self.runner, "graph_cancellation_grace_s", 0.0
+                    ),
                 )
                 # Run-birth provenance (R7+R12+R-C2-2): engine-owned and UNFORGEABLE from the
                 # public surface — no run() parameter carries it. run_authored_flow stages the
@@ -554,6 +557,9 @@ class WorkflowExecutor:
                 session.start_execution_window(
                     run_timeout_s=context.limits.timeout_s if context.limits else None,
                     prior_active_elapsed_s=getattr(snapshot, "active_elapsed_s", 0.0) or 0.0,
+                    completion_reserve_s=getattr(
+                        self.runner, "graph_cancellation_grace_s", 0.0
+                    ),
                 )
                 # Recorded inside the session scope so the resumed-run envelope carries it too.
                 self.runtime.trace_sink.record(

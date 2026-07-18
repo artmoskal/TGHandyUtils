@@ -44,6 +44,7 @@ import logging
 
 from ai_workflow_engine.engine.checkpoints import CheckpointStore
 from ai_workflow_engine.executor import WorkflowExecutor, WorkflowRunResult
+from ai_workflow_engine.execution_window import RunExecutionRequest
 from ai_workflow_engine.models import (
     CapabilityContext,
     CapabilityKind,
@@ -562,6 +563,7 @@ class WorkflowEngine:
         recursion_limit: Optional[int] = None,
         observation_bundle: Any = None,
         terminal_status: Optional[Any] = None,
+        execution: Optional[RunExecutionRequest] = None,
     ) -> WorkflowRunResult:
         definition = self._resolve(workflow)
         if observation_bundle is not None:
@@ -583,6 +585,7 @@ class WorkflowEngine:
             user_id=user_id,
             constraints=constraints,
             delivery_target=delivery_target,
+            execution=execution,
         )
         if (
             observation_bundle is None
@@ -632,6 +635,7 @@ class WorkflowEngine:
         goal: Optional[WorkflowGoal] = None,
         user_id: Optional[int] = None,
         constraints: Optional[Dict[str, Any]] = None,
+        execution: Optional[RunExecutionRequest] = None,
     ) -> WorkflowRunResult:
         """Continue a suspended workflow from its snapshot (live object or JSON string).
 
@@ -694,9 +698,28 @@ class WorkflowEngine:
             # a valid goal/run_context, so resume can never mint a replacement identity.
             goal = snapshot.goal
         context = self._run_context_for(
-            definition, goal=goal, user_id=user_id, constraints=constraints
+            definition,
+            goal=goal,
+            user_id=user_id,
+            constraints=constraints,
+            execution=execution,
         )
         if not forked:
+            persisted_timeout_s = snapshot.run_timeout_s
+            if persisted_timeout_s is not None:
+                current_timeout_s = context.limits.timeout_s
+                effective_timeout_s = (
+                    persisted_timeout_s
+                    if current_timeout_s is None
+                    else min(persisted_timeout_s, current_timeout_s)
+                )
+                limits = context.limits.model_copy(update={"timeout_s": effective_timeout_s})
+                plan = (
+                    context.plan.model_copy(update={"limits": limits})
+                    if context.plan is not None
+                    else None
+                )
+                context = context.model_copy(update={"limits": limits, "plan": plan})
             context = context.model_copy(update={"run_context": snapshot.run_context})
         observation_bundle = None
         if self.observation is not None and self.observation.enabled:
@@ -774,6 +797,7 @@ class WorkflowEngine:
         user_id: Optional[int] = None,
         constraints: Optional[Dict[str, Any]] = None,
         delivery_target: Optional[str] = None,
+        execution: Optional[RunExecutionRequest] = None,
     ) -> CapabilityContext:
         plan = self._plan_for(definition)
         run_goal = goal or WorkflowGoal(
@@ -785,6 +809,25 @@ class WorkflowEngine:
         merged_constraints = {**plan.constraints, **run_goal.constraints, **(constraints or {})}
         if merged_constraints != plan.constraints:
             plan = plan.model_copy(update={"constraints": merged_constraints})
+        limits = plan.limits
+        run_execution_metadata: Dict[str, Any] = {}
+        if execution is not None:
+            configured_timeout_s = limits.timeout_s
+            effective_timeout_s = (
+                execution.timeout_s
+                if configured_timeout_s is None
+                else min(configured_timeout_s, execution.timeout_s)
+            )
+            limits = limits.model_copy(update={"timeout_s": effective_timeout_s})
+            plan = plan.model_copy(update={"limits": limits})
+            run_execution_metadata = {
+                "run_execution": {
+                    "requested_timeout_s": execution.timeout_s,
+                    "configured_timeout_s": configured_timeout_s,
+                    "effective_timeout_s": effective_timeout_s,
+                    "source": execution.source,
+                }
+            }
         run_id = str(run_goal.metadata.get("run_id") or uuid.uuid4())
         return CapabilityContext(
             goal=run_goal,
@@ -798,8 +841,8 @@ class WorkflowEngine:
                 correlation_id=run_goal.correlation_id,
             ),
             plan=plan,
-            limits=plan.limits,
-            metadata={"model_profiles": self.model_profiles},
+            limits=limits,
+            metadata={"model_profiles": self.model_profiles, **run_execution_metadata},
         )
 
     # ---------------------------------------------------------------- internals

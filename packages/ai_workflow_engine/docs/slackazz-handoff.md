@@ -1,6 +1,6 @@
 # SlackAzzCovered Engine Adoption Guide
 
-Status: **`engine-v0.11.3` is released.** SlackAzzCovered should pin tag `engine-v0.11.3`,
+Status: **`engine-v0.11.4` is released.** SlackAzzCovered should pin tag `engine-v0.11.4`,
 implement its Redis coordinator, and pass the engine conformance kit plus product transaction
 tests before enabling live effects.
 
@@ -32,11 +32,11 @@ client event
 
 | Package | SlackAzzCovered use |
 |---|---|
-| `ai-workflow-engine==0.11.3` | Required workflow/wait runtime |
+| `ai-workflow-engine==0.11.4` | Required workflow/wait runtime |
 | `ai-workflow-tools==0.5.1` | Add for CLI agents/tool catalog if the product uses them |
 | `ai-workflow-viewer==0.3.1` | Developer diagnostics or product-linked run inspection |
 
-> **Current matrix:** `engine-v0.11.3` + `ai-workflow-tools==0.5.1` + `ai-workflow-viewer==0.3.1`
+> **Current matrix:** `engine-v0.11.4` + `ai-workflow-tools==0.5.1` + `ai-workflow-viewer==0.3.1`
 > (tools/viewer require `ai-workflow-engine>=0.11,<0.12`). The previous line
 > (`engine-v0.10.1` + tools `0.4.1` + viewer `0.2.3`) remains available at its historical tag for
 > historical data; the lines never mix in one environment.
@@ -238,11 +238,11 @@ Follow [`operations.md`](operations.md) for production recovery. File missing me
 
 ## v0.11 Release Contract
 
-`engine-v0.11.3` is the current immutable release for the **latest-only** line. The line uses strict versioned persisted
+`engine-v0.11.4` is the current immutable release for the **latest-only** line. The line uses strict versioned persisted
 contracts (snapshot `v0.11`, bundle meta v2, wait records `wait-v1`), one strict viewer loader, and
 NO migration layer — the sealed current-contract corpus shows 0 behavior deltas vs v0.10.1, but old
 persisted data is rejected loudly naming its historical tag. Adopt by re-pinning fresh
-(pin tag `engine-v0.11.3`, rebuild wheels: engine `0.11.3`, tools `0.5.1`, viewer `0.3.1`) and
+(pin tag `engine-v0.11.4`, rebuild wheels: engine `0.11.4`, tools `0.5.1`, viewer `0.3.1`) and
 re-run your canaries before changing any deployed pin. The release makes node-context binding
 explicit for every node kind; wait contracts and persisted schemas are unchanged. Read the
 annotated tag for the exact source commit and reference wheel hashes.

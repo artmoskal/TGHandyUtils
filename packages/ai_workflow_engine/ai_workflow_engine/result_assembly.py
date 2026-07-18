@@ -42,10 +42,20 @@ class RunResultAssembler:
         if usage is None:
             logger.warning("run produced no usage_summary — reporting an empty one (plumbing bug?)")
             usage = WorkflowUsageSummary()
-        error = final_state.get("error")
-        if error is None and status in ("partial", "failed"):
-            reasons = [record.error for record in node_results if record.error]
+        latest_by_node = {}
+        for record in node_results:
+            latest_by_node[record.node_id] = record
+        if status in ("partial", "failed"):
+            reasons = [
+                record.error
+                for record in latest_by_node.values()
+                if record.status in ("partial", "failed") and record.error
+            ]
+            if final_state.get("graph_failsafe") is not None and final_state.get("error"):
+                reasons.append(final_state["error"])
             error = "; ".join(dict.fromkeys(reasons)) or None
+        else:
+            error = None
         snapshot = None
         if status == "requires_user_input":
             suspended = next(

@@ -1628,28 +1628,44 @@ def test_graph_failsafe_budget_follows_the_session_remaining_not_the_full_timeou
 
     clock_now = [100.0]
     fresh = _session()
-    fresh.start_execution_window(run_timeout_s=10.0, clock=lambda: clock_now[0])
+    fresh.start_execution_window(
+        run_timeout_s=10.0,
+        clock=lambda: clock_now[0],
+        completion_reserve_s=2.0,
+    )
     fresh_window = derive_graph_failsafe_window(
         10.0, fresh, cancellation_grace_s=2.0
     )
-    assert fresh_window.work_timeout_s == pytest.approx(10.0)
+    assert fresh_window.work_timeout_s == pytest.approx(8.0)
     assert fresh_window.cancellation_grace_s == pytest.approx(2.0)
+    assert (
+        fresh_window.work_timeout_s + fresh_window.cancellation_grace_s
+        == pytest.approx(10.0)
+    )
 
     resumed = _session()
     resumed.start_execution_window(
-        run_timeout_s=10.0, clock=lambda: clock_now[0], prior_active_elapsed_s=9.0
+        run_timeout_s=10.0,
+        clock=lambda: clock_now[0],
+        prior_active_elapsed_s=9.0,
+        completion_reserve_s=2.0,
     )
     resumed_window = derive_graph_failsafe_window(
         10.0, resumed, cancellation_grace_s=2.0
     )
-    assert resumed_window.work_timeout_s == pytest.approx(1.0), (
+    assert resumed_window.work_timeout_s == pytest.approx(0.75), (
         "a resumed run that already consumed 9 of its 10s must NOT get a fresh full timeout"
     )
-    assert resumed_window.cancellation_grace_s == pytest.approx(2.0)
+    assert resumed_window.cancellation_grace_s == pytest.approx(0.25)
+    assert (
+        resumed_window.work_timeout_s + resumed_window.cancellation_grace_s
+        == pytest.approx(1.0)
+    )
 
-    # no session -> the declared timeout; unbounded -> no fail-safe at all
+    # no session still reserves containment inside the declared wall time.
     no_session = derive_graph_failsafe_window(10.0, None, cancellation_grace_s=2.0)
-    assert no_session.work_timeout_s == pytest.approx(10.0)
+    assert no_session.work_timeout_s == pytest.approx(8.0)
+    assert no_session.cancellation_grace_s == pytest.approx(2.0)
     assert derive_graph_failsafe_window(None, fresh, cancellation_grace_s=2.0) is None
     with pytest.raises(ValueError, match="finite non-negative"):
         derive_graph_failsafe_window(10.0, fresh, cancellation_grace_s=float("inf"))
