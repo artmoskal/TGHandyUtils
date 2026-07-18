@@ -2874,66 +2874,195 @@ async def test_health_failed_count_covers_both_producers_directly():
 
 
 # ======================================================================================
-# v0.11.5 — release-manifest identity (changed bytes must be rejected)
+# R0.2 (v0.11.5 corrective) — health-contract attack battery (RED-first on 202e87a)
 # ======================================================================================
 
 
-def test_release_manifest_round_trip_and_byte_flip_rejection(tmp_path):
-    """The manifest's whole-wheel SHA-256 is the authoritative artifact identity: a valid
-    round-trip verifies; a SINGLE flipped byte, a size change, a missing required field, or
-    an unknown schema version are all rejected loudly by name."""
+def _integrity_env():
+    from ai_workflow_engine import InMemoryWaitCoordinator
 
-    import json
-    import sys
-    from pathlib import Path as _P
+    shared: dict = {}
+    clock = _clock()
+    make = lambda: InMemoryWaitCoordinator(clock=clock, shared_state=shared)  # noqa: E731
+    make()  # materialize backing sub-dicts
+    return shared, clock, make
 
-    sys.path.insert(0, str(_P(__file__).parent))
-    try:
-        from release_manifest import ManifestError, build_manifest, verify_manifest
-    finally:
-        sys.path.pop(0)
 
-    wheel = tmp_path / "ai_workflow_engine-9.9.9-py3-none-any.whl"
-    wheel.write_bytes(b"PK\x03\x04 deterministic-not-a-real-wheel payload")
+async def test_forged_typed_record_counts_as_integrity_error_not_nothing():
+    """H3 attack: a validator-bypassing typed object (model_copy with an illegal status) is
+    NOT a valid current-contract record. It must count as exactly one integrity error and
+    contribute to no status bucket — it must not silently vanish."""
 
-    manifest = build_manifest(
-        [wheel],
-        tag="engine-v9.9.9",
-        tag_object_id="t" * 40,
-        source_commit="c" * 40,
-        build_command="test",
-        source_date_epoch="1700000000",
+    from ai_workflow_engine.testing.wait_contract import _record as _kit_record
+
+    shared, clock, make = _integrity_env()
+    coordinator = make()
+    now = clock()
+    forged = _kit_record(now, wait_id="w-forged").model_copy(update={"status": "not-a-status"})
+    shared["records"]["w-forged"] = forged
+
+    health = await coordinator.health()
+    assert health.integrity_errors == 1, (
+        f"a forged typed record must be an integrity error, got {health!r}"
     )
-    verify_manifest(manifest, [wheel])  # clean round-trip
+    assert health.pending == 0 and health.failed == 0 and health.claimed == 0
 
-    flipped = bytearray(wheel.read_bytes())
-    flipped[-1] ^= 0x01
-    wheel.write_bytes(bytes(flipped))
-    try:
-        verify_manifest(manifest, [wheel])
-        raise AssertionError("a flipped byte must be rejected")
-    except ManifestError as exc:
-        assert "SHA-256 mismatch" in str(exc)
 
-    wheel.write_bytes(b"PK\x03\x04 deterministic-not-a-real-wheel payload longer")
-    try:
-        verify_manifest(manifest, [wheel])
-        raise AssertionError("a size change must be rejected")
-    except ManifestError as exc:
-        assert "size mismatch" in str(exc)
+async def test_backing_key_mismatch_counts_as_integrity_error():
+    """H3 attack: an entry stored under a key different from its own wait_id is corrupt
+    identity — one integrity error, zero status contribution."""
 
-    broken = dict(manifest)
-    del broken["source_commit"]
-    try:
-        verify_manifest(broken, [])
-        raise AssertionError("missing required fields must be rejected")
-    except ManifestError as exc:
-        assert "source_commit" in str(exc)
+    from ai_workflow_engine.testing.wait_contract import _record as _kit_record
 
-    alien = json.loads(json.dumps(manifest))
-    alien["manifest_schema_version"] = "release-manifest-v999"
+    shared, clock, make = _integrity_env()
+    coordinator = make()
+    now = clock()
+    shared["records"]["totally-different-key"] = _kit_record(now, wait_id="w-real-id")
+
+    health = await coordinator.health()
+    assert health.integrity_errors == 1, (
+        f"key/wait_id mismatch must be an integrity error, got {health!r}"
+    )
+    assert health.pending == 0
+
+
+async def test_integrity_helper_rejects_per_field_sibling_drift():
+    """H4/H5/H6 attack matrix: an adapter that reports the right integrity count but drifts
+    ANY sibling health field (during corruption, on reconnect, or after repair) must FAIL
+    the integrity conformance helper. The helper compares complete health snapshots."""
+
+    from ai_workflow_engine import InMemoryWaitCoordinator
+    from ai_workflow_engine.testing import run_wait_integrity_conformance
+
+    drift_fields = ["pending", "claimed", "overdue", "stalled", "failed"]
+
+    for field in drift_fields:
+        shared: dict = {}
+        clock = _clock()
+
+        class SiblingLiar(InMemoryWaitCoordinator):
+            async def health(self):  # noqa: A003
+                real = await super().health()
+                if real.integrity_errors > 0:  # lie only while corruption is present
+                    return real.model_copy(update={field: real.__getattribute__(field) + 5})
+                return real
+
+        def make():
+            return SiblingLiar(clock=clock, shared_state=shared)
+
+        make()
+
+        def inject():
+            shared["records"]["corrupt-entry"] = {"garbage": True}
+
+        def repair():
+            del shared["records"]["corrupt-entry"]
+
+        caught = False
+        try:
+            await run_wait_integrity_conformance(
+                make, clock=clock, inject_corruption=inject, repair_corruption=repair, reconnect=make
+            )
+        except AssertionError:
+            caught = True
+        assert caught, (
+            f"an adapter drifting sibling field {field!r} during corruption must FAIL the "
+            "integrity helper — partial-field checks are not conformance"
+        )
+
+
+async def test_integrity_helper_rejects_repair_drift():
+    """H6 attack: repair must restore the COMPLETE pre-corruption health, not only the
+    integrity count."""
+
+    from ai_workflow_engine import InMemoryWaitCoordinator
+    from ai_workflow_engine.testing import run_wait_integrity_conformance
+
+    shared: dict = {}
+    clock = _clock()
+    repaired_once = {"done": False}
+
+    class RepairLiar(InMemoryWaitCoordinator):
+        async def health(self):  # noqa: A003
+            real = await super().health()
+            if repaired_once["done"]:
+                return real.model_copy(update={"oldest_pending_deadline": None})
+            return real
+
+    def make():
+        return RepairLiar(clock=clock, shared_state=shared)
+
+    make()
+
+    def inject():
+        shared["records"]["corrupt-entry"] = {"garbage": True}
+
+    def repair():
+        del shared["records"]["corrupt-entry"]
+        repaired_once["done"] = True
+
+    caught = False
     try:
-        verify_manifest(alien, [])
-        raise AssertionError("unknown schema versions must be rejected")
-    except ManifestError as exc:
-        assert "unknown manifest schema" in str(exc)
+        await run_wait_integrity_conformance(
+            make, clock=clock, inject_corruption=inject, repair_corruption=repair, reconnect=make
+        )
+    except AssertionError:
+        caught = True
+    assert caught, "post-repair sibling drift must fail the helper (complete-health equality)"
+
+
+async def test_lifecycle_kit_rejects_integrity_inventor_and_failed_hider():
+    """H7 attack: an adapter carrying an invented constant integrity count, or one hiding
+    failed records, must fail the ORDINARY lifecycle conformance kit — not only the
+    corruption helper."""
+
+    from ai_workflow_engine import InMemoryWaitCoordinator
+    from ai_workflow_engine.testing import run_wait_registration_conformance
+
+    clock = _clock()
+
+    class IntegrityInventor(InMemoryWaitCoordinator):
+        async def health(self):  # noqa: A003
+            real = await super().health()
+            return real.model_copy(update={"integrity_errors": 99})
+
+    caught = False
+    try:
+        await run_wait_registration_conformance(
+            lambda: IntegrityInventor(clock=clock, shared_state={}), clock=clock
+        )
+    except AssertionError:
+        caught = True
+    assert caught, "constant invented integrity_errors must fail lifecycle conformance (H7)"
+
+    class FailedHider(InMemoryWaitCoordinator):
+        async def health(self):  # noqa: A003
+            real = await super().health()
+            return real.model_copy(update={"failed": 0})
+
+    caught = False
+    try:
+        await run_wait_registration_conformance(
+            lambda: FailedHider(clock=clock, shared_state={}), clock=clock
+        )
+    except AssertionError:
+        caught = True
+    assert caught, "an adapter hiding failed records must fail lifecycle conformance"
+
+    class StartupInventor(InMemoryWaitCoordinator):
+        # dishonest ONLY while the store is empty — kills a kit that anchors integrity
+        # solely at the END of the lifecycle (H7 demands BEGINS and ends at zero)
+        async def health(self):  # noqa: A003
+            real = await super().health()
+            if not self._records:
+                return real.model_copy(update={"integrity_errors": 99})
+            return real
+
+    caught = False
+    try:
+        await run_wait_registration_conformance(
+            lambda: StartupInventor(clock=clock, shared_state={}), clock=clock
+        )
+    except AssertionError:
+        caught = True
+    assert caught, "H7: integrity must be zero at the START of the lifecycle, not only the end"

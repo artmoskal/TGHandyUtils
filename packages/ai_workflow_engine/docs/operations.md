@@ -229,31 +229,38 @@ Framework requests and post-adoption feedback close through
 
 ## Release Artifacts And Verification (v0.11.5)
 
-Releases are consumed as **exact published bytes**, never as rebuilt source. The engine owner
-builds from a detached clean checkout of the annotated tag with a reproducible environment:
+Two roles, two different workflows — a consumer NEVER rebuilds as verification (D1), and the two
+identities are distinct (D2): the **annotated tag proves source**; the **release manifest proves
+artifact bytes**. Annotated tags do not contain wheel hashes.
+
+**Producer (engine owner).** Build from a detached clean checkout of the annotated tag with the
+reproducible environment, then bind identity + gate evidence with the release tool:
 
 ```bash
 umask 022
 export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct <tag>)
-python3 -m pip wheel --no-deps -w ./wheels packages/ai_workflow_engine  # + tools/viewer as needed
-python3 packages/ai_workflow_engine/tests/release_manifest.py build \
-  --tag <tag> --out release-manifest.json ./wheels/*.whl
+python3 -m pip wheel --no-deps -w ./wheels   packages/ai_workflow_engine packages/ai_workflow_tools packages/ai_workflow_viewer
+python3 packages/ai_workflow_engine/scripts/release_artifacts.py build   --repo . --tag <tag> --out release-manifest.json   --test-evidence test-evidence.json --smoke-evidence smoke-evidence.json ./wheels/*.whl
+python3 packages/ai_workflow_engine/scripts/release_artifacts.py sums   --out SHA256SUMS ./wheels/*.whl
 ```
 
 Two independent clean-checkout builds must produce identical wheel SHA-256 values before the
-release may claim reproducibility. The manifest (schema `release-manifest-v1`) records the tag and
-tag-object id, peeled source commit, package matrix with per-wheel filename/size/SHA-256 and which
-wheels were actually published, the build command and reproducibility environment, and the
-test/smoke results. The **whole-wheel SHA-256 of the published artifact is the authoritative
-identity**; `dist-info/RECORD` is diagnostic content evidence only (it lives inside the artifact
-and cannot serve as a supply-chain identity).
+release may claim reproducibility. The manifest (schema `release-manifest-v2`) is closed and
+type-strict: tag + tag-object id + peeled commit, the coherent package matrix (embedded wheel
+METADATA is authoritative — filenames are only locators), the build environment without
+placeholders, REQUIRED `status == "passed"` test and smoke evidence with UTC timestamps and
+evidence-file hashes, and per-artifact size/SHA-256/URI/published state. The published wheel's
+whole-file SHA-256 is the authoritative artifact identity; `dist-info/RECORD` is diagnostic only.
 
-Consumers verify BEFORE installing:
+**Consumer (product owner).** Download the exact published artifact set — the engine wheel,
+`release-manifest.json`, and `SHA256SUMS` — from the release cache and verify BEFORE installing:
 
 ```bash
-python3 release_manifest.py verify --manifest release-manifest.json <downloaded>.whl
+python3 release_artifacts.py check-sums --sums SHA256SUMS --dir .
+python3 release_artifacts.py verify --manifest release-manifest.json <wheel>.whl
+python -m pip install ./<wheel>.whl
 ```
 
-A SHA mismatch means the bytes are not the published artifact — stop, never install. Delivery
-channels (artifact cache vs pushed tag) are chosen per release by the owner; agents never push or
-upload without that explicit choice.
+A mismatch means the bytes are not the published artifact — stop, never install, report to the
+engine owner. Delivery channels are chosen per release by the owner; agents never push or upload
+without that explicit choice.

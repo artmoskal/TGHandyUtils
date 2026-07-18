@@ -578,20 +578,26 @@ class InMemoryWaitCoordinator:
             return self._health_locked()
 
     def _health_locked(self) -> WaitHealth:
-        # v0.11.5: integrity-aware enumeration (reference behavior for the adapter contract):
-        # entries that cannot be validated as the CURRENT WaitRecord contract are excluded
-        # from every status count and reported once as integrity_errors. The dict itself is
-        # the backend; if it were unreadable this method would raise, never report zeros.
+        # v0.11.5 (H3): integrity-aware, REPRESENTATION-INDEPENDENT enumeration — every
+        # stored entry (raw data OR typed object) is normalized to raw model data and
+        # revalidated against the CURRENT WaitRecord contract, and its backing key must
+        # equal the validated wait_id. A validator-bypassing model_copy or a mis-keyed
+        # entry is corrupt identity: excluded from every status count, counted once as
+        # integrity_errors. The dict itself is the backend; if it were unreadable this
+        # method would raise, never report zeros.
         valid: Dict[str, WaitRecord] = {}
         integrity_errors = 0
         for wait_id, entry in self._records.items():
-            if isinstance(entry, WaitRecord):
-                valid[wait_id] = entry
-                continue
+            raw = entry.model_dump() if isinstance(entry, WaitRecord) else entry
             try:
-                valid[wait_id] = WaitRecord.model_validate(entry)
+                record = WaitRecord.model_validate(raw)
             except Exception:
                 integrity_errors += 1
+                continue
+            if record.wait_id != wait_id:
+                integrity_errors += 1
+                continue
+            valid[wait_id] = record
         pending = [r for r in valid.values() if r.status == "pending"]
         claimed = [r for r in valid.values() if r.status == "claimed"]
         failed = [r for r in valid.values() if r.status == "failed"]

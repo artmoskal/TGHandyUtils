@@ -70,7 +70,9 @@ Product adopters should then read exactly one delta guide:
 
 ## Install
 
-Build from the tag because this monorepo is not published to PyPI:
+Consumers with release-cache access download the exact published artifact set (wheel +
+`release-manifest.json` + `SHA256SUMS`), verify checksums, and install — see
+`docs/operations.md`. Building from the tag is the PRODUCER/no-cache path:
 
 ```bash
 git clone <TGHandyUtils-repository> /tmp/tghandy-engine

@@ -272,6 +272,11 @@ async def run_wait_registration_conformance(
     # returns isolated stores or (for a reconnectable adapter) one shared backend.
     surface = make_coordinator()
     before = await surface.health()
+    # H7: ordinary lifecycle conformance BEGINS at zero integrity — a constant or invented
+    # nonzero count is a lying adapter, not a healthy store.
+    assert before.integrity_errors == 0, (
+        f"lifecycle conformance requires integrity_errors == 0 at start, got {before.integrity_errors}"
+    )
     past = now - timedelta(seconds=120)
     due_record = _record(past, wait_id="w-due", timeout_s=60.0)  # deadline = now-60 (elapsed)
     not_due_record = _record(now, wait_id="w-notdue", timeout_s=3600.0)  # deadline = now+3600
@@ -327,10 +332,11 @@ async def run_wait_registration_conformance(
         "health.failed must count every status=='failed' record from BOTH producers — the "
         f"public fail() door and attempts exhaustion: {before.failed}->{after.failed}"
     )
-    assert after.integrity_errors == before.integrity_errors, (
-        "an uncorrupted store must not invent integrity errors"
+    # H7: ...and ENDS at zero — the full lifecycle above created no corruption.
+    assert after.integrity_errors == 0, (
+        f"lifecycle conformance must end at integrity_errors == 0, got {after.integrity_errors} — "
+        "an uncorrupted store must never invent integrity errors"
     )
-    assert after.integrity_errors >= 0 and after.failed >= 0  # required fields, present and sane
     assert after.claimed - before.claimed == 1, (
         f"health.claimed must rise by the 1 stalled (claimed) wait: {before.claimed}->{after.claimed}"
     )
@@ -393,6 +399,24 @@ async def run_wait_integrity_conformance(
     snapshot_json = _snapshot_json()
     definition_json = _definition_json()
 
+    def _assert_full_health(actual, expected, moment: str) -> None:
+        # H4-H6: COMPLETE-snapshot equality, field by field so a lying adapter fails by the
+        # exact drifted field — one field standing still never proves the others did.
+        for field in (
+            "pending",
+            "claimed",
+            "overdue",
+            "stalled",
+            "failed",
+            "integrity_errors",
+            "oldest_pending_deadline",
+        ):
+            got, want = getattr(actual, field), getattr(expected, field)
+            assert got == want, (
+                f"{moment}: health.{field} drifted — expected {want!r}, got {got!r}; "
+                "integrity conformance compares the COMPLETE health model"
+            )
+
     coordinator = make_coordinator()
     baseline = await coordinator.health()
     assert baseline.integrity_errors == 0, (
@@ -401,20 +425,15 @@ async def run_wait_integrity_conformance(
 
     valid = _record(now, wait_id="w-intact")
     await coordinator.register(valid, snapshot_json, definition_json)
+    healthy = await coordinator.health()
+    assert healthy.integrity_errors == 0, "registration alone must not create integrity errors"
 
     await _call(inject_corruption)
     corrupted = await coordinator.health()
-    assert corrupted.integrity_errors == 1, (
-        "exactly ONE malformed persisted entry must report exactly ONE integrity error — "
-        f"got {corrupted.integrity_errors}"
+    expected_corrupted = healthy.model_copy(
+        update={"integrity_errors": healthy.integrity_errors + 1}
     )
-    assert corrupted.pending == baseline.pending + 1, (
-        "the malformed entry must be EXCLUDED from status counts; the valid pending wait "
-        "still counts"
-    )
-    assert corrupted.failed == baseline.failed, (
-        "corruption is an integrity condition, never silently reclassified as 'failed'"
-    )
+    _assert_full_health(corrupted, expected_corrupted, "while corrupted")
     still = await coordinator.get(valid.wait_id)
     assert still is not None and still == valid, (
         "valid records must remain retrievable while a sibling entry is corrupt"
@@ -423,14 +442,8 @@ async def run_wait_integrity_conformance(
     if reconnect is not None:
         fresh = reconnect()
         observed = await fresh.health()
-        assert observed.integrity_errors == 1, (
-            "a reconnected adapter must observe the SAME current integrity condition"
-        )
+        _assert_full_health(observed, expected_corrupted, "on reconnect while corrupted")
 
     await _call(repair_corruption)
     repaired = await coordinator.health()
-    assert repaired.integrity_errors == 0, (
-        "repairing/removing the malformed entry must return integrity_errors to zero — "
-        "the field is CURRENT state, not a cumulative alert counter"
-    )
-    assert repaired.pending == baseline.pending + 1, "valid counts must survive the repair"
+    _assert_full_health(repaired, healthy, "after repair")

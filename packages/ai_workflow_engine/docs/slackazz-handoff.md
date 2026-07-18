@@ -256,4 +256,10 @@ persisted data is rejected loudly naming its historical tag. Adopt by re-pinning
 re-run your canaries before changing any deployed pin. The release makes node-context binding
 explicit for every node kind; wait contracts and persisted schemas are unchanged. The
 `engine-v0.11.4` tag records no distributable wheel evidence; consume artifacts only from a
-release whose manifest records the published wheel SHA-256 (v0.11.5 onward).
+release whose manifest records the published wheel SHA-256 (v0.11.5 onward). The exact cache
+artifact set per release is: `ai_workflow_engine-<version>-py3-none-any.whl`,
+`release-manifest.json` (schema `release-manifest-v2`), and `SHA256SUMS` — verify the
+checksums BEFORE `pip install`, never by rebuilding from source. Product-owned gates before
+changing the deployed pin: real-Redis outage behavior (`health()` must raise, never report
+zeros), Celery scheduler heartbeat monitoring, both engine conformance kits against the real
+adapter, and the trace-only + allowlisted manager-ping canaries.

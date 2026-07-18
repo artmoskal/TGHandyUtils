@@ -548,10 +548,14 @@ def test_adopter_promises_map_to_evidence():
     assert slackazz_health.get("surface") == "WaitHealth", (
         "slackazz AC-11 must bind to the WaitHealth model surface explicitly"
     )
+    # R1.4: CONJUNCTIVE evidence — the promise needs BOTH families; either alone regressed once.
     assert any(
-        "health" in test_name or "integrity" in test_name
+        "health" in test_name or "failed" in test_name
         for test_name in slackazz_health["tests"]
-    ), "slackazz AC-11 evidence must include a WaitHealth-surface test, never bundle-only"
+    ), "slackazz AC-11 must carry health-STATUS evidence (failed-count surface)"
+    assert any(
+        "integrity" in test_name for test_name in slackazz_health["tests"]
+    ), "slackazz AC-11 must carry integrity-conformance evidence"
 
 
 def test_node_handlers_write_only_reserved_state_keys():
