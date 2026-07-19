@@ -486,8 +486,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ai_workflow_engine import (
+    DurableWaitPolicy,
     InMemoryWaitCoordinator,
     ObservationConfig,
+    WaitEvent,
     WorkflowArtifact,
     WorkflowBuilder,
     WorkflowEngineBuilder,
@@ -496,6 +498,7 @@ from ai_workflow_engine import (
 )
 from ai_workflow_engine.models import CapabilityResult
 from ai_workflow_viewer import FileEventSource
+from pydantic import BaseModel
 import ai_workflow_tools
 import ai_workflow_viewer
 
@@ -503,6 +506,53 @@ root = Path(sys.argv[1]).resolve()
 expected = json.loads(sys.argv[2])
 for package, version in expected.items():
     assert importlib.metadata.version(package) == version
+
+class GateState(BaseModel):
+    status: str
+    value: str = ""
+
+def durable_engine(coordinator, clock, *, workflow_id, two_gates=False):
+    calls = {"gate": 0, "second": 0, "finish": 0, "escalate": 0}
+
+    def gate(context, _payload):
+        calls["gate"] += 1
+        event = context.metadata.get("resume_event")
+        return GateState(
+            status="answered" if event is not None else "pending",
+            value="" if event is None else str(event),
+        )
+
+    def second(context, _payload):
+        calls["second"] += 1
+        event = context.metadata.get("resume_event")
+        return GateState(status="answered" if event is not None else "pending")
+
+    def finish(_context, payload):
+        calls["finish"] += 1
+        return {"finished": True, "value": getattr(payload, "value", "")}
+
+    def escalate(_context, _payload):
+        calls["escalate"] += 1
+        return {"escalated": True}
+
+    builder = WorkflowEngineBuilder().with_wait_coordinator(coordinator, clock=clock)
+    builder.register_capability("gate", gate)
+    builder.register_capability("second", second)
+    builder.register_capability("finish", finish)
+    builder.register_capability("escalate", escalate)
+    flow = WorkflowBuilder(workflow_id).human(
+        "gate",
+        wait_policy=DurableWaitPolicy(timeout_s=60),
+        timeout_to="escalate",
+    )
+    if two_gates:
+        flow = flow.human(
+            "second",
+            wait_policy=DurableWaitPolicy(timeout_s=60),
+            timeout_to="escalate",
+        )
+    builder.register_workflow(flow.step("finish").step("escalate").build())
+    return builder.build(), calls
 
 async def main():
     ordinary_root = root / "ordinary"
@@ -585,6 +635,145 @@ async def main():
     meta = load_bundle_meta_v2(cancel_root / "installed-cancel")
     assert meta.status == "cancelled" and meta.artifact_count == 1
     assert FileEventSource(cancel_root).read_group("installed-cancel").status == "cancelled"
+
+    fixed_now = datetime(2036, 1, 1, tzinfo=timezone.utc)
+    clock = lambda: fixed_now
+
+    # MageQA blocker 1: cancellation after coordinator commit but before receipt exposure.
+    committed = asyncio.Event()
+    seen = {}
+
+    class CommitThenBlock(InMemoryWaitCoordinator):
+        async def register(self, record, snapshot_json, definition_json):
+            receipt = await super().register(record, snapshot_json, definition_json)
+            seen["receipt"] = receipt
+            committed.set()
+            await asyncio.Event().wait()
+            return receipt
+
+    cancel_coordinator = CommitThenBlock(clock=clock)
+    cancel_engine, cancel_calls = durable_engine(
+        cancel_coordinator, clock, workflow_id="cancel-registration"
+    )
+    register_task = asyncio.create_task(
+        cancel_engine.run("cancel-registration", {})
+    )
+    await asyncio.wait_for(committed.wait(), timeout=5)
+    register_task.cancel("registration-cancel")
+    try:
+        await register_task
+    except asyncio.CancelledError as exc:
+        assert exc.args == ("registration-cancel",)
+    else:
+        raise AssertionError("registration cancellation was swallowed")
+    cancelled_record = await cancel_coordinator.get(seen["receipt"].wait_id)
+    assert cancelled_record.status == "cancelled"
+    cancelled_claim = await cancel_coordinator.claim_event(
+        cancelled_record.wait_id,
+        WaitEvent(kind="signal", event_id="hidden-cancelled"),
+        registration_id=seen["receipt"].registration_id,
+        lease_until=fixed_now,
+    )
+    assert cancelled_claim.kind == "terminal"
+    assert cancel_calls["finish"] == 0
+
+    # MageQA blocker 2: registration commits but acknowledgement is lost.
+    ack_seen = {}
+
+    class AckLoss(InMemoryWaitCoordinator):
+        async def register(self, record, snapshot_json, definition_json):
+            receipt = await super().register(record, snapshot_json, definition_json)
+            ack_seen["receipt"] = receipt
+            raise RuntimeError("registration acknowledgement lost")
+
+    ack_coordinator = AckLoss(clock=clock)
+    ack_engine, ack_calls = durable_engine(
+        ack_coordinator, clock, workflow_id="ack-loss"
+    )
+    ack_result = await ack_engine.run("ack-loss", {})
+    assert ack_result.status == "failed" and ack_result.wait_handle is None
+    ack_record = await ack_coordinator.get(ack_seen["receipt"].wait_id)
+    assert ack_record.status == "cancelled"
+    ack_claim = await ack_coordinator.claim_event(
+        ack_record.wait_id,
+        WaitEvent(kind="signal", event_id="hidden-ack-loss"),
+        registration_id=ack_seen["receipt"].registration_id,
+        lease_until=fixed_now,
+    )
+    assert ack_claim.kind == "terminal"
+    assert ack_calls["finish"] == 0
+
+    # Abrupt process death remains recoverable by an identical retry. The accepted
+    # receipt is reused and duplicate event delivery never executes twice.
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    class CrashAfterCommit(InMemoryWaitCoordinator):
+        async def register(self, record, snapshot_json, definition_json):
+            await super().register(record, snapshot_json, definition_json)
+            raise SimulatedProcessDeath("worker disappeared before receipt exposure")
+
+    crash_state = {}
+    crash_first = CrashAfterCommit(clock=clock, shared_state=crash_state)
+    crash_engine, _ = durable_engine(crash_first, clock, workflow_id="crash-retry")
+    crash_goal = WorkflowGoal(
+        workflow_type="crash-retry",
+        objective="installed crash retry",
+        metadata={"run_id": "installed-crash-retry"},
+    )
+    try:
+        await crash_engine.run("crash-retry", {}, goal=crash_goal)
+    except SimulatedProcessDeath:
+        pass
+    else:
+        raise AssertionError("simulated process death did not escape")
+    wait_id = next(iter(crash_state["records"]))
+    stored_receipt = await crash_first.load_receipt(wait_id)
+    crash_second = InMemoryWaitCoordinator(clock=clock, shared_state=crash_state)
+    recovered_engine, recovered_calls = durable_engine(
+        crash_second, clock, workflow_id="crash-retry"
+    )
+    recovered = await recovered_engine.run("crash-retry", {}, goal=crash_goal)
+    assert recovered.wait_handle.registration_id == stored_receipt.registration_id
+    crash_event = WaitEvent(kind="signal", event_id="crash-event")
+    crash_done = await recovered_engine.deliver_wait_event(recovered.wait_handle, crash_event)
+    crash_duplicate = await recovered_engine.deliver_wait_event(
+        recovered.wait_handle, crash_event
+    )
+    assert crash_done.kind == "executed"
+    assert crash_duplicate.kind == "duplicate"
+    assert recovered_calls["finish"] == 1
+
+    # Timeout uses the same complete-handle door, and a resumed run may expose another
+    # complete handle without losing the first claim's terminal truth.
+    timeout_coordinator = InMemoryWaitCoordinator(clock=clock)
+    timeout_engine, timeout_calls = durable_engine(
+        timeout_coordinator, clock, workflow_id="timeout-delivery"
+    )
+    timed = await timeout_engine.run("timeout-delivery", {})
+    timed_out = await timeout_engine.deliver_wait_event(
+        timed.wait_handle,
+        WaitEvent(kind="timeout", event_id="timeout-event"),
+    )
+    assert timed_out.kind == "executed" and timeout_calls["escalate"] == 1
+
+    chain_coordinator = InMemoryWaitCoordinator(clock=clock)
+    chain_engine, chain_calls = durable_engine(
+        chain_coordinator, clock, workflow_id="chained-waits", two_gates=True
+    )
+    first_wait = await chain_engine.run("chained-waits", {})
+    second_wait = await chain_engine.deliver_wait_event(
+        first_wait.wait_handle,
+        WaitEvent(kind="signal", event_id="first-gate"),
+    )
+    assert second_wait.run_result.status == "requires_user_input"
+    assert second_wait.run_result.wait_handle is not None
+    chain_done = await chain_engine.deliver_wait_event(
+        second_wait.run_result.wait_handle,
+        WaitEvent(kind="signal", event_id="second-gate"),
+    )
+    assert chain_done.run_result.status == "completed"
+    assert chain_calls["finish"] == 1
 
     coordinator = InMemoryWaitCoordinator(
         clock=lambda: datetime.now(timezone.utc),
