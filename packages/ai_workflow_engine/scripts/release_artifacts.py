@@ -735,7 +735,11 @@ async def main():
     )
     recovered = await recovered_engine.run("crash-retry", {}, goal=crash_goal)
     assert recovered.wait_handle.registration_id == stored_receipt.registration_id
-    crash_event = WaitEvent(kind="signal", event_id="crash-event")
+    crash_event = WaitEvent(
+        kind="signal",
+        event_id="crash-event",
+        payload="approved",
+    )
     crash_done = await recovered_engine.deliver_wait_event(recovered.wait_handle, crash_event)
     crash_duplicate = await recovered_engine.deliver_wait_event(
         recovered.wait_handle, crash_event
@@ -764,13 +768,13 @@ async def main():
     first_wait = await chain_engine.run("chained-waits", {})
     second_wait = await chain_engine.deliver_wait_event(
         first_wait.wait_handle,
-        WaitEvent(kind="signal", event_id="first-gate"),
+        WaitEvent(kind="signal", event_id="first-gate", payload="approved"),
     )
     assert second_wait.run_result.status == "requires_user_input"
     assert second_wait.run_result.wait_handle is not None
     chain_done = await chain_engine.deliver_wait_event(
         second_wait.run_result.wait_handle,
-        WaitEvent(kind="signal", event_id="second-gate"),
+        WaitEvent(kind="signal", event_id="second-gate", payload="approved"),
     )
     assert chain_done.run_result.status == "completed"
     assert chain_calls["finish"] == 1
