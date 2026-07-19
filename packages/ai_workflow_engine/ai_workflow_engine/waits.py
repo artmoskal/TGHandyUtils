@@ -26,6 +26,8 @@ from pydantic import model_validator, AwareDatetime, BaseModel, ConfigDict, Fiel
 __all__ = [
     "WaitClaimOutcome",
     "WaitCoordinator",
+    "WaitRegistrationAbortOutcome",
+    "WaitRegistrationSettlementError",
     "InMemoryWaitCoordinator",
     "WAIT_STATUSES",
     "FAILURE_KINDS",
@@ -285,6 +287,41 @@ class WaitClaimOutcome(BaseModel):
     claim: Optional[WaitClaim] = None
 
 
+class WaitRegistrationAbortOutcome(BaseModel):
+    """v0.11.6 (C2): typed result of the atomic registration-abort operation.
+
+    The engine calls ``abort_registration`` to settle a possibly-committed registration
+    whose handle was NEVER exposed (observed caller cancellation, or a registration
+    failure after the adapter may have committed). The vocabulary is closed:
+
+    - ``absent``: nothing is committed under this wait id.
+    - ``cancelled``: THIS call atomically moved the exact pending registration to
+      ``cancelled``.
+    - ``already_terminal``: the record is already settled — the caller inspects
+      ``record.status`` (a previous compensation is idempotent; a completed/failed
+      record means delivery or exhaustion won and execution truth is preserved).
+    - ``refused_mismatch``: the stored receipt/machine does not match the expected
+      registration incarnation — NOTHING was mutated.
+    - ``refused_active_claim``: a live claimant owns the wait — NOTHING was mutated.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal[
+        "absent", "cancelled", "already_terminal", "refused_mismatch", "refused_active_claim"
+    ]
+    record: Optional[WaitRecord] = None
+
+
+class WaitRegistrationSettlementError(RuntimeError):
+    """v0.11.6 (C2): an observed cancellation/registration failure could NOT be settled.
+
+    Raised INSTEAD of a clean cancelled/failed report when compensation cannot prove the
+    unexposed registration terminal or absent (cleanup raised, timed out, a delivery won
+    the race, or the store is contested). Fail-loud: a caller must never be told a run
+    cleanly cancelled or failed while an executable continuation may remain behind it."""
+
+
 class WaitHealth(BaseModel):
     """Product-neutral coordinator health surface; ``overdue`` is DERIVED, never stored."""
 
@@ -337,6 +374,15 @@ class WaitCoordinator(Protocol):
     async def claim_event(
         self, wait_id: str, event: WaitEvent, *, registration_id: str, lease_until: Any
     ) -> WaitClaimOutcome: ...
+
+    async def abort_registration(
+        self,
+        wait_id: str,
+        *,
+        expected_registration_id: str,
+        expected_definition_digest: str,
+        reason: str,
+    ) -> WaitRegistrationAbortOutcome: ...
 
     async def complete(self, wait_id: str, claim: WaitClaim, *, resolution_kind: str) -> WaitRecord: ...
 
@@ -532,6 +578,54 @@ class InMemoryWaitCoordinator:
             self._claims[wait_id] = claim.model_copy(deep=True)
             return WaitClaimOutcome(
                 kind="claimed", record=claimed.model_copy(deep=True), claim=claim.model_copy(deep=True)
+            )
+
+    async def abort_registration(
+        self,
+        wait_id: str,
+        *,
+        expected_registration_id: str,
+        expected_definition_digest: str,
+        reason: str,
+    ) -> WaitRegistrationAbortOutcome:
+        """v0.11.6 (C2): atomically settle a possibly-committed, NEVER-EXPOSED
+        registration. Validation precedes every mutation; refusals change nothing."""
+
+        async with self._lock:
+            record = self._records.get(wait_id)
+            if record is None:
+                return WaitRegistrationAbortOutcome(kind="absent")
+            receipt = self._receipts.get(wait_id)
+            if (
+                receipt is None
+                or receipt.registration_id != expected_registration_id
+                or record.definition_digest != expected_definition_digest
+            ):
+                return WaitRegistrationAbortOutcome(
+                    kind="refused_mismatch", record=record.model_copy(deep=True)
+                )
+            if record.status in ("completed", "failed", "cancelled"):
+                return WaitRegistrationAbortOutcome(
+                    kind="already_terminal", record=record.model_copy(deep=True)
+                )
+            if record.status == "claimed":
+                # live OR stalled claim: a claimant exists, so this is delivery territory —
+                # compensation never preempts it (stalled claims stay operator-owned).
+                return WaitRegistrationAbortOutcome(
+                    kind="refused_active_claim", record=record.model_copy(deep=True)
+                )
+            cancelled = record.model_copy(
+                update={
+                    "status": "cancelled",
+                    "version": record.version + 1,
+                    "failure_kind": "cancelled",
+                    "failure_detail": str(reason)[:500] if reason else None,
+                }
+            )
+            self._records[wait_id] = cancelled
+            self._leases.pop(wait_id, None)
+            return WaitRegistrationAbortOutcome(
+                kind="cancelled", record=cancelled.model_copy(deep=True)
             )
 
     async def complete(self, wait_id: str, claim: WaitClaim, *, resolution_kind: str) -> WaitRecord:

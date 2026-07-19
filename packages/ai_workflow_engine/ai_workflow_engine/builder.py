@@ -1009,6 +1009,7 @@ class WorkflowEngineBuilder:
             "load_snapshot",
             "load_definition",
             "claim_event",
+            "abort_registration",
             "complete",
             "fail",
             "due",

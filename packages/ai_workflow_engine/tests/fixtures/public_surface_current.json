@@ -130,6 +130,8 @@
     "WaitHealth": "export",
     "WaitReceipt": "export",
     "WaitRecord": "export",
+    "WaitRegistrationAbortOutcome": "export",
+    "WaitRegistrationSettlementError": "export",
     "WindowedMemory": "export",
     "WorkflowArtifact": "export",
     "WorkflowBuilder": "export",
@@ -7663,6 +7665,228 @@
         "deadline_at"
       ],
       "title": "WaitRecord",
+      "type": "object"
+    },
+    "WaitRegistrationAbortOutcome": {
+      "$defs": {
+        "DurableWaitPolicy": {
+          "additionalProperties": false,
+          "description": "Registered durable wait: finite timeout + declared timeout route are MANDATORY.",
+          "properties": {
+            "max_resume_attempts": {
+              "default": 3,
+              "minimum": 1,
+              "title": "Max Resume Attempts",
+              "type": "integer"
+            },
+            "mode": {
+              "const": "durable",
+              "default": "durable",
+              "title": "Mode",
+              "type": "string"
+            },
+            "signal_correlation": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "title": "Signal Correlation",
+              "type": "object"
+            },
+            "timeout_s": {
+              "title": "Timeout S",
+              "type": "number"
+            }
+          },
+          "required": [
+            "timeout_s"
+          ],
+          "title": "DurableWaitPolicy",
+          "type": "object"
+        },
+        "WaitRecord": {
+          "additionalProperties": false,
+          "description": "The engine-owned wait state a coordinator persists (snapshot itself is store-owned).\n\nv0.11 clean contract (manifest row M12): the record is VERSIONED and closed \u2014 a coordinator\nreturning a pre-v0.11 or unknown record shape fails loudly at validation; the current line\nhas no importer for old persisted waits (approved policy: pending old waits are discarded).",
+          "properties": {
+            "correlation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Correlation Id"
+            },
+            "created_at": {
+              "format": "date-time",
+              "title": "Created At",
+              "type": "string"
+            },
+            "deadline_at": {
+              "format": "date-time",
+              "title": "Deadline At",
+              "type": "string"
+            },
+            "definition_digest": {
+              "title": "Definition Digest",
+              "type": "string"
+            },
+            "failure_detail": {
+              "anyOf": [
+                {
+                  "maxLength": 500,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Failure Detail"
+            },
+            "failure_kind": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "digest_mismatch",
+                    "snapshot_missing",
+                    "attempts_exhausted",
+                    "resume_failed",
+                    "cancelled"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Failure Kind"
+            },
+            "origin_segment_index": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Origin Segment Index"
+            },
+            "policy": {
+              "$ref": "#/$defs/DurableWaitPolicy"
+            },
+            "record_schema_version": {
+              "const": "wait-v1",
+              "title": "Record Schema Version",
+              "type": "string"
+            },
+            "resolution_kind": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "signal",
+                    "timeout"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Resolution Kind"
+            },
+            "resume_attempts": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Resume Attempts",
+              "type": "integer"
+            },
+            "run_id": {
+              "title": "Run Id",
+              "type": "string"
+            },
+            "status": {
+              "default": "pending",
+              "enum": [
+                "pending",
+                "claimed",
+                "completed",
+                "failed",
+                "cancelled"
+              ],
+              "title": "Status",
+              "type": "string"
+            },
+            "suspended_node": {
+              "title": "Suspended Node",
+              "type": "string"
+            },
+            "version": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Version",
+              "type": "integer"
+            },
+            "wait_id": {
+              "title": "Wait Id",
+              "type": "string"
+            },
+            "workflow_id": {
+              "title": "Workflow Id",
+              "type": "string"
+            }
+          },
+          "required": [
+            "record_schema_version",
+            "wait_id",
+            "run_id",
+            "workflow_id",
+            "suspended_node",
+            "policy",
+            "definition_digest",
+            "deadline_at"
+          ],
+          "title": "WaitRecord",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "description": "v0.11.6 (C2): typed result of the atomic registration-abort operation.\n\nThe engine calls ``abort_registration`` to settle a possibly-committed registration\nwhose handle was NEVER exposed (observed caller cancellation, or a registration\nfailure after the adapter may have committed). The vocabulary is closed:\n\n- ``absent``: nothing is committed under this wait id.\n- ``cancelled``: THIS call atomically moved the exact pending registration to\n  ``cancelled``.\n- ``already_terminal``: the record is already settled \u2014 the caller inspects\n  ``record.status`` (a previous compensation is idempotent; a completed/failed\n  record means delivery or exhaustion won and execution truth is preserved).\n- ``refused_mismatch``: the stored receipt/machine does not match the expected\n  registration incarnation \u2014 NOTHING was mutated.\n- ``refused_active_claim``: a live claimant owns the wait \u2014 NOTHING was mutated.",
+      "properties": {
+        "kind": {
+          "enum": [
+            "absent",
+            "cancelled",
+            "already_terminal",
+            "refused_mismatch",
+            "refused_active_claim"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "record": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WaitRecord"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "WaitRegistrationAbortOutcome",
       "type": "object"
     },
     "WorkflowArtifact": {

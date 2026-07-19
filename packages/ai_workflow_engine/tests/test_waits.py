@@ -700,6 +700,78 @@ async def test_broken_adapters_fail_conformance_by_named_invariant():
                 )
             return outcome
 
+    class MutatingAbort(InMemoryWaitCoordinator):
+        # C2 negative: cancels even when the registration id does not match — compensating
+        # a DIFFERENT incarnation destroys someone else's state; conformance must name it.
+        async def abort_registration(
+            self, wait_id, *, expected_registration_id, expected_definition_digest, reason
+        ):
+            outcome = await super().abort_registration(
+                wait_id,
+                expected_registration_id=expected_registration_id,
+                expected_definition_digest=expected_definition_digest,
+                reason=reason,
+            )
+            if outcome.kind == "refused_mismatch":
+                from ai_workflow_engine.waits import WaitRegistrationAbortOutcome
+
+                async with self._lock:
+                    record = self._records[wait_id]
+                    cancelled = record.model_copy(
+                        update={
+                            "status": "cancelled",
+                            "version": record.version + 1,
+                            "failure_kind": "cancelled",
+                        }
+                    )
+                    self._records[wait_id] = cancelled
+                return WaitRegistrationAbortOutcome(
+                    kind="cancelled", record=cancelled.model_copy(deep=True)
+                )
+            return outcome
+
+    class AbortLiar(InMemoryWaitCoordinator):
+        # C2 negative: reports 'cancelled' while quietly resurrecting the pending record —
+        # the truthfulness assert must catch the stored/reported divergence.
+        async def abort_registration(self, wait_id, **kwargs):
+            async with self._lock:
+                before = self._records.get(wait_id)
+            outcome = await super().abort_registration(wait_id, **kwargs)
+            if outcome.kind == "cancelled" and before is not None:
+                async with self._lock:
+                    self._records[wait_id] = before
+            return outcome
+
+    class ClaimPreemptor(InMemoryWaitCoordinator):
+        # C2 negative: compensation stealing a CLAIMED wait preempts live delivery.
+        async def abort_registration(
+            self, wait_id, *, expected_registration_id, expected_definition_digest, reason
+        ):
+            outcome = await super().abort_registration(
+                wait_id,
+                expected_registration_id=expected_registration_id,
+                expected_definition_digest=expected_definition_digest,
+                reason=reason,
+            )
+            if outcome.kind == "refused_active_claim":
+                from ai_workflow_engine.waits import WaitRegistrationAbortOutcome
+
+                async with self._lock:
+                    record = self._records[wait_id]
+                    cancelled = record.model_copy(
+                        update={
+                            "status": "cancelled",
+                            "version": record.version + 1,
+                            "failure_kind": "cancelled",
+                        }
+                    )
+                    self._records[wait_id] = cancelled
+                    self._leases.pop(wait_id, None)
+                return WaitRegistrationAbortOutcome(
+                    kind="cancelled", record=cancelled.model_copy(deep=True)
+                )
+            return outcome
+
     class DueLiar(InMemoryWaitCoordinator):
         # R10.1 negative (SlackAzz gap): an adapter that never reports due waits silently
         # strands every product timeout — conformance must name the due() invariant.
@@ -722,6 +794,9 @@ async def test_broken_adapters_fail_conformance_by_named_invariant():
         (StaleAttemptOrdinal, "ordinal"),
         (LeaseIgnorer, "DIFFERENT event"),
         (TerminalReviver, "terminal"),
+        (MutatingAbort, "refused"),
+        (AbortLiar, "TRUTHFUL"),
+        (ClaimPreemptor, "preempt"),
         (DueLiar, "surface"),
         (HealthLiar, "overdue"),
     ):
@@ -746,7 +821,8 @@ def test_builder_rejects_sync_impostor_coordinators():
         def load_receipt(self, wait_id): ...
         def load_snapshot(self, wait_id): ...
         def load_definition(self, wait_id): ...
-        def claim_event(self, wait_id, event, *, lease_until): ...
+        def claim_event(self, wait_id, event, *, registration_id, lease_until): ...
+        def abort_registration(self, wait_id, *, expected_registration_id, expected_definition_digest, reason): ...
         def complete(self, wait_id, claim, *, resolution_kind): ...
         def fail(self, wait_id, claim, *, error, failure_kind="resume_failed"): ...
         def due(self, now): return []
@@ -3209,9 +3285,9 @@ async def test_lifecycle_kit_rejects_integrity_inventor_and_failed_hider():
 # cancellation before exposure, must leave the matching registration terminal/absent and
 # non-executing. Abrupt process death (nothing observed) stays recoverable by identical retry.
 #
-# Both tests are strict-XFAIL while RED on the v0.11.5 contract: they assert the CORRECTED
-# behavior and therefore fail today. Phase C2 removes the markers — strict=True forces that
-# removal the moment the repair lands (an XPASS is a loud failure).
+# Landed strict-XFAIL (RED) at C0 against the v0.11.5 contract; phase C2's compensation
+# turned them green and removed the markers — they are now the permanent MageQA-shaped
+# regression fences for the exposure-truth invariant.
 
 
 def _exposure_probe_engine(coordinator, clock):
@@ -3294,11 +3370,6 @@ async def _attempt_hidden_delivery(engine, wait_id):
         return _LoudRejection()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="v0.11.6 C0 RED (MageQA race 1): observed cancellation leaves a hidden "
-    "executable registration on v0.11.5 — repaired in phase C2",
-)
 async def test_cancel_during_wait_registration_exposes_no_hidden_continuation():
     """Truth-table row 'observed caller cancellation after commit': the coordinator COMMITS
     the registration, blocks before returning its receipt, and the caller cancels the run.
@@ -3350,11 +3421,6 @@ async def test_cancel_during_wait_registration_exposes_no_hidden_continuation():
     assert calls == before, "a hidden continuation must never execute a capability"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="v0.11.6 C0 RED (MageQA race 2): registration acknowledgement loss leaves a "
-    "hidden executable registration on v0.11.5 — repaired in phase C2",
-)
 async def test_wait_registration_ack_loss_exposes_no_hidden_continuation():
     """Truth-table row 'post-commit registration exception': the coordinator COMMITS the
     complete record/snapshot/definition/receipt, then the acknowledgement is lost
@@ -3524,3 +3590,246 @@ async def test_reference_registration_ids_are_opaque_and_factory_injectable():
         await blank_factory.register(record, snapshot, definition)
     with pytest.raises(ValueError, match="factory must be a callable"):
         InMemoryWaitCoordinator(clock=clock, registration_id_factory="not-callable")
+
+
+# ================== v0.11.6 C2: compensation and cancellation containment ==================
+
+
+async def test_settlement_timeout_is_loud_and_chained_when_cleanup_hangs():
+    """C2: abort_registration hangs → the shielded settlement window (fixed 2.0s floor,
+    independent of any run window) expires → WaitRegistrationSettlementError chained from
+    the ORIGINAL CancelledError. The run is NOT reported cleanly cancelled and the still-
+    live registration stays visible (truth, not translation)."""
+
+    import asyncio
+
+    from ai_workflow_engine import InMemoryWaitCoordinator, WaitRegistrationSettlementError
+
+    committed = asyncio.Event()
+    hold = asyncio.Event()
+
+    class HangingAbort(InMemoryWaitCoordinator):
+        async def register(self, record, snapshot_json, definition_json):
+            receipt = await super().register(record, snapshot_json, definition_json)
+            committed.set()
+            await hold.wait()
+            return receipt
+
+        async def abort_registration(self, wait_id, **kwargs):
+            await asyncio.Event().wait()  # cleanup hangs forever
+
+    clock = _clock()
+    coordinator = HangingAbort(clock=clock)
+    engine, calls = _exposure_probe_engine(coordinator, clock)
+    run_task = asyncio.create_task(engine.run("durable_flow", {}))
+    await asyncio.wait_for(committed.wait(), timeout=5)
+    run_task.cancel()
+    with pytest.raises(WaitRegistrationSettlementError, match="did not finish within") as err:
+        await run_task
+    assert isinstance(err.value.__cause__, asyncio.CancelledError), (
+        "the settlement error must CHAIN from the original cancellation"
+    )
+    health = await coordinator.health()
+    assert health.pending == 1, (
+        "an unsettleable registration stays VISIBLE — never silently reported settled"
+    )
+
+
+async def test_settlement_failure_when_cleanup_raises_is_loud_and_chained():
+    """C2: abort_registration raising converts to the typed settlement error chained from
+    the original cancellation — never a clean CancelledError over live state."""
+
+    import asyncio
+
+    from ai_workflow_engine import InMemoryWaitCoordinator, WaitRegistrationSettlementError
+
+    committed = asyncio.Event()
+    hold = asyncio.Event()
+
+    class RaisingAbort(InMemoryWaitCoordinator):
+        async def register(self, record, snapshot_json, definition_json):
+            receipt = await super().register(record, snapshot_json, definition_json)
+            committed.set()
+            await hold.wait()
+            return receipt
+
+        async def abort_registration(self, wait_id, **kwargs):
+            raise RuntimeError("adapter transaction failed mid-abort")
+
+    clock = _clock()
+    coordinator = RaisingAbort(clock=clock)
+    engine, _calls = _exposure_probe_engine(coordinator, clock)
+    run_task = asyncio.create_task(engine.run("durable_flow", {}))
+    await asyncio.wait_for(committed.wait(), timeout=5)
+    run_task.cancel()
+    with pytest.raises(
+        WaitRegistrationSettlementError, match="adapter transaction failed"
+    ) as err:
+        await run_task
+    assert isinstance(err.value.__cause__, asyncio.CancelledError)
+
+
+async def test_repeated_cancellation_never_abandons_settlement():
+    """C2: a second caller cancellation DURING settlement must not abandon or duplicate
+    the cleanup — the shield keeps it alive inside the same fixed budget, the original
+    CancelledError is re-raised, and the registration is settled exactly once."""
+
+    import asyncio
+
+    from ai_workflow_engine import InMemoryWaitCoordinator
+
+    committed = asyncio.Event()
+    hold = asyncio.Event()
+    aborts = {"n": 0}
+
+    class SlowAbort(InMemoryWaitCoordinator):
+        async def register(self, record, snapshot_json, definition_json):
+            receipt = await super().register(record, snapshot_json, definition_json)
+            committed.set()
+            await hold.wait()
+            return receipt
+
+        async def abort_registration(self, wait_id, **kwargs):
+            aborts["n"] += 1
+            await asyncio.sleep(0.3)
+            return await super().abort_registration(wait_id, **kwargs)
+
+    clock = _clock()
+    coordinator = SlowAbort(clock=clock)
+    engine, calls = _exposure_probe_engine(coordinator, clock)
+    run_task = asyncio.create_task(engine.run("durable_flow", {}))
+    await asyncio.wait_for(committed.wait(), timeout=5)
+    run_task.cancel()
+    await asyncio.sleep(0.1)
+    run_task.cancel()  # repeated cancellation mid-settlement
+    with pytest.raises(asyncio.CancelledError):
+        await run_task
+    assert aborts["n"] == 1, "settlement runs exactly once — never abandoned or duplicated"
+    health = await coordinator.health()
+    assert health.pending == 0 and health.claimed == 0
+    before = dict(calls)
+    outcome = await _attempt_hidden_delivery(
+        engine, DurableWaitRuntimeIdProbe.last_wait_id(coordinator)
+    )
+    assert outcome.kind != "executed" and calls == before
+
+
+class DurableWaitRuntimeIdProbe:
+    """Test-local: recover the single registered wait id from a reference store."""
+
+    @staticmethod
+    def last_wait_id(coordinator):
+        return next(iter(coordinator._records))
+
+
+async def test_receipt_loss_makes_settlement_loud_not_a_clean_failure():
+    """C2: acknowledgement loss PLUS receipt loss — compensation cannot prove settlement,
+    so the caller gets the typed settlement error, never a clean folded 'failed' result
+    hiding an executable registration."""
+
+    from ai_workflow_engine import InMemoryWaitCoordinator, WaitRegistrationSettlementError
+
+    class AckAndReceiptLoss(InMemoryWaitCoordinator):
+        async def register(self, record, snapshot_json, definition_json):
+            await super().register(record, snapshot_json, definition_json)
+            async with self._lock:
+                self._receipts.pop(record.wait_id, None)
+            raise RuntimeError("registration acknowledgement lost")
+
+    clock = _clock()
+    coordinator = AckAndReceiptLoss(clock=clock)
+    engine, _calls = _exposure_probe_engine(coordinator, clock)
+    with pytest.raises(WaitRegistrationSettlementError, match="no stored receipt"):
+        await engine.run("durable_flow", {})
+
+
+async def test_delivery_won_registration_is_loud_settlement_not_clean_cancel():
+    """C2 (truth-table row 10, canned): when compensation finds the registration already
+    completed (delivery won), execution truth is preserved and the cancelling caller gets
+    the loud settlement error — NEVER a clean cancellation over executed work."""
+
+    import asyncio
+
+    from ai_workflow_engine import (
+        InMemoryWaitCoordinator,
+        WaitRegistrationSettlementError,
+    )
+    from ai_workflow_engine.waits import WaitRegistrationAbortOutcome
+
+    committed = asyncio.Event()
+    hold = asyncio.Event()
+
+    class DeliveryWon(InMemoryWaitCoordinator):
+        async def register(self, record, snapshot_json, definition_json):
+            receipt = await super().register(record, snapshot_json, definition_json)
+            committed.set()
+            await hold.wait()
+            return receipt
+
+        async def abort_registration(self, wait_id, **kwargs):
+            async with self._lock:
+                record = self._records[wait_id]
+                done = record.model_copy(
+                    update={
+                        "status": "completed",
+                        "version": record.version + 1,
+                        "resolution_kind": "signal",
+                    }
+                )
+                self._records[wait_id] = done
+            return WaitRegistrationAbortOutcome(
+                kind="already_terminal", record=done.model_copy(deep=True)
+            )
+
+    clock = _clock()
+    coordinator = DeliveryWon(clock=clock)
+    engine, _calls = _exposure_probe_engine(coordinator, clock)
+    run_task = asyncio.create_task(engine.run("durable_flow", {}))
+    await asyncio.wait_for(committed.wait(), timeout=5)
+    run_task.cancel()
+    with pytest.raises(WaitRegistrationSettlementError, match="completed") as err:
+        await run_task
+    assert isinstance(err.value.__cause__, asyncio.CancelledError)
+
+
+async def test_foreign_registration_under_same_id_is_not_ours_to_settle():
+    """C2 (changed-retry truth preserved): when a DIFFERENT registration occupies the
+    deterministic wait id, the failure folds normally and compensation touches NOTHING —
+    never cancel a machine this attempt did not commit."""
+
+    from ai_workflow_engine import InMemoryWaitCoordinator, WorkflowGoal
+    from ai_workflow_engine.wait_runtime import DurableWaitRuntime
+    from ai_workflow_engine.waits import WaitRecord
+
+    from datetime import timedelta
+
+    clock = _clock()
+    coordinator = InMemoryWaitCoordinator(clock=clock)
+    engine, calls = _exposure_probe_engine(coordinator, clock)
+    definition = engine.workflows["durable_flow"]
+    now = clock()
+    wait_id = DurableWaitRuntime.wait_id_for("foreign-run", "gate", 0)
+    foreign = WaitRecord(
+        record_schema_version="wait-v1",
+        wait_id=wait_id,
+        run_id="foreign-run",
+        workflow_id="durable_flow",
+        suspended_node="gate",
+        policy=DurableWaitPolicy(timeout_s=60),
+        definition_digest=definition.definition_digest(),
+        created_at=now,
+        deadline_at=now + timedelta(seconds=60),
+    )
+    await coordinator.register(foreign, '{"foreign": "snapshot"}', definition.model_dump_json())
+
+    goal = WorkflowGoal(
+        workflow_type="durable_flow", objective="clash", metadata={"run_id": "foreign-run"}
+    )
+    result = await engine.run("durable_flow", {}, goal=goal)
+    assert result.status == "failed" and result.wait_handle is None
+    assert "DIFFERENT" in (result.error or "")
+    stored = await coordinator.get(wait_id)
+    assert stored is not None and stored.status == "pending", (
+        "a registration this attempt did not commit is NEVER touched by compensation"
+    )
+    assert await coordinator.load_snapshot(wait_id) == '{"foreign": "snapshot"}'

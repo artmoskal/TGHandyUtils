@@ -146,6 +146,13 @@ class SuspensionCoordinator:
                 final_state,
             )
         except Exception as registration_error:
+            # v0.11.6 (C2): a settlement failure means an unexposed registration may
+            # still be executable — folding it into a clean failed result would be the
+            # exact lie this contract forbids. Propagate loudly instead.
+            from ai_workflow_engine.waits import WaitRegistrationSettlementError
+
+            if isinstance(registration_error, WaitRegistrationSettlementError):
+                raise
             suspended_record = next(
                 (
                     result

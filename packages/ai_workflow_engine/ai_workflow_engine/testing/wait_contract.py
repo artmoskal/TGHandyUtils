@@ -364,6 +364,81 @@ async def run_wait_registration_conformance(
     pending_cancelled = await escape.cancel("w-pending", reason="never needed")
     assert pending_cancelled.status == "cancelled", "a pending wait is cancellable directly"
 
+    # ============== v0.11.6 (C2): atomic registration-abort conformance ==============
+    # The engine settles a possibly-committed, never-exposed registration through this
+    # operation. Outcomes are closed and TRUTHFUL; validation precedes every mutation.
+    aborter = make_coordinator()
+    absent = await aborter.abort_registration(
+        "w-abort-never", expected_registration_id="reg-x",
+        expected_definition_digest="digest-conf", reason="settle",
+    )
+    assert absent.kind == "absent", "aborting an uncommitted wait id must report 'absent'"
+    abort_receipt = await aborter.register(
+        _record(now, wait_id="w-abort"), snapshot_json, definition_json
+    )
+    wrong_id = await aborter.abort_registration(
+        "w-abort", expected_registration_id="reg-not-it",
+        expected_definition_digest="digest-conf", reason="settle",
+    )
+    assert wrong_id.kind == "refused_mismatch", (
+        "a registration-id mismatch must be refused — never cancel another incarnation"
+    )
+    wrong_digest = await aborter.abort_registration(
+        "w-abort", expected_registration_id=abort_receipt.registration_id,
+        expected_definition_digest="digest-other", reason="settle",
+    )
+    assert wrong_digest.kind == "refused_mismatch", (
+        "a definition-digest mismatch must be refused — never cancel a different machine"
+    )
+    after_refusals = await aborter.get("w-abort")
+    assert after_refusals is not None and after_refusals.status == "pending" and (
+        after_refusals.resume_attempts == 0
+    ), "refused aborts must MUTATE NOTHING — validation precedes mutation"
+    settled = await aborter.abort_registration(
+        "w-abort", expected_registration_id=abort_receipt.registration_id,
+        expected_definition_digest="digest-conf", reason="never exposed",
+    )
+    assert settled.kind == "cancelled" and settled.record is not None and (
+        settled.record.status == "cancelled"
+    ), "an exact pending registration must be atomically cancelled"
+    stored_settled = await aborter.get("w-abort")
+    assert stored_settled is not None and stored_settled.status == "cancelled", (
+        "the 'cancelled' outcome must be TRUTHFUL — the stored record moved with it"
+    )
+    repeat_settle = await aborter.abort_registration(
+        "w-abort", expected_registration_id=abort_receipt.registration_id,
+        expected_definition_digest="digest-conf", reason="again",
+    )
+    assert repeat_settle.kind == "already_terminal" and (
+        repeat_settle.record is not None and repeat_settle.record.status == "cancelled"
+    ), "repeated compensation is an idempotent terminal report"
+    claim_guard_receipt = await aborter.register(
+        _record(now, wait_id="w-abort-claimed"), snapshot_json, definition_json
+    )
+    abort_claim = await aborter.claim_event(
+        "w-abort-claimed", signal,
+        registration_id=claim_guard_receipt.registration_id, lease_until=live_lease,
+    )
+    assert abort_claim.kind == "claimed"
+    claimed_refused = await aborter.abort_registration(
+        "w-abort-claimed", expected_registration_id=claim_guard_receipt.registration_id,
+        expected_definition_digest="digest-conf", reason="settle",
+    )
+    assert claimed_refused.kind == "refused_active_claim", (
+        "compensation must never preempt a claimant — delivery owns a claimed wait"
+    )
+    assert (await aborter.get("w-abort-claimed")).status == "claimed", (
+        "the active-claim refusal must change nothing"
+    )
+    await aborter.complete("w-abort-claimed", abort_claim.claim, resolution_kind="signal")
+    delivery_won = await aborter.abort_registration(
+        "w-abort-claimed", expected_registration_id=claim_guard_receipt.registration_id,
+        expected_definition_digest="digest-conf", reason="settle",
+    )
+    assert delivery_won.kind == "already_terminal" and (
+        delivery_won.record is not None and delivery_won.record.status == "completed"
+    ), "a delivery-won registration reports terminal truth — execution is never rewritten"
+
     # ================= due()/health() surface (R10.1: SlackAzz-reported gap) =============
     # The engine's product-driven timeout path reads due(now); operators read health(). An
     # adapter that only passed the sections above could TypeError or LIE here — the earlier

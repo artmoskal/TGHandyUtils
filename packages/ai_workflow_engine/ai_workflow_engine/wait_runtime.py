@@ -10,22 +10,44 @@ timer, or poll. This is not a second runtime; it never executes a machine itself
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Literal, Optional, Protocol, runtime_checkable
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 
 from ai_workflow_engine.wait_contract import WaitDeliveryOutcome, WaitHandle
-from ai_workflow_engine.waits import DurableWaitPolicy, WaitReceipt, WaitRecord
+from ai_workflow_engine.waits import (
+    DurableWaitPolicy,
+    WaitReceipt,
+    WaitRecord,
+    WaitRegistrationAbortOutcome,
+    WaitRegistrationSettlementError,
+)
 
 __all__ = [
     "ClaimedResumePort",
     "DurableWaitRuntime",
+    "REGISTRATION_SETTLEMENT_TIMEOUT_S",
     "WAIT_TIMEOUT_MARKER",
     "WaitDeliveryOutcome",
     "WaitRegistrationOutcome",
     "WaitRegistrationRequest",
 ]
+
+# v0.11.6 (C2): the PRIVATE engine-owned settlement bound for compensating a possibly
+# committed registration after observed caller cancellation. A fixed floor, deliberately
+# INDEPENDENT of the run's execution window — cancellation often arrives exactly when
+# that window is exhausted, and settlement must still get a nonzero opportunity. This is
+# settlement, not more workflow work, and it is not a user-facing tuning knob.
+REGISTRATION_SETTLEMENT_TIMEOUT_S = 2.0
+
+
+def _observe_task_result(task: "asyncio.Task[Any]") -> None:
+    """Retrieve an abandoned settlement task's outcome so it never dies unobserved."""
+
+    if not task.cancelled():
+        task.exception()
 
 # Internal resume-event marker for timeout deliveries: the suspended node takes its
 # DECLARED on_timeout transition instead of re-entering the wait capability.
@@ -274,6 +296,30 @@ class DurableWaitRuntime:
                 f"{request.definition_digest!r} — the persisted bytes must BE the registered "
                 "machine"
             )
+        # v0.11.6 (C2): every exit shape of the exposure window is reconciled HERE — the
+        # one registration owner for fresh AND resumed suspensions. Observed caller
+        # cancellation settles in a shielded bounded task and re-raises the ORIGINAL
+        # CancelledError; an ordinary registration failure folds only after compensation
+        # proves the committed state terminal/absent; settlement failures are loud and
+        # chained, never translated into a clean cancellation/failure.
+        try:
+            return await self._register_suspension_inner(request, wait_id)
+        except asyncio.CancelledError as cancellation:
+            await self._settle_after_caller_cancellation(request, wait_id, cancellation)
+            raise
+        except WaitRegistrationSettlementError:
+            raise
+        except Exception as registration_error:
+            await self._compensate_committed_registration(
+                request,
+                wait_id,
+                reason=f"registration failed before exposure: {registration_error}",
+            )
+            raise
+
+    async def _register_suspension_inner(
+        self, request: WaitRegistrationRequest, wait_id: str
+    ) -> WaitRegistrationOutcome:
         existing = await self.coordinator.get(wait_id)
         if existing is not None:
             # W2B.1/W2B.2: reuse is ONLY the crash-before-handle contract — the stored
@@ -384,3 +430,113 @@ class DurableWaitRuntime:
             adapter_id=receipt.adapter_id,
             registration_id=receipt.registration_id,
         )
+
+    async def _compensate_committed_registration(
+        self, request: WaitRegistrationRequest, wait_id: str, *, reason: str
+    ) -> None:
+        """v0.11.6 (C2): prove the registration THIS attempt may have committed is
+        terminal or absent.
+
+        A stored registration that is not byte-identical to the attempted one was NOT
+        committed by this attempt — it is left untouched and the original failure
+        propagates (changed-retry truth). Anything live or contested that cannot be
+        settled raises ``WaitRegistrationSettlementError`` — a caller-visible clean
+        failure must never hide an executable continuation."""
+
+        stored = await self.coordinator.get(wait_id)
+        if stored is None:
+            return  # absent — nothing committed
+        identical = (
+            stored.run_id == request.run_id
+            and stored.workflow_id == request.workflow_id
+            and stored.suspended_node == request.suspended_node
+            and stored.policy == request.policy
+            and stored.definition_digest == request.definition_digest
+            and stored.origin_segment_index == request.origin_segment_index
+            and stored.correlation_id == request.correlation_id
+            and await self.coordinator.load_snapshot(wait_id) == request.snapshot_json
+            and await self.coordinator.load_definition(wait_id) == request.definition_json
+        )
+        if not identical:
+            return  # a DIFFERENT registration occupies this id — not ours to settle
+        receipt = await self.coordinator.load_receipt(wait_id)
+        if receipt is None or receipt.wait_id != wait_id:
+            raise WaitRegistrationSettlementError(
+                f"wait {wait_id!r}: committed registration has "
+                f"{'no stored receipt' if receipt is None else 'a mis-keyed receipt'} — "
+                "settlement cannot be proven; the registration may still be executable"
+            )
+        raw = await self.coordinator.abort_registration(
+            wait_id,
+            expected_registration_id=receipt.registration_id,
+            expected_definition_digest=request.definition_digest,
+            reason=reason,
+        )
+        outcome = (
+            raw
+            if isinstance(raw, WaitRegistrationAbortOutcome)
+            else WaitRegistrationAbortOutcome.model_validate(raw)
+        )
+        if outcome.kind in ("absent", "cancelled"):
+            return
+        if (
+            outcome.kind == "already_terminal"
+            and outcome.record is not None
+            and outcome.record.status == "cancelled"
+        ):
+            return  # a previous compensation settled it — idempotent repeat
+        status = outcome.record.status if outcome.record is not None else "unknown"
+        raise WaitRegistrationSettlementError(
+            f"wait {wait_id!r} could not be settled ({reason}): abort_registration "
+            f"returned {outcome.kind!r} with stored status {status!r} — execution truth "
+            "is preserved and this caller must NOT be reported cleanly cancelled/failed"
+        )
+
+    async def _settle_after_caller_cancellation(
+        self, request: WaitRegistrationRequest, wait_id: str, cancellation: BaseException
+    ) -> None:
+        """v0.11.6 (C2): bounded, SHIELDED settlement after observed caller cancellation.
+
+        Runs compensation in a dedicated task protected from (repeated) caller
+        cancellation, bounded by the fixed ``REGISTRATION_SETTLEMENT_TIMEOUT_S`` floor —
+        deliberately independent of the run's (possibly exhausted) execution window. On
+        success the caller re-raises the ORIGINAL CancelledError; on failure or timeout
+        this raises the settlement error chained from that original cancellation."""
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + REGISTRATION_SETTLEMENT_TIMEOUT_S
+        settle = asyncio.ensure_future(
+            self._compensate_committed_registration(
+                request,
+                wait_id,
+                reason="caller cancelled before the wait handle was exposed",
+            )
+        )
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                settle.cancel()
+                settle.add_done_callback(_observe_task_result)
+                raise WaitRegistrationSettlementError(
+                    f"wait {wait_id!r}: registration settlement did not finish within "
+                    f"{REGISTRATION_SETTLEMENT_TIMEOUT_S}s after caller cancellation — the "
+                    "registration may still be live; this run did NOT cleanly cancel"
+                ) from cancellation
+            try:
+                await asyncio.wait_for(asyncio.shield(settle), timeout=remaining)
+                return
+            except asyncio.CancelledError:
+                # repeated caller cancellation: the shield keeps settlement alive and we
+                # keep waiting inside the SAME fixed budget — never abandon, never exceed
+                if settle.done() and not settle.cancelled() and settle.exception() is None:
+                    return
+                continue
+            except asyncio.TimeoutError:
+                continue  # the loop head converts an exhausted budget into the loud raise
+            except WaitRegistrationSettlementError as settlement_error:
+                raise WaitRegistrationSettlementError(str(settlement_error)) from cancellation
+            except Exception as cleanup_error:
+                raise WaitRegistrationSettlementError(
+                    f"wait {wait_id!r}: registration settlement raised after caller "
+                    f"cancellation: {cleanup_error}"
+                ) from cancellation

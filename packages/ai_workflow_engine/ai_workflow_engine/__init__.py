@@ -25,6 +25,8 @@ if TYPE_CHECKING:
         WaitHealth,
         WaitReceipt,
         WaitRecord,
+        WaitRegistrationAbortOutcome,
+        WaitRegistrationSettlementError,
     )
     from ai_workflow_engine.wait_contract import WaitDeliveryOutcome
     from ai_workflow_engine.builder import WorkflowEngine, WorkflowEngineBuilder, WorkflowPack
@@ -360,6 +362,8 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "WaitHandle": ("ai_workflow_engine.waits", "WaitHandle"),
     "WaitHealth": ("ai_workflow_engine.waits", "WaitHealth"),
     "WaitReceipt": ("ai_workflow_engine.waits", "WaitReceipt"),
+    "WaitRegistrationAbortOutcome": ("ai_workflow_engine.waits", "WaitRegistrationAbortOutcome"),
+    "WaitRegistrationSettlementError": ("ai_workflow_engine.waits", "WaitRegistrationSettlementError"),
     "WaitRecord": ("ai_workflow_engine.waits", "WaitRecord"),
     "WindowedMemory": ("ai_workflow_engine.memory", "WindowedMemory"),
     "WorkflowArtifact": ("ai_workflow_engine.models", "WorkflowArtifact"),
@@ -436,6 +440,8 @@ __all__ = [
     "WaitHandle",
     "WaitHealth",
     "WaitReceipt",
+    "WaitRegistrationAbortOutcome",
+    "WaitRegistrationSettlementError",
     "WaitRecord",
     "run_single_llm",
     "run_single_step",

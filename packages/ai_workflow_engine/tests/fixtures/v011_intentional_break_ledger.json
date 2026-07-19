@@ -656,6 +656,30 @@
    "reason": "v0.11.6 (C1): the same WaitHandle registration_id delta nested inside the public run-result schema. Subtree-scoped for this ONE seal.",
    "manifest_row": "C1",
    "consumed_by_seal": "2026-07-19 v0.11.6 C1 handle-bound WaitHandle.registration_id seal (6 subtree deltas; corpus 0)"
+  },
+  {
+   "path_prefix": "public.exports.WaitRegistrationAbortOutcome",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.6 (C2): new export — closed typed outcome of the atomic coordinator abort_registration operation.",
+   "manifest_row": "C2",
+   "consumed_by_seal": "2026-07-19 v0.11.6 C2 abort/settlement export seal (3 deltas; corpus 0)"
+  },
+  {
+   "path_prefix": "public.exports.WaitRegistrationSettlementError",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.6 (C2): new export — typed loud settlement failure raised instead of a clean cancelled/failed report over a possibly-live registration.",
+   "manifest_row": "C2",
+   "consumed_by_seal": "2026-07-19 v0.11.6 C2 abort/settlement export seal (3 deltas; corpus 0)"
+  },
+  {
+   "path_prefix": "public.schemas.WaitRegistrationAbortOutcome",
+   "match": "prefix",
+   "status": "spent",
+   "reason": "v0.11.6 (C2): new public model schema for the abort outcome (closed kind vocabulary + optional record). Subtree-scoped for this ONE seal.",
+   "manifest_row": "C2",
+   "consumed_by_seal": "2026-07-19 v0.11.6 C2 abort/settlement export seal (3 deltas; corpus 0)"
   }
  ]
 }

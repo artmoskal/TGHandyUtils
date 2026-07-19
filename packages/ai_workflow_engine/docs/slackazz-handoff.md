@@ -82,7 +82,7 @@ from ai_workflow_engine import (
 from ai_workflow_engine.testing import run_wait_registration_conformance
 ```
 
-The 12 async coordinator members are:
+The 13 async coordinator members are:
 
 - `register(record, snapshot_json, definition_json)`
 - `get(wait_id)`
@@ -93,6 +93,12 @@ The 12 async coordinator members are:
 - `claim_event(wait_id, event, registration_id=..., lease_until=...)` — v0.11.6: the
   adapter must verify `registration_id` against its stored receipt BEFORE mutating any
   record/event/attempt/lease state; a mismatch is a loud error, never a claim
+- `abort_registration(wait_id, expected_registration_id=..., expected_definition_digest=..., reason=...)`
+  — v0.11.6: atomic compensation for a possibly-committed, never-exposed registration.
+  Closed `WaitRegistrationAbortOutcome` kinds: `absent`, `cancelled` (exact pending
+  registration atomically cancelled), `already_terminal` (idempotent report),
+  `refused_mismatch`, `refused_active_claim`. Validate BEFORE mutating; refusals must
+  change nothing
 - `complete(wait_id, claim, resolution_kind=...)`
 - `fail(wait_id, claim, error=..., failure_kind=...)`
 - `due(now)`
@@ -119,17 +125,20 @@ Delivery kinds are closed: `executed`, `duplicate`, `already_processing`, `not_a
 The engine never self-fires. Celery/beat calls the public door:
 
 ```python
-async def deliver_due(coordinator, engine, now):
+async def deliver_due(coordinator, engine, now, handle_store):
     for record in await coordinator.due(now):
+        # v0.11.6: timeout delivery needs the COMPLETE WaitHandle the product persisted
+        # when the run exposed it — a due() record alone cannot resume durable work.
+        handle = handle_store.load(record.wait_id)
         event = WaitEvent(
             kind="timeout",
             event_id=f"timeout:{record.wait_id}:{record.deadline_at.isoformat()}",
         )
-        await engine.deliver_wait_event(record.wait_id, event)
+        await engine.deliver_wait_event(handle, event)
 
     for record in await coordinator.stalled(now):
-        # Redeliver the SAME accepted event from product ingress/outbox history,
-        # or cancel a case that is deliberately abandoned.
+        # Redeliver the SAME accepted event (with the persisted handle) from product
+        # ingress/outbox history, or cancel a case that is deliberately abandoned.
         ...
 ```
 
