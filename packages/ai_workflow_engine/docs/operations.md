@@ -83,8 +83,9 @@ Durable waits separate machine mechanics from product infrastructure:
 engine suspension
   -> coordinator.register(wait record + snapshot + definition)
   -> public WaitHandle
+  -> product persists the complete handle
   -> product clock/event ingress
-  -> engine.deliver_wait_event(wait_id, WaitEvent)
+  -> engine.deliver_wait_event(WaitHandle, WaitEvent)
   -> coordinator claim/lease
   -> engine resume
   -> coordinator complete/fail
@@ -94,6 +95,8 @@ engine suspension
 ### Product responsibilities
 
 - Implement persistent `WaitCoordinator` storage and pass the conformance kit.
+- Persist the complete `WaitHandle`, including `registration_id`; `wait_id` is an index, not
+  authority to resume a registration incarnation.
 - Run the external clock/ingress that calls `due(now)` and `stalled(now)`.
 - Redeliver the same accepted `event_id` after a crashed claimant.
 - Cancel dead work explicitly with `engine.cancel_wait`.
@@ -103,6 +106,9 @@ engine suspension
 ### Engine responsibilities
 
 - Register before exposing a handle.
+- On observed cancellation or a handled registration error before exposure, atomically settle only
+  the registration attempt the engine owns. If settlement cannot be proved, fail loudly rather
+  than report clean cancellation/failure.
 - Seal the durable snapshot against direct `resume` bypass.
 - Deduplicate accepted event identity and enforce one active lease claimant.
 - Bound recovery attempts and validate the stored machine digest.
@@ -110,6 +116,12 @@ engine suspension
 
 The guarantee is deduplicated acceptance plus one active claimant plus at-least-once recovery. It is
 not exactly-once business execution.
+
+An abrupt process death before handle exposure is not an observed cancellation. The committed
+registration remains pending and visible, and an exact retry of the same machine recovers the same
+stored receipt. By contrast, once a caller observes cancellation/failure without receiving a
+handle, that attempt's unexposed registration is terminal or the caller receives a
+`WaitRegistrationSettlementError`. These paths must not be collapsed into one cleanup rule.
 
 ### Scheduler health
 
@@ -188,6 +200,7 @@ consent around the engine:
 | Side effect denied | Fix policy/spec mismatch or keep the effect prohibited |
 | Wait definition digest changed | Deploy compatible machine or deliberately migrate/cancel pending waits |
 | Coordinator integrity/conformance failure | Stop delivery and repair adapter/storage; never fabricate state |
+| Registration settlement failure | Treat as an operational incident: the engine could not prove an unexposed continuation terminal/absent; do not retry delivery by bare wait id |
 | Observation write failed | Execution outcome remains visible; repair storage and use typed observation status |
 | Viewer says group corrupt | Preserve files, inspect duplicate/drifting segment identity, do not delete evidence first |
 
@@ -251,7 +264,7 @@ An engine release is ready only when:
 Framework requests and post-adoption feedback close through
 [`extension-lifecycle.md`](extension-lifecycle.md).
 
-## Release Artifacts And Verification (v0.11.5)
+## Release Artifacts And Verification (v0.11.6 candidate)
 
 Two roles, two identities. A consumer NEVER rebuilds as verification: the **annotated tag identifies
 source**, while the **published release directory identifies artifact bytes**. Tags do not contain
@@ -267,7 +280,7 @@ clean checkouts for wheel reproducibility and a third checkout for test/smoke ev
 outputs outside those checkouts.
 
 ```bash
-TAG=engine-v0.11.5
+TAG=engine-v0.11.6
 BUILD_A=/tmp/engine-build-a
 BUILD_B=/tmp/engine-build-b
 GATE=/tmp/engine-gate
@@ -288,7 +301,7 @@ python3 "$TOOL" run-gate --name smoke --record "$OUT/smoke.json" \
   --log "$OUT/smoke.log" --cwd "$GATE" --timeout-s 900 -- \
   python3 "$TOOL" smoke-installed --venv-dir "$OUT/smoke-venv" \
   --work-dir "$OUT/smoke-work" \
-  --wheel "$OUT/wheels-a/ai_workflow_engine-0.11.5-py3-none-any.whl" \
+  --wheel "$OUT/wheels-a/ai_workflow_engine-0.11.6-py3-none-any.whl" \
   --wheel "$OUT/wheels-a/ai_workflow_tools-0.5.1-py3-none-any.whl" \
   --wheel "$OUT/wheels-a/ai_workflow_viewer-0.3.1-py3-none-any.whl"
 
@@ -297,10 +310,10 @@ python3 "$TOOL" assemble --repo "$BUILD_A" --tag "$TAG" \
   --build-evidence "$OUT/build.json" --second-build-evidence "$OUT/build-b.json" \
   --test-evidence "$OUT/test.json" \
   --smoke-evidence "$OUT/smoke.json" \
-  --wheel "$OUT/wheels-a/ai_workflow_engine-0.11.5-py3-none-any.whl" \
+  --wheel "$OUT/wheels-a/ai_workflow_engine-0.11.6-py3-none-any.whl" \
   --wheel "$OUT/wheels-a/ai_workflow_tools-0.5.1-py3-none-any.whl" \
   --wheel "$OUT/wheels-a/ai_workflow_viewer-0.3.1-py3-none-any.whl" \
-  --second-wheel "$OUT/wheels-b/ai_workflow_engine-0.11.5-py3-none-any.whl" \
+  --second-wheel "$OUT/wheels-b/ai_workflow_engine-0.11.6-py3-none-any.whl" \
   --second-wheel "$OUT/wheels-b/ai_workflow_tools-0.5.1-py3-none-any.whl" \
   --second-wheel "$OUT/wheels-b/ai_workflow_viewer-0.3.1-py3-none-any.whl"
 python3 "$TOOL" verify-bundle --dir "$OUT/bundle"
@@ -323,10 +336,10 @@ Download the complete release directory. Obtain `release_artifacts.py` and
 source, place them together, and use that trusted verifier before invoking `pip`:
 
 ```bash
-BUNDLE=/path/to/downloaded/engine-v0.11.5
-TRUSTED=/path/to/trusted/engine-v0.11.5-verifier
+BUNDLE=/path/to/downloaded/engine-v0.11.6
+TRUSTED=/path/to/trusted/engine-v0.11.6-verifier
 python3 "$TRUSTED/release_artifacts.py" verify-bundle --dir "$BUNDLE"
-python -m pip install "$BUNDLE/ai_workflow_engine-0.11.5-py3-none-any.whl"
+python -m pip install "$BUNDLE/ai_workflow_engine-0.11.6-py3-none-any.whl"
 ```
 
 The verifier requires the exact manifest inventory, safely refuses traversal/symlink/FIFO/device

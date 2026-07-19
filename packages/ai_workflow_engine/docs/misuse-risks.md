@@ -75,6 +75,19 @@ Durable events are deduplicated and only one claimant runs at a time, but crashe
 accepted event to be retried. Product effects must be idempotent. Do not claim coordinator/outbox
 atomicity unless a product adapter implements and proves that transaction itself.
 
+### Delivering by wait id or reconstructing a handle
+
+Persist the complete `WaitHandle` returned by a durable suspension and pass it back unchanged for
+both signal and timeout delivery. `wait_id` is deterministic and identifies the logical suspension;
+`registration_id` identifies the accepted registration incarnation. A bare wait id, a reconstructed
+handle, or a handle retained from a retired incarnation must never authorize delivery into a newer
+registration.
+
+If the process dies before exposing the handle, retry the identical run so the engine recovers the
+stored receipt. If the caller observes cancellation or a handled registration failure without a
+handle, do not hunt for and deliver the hidden wait: the engine must settle its own unexposed
+registration or raise `WaitRegistrationSettlementError`.
+
 ### Missing wait timeout ownership
 
 The engine never self-fires. Every durable wait has a finite timeout and declared timeout route;

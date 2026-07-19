@@ -135,6 +135,21 @@
           "bounded_caller_cancellation"
         ],
         "mutation": "removing the CancelledError branch, capability-boundary publication, resume journal seed, or process settlement fails a named public cancellation test"
+      },
+      "15": {
+        "anchor": "Durable-registration exposure truth",
+        "class": "engine-enforceable",
+        "algebra_rows": [
+          "status"
+        ],
+        "tests": [
+          "test_cancel_during_wait_registration_exposes_no_hidden_continuation",
+          "test_wait_registration_ack_loss_exposes_no_hidden_continuation",
+          "test_crash_before_handle_retry_reuses_receipt_and_executes_once",
+          "test_cancelled_identical_retry_does_not_revoke_an_exposed_handle"
+        ],
+        "oracle_rows": [],
+        "mutation": "v0.11.6 C2R/C3: bypassing shielded registration settlement, creator-attempt CAS, or exact-retry participant tracking fails the named race tests"
       }
     },
     "gopro-handoff.md": {

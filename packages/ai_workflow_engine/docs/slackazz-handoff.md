@@ -1,9 +1,10 @@
 # SlackAzzCovered Engine Adoption Guide
 
-Status: **`engine-v0.11.5` is the current release carrying the wait-health contract this
-handoff requires.** SlackAzzCovered should pin tag `engine-v0.11.5`,
-implement its Redis coordinator, and pass the engine conformance kit plus product transaction
-tests before enabling live effects.
+Status: **`engine-v0.11.6` is the release candidate; do not re-pin until it is cut.**
+`engine-v0.11.5` remains the current release, but its delivery contract has a confirmed
+registration-exposure race. Do not start or update the Redis adapter against v0.11.5. After the
+v0.11.6 tag exists, implement the current protocol and pass its conformance kit plus product
+transaction tests before enabling live effects.
 
 This answers the consumer request in
 `SlackAzzCovered/docs/_discussion/2026-07-10-engine-developer-request.md`. Shared mechanics live in
@@ -33,14 +34,14 @@ client event
 
 | Package | SlackAzzCovered use |
 |---|---|
-| `ai-workflow-engine==0.11.5` | Required workflow/wait runtime |
+| `ai-workflow-engine==0.11.6` | Required workflow/wait runtime after the candidate is tagged |
 | `ai-workflow-tools==0.5.1` | Add for CLI agents/tool catalog if the product uses them |
 | `ai-workflow-viewer==0.3.1` | Developer diagnostics or product-linked run inspection |
 
-> **Current matrix:** `engine-v0.11.5` + `ai-workflow-tools==0.5.1` + `ai-workflow-viewer==0.3.1`
+> **Candidate matrix:** `engine-v0.11.6` + `ai-workflow-tools==0.5.1` + `ai-workflow-viewer==0.3.1`
 > (tools/viewer require `ai-workflow-engine>=0.11,<0.12`). The previous line
-> (`engine-v0.10.1` + tools `0.4.1` + viewer `0.2.3`) remains available at its historical tag for
-> historical data; the lines never mix in one environment.
+> remains available at its historical tag for historical data; the lines never mix in one
+> environment. Do not install this matrix until `engine-v0.11.6` is cut.
 
 
 Verify the complete published directory for the immutable tag and record commit/hash. Never copy
@@ -93,12 +94,14 @@ The 13 async coordinator members are:
 - `claim_event(wait_id, event, registration_id=..., lease_until=...)` — v0.11.6: the
   adapter must verify `registration_id` against its stored receipt BEFORE mutating any
   record/event/attempt/lease state; a mismatch is a loud error, never a claim
-- `abort_registration(wait_id, expected_registration_id=..., expected_definition_digest=..., reason=...)`
+- `abort_registration(wait_id, expected_registration_id=...,
+  expected_registration_attempt_id=..., expected_definition_digest=..., reason=...)`
   — v0.11.6: atomic compensation for a possibly-committed, never-exposed registration.
   Closed `WaitRegistrationAbortOutcome` kinds: `absent`, `cancelled` (exact pending
   registration atomically cancelled), `already_terminal` (idempotent report),
-  `refused_mismatch`, `refused_active_claim`. Validate BEFORE mutating; refusals must
-  change nothing
+  `not_creator` (an exact retry reused an existing registration), `refused_reused` (another
+  retry may already hold the exposed handle), `refused_mismatch`, and
+  `refused_active_claim`. Validate BEFORE mutating; refusals must change nothing
 - `complete(wait_id, claim, resolution_kind=...)`
 - `fail(wait_id, claim, error=..., failure_kind=...)`
 - `due(now)`
@@ -221,7 +224,9 @@ async def test_redis_coordinator_contract():
 ```
 
 Add product tests proving real Redis transaction boundaries, scheduler restart, outbox idempotency,
-and reconnect after process loss. The generic kit cannot inspect Redis `MULTI/EXEC` internals.
+reconnect after process loss, and creator-attempt compensation racing exact retry/delivery. Use
+the kit from the accepted v0.11.6 tag; v0.11.5 does not define this protocol. The generic kit cannot
+inspect Redis `MULTI/EXEC` internals.
 
 ## SlackAzz-Specific Misuse Risks
 
@@ -239,7 +244,9 @@ and reconnect after process loss. The generic kit cannot inspect Redis `MULTI/EX
 2. **One provider door:** no provider construction in workflow/event modules.
 3. **No product orchestration loop:** Celery delivers events but never chooses nodes/retries workers.
 4. **Coordinator conformance:** generic kit plus real Redis atomicity/reconnect tests pass.
-5. **Fresh suspension:** restart returns the identical wait, snapshot, and definition.
+5. **Fresh suspension:** abrupt process death plus exact retry returns the identical wait, receipt,
+   snapshot, and definition; observed cancellation without handle exposure leaves no executable
+   registration.
 6. **Timeout:** due event follows the declared transition once per accepted event.
 7. **Crash recovery:** expired lease permits same-event reclaim with bounded attempts.
 8. **Outbox idempotency:** duplicate/redelivered events create one action intent.
@@ -262,16 +269,17 @@ Follow [`operations.md`](operations.md) for production recovery. File missing me
 
 ## v0.11 Release Contract
 
-`engine-v0.11.5` is the current immutable release for the **latest-only** line. The line uses strict versioned persisted
+`engine-v0.11.6` is the release candidate for the **latest-only** line; `engine-v0.11.5`
+remains the immutable tagged release until the candidate passes review and is cut. The line uses strict versioned persisted
 contracts (snapshot `v0.11`, bundle meta v2, wait records `wait-v1`), one strict viewer loader, and
 NO migration layer — the sealed current-contract corpus shows 0 behavior deltas vs v0.10.1, but old
 persisted data is rejected loudly naming its historical tag. Adopt by re-pinning fresh
-(pin tag `engine-v0.11.5`, verify the published `release-manifest-v2` directory, then install the
+(after release, pin tag `engine-v0.11.6`, verify the published `release-manifest-v2` directory, then install the
 required package subset from that exact directory) and
 re-run your canaries before changing any deployed pin. The release makes node-context binding
-explicit for every node kind; wait contracts and persisted schemas are unchanged. The
-`engine-v0.11.4` tag records no distributable wheel evidence; consume artifacts only from a
-release whose manifest records the published wheel SHA-256 (v0.11.5 onward). The exact cache
+explicit for every node kind. v0.11.6 deliberately changes the latest-only wait contract:
+delivery requires the complete exposed handle and registration compensation is creator-attempt
+bound. The exact cache
 artifact set is the complete release directory: all three wheels, the closed
 `release-manifest.json`, `SHA256SUMS`, the two tagged verifier scripts, and command-derived
 two-build/test/smoke evidence records and logs. Verify that directory with the independently trusted

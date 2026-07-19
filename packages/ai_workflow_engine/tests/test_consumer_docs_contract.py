@@ -52,6 +52,68 @@ def test_documented_protocol_table_matches_the_real_protocol():
         )
 
 
+def test_documented_wait_delivery_and_compensation_match_current_contract():
+    """v0.11.6: adapter authors must copy the handle-bound door and complete abort CAS."""
+
+    from ai_workflow_engine.builder import WorkflowEngine
+    from ai_workflow_engine.waits import InMemoryWaitCoordinator, WaitCoordinator
+
+    delivery = inspect.signature(WorkflowEngine.deliver_wait_event)
+    assert list(delivery.parameters) == ["self", "handle", "event"]
+    assert "deliver_wait_event(handle, event)" in SLACKAZZ_DOC
+    assert "deliver_wait_event(wait_id" not in SLACKAZZ_DOC
+
+    expected_abort = [
+        "self",
+        "wait_id",
+        "expected_registration_id",
+        "expected_registration_attempt_id",
+        "expected_definition_digest",
+        "reason",
+    ]
+    assert list(inspect.signature(WaitCoordinator.abort_registration).parameters) == expected_abort
+    assert (
+        list(inspect.signature(InMemoryWaitCoordinator.abort_registration).parameters)
+        == expected_abort
+    )
+    for parameter in expected_abort[2:]:
+        assert parameter in SLACKAZZ_DOC
+    for kind in (
+        "absent",
+        "cancelled",
+        "already_terminal",
+        "not_creator",
+        "refused_reused",
+        "refused_mismatch",
+        "refused_active_claim",
+    ):
+        assert f"`{kind}`" in SLACKAZZ_DOC
+
+
+def test_all_current_wait_guides_require_the_complete_handle():
+    """The binding spec and operational guides may not resurrect bare-id delivery."""
+
+    repo_root = PACKAGE_ROOT.parents[1]
+    paths = (
+        PACKAGE_ROOT / "README.md",
+        PACKAGE_ROOT / "docs" / "getting-started.md",
+        PACKAGE_ROOT / "docs" / "operations.md",
+        PACKAGE_ROOT / "docs" / "misuse-risks.md",
+        PACKAGE_ROOT / "docs" / "mageqa-handoff.md",
+        PACKAGE_ROOT / "docs" / "slackazz-handoff.md",
+        repo_root / "docs" / "executable-workflow-engine-spec.md",
+    )
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        assert "deliver_wait_event(wait_id" not in text, (
+            f"{path}: stale bare-wait-id continuation instruction survived"
+        )
+    combined = "\n".join(path.read_text(encoding="utf-8") for path in paths)
+    assert "complete `WaitHandle`" in combined
+    assert "abrupt process death" in combined
+    assert "observed cancellation" in combined
+
+
 def test_documented_goal_example_constructs_a_valid_goal():
     """The copy-paste example must validate; the old invalid shape must be gone."""
 
@@ -294,16 +356,15 @@ def test_documented_package_matrix_is_coherent_and_derived_from_pyproject():
             f"{versions['ai_workflow_engine']} — the documented matrix could never resolve"
         )
 
-    # C2GR-2, released state: the VISIBLE tables are the copyable instruction — every
-    # handoff carries exactly ONE current matrix (all three pins DERIVED from pyproject,
-    # engine row included), and no previous-line pin survives in copyable ``==`` form
-    # (the historical set may be named by tag/version prose only).
+    # The visible table is one coherent matrix derived from source. During a candidate
+    # gate it is explicitly non-installable; after release it becomes the current matrix.
     current_pins = [
         f"ai-workflow-engine=={versions['ai_workflow_engine']}",
         f"ai-workflow-tools=={versions['ai_workflow_tools']}",
         f"ai-workflow-viewer=={versions['ai_workflow_viewer']}",
     ]
-    previous_pins = ["ai-workflow-engine==0.10.1", "ai-workflow-tools==0.4.1", "ai-workflow-viewer==0.2.3"]
+    candidate_tag = f"engine-v{versions['ai_workflow_engine']}"
+    candidate = f"`{candidate_tag}` is the release candidate" in README
     for name in (
         "gopro-handoff.md",
         "mageqa-handoff.md",
@@ -313,25 +374,13 @@ def test_documented_package_matrix_is_coherent_and_derived_from_pyproject():
         text = (PACKAGE_ROOT / "docs" / name).read_text(encoding="utf-8")
         for pin in current_pins:
             assert pin in text, f"{name}: current matrix is missing {pin}"
-        for stale in previous_pins:
-            assert stale not in text, (
-                f"{name}: copyable previous-line pin {stale} survives — the released state "
-                "carries ONE current matrix; the old line is prose/tag references only"
-            )
-        assert "Pending v0.11 candidate set" not in text, (
-            f"{name}: candidate framing must not survive the release flip"
-        )
-        lowered = text.lower()
-        for stale_phrase in (
-            "candidate note",
-            "unreleased",
-            "pending tag",
-            "keep the pin above",
-        ):
-            assert stale_phrase not in lowered, (
-                f"{name}: stale release framing {stale_phrase!r} survived the release flip"
-            )
-        assert "Current matrix" in text, f"{name}: must label the one current matrix"
+        if candidate:
+            assert "Candidate matrix" in text
+            assert f"Do not install this matrix until `{candidate_tag}` is cut." in text
+            assert "Current matrix" not in text
+        else:
+            assert "Current matrix" in text
+            assert "Candidate matrix" not in text
 
 
 def test_documented_bundle_schema_version_is_the_engine_truth():

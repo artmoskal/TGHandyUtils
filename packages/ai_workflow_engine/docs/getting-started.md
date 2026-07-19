@@ -9,13 +9,15 @@ Always install `ai-workflow-engine`. Add `ai-workflow-tools` only for reusable C
 `ai-workflow-viewer` only where bundles are rendered. Keeping optional packages out of simple runtime
 images preserves the complexity gradient.
 
-Consume the complete release directory for immutable tag `engine-v0.11.5`, verify it
-with the tagged verifier as described in [operations](operations.md#release-artifacts-and-verification-v0115),
+The source tree currently describes candidate `engine-v0.11.6`; do not re-pin until that
+immutable tag and its release directory exist. After release, consume the complete directory for
+tag `engine-v0.11.6`, verify it
+with the tagged verifier as described in [operations](operations.md#release-artifacts-and-verification-v0116-candidate),
 then record the exact bytes installed:
 
 ```text
-engine_tag=engine-v0.11.5
-engine_source_commit=<git rev-parse engine-v0.11.5^{}>
+engine_tag=engine-v0.11.6
+engine_source_commit=<git rev-parse engine-v0.11.6^{}>
 engine_wheel_sha256=<sha256 of vendored wheel>
 release_manifest_sha256=<sha256 of verified release-manifest.json>
 ```
@@ -134,7 +136,9 @@ and [`observability-levels-feedback.md`](observability-levels-feedback.md).
 
 - Local wait: `LocalWaitPolicy()` returns a snapshot; the caller must retain and resume it.
 - Durable wait: `DurableWaitPolicy(timeout_s=...)` registers state in a product-owned
-  `WaitCoordinator`; the product delivers events through `engine.deliver_wait_event`.
+  `WaitCoordinator`; the product persists the complete returned `WaitHandle` and delivers signals
+  or timeouts with `engine.deliver_wait_event(handle, event)`. A `wait_id` by itself is not a
+  continuation capability.
 
 Use [`examples/durable_wait.py`](examples/durable_wait.py) as the executable contract and read
 [`operations.md`](operations.md#durable-wait-lifecycle) before implementing persistent storage.
@@ -152,7 +156,8 @@ Every adopter should test:
 7. Observation is enabled through configuration and a completed/failed run finalizes a readable
    bundle.
 8. Any persistent `WaitCoordinator` passes
-   `ai_workflow_engine.testing.run_wait_registration_conformance` plus product transaction tests.
+   `ai_workflow_engine.testing.run_wait_registration_conformance` plus product transaction tests,
+   including exact crash retry, stale-handle rejection, and cancellation before handle exposure.
 
 Run engine-side tests through this repository's root `./test.sh`; use the consumer's own approved
 wrapper in its repository.

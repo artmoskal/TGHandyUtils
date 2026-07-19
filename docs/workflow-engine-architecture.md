@@ -653,6 +653,7 @@ coordinator; it does not reimplement its collaborators:
 | `machine_compiler.py` | Validate and compile one definition, including digest-keyed cache and routes | Run lifecycle, node results, observation |
 | `node_services.py` | Supply the narrow node execution/scheduling contract and child-run port | Whole-executor access or product orchestration |
 | `suspension.py` | Build identity-sealed snapshots and register durable waits before exposure | Scheduling clocks or product persistence |
+| `wait_runtime.py` | Own registration exposure/settlement, handle-bound delivery, claim recovery, and nested-wait lifecycle reconciliation | Product clocks, storage implementation, outbox effects, or executor branches |
 | `result_assembly.py` | Project final state into the public result envelope | Execute nodes or choose transitions |
 | `observation_contract.py` | Persisted schema and safe path/identity rules | Filesystem sequencing or HTML |
 | `observation_writer.py` / `observation_retention.py` | Write/finalize/archive and prune logical run groups | Runtime control or viewer projection |

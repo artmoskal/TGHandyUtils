@@ -5,7 +5,8 @@ declare a workflow, register typed capabilities, and call one engine door. The e
 transitions, retries, fan-out, budgets, waits, trace, usage, and observation bundles; products own
 domain models, provider clients, storage adapters, clocks, and side-effect delivery.
 
-> **`engine-v0.11.5` is the current release.** The engine owner publishes wheels bound to
+> **`engine-v0.11.6` is the release candidate; do not re-pin until it is cut.**
+> `engine-v0.11.5` remains the current immutable release. The engine owner publishes wheels bound to
 > immutable tags; consumer
 > canaries still decide whether each product changes its deployed pin. Never depend on a live
 > branch. The binding contract is the repository-level
@@ -18,6 +19,14 @@ domain models, provider clients, storage adapters, clocks, and side-effect deliv
 > matching historical tag (`engine-v0.10.1` and earlier keep working for their own data forever).
 > Adoption is fresh: new consumers start on the current contract; existing consumers re-adopt the
 > current surface rather than migrate state.
+>
+> **v0.11.6 candidate delta.** A durable continuation is now bound to the complete
+> `WaitHandle`, including its opaque registration-incarnation identity; a deterministic
+> `wait_id` alone cannot deliver. If cancellation or a registration error is observed before
+> the handle is exposed, the engine atomically settles only the registration attempt it owns.
+> Exact crash retry still recovers the same accepted receipt. Redis/DB adapters must implement
+> the v0.11.6 `WaitCoordinator` contract and pass the current conformance kit; do not implement
+> a new adapter against v0.11.5's delivery signatures.
 >
 > **v0.11.5 release delta.** `WaitHealth` gains REQUIRED current-state `failed` and
 > `integrity_errors` counts (no defaults — adapters without the current health contract fail
@@ -73,25 +82,25 @@ Product adopters should then read exactly one delta guide:
 
 ## Install
 
-Consumers download the complete published release directory, obtain the verifier scripts from the
-annotated tag (or another already trusted pin), verify the bundle before installation, and install
-only the packages their product needs. Building from source is a producer operation, not consumer
-verification. The exact producer and consumer commands are in
-[`docs/operations.md`](docs/operations.md#release-artifacts-and-verification-v0115).
+After `engine-v0.11.6` is cut, consumers download its complete published release directory, obtain
+the verifier scripts from the annotated tag (or another already trusted pin), verify the bundle
+before installation, and install only the packages their product needs. Building from source is a
+producer operation, not consumer verification. The exact producer and consumer commands are in
+[`docs/operations.md`](docs/operations.md#release-artifacts-and-verification-v0116-candidate).
 
 ```bash
-BUNDLE=/path/to/downloaded/engine-v0.11.5
-TRUSTED=/path/to/verifier/from/engine-v0.11.5
+BUNDLE=/path/to/downloaded/engine-v0.11.6
+TRUSTED=/path/to/verifier/from/engine-v0.11.6
 python3 "$TRUSTED/release_artifacts.py" verify-bundle --dir "$BUNDLE"
-python -m pip install "$BUNDLE/ai_workflow_engine-0.11.5-py3-none-any.whl"
-python -c "import ai_workflow_engine as e; assert e.__version__ == '0.11.5'"
+python -m pip install "$BUNDLE/ai_workflow_engine-0.11.6-py3-none-any.whl"
+python -c "import ai_workflow_engine as e; assert e.__version__ == '0.11.6'"
 ```
 
-Optional packages:
+Candidate package matrix:
 
 | Package | Install when |
 |---|---|
-| `ai-workflow-engine==0.11.5` | Always. Core builder, executor, memory, waits, observation writer. |
+| `ai-workflow-engine==0.11.6` | Always. Core builder, executor, memory, waits, observation writer. |
 | `ai-workflow-tools==0.5.1` | The product uses CLI agents, the tool catalog, or media helpers. |
 | `ai-workflow-viewer==0.3.1` | A developer or product service renders observation bundles. |
 
@@ -137,7 +146,8 @@ the execution door.
 3. **Inject infrastructure.** Configuration, model clients, stores, coordinators, and sinks enter
    through builders/adapters; the engine never discovers product secrets.
 4. **Run through the engine.** Use `engine.run`, `engine.resume` for local waits, or
-   `engine.deliver_wait_event` for durable waits.
+   `engine.deliver_wait_event(complete_wait_handle, event)` for durable waits. Persist the complete
+   handle; a bare deterministic `wait_id` cannot authorize a continuation.
 5. **Read the result and observation bundle.** The result is the execution contract; observations
    explain it but never control it.
 
