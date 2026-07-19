@@ -717,7 +717,8 @@ class WorkflowEngine:
             ):
                 raise RuntimeError(
                     f"snapshot is sealed to durable wait {snapshot.durable_wait_id!r} — "
-                    "resume it via engine.deliver_wait_event(wait_id, event); direct "
+                    "resume it via engine.deliver_wait_event(handle, event) using the complete "
+                    "persisted WaitHandle; direct "
                     "resume would bypass claim, deduplication, leases, and attempt bounds"
                 )
         # B-post3 (strict override rule): resume continues the ORIGINAL run identity — goal,

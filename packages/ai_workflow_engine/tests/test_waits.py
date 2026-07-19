@@ -1985,8 +1985,11 @@ async def test_durable_snapshot_cannot_resume_through_the_public_door():
     stored_snapshot = await coordinator.load_snapshot(wait_id)
     assert stored_snapshot, "the coordinator stores the raw snapshot — the attack surface"
 
-    with pytest.raises(RuntimeError, match="sealed to durable wait"):
+    with pytest.raises(RuntimeError, match="deliver_wait_event\\(handle, event\\)") as blocked:
         await engine.resume(stored_snapshot, "bypass")  # codex's exact probe shape
+    assert "wait_id, event" not in str(blocked.value), (
+        "the fail-loud public message must not teach the removed bare-ID delivery contract"
+    )
 
     with pytest.raises(RuntimeError, match="sealed to durable wait"):
         await engine.resume(
