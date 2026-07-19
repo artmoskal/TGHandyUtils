@@ -368,6 +368,12 @@ class WorkflowExecutor:
                 durable_handle, final_state = await self._suspension.register_or_fold(
                     definition, final_state, context, session
                 )
+        except asyncio.CancelledError as cancellation:
+            try:
+                self._close_cancelled_session(session, definition)
+            except Exception as finalization_error:
+                raise finalization_error from cancellation
+            raise
         except Exception:
             # The run raised: the bundle must still close, truthfully, as failed.
             session.close("failed")
@@ -551,6 +557,10 @@ class WorkflowExecutor:
             # Q-R5: the RESUMED half is a run too — it gets its own observation bundle, so
             # the suspend→resume lifecycle is inspectable end to end, not only in memory.
             bundle=observation_bundle,
+            # Caller cancellation has no final graph envelope. Seed the run-owned journal
+            # from the snapshot so pre-suspension evidence and newly completed artifacts are
+            # finalized together in this continuation segment.
+            artifacts=state["artifacts"],
         )
         try:
             with observation_capture_scope(self.runtime.observation), run_session_scope(session):
@@ -587,6 +597,12 @@ class WorkflowExecutor:
                 durable_handle, final_state = await self._suspension.register_or_fold(
                     definition, final_state, context, session
                 )
+        except asyncio.CancelledError as cancellation:
+            try:
+                self._close_cancelled_session(session, definition)
+            except Exception as finalization_error:
+                raise finalization_error from cancellation
+            raise
         except Exception:
             # F8/R0: a raising resume must still finalize its bundle truthfully (run() parity).
             session.close("failed")
@@ -644,6 +660,32 @@ class WorkflowExecutor:
                 update={"observation_bundle_path": str(session.bundle.path)}
             )
         return envelope
+
+    def _close_cancelled_session(
+        self,
+        session: WorkflowRunSession,
+        definition: WorkflowDefinition,
+    ) -> None:
+        """Record and finalize caller cancellation without translating it.
+
+        The caller's ``CancelledError`` is re-raised by the surrounding handler after this
+        synchronous close succeeds. A trace or bundle write failure remains loud and is chained
+        from that cancellation instead of reporting false archival success.
+        """
+
+        with run_session_scope(session):
+            try:
+                self.runtime.trace_sink.record(
+                    WorkflowTraceEvent(
+                        node=definition.workflow_id,
+                        decision="cancelled",
+                        phase="run:result",
+                        severity="warning",
+                        metadata={"reason": "caller_cancelled"},
+                    )
+                )
+            finally:
+                session.close("cancelled")
 
     def compile(self, definition: WorkflowDefinition) -> Any:
         """Compile through the engine-owned machine compiler."""

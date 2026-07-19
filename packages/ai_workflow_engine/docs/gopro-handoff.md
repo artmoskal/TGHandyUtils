@@ -1,7 +1,6 @@
 # GoPro Engine Adoption Guide
 
-Status: **`engine-v0.11.5` is the release candidate; `engine-v0.11.4` remains the current
-release until it is cut.** GoPro should then pin tag `engine-v0.11.5`, record the source
+Status: **`engine-v0.11.5` is the current release.** GoPro should pin tag `engine-v0.11.5`, record the source
 commit and wheel hash, and run its sidecar canary before changing the production image. Do not
 infer the actual GoPro pin from this document; the consumer repository's
 pin file is authoritative for deployed state.
@@ -39,7 +38,7 @@ The engine owns execution and gates. GoPro owns inventory semantics and storage.
 | `ai-workflow-tools==0.5.1` | Add only when GoPro uses CLI agents or shared media helpers |
 | `ai-workflow-viewer==0.3.1` | Developer/diagnostic service; not required in the detector image |
 
-> **Current matrix (candidate):** `engine-v0.11.5` + `ai-workflow-tools==0.5.1` + `ai-workflow-viewer==0.3.1`
+> **Current matrix:** `engine-v0.11.5` + `ai-workflow-tools==0.5.1` + `ai-workflow-viewer==0.3.1`
 > (tools/viewer require `ai-workflow-engine>=0.11,<0.12`). The previous line
 > (`engine-v0.10.1` + tools `0.4.1` + viewer `0.2.3`) remains available at its historical tag for
 > historical data; the lines never mix in one environment.
@@ -165,13 +164,13 @@ second memory, retry, or observation runtime into the sidecar.
 
 ## v0.11 Release Contract
 
-`engine-v0.11.5` is the release candidate for the **latest-only** line; `engine-v0.11.4`
-remains the current immutable release until the candidate is cut. The line uses strict versioned persisted
+`engine-v0.11.5` is the current immutable release for the **latest-only** line. The line uses strict versioned persisted
 contracts (snapshot `v0.11`, bundle meta v2, wait records `wait-v1`), one strict viewer loader, and
 NO migration layer — the sealed current-contract corpus shows 0 behavior deltas vs v0.10.1, but old
 persisted data is rejected loudly naming its historical tag. Adopt by re-pinning fresh
-(pin tag `engine-v0.11.5`, rebuild wheels: engine `0.11.5`, tools `0.5.1`, viewer `0.3.1`) and
+(pin tag `engine-v0.11.5`, verify the published `release-manifest-v2` directory, then install only
+the engine `0.11.5` wheel for the current sidecar) and
 re-run your canaries before changing any deployed pin. The release makes node-context binding
 explicit for every node kind and adds native Codex image attachment in the optional tools wheel;
 persisted schemas and the sealed behavior corpus are unchanged. Read the annotated tag for
-the exact source commit and reference wheel hashes.
+the exact source commit and the published release manifest for wheel hashes.

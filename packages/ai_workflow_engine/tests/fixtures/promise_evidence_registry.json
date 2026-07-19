@@ -114,6 +114,27 @@
           "handler_owned_timeout"
         ],
         "mutation": "sealed oracle rows: window/settlement drift is an unledgered corpus delta"
+      },
+      "14": {
+        "anchor": "finalizes the segment as `cancelled`",
+        "class": "engine-enforceable",
+        "algebra_rows": [
+          "artifacts",
+          "status",
+          "usage_summary"
+        ],
+        "tests": [
+          "test_caller_cancellation_finalizes_bundle_and_preserves_completed_artifact",
+          "test_fanout_retains_completed_siblings_before_aggregate_commit",
+          "test_child_workflow_artifact_survives_parent_cancellation",
+          "test_resumed_cancellation_preserves_snapshot_and_new_artifacts",
+          "test_engine_cancellation_keeps_artifact_and_reaps_external_process"
+        ],
+        "oracle_rows": [
+          "caller_cancellation",
+          "bounded_caller_cancellation"
+        ],
+        "mutation": "removing the CancelledError branch, capability-boundary publication, resume journal seed, or process settlement fails a named public cancellation test"
       }
     },
     "gopro-handoff.md": {
@@ -565,10 +586,35 @@
           "tests": [
             "test_release_docs_name_the_current_tag_consistently",
             "test_documented_package_matrix_is_coherent_and_derived_from_pyproject",
-            "test_current_contract_provenance_is_sealed_and_matches"
+            "test_current_contract_provenance_is_sealed_and_matches",
+            "test_tagged_source_requires_annotated_exact_three_package_matrix",
+            "test_gate_evidence_comes_from_executed_command_and_bounded_log",
+            "test_complete_bundle_round_trip_and_exact_inventory",
+            "test_bundle_rejects_tampered_wheel_evidence_manifest_and_missing_file",
+            "test_two_clean_tag_builds_are_byte_identical_and_recorded"
           ],
           "oracle_rows": [],
-          "mutation": "tag/version/package-matrix and seal provenance drift fail the derived release-contract tests"
+          "mutation": "tag/version/package-matrix, gate-to-commit, wheel/evidence/checksum, exact-bundle, reproducibility, and seal-provenance drift each fail a named release-contract test"
+        },
+        "6": {
+          "anchor": "Caller-cancellation truth",
+          "class": "engine-enforceable",
+          "algebra_rows": [
+            "artifacts",
+            "status",
+            "usage_summary"
+          ],
+          "tests": [
+            "test_caller_cancellation_finalizes_bundle_and_preserves_completed_artifact",
+            "test_fanout_retains_completed_siblings_before_aggregate_commit",
+            "test_resumed_cancellation_preserves_snapshot_and_new_artifacts",
+            "test_cancellation_bundle_finalization_failure_is_loud"
+          ],
+          "oracle_rows": [
+            "caller_cancellation",
+            "bounded_caller_cancellation"
+          ],
+          "mutation": "cancellation-close, early artifact retention, resume seeding, and finalization-error swallowing are each killed by the caller-cancellation suite"
         }
       }
     }

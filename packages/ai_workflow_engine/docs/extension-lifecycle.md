@@ -120,7 +120,8 @@ when:
 
 ## Closing A Request
 
-The engine owner posts tag, source commit, package versions, migration notes, test evidence, and
-known limits. The consumer rebuilds from the tag, runs its contract/canary tests, records the pin,
-and reports `adopted` or a concrete defect. Only then migrate durable conclusions and delete transient
+The engine owner posts the annotated tag, source commit, package versions, verified release bundle,
+known limits, and command-derived test/smoke evidence. The consumer verifies the published bytes,
+installs its required package subset, runs product contract/canary tests, records the pin, and
+reports `adopted` or a concrete defect. Only then migrate durable conclusions and delete transient
 discussion files.

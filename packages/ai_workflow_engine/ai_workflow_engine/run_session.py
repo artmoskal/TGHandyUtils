@@ -20,15 +20,17 @@ from contextvars import ContextVar
 import math
 import time
 import uuid
-from typing import Any, Callable, Iterator, List, Optional
+from typing import Any, Callable, Iterable, Iterator, List, Optional
 
 from ai_workflow_engine._runtime_state import current_run_session
 from ai_workflow_engine.models import (
     CapabilityContext,
+    WorkflowArtifact,
     WorkflowRunContext,
     WorkflowTraceEvent,
     WorkflowUsageSummary,
 )
+from ai_workflow_engine.run_artifacts import RunArtifactJournal
 
 
 # The ANCESTOR CHAIN of active child-trace scopes (v0.11 M7, hardened per review finding 3):
@@ -172,12 +174,14 @@ class WorkflowRunSession:
         usage_summary: Optional[WorkflowUsageSummary] = None,
         bundle: Any = None,
         definition: Any = None,
+        artifacts: Iterable[WorkflowArtifact | dict[str, Any]] = (),
     ) -> None:
         self.workflow_id = workflow_id
         self.context = context
         self.usage_summary = usage_summary if usage_summary is not None else WorkflowUsageSummary()
         self.bundle = bundle
         self.definition = definition
+        self._artifacts = RunArtifactJournal(artifacts if bundle is not None else ())
         # Run-scoped trace buffer (B6/B7): filled by SessionScopedTraceSink while this
         # session's scope is active; the envelope reads it directly.
         self.trace_events: List[WorkflowTraceEvent] = []
@@ -277,14 +281,32 @@ class WorkflowRunSession:
     def run_id(self) -> str:
         return self.run_context.workflow_id
 
-    def close(self, status: str, *, artifacts: Optional[List[Any]] = None) -> None:
+    def retain_artifacts(
+        self, artifacts: Iterable[WorkflowArtifact | dict[str, Any]]
+    ) -> None:
+        """Retain one completed invocation's artifacts before graph-state commit."""
+
+        if self.bundle is None:
+            return
+        self._artifacts.retain(artifacts)
+
+    def artifact_snapshot(self) -> List[WorkflowArtifact]:
+        """Return the run's ordered, deduplicated artifact evidence."""
+
+        return self._artifacts.snapshot()
+
+    def close(
+        self,
+        status: str,
+        *,
+        artifacts: Optional[Iterable[WorkflowArtifact | dict[str, Any]]] = None,
+    ) -> None:
         """Finalize session-scoped resources with the run's terminal status (idempotent).
 
-        Today that is the optional observation bundle — failed runs finalize as failed
-        instead of leaving an unfinalized directory behind. ``artifacts`` (the run's
-        accumulated ``WorkflowArtifact``s) are archived into the bundle at finalize (G1
-        evidence resolution); a run that raised before producing an envelope closes
-        without them — the manifest is then honestly empty. Finalizing a real
+        Today that is the optional observation bundle — failed/cancelled runs finalize instead
+        of leaving an unfinalized directory behind. Completed capability artifacts are already
+        retained in the run journal before graph commit; ``artifacts`` merges any terminal
+        envelope projection through that same identity rule. Finalizing a real
         ``ObservationRunBundle`` requires the definition (B5): attaching a bundle without a
         definition is a loud contract error, never a deep TypeError.
         """
@@ -292,6 +314,8 @@ class WorkflowRunSession:
         if self._closed:
             return
         self._closed = True
+        if artifacts is not None:
+            self.retain_artifacts(artifacts)
         if self.bundle is not None:
             if self.definition is None:
                 raise RuntimeError(
@@ -302,5 +326,5 @@ class WorkflowRunSession:
                 self.definition,
                 status=status,
                 usage=self.usage_summary,
-                artifacts=artifacts,
+                artifacts=self.artifact_snapshot(),
             )

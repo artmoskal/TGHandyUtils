@@ -1,38 +1,51 @@
-"""R0.3 (v0.11.5 corrective) — release-artifact trust-boundary attacks (RED-first).
-
-Targets the producer tool at its corrected owner (``scripts/release_artifacts.py``); during
-the RED phase the loader falls back to the defective ``tests/release_manifest.py`` so every
-attack demonstrably fails against candidate ``202e87a`` before the repair lands. The fallback
-dies with the old module in R2.1.
-"""
+"""Release trust boundary: real commands, real wheels, and hostile bundle shapes."""
 
 from __future__ import annotations
 
+import base64
+import copy
 import hashlib
-import importlib.util
 import json
+import os
+import shutil
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
+from typing import Callable
 
 import pytest
 
 pytestmark = pytest.mark.unit
 
 _PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+_SCRIPTS = _PACKAGE_ROOT / "scripts"
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+
+import release_artifacts as cli  # noqa: E402
+import release_contract as contract  # noqa: E402
 
 
-def _load_release_module():
-    for candidate in (
-        _PACKAGE_ROOT / "scripts" / "release_artifacts.py",
-        _PACKAGE_ROOT / "tests" / "release_manifest.py",
-    ):
-        if candidate.exists():
-            spec = importlib.util.spec_from_file_location("release_artifacts_under_test", candidate)
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            return module
-    raise AssertionError("no release tool found at either owner")
+def _expect_rejection(callable_, *args, fragment: str, **kwargs) -> Exception:
+    try:
+        callable_(*args, **kwargs)
+    except AssertionError:
+        raise
+    except Exception as exc:
+        assert fragment.lower() in str(exc).lower(), (
+            f"rejection must name {fragment!r}; got {exc!r}"
+        )
+        return exc
+    raise AssertionError(f"must reject {fragment!r}, but accepted")
+
+
+def _record_hash(data: bytes) -> str:
+    return (
+        base64.urlsafe_b64encode(hashlib.sha256(data).digest())
+        .rstrip(b"=")
+        .decode("ascii")
+    )
 
 
 def _real_wheel(
@@ -41,314 +54,875 @@ def _real_wheel(
     package: str = "ai_workflow_engine",
     version: str = "0.11.5",
     filename: str | None = None,
+    wheel_metadata: bytes | None = None,
+    record_override: bytes | None = None,
+    extra_members: dict[str, bytes] | None = None,
+    duplicate_member: str | None = None,
 ) -> Path:
-    """A REAL minimal wheel: valid zip with coherent dist-info METADATA/WHEEL/RECORD."""
-
+    directory.mkdir(parents=True, exist_ok=True)
     name = filename or f"{package}-{version}-py3-none-any.whl"
     path = directory / name
     dist_info = f"{package}-{version}.dist-info"
-    metadata = f"Metadata-Version: 2.1\nName: {package.replace('_', '-')}\nVersion: {version}\n"
-    wheel_meta = "Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\nTag: py3-none-any\n"
-    module_body = "__version__ = " + repr(version) + "\n"
-
-    def _record_line(arcname: str, data: bytes) -> str:
-        digest = hashlib.sha256(data).hexdigest()
-        return f"{arcname},sha256={digest},{len(data)}"
-
     files = {
-        f"{package}/__init__.py": module_body.encode(),
-        f"{dist_info}/METADATA": metadata.encode(),
-        f"{dist_info}/WHEEL": wheel_meta.encode(),
+        f"{package}/__init__.py": f"__version__ = {version!r}\n".encode(),
+        f"{dist_info}/METADATA": (
+            f"Metadata-Version: 2.1\n"
+            f"Name: {package.replace('_', '-')}\n"
+            f"Version: {version}\n"
+        ).encode(),
+        f"{dist_info}/WHEEL": (
+            wheel_metadata
+            if wheel_metadata is not None
+            else (
+                b"Wheel-Version: 1.0\n"
+                b"Generator: release-contract-test\n"
+                b"Root-Is-Purelib: true\n"
+                b"Tag: py3-none-any\n"
+            )
+        ),
     }
-    record_lines = [_record_line(arc, data) for arc, data in files.items()]
-    record_lines.append(f"{dist_info}/RECORD,,")
-    files[f"{dist_info}/RECORD"] = ("\n".join(record_lines) + "\n").encode()
-    with zipfile.ZipFile(path, "w") as zf:
+    files.update(extra_members or {})
+    record_name = f"{dist_info}/RECORD"
+    if record_override is None:
+        rows = [
+            f"{arcname},sha256={_record_hash(data)},{len(data)}"
+            for arcname, data in files.items()
+        ]
+        rows.append(f"{record_name},,")
+        files[record_name] = ("\n".join(rows) + "\n").encode()
+    else:
+        files[record_name] = record_override
+    with zipfile.ZipFile(path, "w") as archive:
         for arcname, data in files.items():
-            zf.writestr(arcname, data)
+            archive.writestr(arcname, data)
+        if duplicate_member is not None:
+            archive.writestr(duplicate_member, files[duplicate_member])
     return path
 
 
-def _scratch_tag_repo(tmp_path: Path, *, tag: str, annotated: bool = True) -> tuple[Path, str]:
-    repo = tmp_path / "scratch-repo"
-    repo.mkdir()
+def _write_package(repo: Path, relative_pyproject: str, name: str, version: str) -> None:
+    package_root = repo / relative_pyproject
+    package_root.mkdir(parents=True, exist_ok=True)
+    module_name = name.replace("-", "_")
+    module = package_root / module_name
+    module.mkdir()
+    (module / "__init__.py").write_text(
+        f"__version__ = {version!r}\n",
+        encoding="utf-8",
+    )
+    (package_root / "pyproject.toml").write_text(
+        "\n".join(
+            [
+                "[build-system]",
+                'requires = ["setuptools"]',
+                'build-backend = "setuptools.build_meta"',
+                "",
+                "[project]",
+                f'name = "{name}"',
+                f'version = "{version}"',
+                "",
+                "[tool.setuptools.packages.find]",
+                'where = ["."]',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def _scratch_tag_repo(
+    tmp_path: Path,
+    *,
+    tag: str = "engine-v0.11.5",
+    annotated: bool = True,
+    versions: dict[str, str] | None = None,
+    inspect_tag: bool = True,
+) -> tuple[Path, dict]:
+    versions = versions or {
+        "ai-workflow-engine": "0.11.5",
+        "ai-workflow-tools": "0.5.1",
+        "ai-workflow-viewer": "0.3.1",
+    }
+    repo = tmp_path / "tagged-source"
+    repo.mkdir(parents=True)
+    _write_package(
+        repo,
+        "packages/ai_workflow_engine",
+        "ai-workflow-engine",
+        versions["ai-workflow-engine"],
+    )
+    _write_package(
+        repo,
+        "packages/ai_workflow_tools",
+        "ai-workflow-tools",
+        versions["ai-workflow-tools"],
+    )
+    _write_package(
+        repo,
+        "packages/ai_workflow_viewer",
+        "ai-workflow-viewer",
+        versions["ai-workflow-viewer"],
+    )
+    verifier_dir = repo / "packages/ai_workflow_engine/scripts"
+    verifier_dir.mkdir(parents=True)
+    for name in contract.VERIFIER_FILENAMES:
+        (verifier_dir / name).write_bytes((_SCRIPTS / name).read_bytes())
+    (repo / ".gitignore").write_text(
+        "__pycache__/\n*.egg-info/\nbuild/\n",
+        encoding="utf-8",
+    )
+
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
-    (repo / "x.txt").write_text("x")
-    env_args = ["-c", "user.email=t@t", "-c", "user.name=t"]
-    subprocess.run(["git", *env_args, "-C", str(repo), "add", "."], check=True)
-    subprocess.run(["git", *env_args, "-C", str(repo), "commit", "-qm", "c"], check=True)
+    git_identity = ["-c", "user.email=release@test", "-c", "user.name=release-test"]
+    subprocess.run(["git", *git_identity, "-C", str(repo), "add", "."], check=True)
+    commit_env = {
+        **os.environ,
+        "GIT_AUTHOR_DATE": "2026-07-19T00:00:00Z",
+        "GIT_COMMITTER_DATE": "2026-07-19T00:00:00Z",
+    }
+    subprocess.run(
+        ["git", *git_identity, "-C", str(repo), "commit", "-qm", "release source"],
+        check=True,
+        env=commit_env,
+    )
     if annotated:
-        subprocess.run(["git", *env_args, "-C", str(repo), "tag", "-a", tag, "-m", tag], check=True)
-    else:
-        subprocess.run(["git", *env_args, "-C", str(repo), "tag", tag], check=True)
-    commit = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", f"{tag}^{{}}"],
-        check=True, capture_output=True, text=True,
-    ).stdout.strip()
-    return repo, commit
-
-
-def _expect_named_rejection(callable_, *args, fragment: str, **kwargs):
-    try:
-        callable_(*args, **kwargs)
-    except AssertionError:
-        raise
-    except Exception as exc:  # the rejection must NAME the violated rule — no masking
-        assert fragment.lower() in str(exc).lower(), (
-            f"rejection must name {fragment!r}; got {exc!r} — a different guard masked it"
+        subprocess.run(
+            ["git", *git_identity, "-C", str(repo), "tag", "-a", tag, "-m", tag],
+            check=True,
+            env=commit_env,
         )
-        return
-    raise AssertionError(f"must reject ({fragment}) — accepted instead")
+    else:
+        subprocess.run(["git", "-C", str(repo), "tag", tag], check=True)
+    source = contract.tagged_source(repo, tag) if annotated and inspect_tag else {}
+    return repo, source
 
 
-# ---------------------------------------------------------------- M1/M2: wheel identity
+def _wheel_matrix(directory: Path) -> list[Path]:
+    return [
+        _real_wheel(directory, package="ai_workflow_engine", version="0.11.5"),
+        _real_wheel(directory, package="ai_workflow_tools", version="0.5.1"),
+        _real_wheel(directory, package="ai_workflow_viewer", version="0.3.1"),
+    ]
 
 
-def test_fake_bytes_with_whl_suffix_are_rejected(tmp_path):
-    """M1 (CR-1 live attack): arbitrary bytes with a .whl name must never be certifiable."""
+def test_installed_smoke_uses_fresh_venv_and_installs_declared_dependencies(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wheels = _wheel_matrix(tmp_path / "wheels")
+    calls: list[list[str]] = []
 
-    mod = _load_release_module()
-    fake = tmp_path / "ai_workflow_engine-0.11.5-py3-none-any.whl"
-    fake.write_bytes(b"not a wheel")  # the exact 11-byte fake
-    _expect_named_rejection(
-        mod.build_manifest,
-        [fake],
-        tag="engine-v0.11.5",
-        tag_object_id="t" * 40,
-        source_commit="c" * 40,
-        build_command="x",
-        source_date_epoch="1",
-        fragment="wheel",
+    def capture_run(argv, **_kwargs):
+        calls.append([str(item) for item in argv])
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(cli.subprocess, "run", capture_run)
+    cli.run_installed_smoke(
+        wheels=wheels,
+        venv_dir=tmp_path / "venv",
+        work_dir=tmp_path / "work",
     )
 
+    assert len(calls) == 3
+    assert calls[0] == [sys.executable, "-m", "venv", str(tmp_path / "venv")]
+    pip_call = calls[1]
+    assert pip_call[1:4] == ["-m", "pip", "install"]
+    assert "--no-deps" not in pip_call
+    assert "--system-site-packages" not in calls[0]
+    assert pip_call[4:] == [str(path.resolve()) for path in wheels]
+    assert calls[2][1:3] == ["-I", "-c"]
 
-def test_embedded_metadata_must_agree_with_filename(tmp_path):
-    """M2: embedded METADATA Name/Version is authoritative; filename disagreement rejects."""
 
-    mod = _load_release_module()
-    lying = _real_wheel(
-        tmp_path, package="ai_workflow_engine", version="9.9.9",
-        filename="ai_workflow_engine-0.11.5-py3-none-any.whl",
+def _execute_evidence(
+    tmp_path: Path,
+    repo: Path,
+    source: dict,
+    wheels: list[Path],
+) -> tuple[Path, Path, Path, Path]:
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    inspected = [contract.inspect_wheel(path) for path in wheels]
+    build_record = evidence_root / "build-evidence.json"
+    cli.execute_gate(
+        name="build",
+        command=[sys.executable, "-c", "print('build gate')"],
+        cwd=repo,
+        record_path=build_record,
+        log_path=evidence_root / "build.log",
+        timeout_s=10,
+        build_fields={
+            "python_implementation": "CPython",
+            "python_version": "3.12.0",
+            "frontend": {"name": "pip", "version": "26.0"},
+            "backend": {"name": "setuptools.build_meta", "version": "80.0"},
+            "tool_versions": [
+                {"name": "pip", "version": "26.0"},
+                {"name": "setuptools", "version": "80.0"},
+            ],
+            "source_commit": source["source_commit"],
+            "source_date_epoch": source["source_date_epoch"],
+            "umask": "022",
+        },
+        post_success=lambda: {
+            "built_artifacts": [
+                {
+                    key: item[key]
+                    for key in ("package", "version", "filename", "size_bytes", "sha256")
+                }
+                for item in sorted(inspected, key=lambda row: row["package"])
+            ]
+        },
     )
-    _expect_named_rejection(
-        mod.build_manifest,
-        [lying],
-        tag="engine-v0.11.5",
-        tag_object_id="t" * 40,
-        source_commit="c" * 40,
-        build_command="x",
-        source_date_epoch="1",
-        fragment="version",
+    second_build_record = evidence_root / "build-b-evidence.json"
+    cli.execute_gate(
+        name="build",
+        command=[sys.executable, "-c", "print('second build gate')"],
+        cwd=repo,
+        record_path=second_build_record,
+        log_path=evidence_root / "build-b.log",
+        timeout_s=10,
+        build_fields={
+            "python_implementation": "CPython",
+            "python_version": "3.12.0",
+            "frontend": {"name": "pip", "version": "26.0"},
+            "backend": {"name": "setuptools.build_meta", "version": "80.0"},
+            "tool_versions": [
+                {"name": "pip", "version": "26.0"},
+                {"name": "setuptools", "version": "80.0"},
+            ],
+            "source_commit": source["source_commit"],
+            "source_date_epoch": source["source_date_epoch"],
+            "umask": "022",
+        },
+        post_success=lambda: {
+            "built_artifacts": [
+                {
+                    key: item[key]
+                    for key in ("package", "version", "filename", "size_bytes", "sha256")
+                }
+                for item in sorted(inspected, key=lambda row: row["package"])
+            ]
+        },
     )
+    records = [build_record, second_build_record]
+    for name in ("test", "smoke"):
+        record = evidence_root / f"{name}-evidence.json"
+        cli.execute_gate(
+            name=name,
+            command=[sys.executable, "-c", f"print('{name} gate')"],
+            cwd=repo,
+            record_path=record,
+            log_path=evidence_root / f"{name}.log",
+            timeout_s=10,
+        )
+        records.append(record)
+    return tuple(records)
 
 
-# ---------------------------------------------------------------- M3: tag binding
-
-
-def test_engine_wheel_version_must_match_tag_and_tag_must_be_annotated(tmp_path):
-    """M3: engine 0.11.5 wheel under engine-v0.11.4 rejects; lightweight tags reject."""
-
-    mod = _load_release_module()
-    wheel = _real_wheel(tmp_path)
-
-    repo_wrong, commit_wrong = _scratch_tag_repo(tmp_path, tag="engine-v0.11.4")
-    _expect_named_rejection(
-        mod.build_release_manifest,
-        [wheel],
-        repo=repo_wrong,
-        tag="engine-v0.11.4",
-        fragment="tag",
+def _release_inputs(tmp_path: Path) -> dict:
+    repo, source = _scratch_tag_repo(tmp_path)
+    wheels = _wheel_matrix(tmp_path / "wheels")
+    second_wheel_dir = tmp_path / "second-wheels"
+    second_wheel_dir.mkdir()
+    second_wheels = []
+    for wheel in wheels:
+        copied = second_wheel_dir / wheel.name
+        shutil.copy2(wheel, copied)
+        second_wheels.append(copied)
+    build, second_build, test, smoke = _execute_evidence(
+        tmp_path,
+        repo,
+        source,
+        wheels,
     )
-
-    light_dir = tmp_path / "light"
-    light_dir.mkdir()
-    repo_light, _ = _scratch_tag_repo(light_dir, tag="engine-v0.11.5", annotated=False)
-    _expect_named_rejection(
-        mod.build_release_manifest,
-        [wheel],
-        repo=repo_light,
-        tag="engine-v0.11.5",
-        fragment="annotated",
-    )
-
-
-# ---------------------------------------------------------------- M4-M6: matrix + evidence
-
-
-def test_manifest_requires_coherent_matrix_without_duplicates(tmp_path):
-    """M4: duplicate package identities and incomplete matrices reject."""
-
-    mod = _load_release_module()
-    first = _real_wheel(tmp_path)
-    dup_dir = tmp_path / "dup"
-    dup_dir.mkdir()
-    duplicate = _real_wheel(dup_dir)
-    _expect_named_rejection(
-        mod.build_manifest,
-        [first, duplicate],
-        tag="engine-v0.11.5",
-        tag_object_id="t" * 40,
-        source_commit="c" * 40,
-        build_command="x",
-        source_date_epoch="1",
-        fragment="duplicate",
-    )
-
-
-def test_manifest_requires_passed_gate_evidence(tmp_path):
-    """M6 (CR-2): 'not-run'/failed/missing test+smoke evidence is never publishable."""
-
-    mod = _load_release_module()
-    wheel = _real_wheel(tmp_path)
-    manifest = mod.build_manifest(
-        [wheel],
-        tag="engine-v0.11.5",
-        tag_object_id="t" * 40,
-        source_commit="c" * 40,
-        build_command="x",
-        source_date_epoch="1",
-    )
-    _expect_named_rejection(mod.verify_manifest, manifest, [wheel], fragment="evidence")
-
-
-def test_verification_rejects_unpublished_artifacts(tmp_path):
-    """M8: an artifact not marked published==true must not verify as consumable."""
-
-    mod = _load_release_module()
-    wheel = _real_wheel(tmp_path, package="ai_workflow_tools", version="0.5.1")
-    manifest = mod.build_manifest(
-        [wheel],
-        tag="engine-v0.11.5",
-        tag_object_id="t" * 40,
-        source_commit="c" * 40,
-        build_command="x",
-        source_date_epoch="1",
-        published=set(),  # nothing published
-        test_evidence=_passed_evidence(),   # evidence valid so the PUBLISHED check is reached
-        smoke_evidence=_passed_evidence(),
-    )
-    _expect_named_rejection(mod.verify_manifest, manifest, [wheel], fragment="published")
-
-
-# ---------------------------------------------------------------- M9: SHA256SUMS sidecar
-
-
-def test_sha256sums_sidecar_generation_and_tamper_rejection(tmp_path):
-    """M9: the sidecar is generated from artifact records; byte changes, missing files,
-    extra claims, and disagreement with the manifest all fail."""
-
-    mod = _load_release_module()
-    assert hasattr(mod, "write_sha256sums") and hasattr(mod, "verify_sha256sums"), (
-        "release tool must own SHA256SUMS generation/verification (missing surface)"
-    )
-    wheel = _real_wheel(tmp_path)
-    sums = mod.write_sha256sums([wheel], tmp_path / "SHA256SUMS")
-    mod.verify_sha256sums(sums, tmp_path)  # clean pass
-
-    tampered = bytearray(wheel.read_bytes())
-    tampered[-1] ^= 0x01
-    wheel.write_bytes(bytes(tampered))
-    _expect_named_rejection(mod.verify_sha256sums, sums, tmp_path, fragment="mismatch")
-
-
-# ---------------------------------------------------------------- positive path + guards
-
-
-def _passed_evidence() -> dict:
     return {
-        "command": ["./test.sh", "unit"],
-        "status": "passed",
-        "completed_at_utc": "2026-07-19T00:00:00Z",
-        "evidence_file_sha256": "a" * 64,
+        "repo": repo,
+        "source": source,
+        "wheels": wheels,
+        "second_wheels": second_wheels,
+        "build": build,
+        "second_build": second_build,
+        "test": test,
+        "smoke": smoke,
+        "verifiers": [
+            repo / "packages/ai_workflow_engine/scripts" / name
+            for name in sorted(contract.VERIFIER_FILENAMES)
+        ],
     }
 
 
-def test_full_manifest_round_trip_with_real_wheel_and_evidence(tmp_path):
-    """Happy path: a REAL wheel matrix with passed evidence builds and verifies; the sidecar
-    verifies the same bytes; a byte flip afterwards fails BOTH doors."""
-
-    mod = _load_release_module()
-    engine = _real_wheel(tmp_path)
-    tools = _real_wheel(tmp_path, package="ai_workflow_tools", version="0.5.1")
-    viewer = _real_wheel(tmp_path, package="ai_workflow_viewer", version="0.3.1")
-    wheels = [engine, tools, viewer]
-
-    manifest = mod.build_manifest(
-        wheels,
+def _assemble(tmp_path: Path) -> tuple[Path, dict]:
+    inputs = _release_inputs(tmp_path)
+    bundle = tmp_path / "bundle"
+    manifest = cli.assemble_release_bundle(
+        repo=inputs["repo"],
         tag="engine-v0.11.5",
-        tag_object_id="t" * 40,
-        source_commit="c" * 40,
-        build_command=["python3", "-m", "pip", "wheel", "--no-deps"],
-        source_date_epoch="1700000000",
-        uri_prefix="cache://releases/0.11.5/",
-        test_evidence=_passed_evidence(),
-        smoke_evidence=_passed_evidence(),
+        bundle_dir=bundle,
+        uri_base="file:///private-cache/engine-v0.11.5/",
+        wheels=inputs["wheels"],
+        build_evidence_path=inputs["build"],
+        second_wheels=inputs["second_wheels"],
+        second_build_evidence_path=inputs["second_build"],
+        test_evidence_path=inputs["test"],
+        smoke_evidence_path=inputs["smoke"],
+        verifier_paths=inputs["verifiers"],
     )
-    mod.verify_manifest(manifest, wheels)
-    sums = mod.write_sha256sums(wheels, tmp_path / "SHA256SUMS")
-    mod.verify_sha256sums(sums, tmp_path)
-
-    tampered = bytearray(engine.read_bytes())
-    tampered[-1] ^= 0x01
-    engine.write_bytes(bytes(tampered))
-    _expect_named_rejection(mod.verify_manifest, manifest, wheels, fragment="mismatch")
-    _expect_named_rejection(mod.verify_sha256sums, sums, tmp_path, fragment="mismatch")
+    return bundle, manifest
 
 
-def test_manifest_schema_is_closed_and_placeholders_reject(tmp_path):
-    """M5/M7: unknown fields and placeholder build commands fail by name."""
+def _rewrite_sums(bundle: Path) -> None:
+    contract.write_sha256sums(
+        [
+            child
+            for child in bundle.iterdir()
+            if child.name != "SHA256SUMS"
+        ],
+        bundle / "SHA256SUMS",
+    )
 
-    mod = _load_release_module()
-    wheel = _real_wheel(tmp_path)
-    manifest = mod.build_manifest(
-        [wheel],
+
+def test_wheel_requires_real_zip_and_coherent_controls(tmp_path: Path) -> None:
+    fake = tmp_path / "ai_workflow_engine-0.11.5-py3-none-any.whl"
+    fake.write_bytes(b"not a wheel")
+    _expect_rejection(contract.inspect_wheel, fake, fragment="ZIP wheel")
+
+    empty_wheel = _real_wheel(
+        tmp_path / "empty-wheel",
+        wheel_metadata=b"",
+    )
+    _expect_rejection(contract.inspect_wheel, empty_wheel, fragment="Wheel-Version")
+
+    empty_record = _real_wheel(
+        tmp_path / "empty-record",
+        record_override=b"",
+    )
+    _expect_rejection(contract.inspect_wheel, empty_record, fragment="RECORD member set")
+
+
+def test_wheel_rejects_duplicate_unsafe_and_digest_drift(tmp_path: Path) -> None:
+    duplicate = _real_wheel(
+        tmp_path / "duplicate",
+        duplicate_member="ai_workflow_engine/__init__.py",
+    )
+    _expect_rejection(contract.inspect_wheel, duplicate, fragment="duplicate")
+
+    unsafe = _real_wheel(
+        tmp_path / "unsafe",
+        extra_members={"../outside.py": b"x"},
+    )
+    _expect_rejection(contract.inspect_wheel, unsafe, fragment="unsafe archive member")
+
+    bad_record = _real_wheel(
+        tmp_path / "bad-record",
+        record_override=(
+            b"ai_workflow_engine/__init__.py,sha256=wrong,1\n"
+            b"ai_workflow_engine-0.11.5.dist-info/METADATA,sha256=wrong,1\n"
+            b"ai_workflow_engine-0.11.5.dist-info/WHEEL,sha256=wrong,1\n"
+            b"ai_workflow_engine-0.11.5.dist-info/RECORD,,\n"
+        ),
+    )
+    _expect_rejection(contract.inspect_wheel, bad_record, fragment="size mismatch")
+
+
+def test_wheel_path_must_be_plain_non_symlink_regular_file(tmp_path: Path) -> None:
+    wheel = _real_wheel(tmp_path / "real")
+    link = tmp_path / wheel.name
+    link.symlink_to(wheel)
+    _expect_rejection(contract.inspect_wheel, link, fragment="non-symlink regular")
+
+
+def test_tagged_source_requires_annotated_exact_three_package_matrix(
+    tmp_path: Path,
+) -> None:
+    repo, source = _scratch_tag_repo(tmp_path / "good")
+    assert source["matrix"] == {
+        "ai-workflow-engine": "0.11.5",
+        "ai-workflow-tools": "0.5.1",
+        "ai-workflow-viewer": "0.3.1",
+    }
+    assert source["source_date_epoch"] > 0
+
+    engine_pyproject = repo / "packages/ai_workflow_engine/pyproject.toml"
+    engine_pyproject.write_text(
+        engine_pyproject.read_text(encoding="utf-8").replace(
+            'version = "0.11.5"',
+            'version = "99.0.0"',
+        ),
+        encoding="utf-8",
+    )
+    assert contract.tagged_source(repo, "engine-v0.11.5")["matrix"][
+        "ai-workflow-engine"
+    ] == "0.11.5"
+
+    light_repo, _ = _scratch_tag_repo(tmp_path / "light", annotated=False)
+    _expect_rejection(
+        contract.tagged_source,
+        light_repo,
+        "engine-v0.11.5",
+        fragment="annotated",
+    )
+
+    wrong_repo, _ = _scratch_tag_repo(
+        tmp_path / "wrong",
+        versions={
+            "ai-workflow-engine": "0.11.4",
+            "ai-workflow-tools": "0.5.1",
+            "ai-workflow-viewer": "0.3.1",
+        },
+        inspect_tag=False,
+    )
+    _expect_rejection(
+        contract.tagged_source,
+        wrong_repo,
+        "engine-v0.11.5",
+        fragment="tag suffix",
+    )
+
+
+def test_gate_evidence_comes_from_executed_command_and_bounded_log(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, source = _scratch_tag_repo(tmp_path / "source")
+    monkeypatch.setattr(cli, "MAX_RETAINED_LOG_BYTES", 64)
+    record_path = tmp_path / "test-evidence.json"
+    log_path = tmp_path / "test.log"
+    record = cli.execute_gate(
+        name="test",
+        command=[sys.executable, "-c", "print('x' * 1024)"],
+        cwd=repo,
+        record_path=record_path,
+        log_path=log_path,
+        timeout_s=10,
+    )
+    assert record["status"] == "passed"
+    assert record["source_commit"] == source["source_commit"]
+    assert record["command_argv"][0] == sys.executable
+    assert record["log_size_bytes"] == 64
+    assert record["log_total_bytes"] > record["log_size_bytes"]
+    assert record["log_truncated"] is True
+    embedded = contract.load_evidence_record(record_path, "test")
+    assert embedded["record_sha256"] == contract.hash_path(record_path)[1]
+
+    log_path.write_text("caller-replaced-evidence", encoding="utf-8")
+    _expect_rejection(
+        contract.load_evidence_record,
+        record_path,
+        "test",
+        fragment="size mismatch",
+    )
+    log_path.unlink()
+    _expect_rejection(
+        contract.load_evidence_record,
+        record_path,
+        "test",
+        fragment="missing",
+    )
+
+
+def test_failed_and_timed_out_commands_never_emit_passed_evidence(
+    tmp_path: Path,
+) -> None:
+    repo, _source = _scratch_tag_repo(tmp_path / "source")
+    failed_record = tmp_path / "failed.json"
+    _expect_rejection(
+        cli.execute_gate,
+        name="test",
+        command=[sys.executable, "-c", "raise SystemExit(7)"],
+        cwd=repo,
+        record_path=failed_record,
+        log_path=tmp_path / "failed.log",
+        timeout_s=10,
+        fragment="exited with 7",
+    )
+    assert json.loads(failed_record.read_text())["status"] == "failed"
+    _expect_rejection(
+        contract.load_evidence_record,
+        failed_record,
+        "test",
+        fragment="successful command",
+    )
+
+    timeout_record = tmp_path / "timeout.json"
+    _expect_rejection(
+        cli.execute_gate,
+        name="smoke",
+        command=[sys.executable, "-c", "import time; time.sleep(30)"],
+        cwd=repo,
+        record_path=timeout_record,
+        log_path=tmp_path / "timeout.log",
+        timeout_s=0.1,
+        fragment="timed out",
+    )
+    timeout = json.loads(timeout_record.read_text())
+    assert timeout["status"] == "failed"
+    assert timeout["exit_code"] == 124
+
+    dirty_record = tmp_path / "dirty.json"
+    _expect_rejection(
+        cli.execute_gate,
+        name="test",
+        command=[
+            sys.executable,
+            "-c",
+            "from pathlib import Path; Path('unexpected.py').write_text('dirty')",
+        ],
+        cwd=repo,
+        record_path=dirty_record,
+        log_path=tmp_path / "dirty.log",
+        timeout_s=10,
+        fragment="left the checkout dirty",
+    )
+    assert json.loads(dirty_record.read_text())["status"] == "failed"
+
+
+def test_manifest_is_nested_closed_type_strict_and_time_ordered(
+    tmp_path: Path,
+) -> None:
+    inputs = _release_inputs(tmp_path)
+    manifest = contract.assemble_manifest(
+        repo=inputs["repo"],
         tag="engine-v0.11.5",
-        tag_object_id="t" * 40,
-        source_commit="c" * 40,
-        build_command=["ok"],
-        source_date_epoch="1",
-        test_evidence=_passed_evidence(),
-        smoke_evidence=_passed_evidence(),
+        wheels=inputs["wheels"],
+        build_evidence_path=inputs["build"],
+        second_wheels=inputs["second_wheels"],
+        second_build_evidence_path=inputs["second_build"],
+        test_evidence_path=inputs["test"],
+        smoke_evidence_path=inputs["smoke"],
+        uri_base="file:///cache/engine-v0.11.5/",
+        verifier_paths=inputs["verifiers"],
     )
-    alien = dict(manifest)
-    alien["surprise"] = 1
-    _expect_named_rejection(mod.verify_manifest, alien, [wheel], fragment="unknown")
+    assert contract.parse_manifest(manifest) == manifest
 
-    _expect_named_rejection(
-        mod.build_manifest,
-        [wheel],
+    attacks: list[tuple[str, Callable[[dict], None]]] = [
+        ("unknown fields", lambda value: value["test_evidence"].update({"surprise": 1})),
+        ("boolean", lambda value: value["artifacts"][0].update({"published": "false"})),
+        (
+            "real ISO-8601",
+            lambda value: value["smoke_evidence"].update(
+                {"completed_at_utc": "2026-99-99T99:99:99Z"}
+            ),
+        ),
+        (
+            "precedes",
+            lambda value: value["test_evidence"].update(
+                {
+                    "started_at_utc": "2026-07-20T00:00:00Z",
+                    "completed_at_utc": "2026-07-19T00:00:00Z",
+                }
+            ),
+        ),
+        ("integer", lambda value: value["artifacts"][0].update({"size_bytes": True})),
+        ("nonblank", lambda value: value["artifacts"][0].update({"uri": ""})),
+        ("matrix", lambda value: value["matrix"].pop("ai-workflow-viewer")),
+        (
+            "build evidence",
+            lambda value: value["build"]["built_artifacts"][0].update({"sha256": "f" * 64}),
+        ),
+        (
+            "reproducibility",
+            lambda value: value["reproducibility"]["second_build"][
+                "built_artifacts"
+            ][0].update({"sha256": "e" * 64}),
+        ),
+        (
+            "invalid format",
+            lambda value: value["build"]["frontend"].update({"version": "not-run"}),
+        ),
+        (
+            "test evidence source commit",
+            lambda value: value["test_evidence"].update({"source_commit": "f" * 40}),
+        ),
+    ]
+    for fragment, mutate in attacks:
+        attacked = copy.deepcopy(manifest)
+        mutate(attacked)
+        _expect_rejection(contract.parse_manifest, attacked, fragment=fragment)
+
+
+def test_manifest_binds_supplied_wheels_and_verifiers_to_build_and_tag(
+    tmp_path: Path,
+) -> None:
+    inputs = _release_inputs(tmp_path)
+    alien = _real_wheel(
+        tmp_path / "alien",
+        package="ai_workflow_engine",
+        version="0.11.5",
+        extra_members={"ai_workflow_engine/extra.txt": b"different-valid-wheel"},
+    )
+    _expect_rejection(
+        contract.assemble_manifest,
+        repo=inputs["repo"],
         tag="engine-v0.11.5",
-        tag_object_id="t" * 40,
-        source_commit="c" * 40,
-        build_command=["pip", "wheel", "-w", "<out>"],
-        source_date_epoch="1",
-        fragment="placeholder",
+        wheels=[alien, *inputs["wheels"][1:]],
+        build_evidence_path=inputs["build"],
+        second_wheels=inputs["second_wheels"],
+        second_build_evidence_path=inputs["second_build"],
+        test_evidence_path=inputs["test"],
+        smoke_evidence_path=inputs["smoke"],
+        uri_base="file:///cache/",
+        verifier_paths=inputs["verifiers"],
+        fragment="build evidence",
+    )
+    _expect_rejection(
+        contract.assemble_manifest,
+        repo=inputs["repo"],
+        tag="engine-v0.11.5",
+        wheels=inputs["wheels"],
+        build_evidence_path=inputs["build"],
+        second_wheels=[alien, *inputs["second_wheels"][1:]],
+        second_build_evidence_path=inputs["second_build"],
+        test_evidence_path=inputs["test"],
+        smoke_evidence_path=inputs["smoke"],
+        uri_base="file:///cache/",
+        verifier_paths=inputs["verifiers"],
+        fragment="second build evidence",
+    )
+
+    changed_verifier = tmp_path / "release_contract.py"
+    changed_verifier.write_text("# not tagged\n", encoding="utf-8")
+    _expect_rejection(
+        contract.assemble_manifest,
+        repo=inputs["repo"],
+        tag="engine-v0.11.5",
+        wheels=inputs["wheels"],
+        build_evidence_path=inputs["build"],
+        second_wheels=inputs["second_wheels"],
+        second_build_evidence_path=inputs["second_build"],
+        test_evidence_path=inputs["test"],
+        smoke_evidence_path=inputs["smoke"],
+        uri_base="file:///cache/",
+        verifier_paths=[inputs["verifiers"][0], changed_verifier],
+        fragment="byte-match",
+    )
+    _expect_rejection(
+        contract.assemble_manifest,
+        repo=inputs["repo"],
+        tag="engine-v0.11.5",
+        wheels=inputs["wheels"],
+        build_evidence_path=inputs["build"],
+        second_wheels=inputs["second_wheels"],
+        second_build_evidence_path=inputs["second_build"],
+        test_evidence_path=inputs["test"],
+        smoke_evidence_path=inputs["smoke"],
+        uri_base="file:///cache/",
+        verifier_paths=inputs["verifiers"][:1],
+        fragment="both release verifier",
     )
 
 
-def test_positive_release_manifest_binds_real_annotated_tag(tmp_path):
-    """M3 positive: an annotated engine-v0.11.5 tag + matching wheel builds a full manifest."""
+def test_complete_bundle_round_trip_and_exact_inventory(tmp_path: Path) -> None:
+    bundle, manifest = _assemble(tmp_path)
+    verified = contract.verify_bundle(bundle, "release-manifest.json", "SHA256SUMS")
+    assert verified == manifest
+    expected = contract.manifest_bundle_filenames(manifest) | {"SHA256SUMS"}
+    assert {child.name for child in bundle.iterdir()} == expected
 
-    mod = _load_release_module()
-    wheel = _real_wheel(tmp_path)
-    repo, commit = _scratch_tag_repo(tmp_path, tag="engine-v0.11.5")
-    manifest = mod.build_release_manifest(
-        [wheel], repo=repo, tag="engine-v0.11.5",
-        test_evidence=_passed_evidence(), smoke_evidence=_passed_evidence(),
+    extra = bundle / "not-in-manifest.txt"
+    extra.write_text("extra", encoding="utf-8")
+    _expect_rejection(
+        contract.verify_bundle,
+        bundle,
+        "release-manifest.json",
+        "SHA256SUMS",
+        fragment="directory set",
     )
-    assert manifest["source_commit"] == commit
-    assert manifest["artifacts"][0]["published"] is True
-    mod.verify_manifest(manifest, [wheel])
 
 
-def test_release_script_is_not_imported_by_the_runtime_engine():
-    """R2.1 guard: scripts/ is release tooling; normal engine import must never load it."""
+def test_checksum_extras_are_rejected_before_unlisted_bytes_are_hashed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle, _manifest = _assemble(tmp_path)
+    extra = bundle / "unlisted-large.bin"
+    extra.write_bytes(b"unlisted")
+    sums = bundle / "SHA256SUMS"
+    sums.write_text(
+        sums.read_text(encoding="utf-8")
+        + f"{'0' * 64}  {extra.name}\n",
+        encoding="utf-8",
+    )
+    original = contract._safe_regular_hash
 
+    def guarded(directory, filename, **kwargs):
+        assert filename != extra.name, "unlisted bytes were hashed before exact-set rejection"
+        return original(directory, filename, **kwargs)
+
+    monkeypatch.setattr(contract, "_safe_regular_hash", guarded)
+    _expect_rejection(
+        contract.verify_bundle,
+        bundle,
+        "release-manifest.json",
+        "SHA256SUMS",
+        fragment="SHA256SUMS set disagrees",
+    )
+
+
+@pytest.mark.parametrize("shape", ["empty", "duplicate", "traversal"])
+def test_checksum_sidecar_rejects_open_or_unsafe_claims(
+    tmp_path: Path,
+    shape: str,
+) -> None:
+    bundle, _manifest = _assemble(tmp_path)
+    sums = bundle / "SHA256SUMS"
+    if shape == "empty":
+        sums.write_text("", encoding="utf-8")
+        fragment = "must not be empty"
+    elif shape == "duplicate":
+        line = sums.read_text(encoding="utf-8").splitlines()[0]
+        sums.write_text(f"{line}\n{line}\n", encoding="utf-8")
+        fragment = "duplicate"
+    else:
+        outside = tmp_path / "outside-secret"
+        outside.write_text("secret", encoding="utf-8")
+        digest = hashlib.sha256(outside.read_bytes()).hexdigest()
+        sums.write_text(f"{digest}  ../outside-secret\n", encoding="utf-8")
+        fragment = "plain child filename"
+    _expect_rejection(
+        contract.verify_bundle,
+        bundle,
+        "release-manifest.json",
+        "SHA256SUMS",
+        fragment=fragment,
+    )
+
+
+@pytest.mark.parametrize("shape", ["symlink", "fifo"])
+def test_bundle_refuses_non_regular_expected_child_without_opening(
+    tmp_path: Path,
+    shape: str,
+) -> None:
+    bundle, _manifest = _assemble(tmp_path)
+    target = bundle / "release_contract.py"
+    target.unlink()
+    if shape == "symlink":
+        outside = tmp_path / "outside.py"
+        outside.write_text("outside", encoding="utf-8")
+        target.symlink_to(outside)
+    else:
+        if not hasattr(os, "mkfifo"):
+            pytest.skip("mkfifo unavailable on this platform")
+        os.mkfifo(target)
+    _expect_rejection(
+        contract.verify_bundle,
+        bundle,
+        "release-manifest.json",
+        "SHA256SUMS",
+        fragment="non-symlink regular",
+    )
+
+
+def test_bundle_rejects_tampered_wheel_evidence_manifest_and_missing_file(
+    tmp_path: Path,
+) -> None:
+    for shape in ("wheel", "evidence", "manifest", "missing"):
+        case = tmp_path / shape
+        case.mkdir()
+        bundle, _manifest = _assemble(case)
+        if shape == "wheel":
+            wheel = next(bundle.glob("ai_workflow_engine-*.whl"))
+            data = bytearray(wheel.read_bytes())
+            data[-1] ^= 1
+            wheel.write_bytes(data)
+            fragment = "SHA-256 mismatch"
+        elif shape == "evidence":
+            (bundle / "test.log").write_text("tampered", encoding="utf-8")
+            fragment = "SHA-256 mismatch"
+        elif shape == "manifest":
+            manifest_path = bundle / "release-manifest.json"
+            value = json.loads(manifest_path.read_text())
+            value["test_evidence"]["surprise"] = 1
+            manifest_path.write_text(json.dumps(value), encoding="utf-8")
+            _rewrite_sums(bundle)
+            fragment = "unknown fields"
+        else:
+            (bundle / "smoke.log").unlink()
+            fragment = "missing"
+        _expect_rejection(
+            contract.verify_bundle,
+            bundle,
+            "release-manifest.json",
+            "SHA256SUMS",
+            fragment=fragment,
+        )
+
+
+def test_two_clean_tag_builds_are_byte_identical_and_recorded(
+    tmp_path: Path,
+) -> None:
+    repo, source = _scratch_tag_repo(tmp_path / "source")
+    first_dir = tmp_path / "first-wheels"
+    first_record = tmp_path / "first-build.json"
+    cli.run_reproducible_build(
+        repo=repo,
+        tag="engine-v0.11.5",
+        wheel_dir=first_dir,
+        record_path=first_record,
+        log_path=tmp_path / "first-build.log",
+        timeout_s=120,
+    )
+    first = contract.load_evidence_record(first_record, "build", build=True)
+    assert first["source_commit"] == source["source_commit"]
+    assert {item["package"] for item in first["built_artifacts"]} == set(
+        contract.EXPECTED_PACKAGES
+    )
+
+    clone = tmp_path / "second-source"
+    subprocess.run(["git", "clone", "-q", str(repo), str(clone)], check=True)
+    subprocess.run(
+        ["git", "-C", str(clone), "checkout", "-q", source["source_commit"]],
+        check=True,
+    )
+    second_dir = tmp_path / "second-wheels"
+    cli.run_reproducible_build(
+        repo=clone,
+        tag="engine-v0.11.5",
+        wheel_dir=second_dir,
+        record_path=tmp_path / "second-build.json",
+        log_path=tmp_path / "second-build.log",
+        timeout_s=120,
+    )
+    compared = cli.compare_builds(
+        repo=repo,
+        tag="engine-v0.11.5",
+        first=first_dir,
+        second=second_dir,
+    )
+    assert len(compared) == 3
+
+
+def test_release_scripts_stay_outside_runtime_import_graph() -> None:
     engine_root = _PACKAGE_ROOT / "ai_workflow_engine"
     offenders = [
         str(path)
         for path in engine_root.rglob("*.py")
-        if "release_artifacts" in path.read_text(encoding="utf-8")
+        if "release_contract" in path.read_text(encoding="utf-8")
+        or "release_artifacts" in path.read_text(encoding="utf-8")
     ]
-    assert not offenders, f"runtime engine references release tooling: {offenders}"
-    assert not (engine_root / "scripts").exists(), "release tooling must live outside the package"
+    assert offenders == []
+    assert not (engine_root / "scripts").exists()
+
+
+def test_consumer_verifier_import_does_not_require_producer_only_tomllib() -> None:
+    program = f"""
+import builtins
+import runpy
+
+real_import = builtins.__import__
+
+def guarded_import(name, *args, **kwargs):
+    if name == "tomllib":
+        raise ModuleNotFoundError("simulated Python 3.10")
+    return real_import(name, *args, **kwargs)
+
+builtins.__import__ = guarded_import
+surface = runpy.run_path({str(_SCRIPTS / "release_contract.py")!r})
+assert callable(surface["verify_bundle"])
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", program],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr

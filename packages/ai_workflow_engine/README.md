@@ -5,8 +5,8 @@ declare a workflow, register typed capabilities, and call one engine door. The e
 transitions, retries, fan-out, budgets, waits, trace, usage, and observation bundles; products own
 domain models, provider clients, storage adapters, clocks, and side-effect delivery.
 
-> **`engine-v0.11.5` is the release candidate; do not re-pin until it is cut.** `engine-v0.11.4` remains the current
-> release. Pin immutable tags and build wheels; consumer
+> **`engine-v0.11.5` is the current release.** The engine owner publishes wheels bound to
+> immutable tags; consumer
 > canaries still decide whether each product changes its deployed pin. Never depend on a live
 > branch. The binding contract is the repository-level
 > [`executable-workflow-engine-spec.md`](../../docs/executable-workflow-engine-spec.md).
@@ -19,12 +19,15 @@ domain models, provider clients, storage adapters, clocks, and side-effect deliv
 > Adoption is fresh: new consumers start on the current contract; existing consumers re-adopt the
 > current surface rather than migrate state.
 >
-> **v0.11.5 candidate delta.** `WaitHealth` gains REQUIRED current-state `failed` and
+> **v0.11.5 release delta.** `WaitHealth` gains REQUIRED current-state `failed` and
 > `integrity_errors` counts (no defaults — adapters without the current health contract fail
 > loudly, and a backend outage must raise rather than report zero); the conformance kit asserts
 > the failed count through both producers, and the new `run_wait_integrity_conformance` helper
-> proves adapter-specific corruption reporting. Releases now ship a `release-manifest-v1` with
-> reproducible-build identity (published-wheel SHA-256 is authoritative).
+> proves adapter-specific corruption reporting. Releases now ship a closed
+> `release-manifest-v2` bundle with command-derived test/smoke/two-build evidence and reproducible
+> published-wheel identity. The release also finalizes caller-cancelled observation runs as
+> `cancelled`, retaining artifacts from completed invocations before graph-state commit while
+> re-raising the original `CancelledError`.
 >
 > **v0.11.4 release delta.** `RunExecutionRequest` gives callers a typed, invocation-local
 > deadline for the complete graph. It narrows configured limits without mutating cached profiles,
@@ -47,7 +50,7 @@ domain models, provider clients, storage adapters, clocks, and side-effect deliv
 > the runtime ownership decomposition: runtime compilation,
 > node/scheduling, suspension/result, bundle, and viewer responsibilities have focused internal
 > owners; public APIs and persisted schemas are unchanged. The annotated tag is the canonical
-> release manifest for the exact source commit and reference wheel hashes.
+> source identity. Published wheel hashes live in the release bundle, not in the tag.
 
 ## Start Here
 
@@ -70,16 +73,17 @@ Product adopters should then read exactly one delta guide:
 
 ## Install
 
-Consumers with release-cache access download the exact published artifact set (wheel +
-`release-manifest.json` + `SHA256SUMS`), verify checksums, and install — see
-`docs/operations.md`. Building from the tag is the PRODUCER/no-cache path:
+Consumers download the complete published release directory, obtain the verifier scripts from the
+annotated tag (or another already trusted pin), verify the bundle before installation, and install
+only the packages their product needs. Building from source is a producer operation, not consumer
+verification. The exact producer and consumer commands are in
+[`docs/operations.md`](docs/operations.md#release-artifacts-and-verification-v0115).
 
 ```bash
-git clone <TGHandyUtils-repository> /tmp/tghandy-engine
-git -C /tmp/tghandy-engine checkout --detach engine-v0.11.5
-python -m pip wheel --no-deps -w ./vendor \
-  /tmp/tghandy-engine/packages/ai_workflow_engine
-python -m pip install ./vendor/ai_workflow_engine-0.11.5-py3-none-any.whl
+BUNDLE=/path/to/downloaded/engine-v0.11.5
+TRUSTED=/path/to/verifier/from/engine-v0.11.5
+python3 "$TRUSTED/release_artifacts.py" verify-bundle --dir "$BUNDLE"
+python -m pip install "$BUNDLE/ai_workflow_engine-0.11.5-py3-none-any.whl"
 python -c "import ai_workflow_engine as e; assert e.__version__ == '0.11.5'"
 ```
 

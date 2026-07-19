@@ -1,8 +1,7 @@
 # SlackAzzCovered Engine Adoption Guide
 
-Status: **`engine-v0.11.5` is the release candidate carrying the wait-health contract this
-handoff requires; `engine-v0.11.4` remains the current release until it is cut.**
-SlackAzzCovered should then pin tag `engine-v0.11.5`,
+Status: **`engine-v0.11.5` is the current release carrying the wait-health contract this
+handoff requires.** SlackAzzCovered should pin tag `engine-v0.11.5`,
 implement its Redis coordinator, and pass the engine conformance kit plus product transaction
 tests before enabling live effects.
 
@@ -38,13 +37,14 @@ client event
 | `ai-workflow-tools==0.5.1` | Add for CLI agents/tool catalog if the product uses them |
 | `ai-workflow-viewer==0.3.1` | Developer diagnostics or product-linked run inspection |
 
-> **Current matrix (candidate):** `engine-v0.11.5` + `ai-workflow-tools==0.5.1` + `ai-workflow-viewer==0.3.1`
+> **Current matrix:** `engine-v0.11.5` + `ai-workflow-tools==0.5.1` + `ai-workflow-viewer==0.3.1`
 > (tools/viewer require `ai-workflow-engine>=0.11,<0.12`). The previous line
 > (`engine-v0.10.1` + tools `0.4.1` + viewer `0.2.3`) remains available at its historical tag for
 > historical data; the lines never mix in one environment.
 
 
-Build from the immutable tag and record commit/hash. Never copy engine source or track the branch.
+Verify the complete published directory for the immutable tag and record commit/hash. Never copy
+engine source, rebuild as verification, or track the branch.
 
 ## Ownership Boundary
 
@@ -247,19 +247,20 @@ Follow [`operations.md`](operations.md) for production recovery. File missing me
 
 ## v0.11 Release Contract
 
-`engine-v0.11.5` is the release candidate for the **latest-only** line; `engine-v0.11.4`
-remains the current immutable release until the candidate is cut. The line uses strict versioned persisted
+`engine-v0.11.5` is the current immutable release for the **latest-only** line. The line uses strict versioned persisted
 contracts (snapshot `v0.11`, bundle meta v2, wait records `wait-v1`), one strict viewer loader, and
 NO migration layer — the sealed current-contract corpus shows 0 behavior deltas vs v0.10.1, but old
 persisted data is rejected loudly naming its historical tag. Adopt by re-pinning fresh
-(pin tag `engine-v0.11.5`, rebuild wheels: engine `0.11.5`, tools `0.5.1`, viewer `0.3.1`) and
+(pin tag `engine-v0.11.5`, verify the published `release-manifest-v2` directory, then install the
+required package subset from that exact directory) and
 re-run your canaries before changing any deployed pin. The release makes node-context binding
 explicit for every node kind; wait contracts and persisted schemas are unchanged. The
 `engine-v0.11.4` tag records no distributable wheel evidence; consume artifacts only from a
 release whose manifest records the published wheel SHA-256 (v0.11.5 onward). The exact cache
-artifact set per release is: `ai_workflow_engine-<version>-py3-none-any.whl`,
-`release-manifest.json` (schema `release-manifest-v2`), and `SHA256SUMS` — verify the
-checksums BEFORE `pip install`, never by rebuilding from source. Product-owned gates before
+artifact set is the complete release directory: all three wheels, the closed
+`release-manifest.json`, `SHA256SUMS`, the two tagged verifier scripts, and command-derived
+two-build/test/smoke evidence records and logs. Verify that directory with the independently trusted
+tagged verifier BEFORE `pip install`; never rebuild as consumer verification. Product-owned gates before
 changing the deployed pin: real-Redis outage behavior (`health()` must raise, never report
 zeros), Celery scheduler heartbeat monitoring, both engine conformance kits against the real
 adapter, and the trace-only + allowlisted manager-ping canaries.

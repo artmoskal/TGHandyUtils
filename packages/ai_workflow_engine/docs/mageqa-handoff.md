@@ -1,13 +1,12 @@
 # MageQA Engine Adoption Guide
 
-Status: **`engine-v0.11.5` is the release candidate; `engine-v0.11.4` remains the current
-release. MageQA must not re-pin or delete its fork until its E0
+Status: **`engine-v0.11.5` is the current release. MageQA must not re-pin or delete its fork until its E0
 canaries pass against the immutable tag.** The five historical E0 blockers (planned
 `partial` rewritten to `done`, unenforced `RuntimeLimits.timeout_s`, hidden retrace provenance,
 the CLI 600s default, and the reused tools wheel identity) are addressed and carried forward;
 v0.11 additionally hardens every persisted contract (strict versioned snapshot, bundle meta v2,
 wait records) with NO migration layer. MageQA must pin tag `engine-v0.11.5` from a clean checkout,
-rebuild wheels, and pass its E0 canaries before
+verify the complete published release directory, install the required wheels, and pass its E0 canaries before
 adopting; it stays on its existing pin until those canaries pass.
 Do not infer the actual MageQA pin from this document; the consumer repository's pin file is
 authoritative for deployed state.
@@ -50,7 +49,7 @@ a defect.
 | `ai-workflow-tools==0.5.1` | CLI agents, `claude -p`/`codex exec`, tool catalog, media helpers |
 | `ai-workflow-viewer==0.3.1` | Low-level engine run investigation and bundle rendering |
 
-> **Current matrix (candidate):** `engine-v0.11.5` + `ai-workflow-tools==0.5.1` + `ai-workflow-viewer==0.3.1`
+> **Current matrix:** `engine-v0.11.5` + `ai-workflow-tools==0.5.1` + `ai-workflow-viewer==0.3.1`
 > (tools/viewer require `ai-workflow-engine>=0.11,<0.12`). The previous line
 > (`engine-v0.10.1` + tools `0.4.1` + viewer `0.2.3`) remains available at its historical tag for
 > historical data; the lines never mix in one environment.
@@ -66,6 +65,7 @@ it must not create a duplicate trace or workflow runtime.
 - workflow execution, bounded planning, branch/evaluate/retrace/fallback, fan-out, waits;
 - model/tool policy, side-effect gates, budgets, cost classes, replay mechanics;
 - observation bundle lifecycle, prompts/responses/tool details, evidence manifests;
+- caller-cancellation finalization and retention of already-completed capability artifacts;
 - validated authored flows over already registered capabilities.
 
 ### MageQA owns
@@ -152,6 +152,8 @@ The engine enforces declared side-effect classes; MageQA must declare the real e
 - Do not let the product dashboard become the source of run status or cost truth.
 - Do not use authored flow as permission for arbitrary generated pipelines.
 - Do not hide provider/tool failures behind a parser fallback.
+- Do not catch `CancelledError` to create a MageQA-owned replacement bundle; await engine cleanup
+  and use the finalized `cancelled` segment.
 
 ## Adopter Contract AC
 
@@ -175,6 +177,9 @@ MageQA adoption is complete when its repository proves:
 13. **Runtime truth:** a slow browser/CLI subprocess is stopped and reaped inside the engine window,
     retains partial evidence, and renders work/cleanup/settlement; a sync handler under the same
     finite profile is refused before invocation rather than pretending to be bounded.
+14. **Caller-cancellation truth:** cancelling fresh and resumed runs re-raises the original
+    `CancelledError`, finalizes the segment as `cancelled`, preserves prior trace/detail/usage and
+    completed direct/fan-out/child artifacts, and keeps archive failure loud.
 
 Engine-side examples: `ai_workflow_engine.examples.run_toy_site_audit_pilot` and the paid
 qualification's MageQA authored-flow scenario.
@@ -196,12 +201,12 @@ with a scenario and acceptance proof. Upgrade via [`operations.md`](operations.m
 
 ## v0.11 Release Contract
 
-`engine-v0.11.5` is the release candidate for the **latest-only** line; `engine-v0.11.4`
-remains the current immutable release until the candidate is cut. The line uses strict versioned persisted
+`engine-v0.11.5` is the current immutable release for the **latest-only** line. The line uses strict versioned persisted
 contracts (snapshot `v0.11`, bundle meta v2, wait records `wait-v1`), one strict viewer loader, and
 NO migration layer — the sealed current-contract corpus shows 0 behavior deltas vs v0.10.1, but old
 persisted data is rejected loudly naming its historical tag. Adopt by re-pinning fresh
-(pin tag `engine-v0.11.5`, rebuild wheels: engine `0.11.5`, tools `0.5.1`, viewer `0.3.1`) and
+(pin tag `engine-v0.11.5`, verify the published `release-manifest-v2` bundle, then install engine
+`0.11.5`, tools `0.5.1`, and viewer `0.3.1`) and
 re-run your canaries before changing any deployed pin.
 
 The release supersedes exactly the two changes declared in MageQA's v0.11.1 fork. Engine
@@ -219,5 +224,14 @@ retrace provenance target-only (a retraced parent never leaks round data into ch
 capabilities — a child planner cannot mistake its first local run for a follow-up round) and makes
 `model_binding` trace truth invocation-local (concurrent fan-out items each attribute the model
 THEY invoked, keyed by `fanout_item_index`; aggregate billing/budget behavior is unchanged). MageQA removes its patch only after the
-annotated tag, source commit, wheel hashes, engine canaries, the recorded Codex image semantic proof, and E0 gate
+annotated tag, source commit, published wheel hashes, engine canaries, the recorded Codex image semantic proof, and E0 gate
 are recorded.
+
+The release also closes MageQA's caller-cancellation blocker. Every normalized capability result
+publishes its artifacts to the active run session before graph-state aggregation. Cancelling
+`engine.run()` or `engine.resume()` then finalizes the active observation segment as `cancelled`
+with completed evidence and re-raises the original `CancelledError`. This applies to direct steps,
+completed fan-out siblings, declared child workflows, registered workflow capabilities, and
+resumed runs. MageQA's E0 gate must execute its public
+`test_operator_cancellation_finalizes_bundle_and_preserves_completed_artifacts` canary against the
+installed immutable release; no downstream bundle owner or fork is accepted.

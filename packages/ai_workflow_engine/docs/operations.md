@@ -42,6 +42,27 @@ persisted `ExecutionWindowDecision`.
 An explicit worker timeout may narrow the engine window, never widen it. A process call outside an
 engine run must declare its own timeout; no hidden default is selected.
 
+## Caller Cancellation Lifecycle
+
+Cancelling the task that awaits `engine.run(...)` or `engine.resume(...)` is different from an
+engine execution-window timeout:
+
+1. capability supervision stops and settles owned async/process work;
+2. the run session finalizes its observation segment with status `cancelled`;
+3. trace, detail, usage, and artifacts from capability invocations completed before cancellation
+   remain in that segment;
+4. the original `asyncio.CancelledError` is re-raised to the caller.
+
+Artifacts are retained at the normalized capability-result boundary, before fan-out, child-
+workflow, or graph-state aggregation can be interrupted. A resumed segment starts with the
+snapshot's artifacts and adds newly completed artifacts in first-publication order. Identical
+`artifact_id` records deduplicate; conflicting evidence under one id fails loudly.
+
+If observation finalization itself fails, that storage error is raised with the cancellation as
+its cause. The engine never reports ordinary cancellation while silently leaving an incomplete
+archive. With observation disabled no bundle is created; process cleanup and cancellation
+propagation are unchanged.
+
 ## Local Wait Lifecycle
 
 Use a local wait only when the caller can retain the returned snapshot:
@@ -204,6 +225,9 @@ databases, outboxes, provider credentials, and deployment remain consumer-owned 
 5. **Release identity.** A consumable release has one coherent engine/tools/viewer matrix, exact
    source/tag identity, wheel hashes, clean installed-wheel smoke, consumer-shaped qualification,
    and counterpart review. Consumer adoption is a separate pin-and-canary gate.
+6. **Caller-cancellation truth.** Cancelling a fresh or resumed engine run finalizes its segment as
+   `cancelled`, preserves evidence from completed direct/fan-out/child invocations, settles owned
+   processes, and re-raises the original `CancelledError`; archive failure remains loud.
 
 ## Release Qualification
 
@@ -229,38 +253,84 @@ Framework requests and post-adoption feedback close through
 
 ## Release Artifacts And Verification (v0.11.5)
 
-Two roles, two different workflows — a consumer NEVER rebuilds as verification (D1), and the two
-identities are distinct (D2): the **annotated tag proves source**; the **release manifest proves
-artifact bytes**. Annotated tags do not contain wheel hashes.
+Two roles, two identities. A consumer NEVER rebuilds as verification: the **annotated tag identifies
+source**, while the **published release directory identifies artifact bytes**. Tags do not contain
+wheel hashes. The bundle verifier detects incomplete, malformed, unsafe, or byte-drifted deliveries;
+channel authenticity still comes from the approved private cache or an independently pinned
+manifest/wheel hash.
 
-**Producer (engine owner).** Build from a detached clean checkout of the annotated tag with the
-reproducible environment, then bind identity + gate evidence with the release tool:
+### Producer
 
-```bash
-umask 022
-export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct <tag>)
-python3 -m pip wheel --no-deps -w ./wheels   packages/ai_workflow_engine packages/ai_workflow_tools packages/ai_workflow_viewer
-python3 packages/ai_workflow_engine/scripts/release_artifacts.py build   --repo . --tag <tag> --out release-manifest.json   --test-evidence test-evidence.json --smoke-evidence smoke-evidence.json ./wheels/*.whl
-python3 packages/ai_workflow_engine/scripts/release_artifacts.py sums   --out SHA256SUMS ./wheels/*.whl
-```
-
-Two independent clean-checkout builds must produce identical wheel SHA-256 values before the
-release may claim reproducibility. The manifest (schema `release-manifest-v2`) is closed and
-type-strict: tag + tag-object id + peeled commit, the coherent package matrix (embedded wheel
-METADATA is authoritative — filenames are only locators), the build environment without
-placeholders, REQUIRED `status == "passed"` test and smoke evidence with UTC timestamps and
-evidence-file hashes, and per-artifact size/SHA-256/URI/published state. The published wheel's
-whole-file SHA-256 is the authoritative artifact identity; `dist-info/RECORD` is diagnostic only.
-
-**Consumer (product owner).** Download the exact published artifact set — the engine wheel,
-`release-manifest.json`, and `SHA256SUMS` — from the release cache and verify BEFORE installing:
+The user creates the immutable annotated tag only after code review. From that point, a failed
+artifact gate requires a new fix-forward version; never move the tag. Use two independent detached,
+clean checkouts for wheel reproducibility and a third checkout for test/smoke evidence. Keep all
+outputs outside those checkouts.
 
 ```bash
-python3 release_artifacts.py check-sums --sums SHA256SUMS --dir .
-python3 release_artifacts.py verify --manifest release-manifest.json <wheel>.whl
-python -m pip install ./<wheel>.whl
+TAG=engine-v0.11.5
+BUILD_A=/tmp/engine-build-a
+BUILD_B=/tmp/engine-build-b
+GATE=/tmp/engine-gate
+OUT=/tmp/engine-release-work
+TOOL="$BUILD_A/packages/ai_workflow_engine/scripts/release_artifacts.py"
+
+python3 "$TOOL" run-build --repo "$BUILD_A" --tag "$TAG" \
+  --wheel-dir "$OUT/wheels-a" --record "$OUT/build.json" --log "$OUT/build.log"
+python3 "$BUILD_B/packages/ai_workflow_engine/scripts/release_artifacts.py" run-build \
+  --repo "$BUILD_B" --tag "$TAG" --wheel-dir "$OUT/wheels-b" \
+  --record "$OUT/build-b.json" --log "$OUT/build-b.log"
+python3 "$TOOL" compare-builds --repo "$BUILD_A" --tag "$TAG" \
+  --first "$OUT/wheels-a" --second "$OUT/wheels-b"
+
+python3 "$TOOL" run-gate --name test --record "$OUT/test.json" \
+  --log "$OUT/test.log" --cwd "$GATE" --timeout-s 7200 -- ./test.sh unit
+python3 "$TOOL" run-gate --name smoke --record "$OUT/smoke.json" \
+  --log "$OUT/smoke.log" --cwd "$GATE" --timeout-s 900 -- \
+  python3 "$TOOL" smoke-installed --venv-dir "$OUT/smoke-venv" \
+  --work-dir "$OUT/smoke-work" \
+  --wheel "$OUT/wheels-a/ai_workflow_engine-0.11.5-py3-none-any.whl" \
+  --wheel "$OUT/wheels-a/ai_workflow_tools-0.5.1-py3-none-any.whl" \
+  --wheel "$OUT/wheels-a/ai_workflow_viewer-0.3.1-py3-none-any.whl"
+
+python3 "$TOOL" assemble --repo "$BUILD_A" --tag "$TAG" \
+  --bundle-dir "$OUT/bundle" --uri-base "file:///approved-cache/$TAG/" \
+  --build-evidence "$OUT/build.json" --second-build-evidence "$OUT/build-b.json" \
+  --test-evidence "$OUT/test.json" \
+  --smoke-evidence "$OUT/smoke.json" \
+  --wheel "$OUT/wheels-a/ai_workflow_engine-0.11.5-py3-none-any.whl" \
+  --wheel "$OUT/wheels-a/ai_workflow_tools-0.5.1-py3-none-any.whl" \
+  --wheel "$OUT/wheels-a/ai_workflow_viewer-0.3.1-py3-none-any.whl" \
+  --second-wheel "$OUT/wheels-b/ai_workflow_engine-0.11.5-py3-none-any.whl" \
+  --second-wheel "$OUT/wheels-b/ai_workflow_tools-0.5.1-py3-none-any.whl" \
+  --second-wheel "$OUT/wheels-b/ai_workflow_viewer-0.3.1-py3-none-any.whl"
+python3 "$TOOL" verify-bundle --dir "$OUT/bundle"
 ```
 
-A mismatch means the bytes are not the published artifact — stop, never install, report to the
-engine owner. Delivery channels are chosen per release by the owner; agents never push or upload
-without that explicit choice.
+`run-build` derives `SOURCE_DATE_EPOCH` from the tagged commit, fixes the build umask, refuses a
+dirty/wrong checkout, executes the build itself, and records the exact three wheel identities.
+`run-gate` executes and records the real command, observed checkout commit, exit status,
+timestamps, bounded log, and log hash. `assemble` requires both independent build records plus
+both wheel matrices to be byte-identical, requires all gates to name the tagged source commit,
+and accepts only passed records, genuine internally coherent wheels, and verifier sources that
+byte-match the tag. The closed
+`release-manifest-v2`, every evidence record/log, all three wheels, both verifier scripts, and
+`SHA256SUMS` form one indivisible release directory.
+
+### Consumer
+
+Download the complete release directory. Obtain `release_artifacts.py` and
+`release_contract.py` independently from the pinned annotated tag or another previously trusted
+source, place them together, and use that trusted verifier before invoking `pip`:
+
+```bash
+BUNDLE=/path/to/downloaded/engine-v0.11.5
+TRUSTED=/path/to/trusted/engine-v0.11.5-verifier
+python3 "$TRUSTED/release_artifacts.py" verify-bundle --dir "$BUNDLE"
+python -m pip install "$BUNDLE/ai_workflow_engine-0.11.5-py3-none-any.whl"
+```
+
+The verifier requires the exact manifest inventory, safely refuses traversal/symlink/FIFO/device
+shapes without opening them, validates every checksum and evidence record, and validates wheel
+ZIP/METADATA/WHEEL/RECORD coherence. A consumer may install only the engine wheel, but it still
+verifies the complete three-package release directory first. Any mismatch means stop: do not
+install, rebuild, or substitute bytes; report the release defect to the engine owner.

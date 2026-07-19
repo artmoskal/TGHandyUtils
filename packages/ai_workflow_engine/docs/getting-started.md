@@ -9,15 +9,20 @@ Always install `ai-workflow-engine`. Add `ai-workflow-tools` only for reusable C
 `ai-workflow-viewer` only where bundles are rendered. Keeping optional packages out of simple runtime
 images preserves the complexity gradient.
 
-Build from the current immutable tag `engine-v0.11.5` (once cut) and record:
+Consume the complete release directory for immutable tag `engine-v0.11.5`, verify it
+with the tagged verifier as described in [operations](operations.md#release-artifacts-and-verification-v0115),
+then record the exact bytes installed:
 
 ```text
 engine_tag=engine-v0.11.5
 engine_source_commit=<git rev-parse engine-v0.11.5^{}>
 engine_wheel_sha256=<sha256 of vendored wheel>
+release_manifest_sha256=<sha256 of verified release-manifest.json>
 ```
 
-Never vendor engine source or install a live branch. **The line is latest-only**: there is no
+Consumers do not rebuild as verification: wheel identity belongs to the published release bundle,
+while the annotated tag identifies source. Never vendor engine source or install a live branch.
+**The line is latest-only**: there is no
 migration path between lines — adopt the current contract fresh. Runs, snapshots, wait records,
 and observation bundles written under an older tag are rejected loudly by the current engine and
 viewer; inspect that data with its matching historical tag instead.

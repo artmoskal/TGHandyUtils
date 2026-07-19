@@ -2908,6 +2908,58 @@ async def test_forged_typed_record_counts_as_integrity_error_not_nothing():
     assert health.pending == 0 and health.failed == 0 and health.claimed == 0
 
 
+async def test_forged_typed_unknown_field_is_not_laundered_by_health_scan():
+    """IR-3: typed corruption must be checked from its stored representation.
+
+    Pydantic ``model_copy(update=...)`` can put an undeclared key in ``__dict__`` while
+    ``model_dump()`` silently omits it. Health must expose that record as one integrity error,
+    never as a healthy pending wait.
+    """
+
+    from ai_workflow_engine.testing.wait_contract import _record as _kit_record
+
+    shared, clock, make = _integrity_env()
+    coordinator = make()
+    forged = _kit_record(clock(), wait_id="w-hidden-extra").model_copy(
+        update={"unexpected_persisted_field": "must-not-disappear"}
+    )
+    assert "unexpected_persisted_field" in vars(forged)
+    assert "unexpected_persisted_field" not in forged.model_dump()
+    shared["records"]["w-hidden-extra"] = forged
+
+    health = await coordinator.health()
+    assert health.integrity_errors == 1
+    assert health.pending == 0
+    assert health.claimed == 0
+    assert health.failed == 0
+
+
+async def test_forged_nested_policy_is_not_trusted_by_health_scan():
+    """Nested typed values receive the same representation-independent validation.
+
+    Revalidating only the outer WaitRecord would trust an already-built policy instance and
+    silently omit its forged extra field.
+    """
+
+    from ai_workflow_engine.testing.wait_contract import _record as _kit_record
+
+    shared, clock, make = _integrity_env()
+    coordinator = make()
+    record = _kit_record(clock(), wait_id="w-nested-extra")
+    forged_policy = record.policy.model_copy(
+        update={"unexpected_policy_field": "must-not-disappear"}
+    )
+    forged = record.model_copy(update={"policy": forged_policy})
+    assert "unexpected_policy_field" in vars(forged_policy)
+    shared["records"]["w-nested-extra"] = forged
+
+    health = await coordinator.health()
+    assert health.integrity_errors == 1
+    assert health.pending == 0
+    assert health.claimed == 0
+    assert health.failed == 0
+
+
 async def test_backing_key_mismatch_counts_as_integrity_error():
     """H3 attack: an entry stored under a key different from its own wait_id is corrupt
     identity — one integrity error, zero status contribution."""

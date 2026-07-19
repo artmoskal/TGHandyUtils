@@ -117,10 +117,30 @@ def test_release_docs_name_the_current_tag_consistently():
     assert released or candidate, (
         f"README must either declare {current} released or mark it a pending release candidate"
     )
-    assert (
-        f"checkout --detach {current}" in README
-        or f"@{current}#subdirectory" in README
-    ), "README install instructions must pin the current immutable tag"
+    assert "verify-bundle" in README, (
+        "README install instructions must verify the published release directory"
+    )
+    permanent_release_docs = {
+        "README.md": README,
+        **{
+            f"docs/{path.name}": path.read_text(encoding="utf-8")
+            for path in (PACKAGE_ROOT / "docs").glob("*.md")
+        },
+    }
+    for name, doc in permanent_release_docs.items():
+        normalized_doc = " ".join(doc.lower().split())
+        assert "pip wheel" not in normalized_doc, (
+            f"{name} must not present source rebuilding as consumer artifact verification"
+        )
+        for false_tag_claim in (
+            "tag carries wheel hashes",
+            "tag contains wheel hashes",
+            "tag includes wheel hashes",
+            "tag records wheel hashes",
+        ):
+            assert false_tag_claim not in normalized_doc, (
+                f"{name} falsely assigns published wheel identity to the source tag"
+            )
     assert "`engine-v0.8.1` is the current release" not in README
     for name in ("gopro-handoff.md", "mageqa-handoff.md"):
         doc = (PACKAGE_ROOT / "docs" / name).read_text(encoding="utf-8")

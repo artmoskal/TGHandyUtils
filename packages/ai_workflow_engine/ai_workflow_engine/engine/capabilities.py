@@ -389,6 +389,11 @@ class CapabilityRuntime:
                         name=name, awaitable=result, window=window, enforcement=enforcement
                     )
             output = normalize_result(spec, result)
+            if session is not None:
+                # A completed invocation is the earliest universal artifact boundary. Fan-out or
+                # child execution may be cancelled before its aggregate graph update commits, so
+                # the run session retains evidence here rather than reconstructing it from state.
+                session.retain_artifacts(output.artifacts)
             elapsed_ms = int((time.monotonic() - start) * 1000)
             # v0.10: record the resolved window on the result event of a BOUNDED call so the
             # viewer/audit can project the effective soft/hard window + clamps + enforcement on

@@ -56,6 +56,29 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _stored_model_data(value: Any) -> Any:
+    """Project persisted model objects to their complete raw representation.
+
+    Pydantic trusts nested model instances by default. A store containing a
+    ``model_copy(update=...)`` forgery must therefore be converted recursively before the
+    current contract is revalidated, including hidden extra mappings at every model depth.
+    """
+
+    if isinstance(value, BaseModel):
+        raw = dict(vars(value))
+        extra = getattr(value, "__pydantic_extra__", None)
+        if isinstance(extra, dict):
+            raw.update(extra)
+        return {key: _stored_model_data(item) for key, item in raw.items()}
+    if isinstance(value, dict):
+        return {key: _stored_model_data(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_stored_model_data(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_stored_model_data(item) for item in value)
+    return value
+
+
 class LocalWaitPolicy(BaseModel):
     """Explicitly local/in-process wait: snapshot exposed, product resumes directly."""
 
@@ -588,7 +611,11 @@ class InMemoryWaitCoordinator:
         valid: Dict[str, WaitRecord] = {}
         integrity_errors = 0
         for wait_id, entry in self._records.items():
-            raw = entry.model_dump() if isinstance(entry, WaitRecord) else entry
+            # ``model_copy(update=...)`` can forge undeclared keys directly into a Pydantic
+            # model's stored representation. ``model_dump()`` omits those keys, while
+            # validating an existing nested model trusts it. Normalize the complete stored
+            # tree before extra="forbid" and field validators see it.
+            raw = _stored_model_data(entry)
             try:
                 record = WaitRecord.model_validate(raw)
             except Exception:

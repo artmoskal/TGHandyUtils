@@ -11,6 +11,7 @@ pytestmark = pytest.mark.unit
 
 # Import database and service components
 from database.connection import DatabaseManager
+from database.migrations import ensure_database_ready
 from database.unified_recipient_repository import UnifiedRecipientRepository
 from database.user_preferences_repository import UserPreferencesRepository
 from services.recipient_service import RecipientService
@@ -35,23 +36,21 @@ from models.parameter_objects import RecipientCreationData, SharedRecipientCreat
 
 class TestRecipientService:
     """Test cases for RecipientService with real database integration."""
-    
-    def setup_method(self):
-        """Setup real database components for each test."""
-        self.db_manager = DatabaseManager("data/db/tasks.db")
+
+    @pytest.fixture(autouse=True)
+    def isolated_database(self, tmp_path):
+        """Give every test a fully migrated database with no cross-run state."""
+
+        database_path = tmp_path / "tasks.db"
+        assert ensure_database_ready(str(database_path))
+        self.db_manager = DatabaseManager(str(database_path))
         self.recipient_repo = UnifiedRecipientRepository(self.db_manager)
         self.preferences_repo = UserPreferencesRepository(self.db_manager)
         self.recipient_service = RecipientService(self.recipient_repo, self.preferences_repo)
-        
+
         # Test user ID for isolation
         self.test_user_id = 888888888  # Unique ID to avoid conflicts
-    
-    def teardown_method(self):
-        """Clean up test data after each test."""
-        with self.db_manager.get_connection() as conn:
-            # Clean up test recipients
-            conn.execute("DELETE FROM recipients WHERE user_id = ?", (self.test_user_id,))
-    
+
     def test_get_all_recipients_returns_all_types(self):
         """Test getting all recipients returns both personal and shared."""
         # Create mixed recipients using factories

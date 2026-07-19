@@ -54,6 +54,15 @@ When a capability object publishes `handler.spec`, that spec owns schemas, effec
 timeout enforcement. Configure it at construction; duplicate registration kwargs are rejected so a
 safety policy cannot disappear silently.
 
+### Replacing engine cancellation finalization
+
+Do not catch caller cancellation around `engine.run()` and write a product-owned substitute bundle.
+The engine finalizes the active segment as `cancelled` before re-raising, using its run-local
+artifact journal to preserve completed fan-out and child evidence that may not have reached graph
+state. A product wrapper may log or translate at its outer API boundary only after the engine task
+has settled. If bundle finalization raises, treat that storage failure as operationally distinct;
+do not replace it with a successful cancellation acknowledgement.
+
 ### Side effects inside undeclared code
 
 Declare all effects on the capability. The engine can deny a declared external write before spawn;
