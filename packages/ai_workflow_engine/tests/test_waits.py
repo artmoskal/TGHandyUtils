@@ -4221,9 +4221,15 @@ async def test_settlement_timeout_is_loud_and_chained_when_cleanup_hangs():
     engine, calls = _exposure_probe_engine(coordinator, clock)
     run_task = asyncio.create_task(engine.run("durable_flow", {}))
     await asyncio.wait_for(committed.wait(), timeout=5)
+    settlement_started = asyncio.get_running_loop().time()
     run_task.cancel()
     with pytest.raises(WaitRegistrationSettlementError, match="did not finish within") as err:
         await run_task
+    settlement_elapsed = asyncio.get_running_loop().time() - settlement_started
+    assert settlement_elapsed >= 1.5, (
+        "registration settlement must retain its fixed nonzero 2.0s opportunity even after "
+        f"the run is cancelled; observed only {settlement_elapsed:.3f}s"
+    )
     assert isinstance(err.value.__cause__, asyncio.CancelledError), (
         "the settlement error must CHAIN from the original cancellation"
     )
