@@ -7597,6 +7597,10 @@
           "title": "Record Schema Version",
           "type": "string"
         },
+        "registration_attempt_id": {
+          "title": "Registration Attempt Id",
+          "type": "string"
+        },
         "resolution_kind": {
           "anyOf": [
             {
@@ -7786,6 +7790,10 @@
               "title": "Record Schema Version",
               "type": "string"
             },
+            "registration_attempt_id": {
+              "title": "Registration Attempt Id",
+              "type": "string"
+            },
             "resolution_kind": {
               "anyOf": [
                 {
@@ -7858,13 +7866,15 @@
         }
       },
       "additionalProperties": false,
-      "description": "v0.11.6 (C2): typed result of the atomic registration-abort operation.\n\nThe engine calls ``abort_registration`` to settle a possibly-committed registration\nwhose handle was NEVER exposed (observed caller cancellation, or a registration\nfailure after the adapter may have committed). The vocabulary is closed:\n\n- ``absent``: nothing is committed under this wait id.\n- ``cancelled``: THIS call atomically moved the exact pending registration to\n  ``cancelled``.\n- ``already_terminal``: the record is already settled \u2014 the caller inspects\n  ``record.status`` (a previous compensation is idempotent; a completed/failed\n  record means delivery or exhaustion won and execution truth is preserved).\n- ``refused_mismatch``: the stored receipt/machine does not match the expected\n  registration incarnation \u2014 NOTHING was mutated.\n- ``refused_active_claim``: a live claimant owns the wait \u2014 NOTHING was mutated.",
+      "description": "v0.11.6 (C2): typed result of the atomic registration-abort operation.\n\nThe engine calls ``abort_registration`` to settle a possibly-committed registration\nwhose handle was NEVER exposed (observed caller cancellation, or a registration\nfailure after the adapter may have committed). The vocabulary is closed:\n\n- ``absent``: nothing is committed under this wait id.\n- ``cancelled``: THIS call atomically moved the exact pending registration to\n  ``cancelled``.\n- ``already_terminal``: the record is already settled \u2014 the caller inspects\n  ``record.status`` (a previous compensation is idempotent; a completed/failed\n  record means delivery or exhaustion won and execution truth is preserved).\n- ``not_creator``: this invocation reused a pre-existing registration and therefore\n  owns no registration side effect to compensate.\n- ``refused_reused``: this invocation created the registration, but another\n  invocation has since reused it; cancellation may not revoke a concurrently exposed\n  handle.\n- ``refused_mismatch``: the stored receipt/machine does not match the expected\n  registration incarnation \u2014 NOTHING was mutated.\n- ``refused_active_claim``: a live claimant owns the wait \u2014 NOTHING was mutated.",
       "properties": {
         "kind": {
           "enum": [
             "absent",
             "cancelled",
             "already_terminal",
+            "not_creator",
+            "refused_reused",
             "refused_mismatch",
             "refused_active_claim"
           ],

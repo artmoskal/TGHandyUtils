@@ -11,6 +11,8 @@ timer, or poll. This is not a second runtime; it never executes a machine itself
 from __future__ import annotations
 
 import asyncio
+import uuid
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Literal, Optional, Protocol, runtime_checkable
 
@@ -41,6 +43,13 @@ __all__ = [
 # that window is exhausted, and settlement must still get a nonzero opportunity. This is
 # settlement, not more workflow work, and it is not a user-facing tuning knob.
 REGISTRATION_SETTLEMENT_TIMEOUT_S = 2.0
+
+# A delivery may resume into another durable suspension. The mutable list is deliberately
+# task-local by ContextVar identity but shared with child tasks copied from that context, so
+# register_suspension can report that it reached and settled the next machine boundary.
+_NESTED_REGISTRATION_SETTLED: ContextVar[Optional[list[str]]] = ContextVar(
+    "durable_wait_nested_registration_settled", default=None
+)
 
 
 def _observe_task_result(task: "asyncio.Task[Any]") -> None:
@@ -172,9 +181,12 @@ class DurableWaitRuntime:
         registration identity against its stored receipt before any state changes; a bare
         deterministic wait id cannot resume durable work."""
 
-        from ai_workflow_engine.waits import WaitEvent
+        from ai_workflow_engine.waits import WaitEvent, _stored_model_data
 
-        event = event if isinstance(event, WaitEvent) else WaitEvent.model_validate(event)
+        # Pydantic does not revalidate an already-constructed model by default. Rebuild from
+        # the complete raw representation so model_copy(update=...) forgeries and hidden
+        # extras fail before the coordinator can claim or mutate anything.
+        event = WaitEvent.model_validate(_stored_model_data(event))
         if self._resume_port is None:
             raise RuntimeError(
                 "deliver_wait_event requires a composed resume port — build the engine via "
@@ -239,21 +251,31 @@ class DurableWaitRuntime:
 
         claim_token = _uuid.uuid4().hex
         self._inflight_claims[wait_id] = claim_token
+        nested_settlements: list[str] = []
+        nested_token = _NESTED_REGISTRATION_SETTLED.set(nested_settlements)
         try:
-            run_result = await self._resume_port(  # type: ignore[misc]
-                snapshot_json,
-                {
-                    "__wait_delivery__": {
-                        "wait_id": wait_id,
-                        "event_id": event.event_id,
-                        "kind": event.kind,
-                        "attempt": record.resume_attempts,
-                        "claim_token": claim_token,
+            try:
+                run_result = await self._resume_port(  # type: ignore[misc]
+                    snapshot_json,
+                    {
+                        "__wait_delivery__": {
+                            "wait_id": wait_id,
+                            "event_id": event.event_id,
+                            "kind": event.kind,
+                            "attempt": record.resume_attempts,
+                            "claim_token": claim_token,
+                        },
+                        "payload": resume_event,
                     },
-                    "payload": resume_event,
-                },
-            )
+                )
+            except asyncio.CancelledError as cancellation:
+                if nested_settlements:
+                    await self._complete_after_nested_registration(
+                        wait_id, claim, event.kind, cancellation
+                    )
+                raise
         finally:
+            _NESTED_REGISTRATION_SETTLED.reset(nested_token)
             self._inflight_claims.pop(wait_id, None)
         if run_result.status in ("completed", "partial", "requires_user_input"):
             terminal = await self.coordinator.complete(
@@ -277,6 +299,7 @@ class DurableWaitRuntime:
 
     async def register_suspension(self, request: WaitRegistrationRequest) -> WaitRegistrationOutcome:
         wait_id = self.wait_id_for(request.run_id, request.suspended_node, request.occurrence)
+        registration_attempt_id = "attempt-" + uuid.uuid4().hex
         # W3R.3a integrity seal: the persisted definition bytes must BE the machine the
         # digest names — recompute and compare before anything is stored.
         from ai_workflow_engine.workflow import WorkflowDefinition
@@ -303,22 +326,38 @@ class DurableWaitRuntime:
         # proves the committed state terminal/absent; settlement failures are loud and
         # chained, never translated into a clean cancellation/failure.
         try:
-            return await self._register_suspension_inner(request, wait_id)
+            return await self._register_suspension_inner(
+                request, wait_id, registration_attempt_id
+            )
         except asyncio.CancelledError as cancellation:
-            await self._settle_after_caller_cancellation(request, wait_id, cancellation)
+            await self._settle_registration(
+                request,
+                wait_id,
+                registration_attempt_id,
+                cancellation,
+                reason="caller cancelled before the wait handle was exposed",
+            )
+            nested_settlements = _NESTED_REGISTRATION_SETTLED.get()
+            if nested_settlements is not None:
+                nested_settlements.append(wait_id)
             raise
         except WaitRegistrationSettlementError:
             raise
         except Exception as registration_error:
-            await self._compensate_committed_registration(
+            await self._settle_registration(
                 request,
                 wait_id,
+                registration_attempt_id,
+                registration_error,
                 reason=f"registration failed before exposure: {registration_error}",
             )
             raise
 
     async def _register_suspension_inner(
-        self, request: WaitRegistrationRequest, wait_id: str
+        self,
+        request: WaitRegistrationRequest,
+        wait_id: str,
+        registration_attempt_id: str,
     ) -> WaitRegistrationOutcome:
         existing = await self.coordinator.get(wait_id)
         if existing is not None:
@@ -357,15 +396,27 @@ class DurableWaitRuntime:
                     f"wait {wait_id!r} exists with DIFFERENT {', '.join(mismatches)} — "
                     "changed machine state is rejected, never silently reused"
                 )
-            # v0.11.6 (C1): exact crash-retry reuse returns the SAME stored registration
-            # identity — no second incarnation is minted for the same accepted attempt.
-            stored_receipt = await self.coordinator.load_receipt(wait_id)
-            if stored_receipt is None or stored_receipt.wait_id != wait_id:
+            attempted_record = WaitRecord.model_validate(
+                {
+                    **existing.model_dump(),
+                    "registration_attempt_id": registration_attempt_id,
+                }
+            )
+            # C2R: the adapter sees every retry attempt atomically. This closes the race
+            # where the creator's compensation could otherwise cancel a handle a concurrent
+            # exact retry had already exposed.
+            raw_receipt = await self.coordinator.register(
+                attempted_record, request.snapshot_json, request.definition_json
+            )
+            stored_receipt = (
+                raw_receipt
+                if isinstance(raw_receipt, WaitReceipt)
+                else WaitReceipt.model_validate(raw_receipt)
+            )
+            if stored_receipt.wait_id != wait_id:
                 raise RuntimeError(
-                    f"wait {wait_id!r} is registered but its stored receipt is "
-                    f"{'missing' if stored_receipt is None else 'mis-keyed'} — adapter "
-                    "integrity failure; an exposable handle requires the accepted "
-                    "registration identity"
+                    f"wait {wait_id!r} reuse returned a mis-keyed receipt — adapter "
+                    "integrity failure"
                 )
             return WaitRegistrationOutcome(
                 handle=WaitHandle(
@@ -393,6 +444,7 @@ class DurableWaitRuntime:
             definition_digest=request.definition_digest,
             created_at=now,
             deadline_at=now + timedelta(seconds=request.policy.timeout_s),
+            registration_attempt_id=registration_attempt_id,
             origin_segment_index=request.origin_segment_index,
             correlation_id=request.correlation_id,
         )
@@ -432,7 +484,12 @@ class DurableWaitRuntime:
         )
 
     async def _compensate_committed_registration(
-        self, request: WaitRegistrationRequest, wait_id: str, *, reason: str
+        self,
+        request: WaitRegistrationRequest,
+        wait_id: str,
+        registration_attempt_id: str,
+        *,
+        reason: str,
     ) -> None:
         """v0.11.6 (C2): prove the registration THIS attempt may have committed is
         terminal or absent.
@@ -469,6 +526,7 @@ class DurableWaitRuntime:
         raw = await self.coordinator.abort_registration(
             wait_id,
             expected_registration_id=receipt.registration_id,
+            expected_registration_attempt_id=registration_attempt_id,
             expected_definition_digest=request.definition_digest,
             reason=reason,
         )
@@ -477,7 +535,7 @@ class DurableWaitRuntime:
             if isinstance(raw, WaitRegistrationAbortOutcome)
             else WaitRegistrationAbortOutcome.model_validate(raw)
         )
-        if outcome.kind in ("absent", "cancelled"):
+        if outcome.kind in ("absent", "cancelled", "not_creator"):
             return
         if (
             outcome.kind == "already_terminal"
@@ -492,24 +550,34 @@ class DurableWaitRuntime:
             "is preserved and this caller must NOT be reported cleanly cancelled/failed"
         )
 
-    async def _settle_after_caller_cancellation(
-        self, request: WaitRegistrationRequest, wait_id: str, cancellation: BaseException
+    async def _settle_registration(
+        self,
+        request: WaitRegistrationRequest,
+        wait_id: str,
+        registration_attempt_id: str,
+        trigger: BaseException,
+        *,
+        reason: str,
     ) -> None:
-        """v0.11.6 (C2): bounded, SHIELDED settlement after observed caller cancellation.
+        """Bounded, shielded settlement after cancellation or registration failure.
 
-        Runs compensation in a dedicated task protected from (repeated) caller
-        cancellation, bounded by the fixed ``REGISTRATION_SETTLEMENT_TIMEOUT_S`` floor —
-        deliberately independent of the run's (possibly exhausted) execution window. On
-        success the caller re-raises the ORIGINAL CancelledError; on failure or timeout
-        this raises the settlement error chained from that original cancellation."""
+        One task owns cleanup for every exit shape. Cancellation arriving while ordinary
+        failure cleanup is running cannot abandon that task; after successful settlement
+        the exact cancellation propagates. Cleanup failures are always typed and explicitly
+        chained from the event that made settlement necessary."""
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + REGISTRATION_SETTLEMENT_TIMEOUT_S
+        initial_cancellation = (
+            trigger if isinstance(trigger, asyncio.CancelledError) else None
+        )
+        interrupted_by = initial_cancellation
         settle = asyncio.ensure_future(
             self._compensate_committed_registration(
                 request,
                 wait_id,
-                reason="caller cancelled before the wait handle was exposed",
+                registration_attempt_id,
+                reason=reason,
             )
         )
         while True:
@@ -519,24 +587,85 @@ class DurableWaitRuntime:
                 settle.add_done_callback(_observe_task_result)
                 raise WaitRegistrationSettlementError(
                     f"wait {wait_id!r}: registration settlement did not finish within "
-                    f"{REGISTRATION_SETTLEMENT_TIMEOUT_S}s after caller cancellation — the "
-                    "registration may still be live; this run did NOT cleanly cancel"
-                ) from cancellation
+                    f"{REGISTRATION_SETTLEMENT_TIMEOUT_S}s after {reason} — the registration "
+                    "may still be live; this run did NOT settle cleanly"
+                ) from (interrupted_by or trigger)
             try:
                 await asyncio.wait_for(asyncio.shield(settle), timeout=remaining)
-                return
-            except asyncio.CancelledError:
+            except asyncio.CancelledError as cancellation:
                 # repeated caller cancellation: the shield keeps settlement alive and we
                 # keep waiting inside the SAME fixed budget — never abandon, never exceed
+                if interrupted_by is None:
+                    interrupted_by = cancellation
                 if settle.done() and not settle.cancelled() and settle.exception() is None:
+                    if initial_cancellation is None:
+                        raise interrupted_by
                     return
                 continue
             except asyncio.TimeoutError:
                 continue  # the loop head converts an exhausted budget into the loud raise
             except WaitRegistrationSettlementError as settlement_error:
-                raise WaitRegistrationSettlementError(str(settlement_error)) from cancellation
+                raise WaitRegistrationSettlementError(str(settlement_error)) from (
+                    interrupted_by or trigger
+                )
             except Exception as cleanup_error:
                 raise WaitRegistrationSettlementError(
-                    f"wait {wait_id!r}: registration settlement raised after caller "
-                    f"cancellation: {cleanup_error}"
+                    f"wait {wait_id!r}: registration settlement raised after {reason}: "
+                    f"{cleanup_error}"
+                ) from (interrupted_by or trigger)
+            else:
+                if interrupted_by is not None and initial_cancellation is None:
+                    raise interrupted_by
+                return
+
+    async def _complete_after_nested_registration(
+        self,
+        wait_id: str,
+        claim: Any,
+        resolution_kind: str,
+        cancellation: asyncio.CancelledError,
+    ) -> None:
+        """Terminalize the accepted event when its resumed machine reached the next wait.
+
+        The next registration has already been settled before this runs. Keeping the first
+        wait claimed would strand an accepted event even though it reached a durable machine
+        boundary. Repeated caller cancellation cannot abandon this terminal write; failure
+        stays loud and chained instead of rewriting execution truth as clean cancellation.
+        """
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + REGISTRATION_SETTLEMENT_TIMEOUT_S
+        terminalize = asyncio.ensure_future(
+            self.coordinator.complete(wait_id, claim, resolution_kind=resolution_kind)
+        )
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                terminalize.cancel()
+                terminalize.add_done_callback(_observe_task_result)
+                raise WaitRegistrationSettlementError(
+                    f"wait {wait_id!r}: the resumed machine reached and settled its next "
+                    "durable wait, but the accepted event could not be terminalized within "
+                    f"{REGISTRATION_SETTLEMENT_TIMEOUT_S}s"
                 ) from cancellation
+            try:
+                await asyncio.wait_for(asyncio.shield(terminalize), timeout=remaining)
+            except asyncio.CancelledError:
+                if terminalize.done() and not terminalize.cancelled():
+                    error = terminalize.exception()
+                    if error is None:
+                        return
+                    raise WaitRegistrationSettlementError(
+                        f"wait {wait_id!r}: terminalizing the accepted event after nested "
+                        f"registration settlement failed: {error}"
+                    ) from cancellation
+                continue
+            except asyncio.TimeoutError:
+                continue
+            except Exception as terminal_error:
+                raise WaitRegistrationSettlementError(
+                    f"wait {wait_id!r}: terminalizing the accepted event after nested "
+                    f"registration settlement failed: {terminal_error}"
+                ) from cancellation
+            else:
+                return

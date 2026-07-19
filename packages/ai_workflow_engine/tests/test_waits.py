@@ -704,11 +704,18 @@ async def test_broken_adapters_fail_conformance_by_named_invariant():
         # C2 negative: cancels even when the registration id does not match — compensating
         # a DIFFERENT incarnation destroys someone else's state; conformance must name it.
         async def abort_registration(
-            self, wait_id, *, expected_registration_id, expected_definition_digest, reason
+            self,
+            wait_id,
+            *,
+            expected_registration_id,
+            expected_registration_attempt_id,
+            expected_definition_digest,
+            reason,
         ):
             outcome = await super().abort_registration(
                 wait_id,
                 expected_registration_id=expected_registration_id,
+                expected_registration_attempt_id=expected_registration_attempt_id,
                 expected_definition_digest=expected_definition_digest,
                 reason=reason,
             )
@@ -745,11 +752,18 @@ async def test_broken_adapters_fail_conformance_by_named_invariant():
     class ClaimPreemptor(InMemoryWaitCoordinator):
         # C2 negative: compensation stealing a CLAIMED wait preempts live delivery.
         async def abort_registration(
-            self, wait_id, *, expected_registration_id, expected_definition_digest, reason
+            self,
+            wait_id,
+            *,
+            expected_registration_id,
+            expected_registration_attempt_id,
+            expected_definition_digest,
+            reason,
         ):
             outcome = await super().abort_registration(
                 wait_id,
                 expected_registration_id=expected_registration_id,
+                expected_registration_attempt_id=expected_registration_attempt_id,
                 expected_definition_digest=expected_definition_digest,
                 reason=reason,
             )
@@ -822,7 +836,15 @@ def test_builder_rejects_sync_impostor_coordinators():
         def load_snapshot(self, wait_id): ...
         def load_definition(self, wait_id): ...
         def claim_event(self, wait_id, event, *, registration_id, lease_until): ...
-        def abort_registration(self, wait_id, *, expected_registration_id, expected_definition_digest, reason): ...
+        def abort_registration(
+            self,
+            wait_id,
+            *,
+            expected_registration_id,
+            expected_registration_attempt_id,
+            expected_definition_digest,
+            reason,
+        ): ...
         def complete(self, wait_id, claim, *, resolution_kind): ...
         def fail(self, wait_id, claim, *, error, failure_kind="resume_failed"): ...
         def due(self, now): return []
@@ -989,7 +1011,14 @@ async def test_registration_reuse_and_distinct_occurrence_identity():
     second = await engine2.run("durable_flow", {}, goal=goal)
     assert second.status == "requires_user_input"
     assert second.wait_handle.wait_id == wait_id, "same logical suspension reuses ONE registration"
-    assert calls["register"] == 1, "no duplicate registration on retry"
+    assert calls["register"] == 2, (
+        "an exact retry must cross the adapter's atomic register door again so reuse is "
+        "visible to the compensation CAS"
+    )
+    assert len(shared["records"]) == 1
+    assert second.wait_handle.registration_id == handle.registration_id, (
+        "retry participation never mints a second registration incarnation"
+    )
     assert any(e.decision == "wait:registration_reused" for e in second.trace)
 
 
@@ -3465,6 +3494,529 @@ async def test_wait_registration_ack_loss_exposes_no_hidden_continuation():
     assert calls == before, "a hidden continuation must never execute a capability"
 
 
+async def test_ack_loss_cleanup_failure_is_loud_and_chained():
+    """C2R-1: acknowledgement loss enters the SAME bounded settlement owner as caller
+    cancellation. If abort raises, the adapter error may not fold into a normal failed
+    result while its committed registration remains executable."""
+
+    from ai_workflow_engine import InMemoryWaitCoordinator, WaitRegistrationSettlementError
+
+    class AckLossAndAbortFailure(InMemoryWaitCoordinator):
+        async def register(self, record, snapshot_json, definition_json):
+            await super().register(record, snapshot_json, definition_json)
+            raise RuntimeError("registration acknowledgement lost")
+
+        async def abort_registration(self, wait_id, **kwargs):
+            raise RuntimeError("abort backend unavailable")
+
+    clock = _clock()
+    coordinator = AckLossAndAbortFailure(clock=clock)
+    engine, _calls = _exposure_probe_engine(coordinator, clock)
+
+    with pytest.raises(WaitRegistrationSettlementError, match="abort backend unavailable") as err:
+        await engine.run("durable_flow", {})
+    assert isinstance(err.value.__cause__, RuntimeError)
+    assert "acknowledgement lost" in str(err.value.__cause__)
+    assert (await coordinator.health()).pending == 1, (
+        "unsettled state remains visible, but may never be reported as a clean failed run"
+    )
+
+
+async def test_cancellation_during_ack_loss_cleanup_finishes_the_same_settlement():
+    """C2R-1: cancellation arriving while ordinary-error compensation is in flight must
+    not cancel that cleanup. The one settlement task finishes, then the exact caller
+    cancellation propagates with no hidden pending registration."""
+
+    import asyncio
+
+    from ai_workflow_engine import InMemoryWaitCoordinator
+
+    abort_started = asyncio.Event()
+    release_abort = asyncio.Event()
+
+    class AckLossAndBlockingAbort(InMemoryWaitCoordinator):
+        async def register(self, record, snapshot_json, definition_json):
+            await super().register(record, snapshot_json, definition_json)
+            raise RuntimeError("registration acknowledgement lost")
+
+        async def abort_registration(self, wait_id, **kwargs):
+            abort_started.set()
+            await release_abort.wait()
+            return await super().abort_registration(wait_id, **kwargs)
+
+    clock = _clock()
+    coordinator = AckLossAndBlockingAbort(clock=clock)
+    engine, _calls = _exposure_probe_engine(coordinator, clock)
+
+    run_task = asyncio.create_task(engine.run("durable_flow", {}))
+    await asyncio.wait_for(abort_started.wait(), timeout=5)
+    run_task.cancel()
+    release_abort.set()
+    with pytest.raises(asyncio.CancelledError):
+        await run_task
+    assert (await coordinator.health()).pending == 0
+    assert next(iter(coordinator._records.values())).status == "cancelled"
+
+
+async def test_cancelled_identical_retry_does_not_revoke_an_exposed_handle():
+    """C2R-2: a second identical run may reuse a registration whose handle was already
+    returned to another caller. Cancelling that retry owns no registration side effect and
+    must not revoke the first caller's continuation."""
+
+    import asyncio
+
+    from ai_workflow_engine import InMemoryWaitCoordinator, WorkflowGoal
+
+    reuse_started = asyncio.Event()
+    hold_reuse = asyncio.Event()
+
+    class BlockingReuseReceipt(InMemoryWaitCoordinator):
+        block_reuse = False
+
+        async def register(self, record, snapshot_json, definition_json):
+            receipt = await super().register(record, snapshot_json, definition_json)
+            if self.block_reuse:
+                reuse_started.set()
+                await hold_reuse.wait()
+            return receipt
+
+    clock = _clock()
+    coordinator = BlockingReuseReceipt(clock=clock)
+    engine, _calls = _exposure_probe_engine(coordinator, clock)
+    goal = WorkflowGoal(
+        workflow_type="durable_flow",
+        objective="same logical run",
+        metadata={"run_id": "exposed-retry-run"},
+    )
+    first = await engine.run("durable_flow", {}, goal=goal)
+    handle = first.wait_handle
+    assert handle is not None
+
+    coordinator.block_reuse = True
+    retry = asyncio.create_task(engine.run("durable_flow", {}, goal=goal))
+    await asyncio.wait_for(reuse_started.wait(), timeout=5)
+    retry.cancel()
+    hold_reuse.set()
+    with pytest.raises(asyncio.CancelledError):
+        await retry
+
+    stored = await coordinator.get(handle.wait_id)
+    assert stored is not None and stored.status == "pending", (
+        "cancelling a duplicate caller must not revoke a handle already exposed elsewhere"
+    )
+    coordinator.block_reuse = False
+    delivered = await engine.deliver_wait_event(
+        handle, {"kind": "signal", "event_id": "evt-original-handle", "payload": "yes"}
+    )
+    assert delivered.kind == "executed" and delivered.run_result.status == "completed"
+
+
+async def test_registration_reuse_wins_creator_compensation_race():
+    """C2R CAS, reuse-wins order: a creator loses its acknowledgement while an exact
+    retry atomically reuses and exposes the registration. Creator compensation must fail
+    loudly rather than cancel the retry's valid handle."""
+
+    import asyncio
+
+    from ai_workflow_engine import (
+        InMemoryWaitCoordinator,
+        WaitRegistrationSettlementError,
+        WorkflowGoal,
+    )
+
+    creator_committed = asyncio.Event()
+    release_creator = asyncio.Event()
+    calls = {"register": 0}
+
+    class LostCreatorAck(InMemoryWaitCoordinator):
+        async def register(self, record, snapshot_json, definition_json):
+            receipt = await super().register(record, snapshot_json, definition_json)
+            calls["register"] += 1
+            if calls["register"] == 1:
+                creator_committed.set()
+                await release_creator.wait()
+                raise RuntimeError("creator acknowledgement lost")
+            return receipt
+
+    clock = _clock()
+    coordinator = LostCreatorAck(clock=clock)
+    engine, _calls = _exposure_probe_engine(coordinator, clock)
+    goal = WorkflowGoal(
+        workflow_type="durable_flow",
+        objective="registration race",
+        metadata={"run_id": "reuse-wins-run"},
+    )
+
+    creator = asyncio.create_task(engine.run("durable_flow", {}, goal=goal))
+    await asyncio.wait_for(creator_committed.wait(), timeout=5)
+    reuser = await engine.run("durable_flow", {}, goal=goal)
+    assert reuser.wait_handle is not None
+    release_creator.set()
+    with pytest.raises(WaitRegistrationSettlementError, match="refused_reused"):
+        await creator
+
+    handle = reuser.wait_handle
+    assert (await coordinator.get(handle.wait_id)).status == "pending"
+    delivered = await engine.deliver_wait_event(
+        handle, {"kind": "signal", "event_id": "evt-reuse-won", "payload": "yes"}
+    )
+    assert delivered.kind == "executed" and delivered.run_result.status == "completed"
+
+
+async def test_registration_compensation_wins_retry_race():
+    """C2R CAS, compensation-wins order: cancellation settles the creator before an
+    identical retry reaches registration. The retry receives no handle and cannot revive
+    the terminal record."""
+
+    import asyncio
+
+    from ai_workflow_engine import InMemoryWaitCoordinator, WorkflowGoal
+
+    creator_committed = asyncio.Event()
+    hold_creator = asyncio.Event()
+    compensation_committed = asyncio.Event()
+    release_compensation = asyncio.Event()
+
+    class CompensationFirst(InMemoryWaitCoordinator):
+        async def register(self, record, snapshot_json, definition_json):
+            receipt = await super().register(record, snapshot_json, definition_json)
+            creator_committed.set()
+            await hold_creator.wait()
+            return receipt
+
+        async def abort_registration(self, wait_id, **kwargs):
+            outcome = await super().abort_registration(wait_id, **kwargs)
+            if outcome.kind == "cancelled":
+                compensation_committed.set()
+                await release_compensation.wait()
+            return outcome
+
+    clock = _clock()
+    coordinator = CompensationFirst(clock=clock)
+    engine, _calls = _exposure_probe_engine(coordinator, clock)
+    goal = WorkflowGoal(
+        workflow_type="durable_flow",
+        objective="registration race",
+        metadata={"run_id": "compensation-wins-run"},
+    )
+
+    creator = asyncio.create_task(engine.run("durable_flow", {}, goal=goal))
+    await asyncio.wait_for(creator_committed.wait(), timeout=5)
+    creator.cancel()
+    await asyncio.wait_for(compensation_committed.wait(), timeout=5)
+
+    retry = await engine.run("durable_flow", {}, goal=goal)
+    assert retry.status == "failed" and retry.wait_handle is None
+    release_compensation.set()
+    with pytest.raises(asyncio.CancelledError):
+        await creator
+    record = next(iter(coordinator._records.values()))
+    assert record.status == "cancelled"
+
+
+async def test_crash_before_handle_retry_reuses_receipt_and_executes_once():
+    """C3 truth-table row 5: abrupt process death is not observed cancellation. A second
+    process retries the identical machine bytes, receives the stored registration identity,
+    and the continuation executes exactly once despite at-least-once delivery."""
+
+    from ai_workflow_engine import InMemoryWaitCoordinator, WorkflowGoal
+
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    class CrashAfterCommit(InMemoryWaitCoordinator):
+        async def register(self, record, snapshot_json, definition_json):
+            receipt = await super().register(record, snapshot_json, definition_json)
+            raise SimulatedProcessDeath("worker disappeared before receipt exposure")
+
+    shared = {}
+    clock = _clock()
+    first_coordinator = CrashAfterCommit(clock=clock, shared_state=shared)
+    first_engine, _first_calls = _exposure_probe_engine(first_coordinator, clock)
+    goal = WorkflowGoal(
+        workflow_type="durable_flow",
+        objective="recover exact registration",
+        metadata={"run_id": "crash-retry-run"},
+    )
+    with pytest.raises(SimulatedProcessDeath):
+        await first_engine.run("durable_flow", {}, goal=goal)
+
+    wait_id = next(iter(shared["records"]))
+    stored_receipt = await first_coordinator.load_receipt(wait_id)
+    second_coordinator = InMemoryWaitCoordinator(clock=clock, shared_state=shared)
+    second_engine, calls = _exposure_probe_engine(second_coordinator, clock)
+    recovered = await second_engine.run("durable_flow", {}, goal=goal)
+    assert recovered.wait_handle.registration_id == stored_receipt.registration_id
+    assert len(shared["records"]) == 1
+
+    event = {"kind": "signal", "event_id": "evt-crash-retry", "payload": "yes"}
+    completed = await second_engine.deliver_wait_event(recovered.wait_handle, event)
+    duplicate = await second_engine.deliver_wait_event(recovered.wait_handle, event)
+    assert completed.kind == "executed" and completed.run_result.status == "completed"
+    assert duplicate.kind == "duplicate"
+    assert calls["finish"] == 1, "the recovered continuation must execute exactly once"
+
+
+async def test_crash_orphan_is_visible_inert_and_operator_cancellable():
+    """C3 truth-table row 6: if the crashed worker is never retried, the registration is
+    visible as pending then overdue, never self-executes, rejects reconstructed delivery,
+    and remains cancellable by the product operator."""
+
+    from datetime import datetime, timedelta, timezone
+
+    from ai_workflow_engine import InMemoryWaitCoordinator, WorkflowGoal
+
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    class CrashAfterCommit(InMemoryWaitCoordinator):
+        async def register(self, record, snapshot_json, definition_json):
+            await super().register(record, snapshot_json, definition_json)
+            raise SimulatedProcessDeath("worker disappeared before receipt exposure")
+
+    current = {"now": datetime(2036, 1, 1, tzinfo=timezone.utc)}
+    clock = lambda: current["now"]  # noqa: E731
+    coordinator = CrashAfterCommit(clock=clock)
+    engine, calls = _exposure_probe_engine(coordinator, clock)
+    goal = WorkflowGoal(
+        workflow_type="durable_flow",
+        objective="orphan remains inert",
+        metadata={"run_id": "crash-orphan-run"},
+    )
+    with pytest.raises(SimulatedProcessDeath):
+        await engine.run("durable_flow", {}, goal=goal)
+
+    wait_id = next(iter(coordinator._records))
+    health = await coordinator.health()
+    assert health.pending == 1 and health.overdue == 0
+    current["now"] += timedelta(seconds=61)
+    health = await coordinator.health()
+    assert health.pending == 1 and health.overdue == 1
+    assert [record.wait_id for record in await coordinator.due(clock())] == [wait_id]
+
+    before = dict(calls)
+    rejected = await _attempt_hidden_delivery(engine, wait_id)
+    assert rejected.kind != "executed" and calls == before
+    cancelled, _observation = await engine.cancel_wait(wait_id, reason="orphan cleanup")
+    assert cancelled.status == "cancelled"
+    assert (await coordinator.health()).pending == 0
+
+
+async def test_compensation_wins_atomic_race_with_delivery_claim():
+    """C3 truth-table row 9: both operations are alive behind barriers. Compensation
+    commits first, so the delivery claimant observes terminal state and cannot execute."""
+
+    import asyncio
+    from datetime import timedelta
+
+    from ai_workflow_engine import InMemoryWaitCoordinator
+
+    abort_arrived = asyncio.Event()
+    claim_arrived = asyncio.Event()
+    allow_abort = asyncio.Event()
+    allow_claim = asyncio.Event()
+
+    class OrderedRace(InMemoryWaitCoordinator):
+        async def abort_registration(self, wait_id, **kwargs):
+            abort_arrived.set()
+            await allow_abort.wait()
+            return await super().abort_registration(wait_id, **kwargs)
+
+        async def claim_event(self, wait_id, event, **kwargs):
+            claim_arrived.set()
+            await allow_claim.wait()
+            return await super().claim_event(wait_id, event, **kwargs)
+
+    clock = _clock()
+    coordinator = OrderedRace(clock=clock)
+    now = clock()
+    record = WaitRecord(
+        record_schema_version="wait-v1",
+        wait_id="race-compensation-wins",
+        run_id="race-run",
+        workflow_id="wf",
+        suspended_node="gate",
+        policy=DurableWaitPolicy(timeout_s=60),
+        definition_digest=_definition_digest(),
+        created_at=now,
+        deadline_at=now + timedelta(seconds=60),
+    )
+    receipt = await coordinator.register(record, "{}", _definition_json())
+    abort_task = asyncio.create_task(
+        coordinator.abort_registration(
+            record.wait_id,
+            expected_registration_id=receipt.registration_id,
+            expected_registration_attempt_id=record.registration_attempt_id,
+            expected_definition_digest=record.definition_digest,
+            reason="caller cancelled",
+        )
+    )
+    claim_task = asyncio.create_task(
+        coordinator.claim_event(
+            record.wait_id,
+            WaitEvent(kind="signal", event_id="evt-race-compensation"),
+            registration_id=receipt.registration_id,
+            lease_until=now + timedelta(seconds=30),
+        )
+    )
+    await asyncio.wait_for(
+        asyncio.gather(abort_arrived.wait(), claim_arrived.wait()), timeout=5
+    )
+    allow_abort.set()
+    abort = await abort_task
+    allow_claim.set()
+    claim = await claim_task
+    assert abort.kind == "cancelled"
+    assert claim.kind == "terminal" and claim.record.status == "cancelled"
+    assert record.wait_id not in coordinator._accepted_events
+
+
+async def test_delivery_claim_wins_atomic_race_with_compensation():
+    """C3 truth-table row 10: both operations are alive behind barriers. Delivery claims
+    first, so compensation refuses to preempt it and execution truth remains claim-owned."""
+
+    import asyncio
+    from datetime import timedelta
+
+    from ai_workflow_engine import InMemoryWaitCoordinator
+
+    abort_arrived = asyncio.Event()
+    claim_arrived = asyncio.Event()
+    allow_abort = asyncio.Event()
+    allow_claim = asyncio.Event()
+
+    class OrderedRace(InMemoryWaitCoordinator):
+        async def abort_registration(self, wait_id, **kwargs):
+            abort_arrived.set()
+            await allow_abort.wait()
+            return await super().abort_registration(wait_id, **kwargs)
+
+        async def claim_event(self, wait_id, event, **kwargs):
+            claim_arrived.set()
+            await allow_claim.wait()
+            return await super().claim_event(wait_id, event, **kwargs)
+
+    clock = _clock()
+    coordinator = OrderedRace(clock=clock)
+    now = clock()
+    record = WaitRecord(
+        record_schema_version="wait-v1",
+        wait_id="race-delivery-wins",
+        run_id="race-run",
+        workflow_id="wf",
+        suspended_node="gate",
+        policy=DurableWaitPolicy(timeout_s=60),
+        definition_digest=_definition_digest(),
+        created_at=now,
+        deadline_at=now + timedelta(seconds=60),
+    )
+    receipt = await coordinator.register(record, "{}", _definition_json())
+    abort_task = asyncio.create_task(
+        coordinator.abort_registration(
+            record.wait_id,
+            expected_registration_id=receipt.registration_id,
+            expected_registration_attempt_id=record.registration_attempt_id,
+            expected_definition_digest=record.definition_digest,
+            reason="caller cancelled",
+        )
+    )
+    claim_task = asyncio.create_task(
+        coordinator.claim_event(
+            record.wait_id,
+            WaitEvent(kind="signal", event_id="evt-race-delivery"),
+            registration_id=receipt.registration_id,
+            lease_until=now + timedelta(seconds=30),
+        )
+    )
+    await asyncio.wait_for(
+        asyncio.gather(abort_arrived.wait(), claim_arrived.wait()), timeout=5
+    )
+    allow_claim.set()
+    claim = await claim_task
+    allow_abort.set()
+    abort = await abort_task
+    assert claim.kind == "claimed"
+    assert abort.kind == "refused_active_claim"
+    completed = await coordinator.complete(
+        record.wait_id, claim.claim, resolution_kind="signal"
+    )
+    assert completed.status == "completed"
+
+
+async def test_resumed_second_wait_cancellation_compensates_only_that_wait():
+    """C3 Scenario 4: delivery of the first wait reaches a second durable suspension.
+    Cancellation after the second registration commits must settle that unexposed second
+    continuation without changing the first wait's accepted execution truth."""
+
+    import asyncio
+
+    from ai_workflow_engine import InMemoryWaitCoordinator
+
+    second_committed = asyncio.Event()
+    registrations = []
+
+    class BlockSecondRegistration(InMemoryWaitCoordinator):
+        async def register(self, record, snapshot_json, definition_json):
+            receipt = await super().register(record, snapshot_json, definition_json)
+            registrations.append(record.wait_id)
+            if len(registrations) == 2:
+                second_committed.set()
+                await asyncio.Event().wait()
+            return receipt
+
+    clock = _clock()
+    coordinator = BlockSecondRegistration(clock=clock)
+
+    from pydantic import BaseModel as _BM
+    from ai_workflow_engine import WorkflowEngineBuilder
+
+    class Gate(_BM):
+        status: str
+
+    def gate(context, _payload):
+        return Gate(
+            status="answered" if context.metadata.get("resume_event") is not None else "pending"
+        )
+
+    builder = WorkflowEngineBuilder().with_wait_coordinator(coordinator, clock=clock)
+    builder.register_capability("first", gate)
+    builder.register_capability("second", gate)
+    builder.register_capability("finish", lambda _context, _payload: {"done": True})
+    builder.register_capability("escalate", lambda _context, _payload: {"escalated": True})
+    builder.register_workflow(
+        WorkflowBuilder("durable_flow")
+        .human("first", wait_policy=DurableWaitPolicy(timeout_s=60), timeout_to="escalate")
+        .human("second", wait_policy=DurableWaitPolicy(timeout_s=60), timeout_to="escalate")
+        .step("finish")
+        .step("escalate")
+        .build()
+    )
+    engine = builder.build()
+
+    first = await engine.run("durable_flow", {})
+    first_handle = first.wait_handle
+    delivery = asyncio.create_task(
+        engine.deliver_wait_event(
+            first_handle,
+            {"kind": "signal", "event_id": "evt-first", "payload": "approved"},
+        )
+    )
+    await asyncio.wait_for(second_committed.wait(), timeout=5)
+    delivery.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await delivery
+
+    first_record = await coordinator.get(first_handle.wait_id)
+    second_record = await coordinator.get(registrations[1])
+    assert first_record.status == "completed", (
+        "the accepted first event reached the next machine boundary and must not be "
+        "rewritten or left claim-stalled by second-registration cancellation"
+    )
+    assert second_record.status == "cancelled"
+    hidden = await _attempt_hidden_delivery(engine, second_record.wait_id)
+    assert hidden.kind != "executed"
+
+
 # ============================== v0.11.6 C1: handle-bound delivery + registration identity
 
 
@@ -3505,6 +4057,52 @@ async def test_delivery_requires_the_complete_exposed_handle():
         {"kind": "signal", "event_id": "evt-ok", "payload": "yes"},
     )
     assert outcome.kind == "executed" and outcome.run_result.status == "completed"
+
+
+async def test_forged_typed_wait_event_is_revalidated_before_claim():
+    """C3: an already-constructed WaitEvent is not trusted. A model_copy forgery with a
+    blank deduplication key and a hidden extra field must fail at the delivery boundary
+    while every coordinator map remains byte-for-byte equivalent."""
+
+    import copy
+
+    engine, coordinator = _delivery_engine()
+    first = await engine.run("durable_flow", {})
+    before = copy.deepcopy(coordinator._state)
+    forged = WaitEvent(kind="signal", event_id="evt-valid", payload="yes").model_copy(
+        update={"event_id": "   ", "hidden_control": "smuggled"}
+    )
+
+    with pytest.raises(ValidationError):
+        await engine.deliver_wait_event(first.wait_handle, forged)
+
+    assert coordinator._state == before
+
+
+async def test_claim_validation_failure_mutates_no_coordinator_map():
+    """C3 validate-before-mutate: an invalid lease makes WaitClaim construction fail.
+    Records, accepted-event identity, leases, and claims must all remain exactly as they
+    were before the attempted transaction."""
+
+    import copy
+
+    from ai_workflow_engine import InMemoryWaitCoordinator
+
+    shared = {}
+    engine, coordinator = _delivery_engine(shared)
+    assert isinstance(coordinator, InMemoryWaitCoordinator)
+    first = await engine.run("durable_flow", {})
+    before = copy.deepcopy(shared)
+
+    with pytest.raises(ValidationError):
+        await coordinator.claim_event(
+            first.wait_handle.wait_id,
+            WaitEvent(kind="signal", event_id="evt-invalid-lease", payload="yes"),
+            registration_id=first.wait_handle.registration_id,
+            lease_until="not-an-aware-datetime",
+        )
+
+    assert shared == before
 
 
 async def test_new_incarnation_after_store_replacement_rejects_the_retired_handle():

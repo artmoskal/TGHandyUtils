@@ -680,6 +680,54 @@
    "reason": "v0.11.6 (C2): new public model schema for the abort outcome (closed kind vocabulary + optional record). Subtree-scoped for this ONE seal.",
    "manifest_row": "C2",
    "consumed_by_seal": "2026-07-19 v0.11.6 C2 abort/settlement export seal (3 deltas; corpus 0)"
+  },
+  {
+   "path_prefix": "public.schemas.WaitRecord.properties.registration_attempt_id",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.6 (C2R): persist the opaque registration-attempt identity used by the adapter's compensation-versus-reuse CAS.",
+   "manifest_row": "C2R",
+   "consumed_by_seal": "2026-07-19 v0.11.6 C2R attempt-aware compensation seal (6 public deltas; corpus 0)"
+  },
+  {
+   "path_prefix": "public.schemas.WaitRegistrationAbortOutcome.$defs.WaitRecord.properties.registration_attempt_id",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.6 (C2R): nested abort-outcome records expose the same persisted registration-attempt identity.",
+   "manifest_row": "C2R",
+   "consumed_by_seal": "2026-07-19 v0.11.6 C2R attempt-aware compensation seal (6 public deltas; corpus 0)"
+  },
+  {
+   "path_prefix": "public.schemas.WaitRegistrationAbortOutcome.description",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.6 (C2R): document the closed not_creator/refused_reused compensation outcomes.",
+   "manifest_row": "C2R",
+   "consumed_by_seal": "2026-07-19 v0.11.6 C2R attempt-aware compensation seal (6 public deltas; corpus 0)"
+  },
+  {
+   "path_prefix": "public.schemas.WaitRegistrationAbortOutcome.properties.kind.enum",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.6 (C2R): the abort outcome vocabulary adds attempt-aware no-op/refusal outcomes.",
+   "manifest_row": "C2R",
+   "consumed_by_seal": "2026-07-19 v0.11.6 C2R attempt-aware compensation seal (6 public deltas; corpus 0)"
+  },
+  {
+   "path_prefix": "public.schemas.WaitRegistrationAbortOutcome.properties.kind.enum[3]",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.6 (C2R): not_creator occupies the first new closed-vocabulary position.",
+   "manifest_row": "C2R",
+   "consumed_by_seal": "2026-07-19 v0.11.6 C2R attempt-aware compensation seal (6 public deltas; corpus 0)"
+  },
+  {
+   "path_prefix": "public.schemas.WaitRegistrationAbortOutcome.properties.kind.enum[4]",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.6 (C2R): refused_reused occupies the second new closed-vocabulary position.",
+   "manifest_row": "C2R",
+   "consumed_by_seal": "2026-07-19 v0.11.6 C2R attempt-aware compensation seal (6 public deltas; corpus 0)"
   }
  ]
 }

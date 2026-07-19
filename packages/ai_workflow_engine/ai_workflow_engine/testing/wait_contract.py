@@ -370,14 +370,17 @@ async def run_wait_registration_conformance(
     aborter = make_coordinator()
     absent = await aborter.abort_registration(
         "w-abort-never", expected_registration_id="reg-x",
+        expected_registration_attempt_id="attempt-x",
         expected_definition_digest="digest-conf", reason="settle",
     )
     assert absent.kind == "absent", "aborting an uncommitted wait id must report 'absent'"
+    abort_record = _record(now, wait_id="w-abort")
     abort_receipt = await aborter.register(
-        _record(now, wait_id="w-abort"), snapshot_json, definition_json
+        abort_record, snapshot_json, definition_json
     )
     wrong_id = await aborter.abort_registration(
         "w-abort", expected_registration_id="reg-not-it",
+        expected_registration_attempt_id=abort_record.registration_attempt_id,
         expected_definition_digest="digest-conf", reason="settle",
     )
     assert wrong_id.kind == "refused_mismatch", (
@@ -385,6 +388,7 @@ async def run_wait_registration_conformance(
     )
     wrong_digest = await aborter.abort_registration(
         "w-abort", expected_registration_id=abort_receipt.registration_id,
+        expected_registration_attempt_id=abort_record.registration_attempt_id,
         expected_definition_digest="digest-other", reason="settle",
     )
     assert wrong_digest.kind == "refused_mismatch", (
@@ -394,8 +398,39 @@ async def run_wait_registration_conformance(
     assert after_refusals is not None and after_refusals.status == "pending" and (
         after_refusals.resume_attempts == 0
     ), "refused aborts must MUTATE NOTHING — validation precedes mutation"
+    reused_record = _record(now, wait_id="w-abort-reused")
+    reused_receipt = await aborter.register(
+        reused_record, snapshot_json, definition_json
+    )
+    retry_record = reused_record.model_copy(
+        update={"registration_attempt_id": "attempt-conformance-retry"}
+    )
+    await aborter.register(retry_record, snapshot_json, definition_json)
+    retry_abort = await aborter.abort_registration(
+        "w-abort-reused",
+        expected_registration_id=reused_receipt.registration_id,
+        expected_registration_attempt_id=retry_record.registration_attempt_id,
+        expected_definition_digest="digest-conf",
+        reason="retry cancelled",
+    )
+    assert retry_abort.kind == "not_creator", (
+        "a retry did not create the registration and must never revoke its creator"
+    )
+    creator_after_reuse = await aborter.abort_registration(
+        "w-abort-reused",
+        expected_registration_id=reused_receipt.registration_id,
+        expected_registration_attempt_id=reused_record.registration_attempt_id,
+        expected_definition_digest="digest-conf",
+        reason="creator cancelled late",
+    )
+    assert creator_after_reuse.kind == "refused_reused", (
+        "once another invocation reused a registration, creator compensation must lose "
+        "the CAS rather than revoke a potentially exposed handle"
+    )
+    assert (await aborter.get("w-abort-reused")).status == "pending"
     settled = await aborter.abort_registration(
         "w-abort", expected_registration_id=abort_receipt.registration_id,
+        expected_registration_attempt_id=abort_record.registration_attempt_id,
         expected_definition_digest="digest-conf", reason="never exposed",
     )
     assert settled.kind == "cancelled" and settled.record is not None and (
@@ -407,13 +442,15 @@ async def run_wait_registration_conformance(
     )
     repeat_settle = await aborter.abort_registration(
         "w-abort", expected_registration_id=abort_receipt.registration_id,
+        expected_registration_attempt_id=abort_record.registration_attempt_id,
         expected_definition_digest="digest-conf", reason="again",
     )
     assert repeat_settle.kind == "already_terminal" and (
         repeat_settle.record is not None and repeat_settle.record.status == "cancelled"
     ), "repeated compensation is an idempotent terminal report"
+    claim_guard_record = _record(now, wait_id="w-abort-claimed")
     claim_guard_receipt = await aborter.register(
-        _record(now, wait_id="w-abort-claimed"), snapshot_json, definition_json
+        claim_guard_record, snapshot_json, definition_json
     )
     abort_claim = await aborter.claim_event(
         "w-abort-claimed", signal,
@@ -422,6 +459,7 @@ async def run_wait_registration_conformance(
     assert abort_claim.kind == "claimed"
     claimed_refused = await aborter.abort_registration(
         "w-abort-claimed", expected_registration_id=claim_guard_receipt.registration_id,
+        expected_registration_attempt_id=claim_guard_record.registration_attempt_id,
         expected_definition_digest="digest-conf", reason="settle",
     )
     assert claimed_refused.kind == "refused_active_claim", (
@@ -433,6 +471,7 @@ async def run_wait_registration_conformance(
     await aborter.complete("w-abort-claimed", abort_claim.claim, resolution_kind="signal")
     delivery_won = await aborter.abort_registration(
         "w-abort-claimed", expected_registration_id=claim_guard_receipt.registration_id,
+        expected_registration_attempt_id=claim_guard_record.registration_attempt_id,
         expected_definition_digest="digest-conf", reason="settle",
     )
     assert delivery_won.kind == "already_terminal" and (

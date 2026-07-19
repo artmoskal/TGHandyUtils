@@ -59,6 +59,10 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _new_registration_attempt_id() -> str:
+    return "attempt-" + uuid.uuid4().hex
+
+
 def _stored_model_data(value: Any) -> Any:
     """Project persisted model objects to their complete raw representation.
 
@@ -198,14 +202,19 @@ class WaitRecord(BaseModel):
         return data
     deadline_at: AwareDatetime
     version: int = Field(default=1, ge=1)
+    # v0.11.6 C2R: identifies the invocation that created this registration
+    # incarnation. Exact retries carry a fresh attempted id, but the persisted record
+    # retains the original creator. The adapter uses this with its attempt-participant
+    # set to decide compensation atomically; it is lifecycle state, not authorization.
+    registration_attempt_id: str = Field(default_factory=_new_registration_attempt_id)
 
-    @field_validator("definition_digest")
+    @field_validator("definition_digest", "registration_attempt_id")
     @classmethod
-    def _non_blank_digest(cls, value: str) -> str:
+    def _non_blank_identity(cls, value: str) -> str:
         if not value.strip():
             raise ValueError(
-                "definition_digest must be a non-blank machine identity — blank would "
-                "disable changed-machine protection"
+                "definition_digest and registration_attempt_id must be non-blank "
+                "lifecycle identities"
             )
         return value
     resume_attempts: int = Field(default=0, ge=0)
@@ -300,6 +309,11 @@ class WaitRegistrationAbortOutcome(BaseModel):
     - ``already_terminal``: the record is already settled — the caller inspects
       ``record.status`` (a previous compensation is idempotent; a completed/failed
       record means delivery or exhaustion won and execution truth is preserved).
+    - ``not_creator``: this invocation reused a pre-existing registration and therefore
+      owns no registration side effect to compensate.
+    - ``refused_reused``: this invocation created the registration, but another
+      invocation has since reused it; cancellation may not revoke a concurrently exposed
+      handle.
     - ``refused_mismatch``: the stored receipt/machine does not match the expected
       registration incarnation — NOTHING was mutated.
     - ``refused_active_claim``: a live claimant owns the wait — NOTHING was mutated.
@@ -308,7 +322,13 @@ class WaitRegistrationAbortOutcome(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     kind: Literal[
-        "absent", "cancelled", "already_terminal", "refused_mismatch", "refused_active_claim"
+        "absent",
+        "cancelled",
+        "already_terminal",
+        "not_creator",
+        "refused_reused",
+        "refused_mismatch",
+        "refused_active_claim",
     ]
     record: Optional[WaitRecord] = None
 
@@ -380,6 +400,7 @@ class WaitCoordinator(Protocol):
         wait_id: str,
         *,
         expected_registration_id: str,
+        expected_registration_attempt_id: str,
         expected_definition_digest: str,
         reason: str,
     ) -> WaitRegistrationAbortOutcome: ...
@@ -436,6 +457,9 @@ class InMemoryWaitCoordinator:
         self._snapshots: Dict[str, str] = state.setdefault("snapshots", {})
         self._definitions: Dict[str, str] = state.setdefault("definitions", {})
         self._receipts: Dict[str, WaitReceipt] = state.setdefault("receipts", {})
+        self._registration_attempts: Dict[str, set[str]] = state.setdefault(
+            "registration_attempts", {}
+        )
         self._accepted_events: Dict[str, str] = state.setdefault("accepted_events", {})
         self._leases: Dict[str, Any] = state.setdefault("leases", {})
         self._claims: Dict[str, WaitClaim] = state.setdefault("claims", {})
@@ -447,11 +471,18 @@ class InMemoryWaitCoordinator:
         async with self._lock:
             existing = self._records.get(record.wait_id)
             if existing is not None:
+                existing_data = existing.model_dump()
+                attempted_data = record.model_dump()
+                existing_data.pop("registration_attempt_id", None)
+                attempted_data.pop("registration_attempt_id", None)
                 if (
-                    existing == record
+                    existing_data == attempted_data
                     and self._snapshots.get(record.wait_id) == snapshot_json
                     and self._definitions.get(record.wait_id) == definition_json
                 ):
+                    self._registration_attempts.setdefault(
+                        record.wait_id, {existing.registration_attempt_id}
+                    ).add(record.registration_attempt_id)
                     # idempotent crash/retry re-register — DEFENSIVE result (W2C.2): the
                     # caller can never alias the stored receipt.
                     return self._receipts[record.wait_id].model_copy(deep=True)
@@ -478,6 +509,9 @@ class InMemoryWaitCoordinator:
             self._snapshots[record.wait_id] = snapshot_json
             self._definitions[record.wait_id] = definition_json
             self._receipts[record.wait_id] = receipt.model_copy(deep=True)
+            self._registration_attempts[record.wait_id] = {
+                record.registration_attempt_id
+            }
             return receipt.model_copy(deep=True)
 
     async def get(self, wait_id: str) -> Optional[WaitRecord]:
@@ -545,8 +579,9 @@ class InMemoryWaitCoordinator:
                     return WaitClaimOutcome(kind="not_accepted", record=record.model_copy(deep=True))
                 # lease expired, same accepted event: reclaim (crash recovery) — bounded below
             if record.resume_attempts >= record.policy.max_resume_attempts:
-                failed = record.model_copy(
-                    update={
+                failed = WaitRecord.model_validate(
+                    {
+                        **_stored_model_data(record),
                         "status": "failed",
                         "version": record.version + 1,
                         "failure_kind": "attempts_exhausted",
@@ -556,18 +591,19 @@ class InMemoryWaitCoordinator:
                         ),
                     }
                 )
+                result = WaitClaimOutcome(
+                    kind="attempts_exhausted", record=failed.model_copy(deep=True)
+                )
                 self._records[wait_id] = failed
-                return WaitClaimOutcome(kind="attempts_exhausted", record=failed.model_copy(deep=True))
-            claimed = record.model_copy(
-                update={
+                return result
+            claimed = WaitRecord.model_validate(
+                {
+                    **_stored_model_data(record),
                     "status": "claimed",
                     "version": record.version + 1,
                     "resume_attempts": record.resume_attempts + 1,
                 }
             )
-            self._records[wait_id] = claimed
-            self._accepted_events[wait_id] = event.event_id
-            self._leases[wait_id] = lease_until
             claim = WaitClaim(
                 wait_id=wait_id,
                 wait_version=claimed.version,
@@ -575,16 +611,26 @@ class InMemoryWaitCoordinator:
                 claimed_at=self._clock(),
                 lease_expires_at=lease_until,
             )
-            self._claims[wait_id] = claim.model_copy(deep=True)
-            return WaitClaimOutcome(
-                kind="claimed", record=claimed.model_copy(deep=True), claim=claim.model_copy(deep=True)
+            result = WaitClaimOutcome(
+                kind="claimed",
+                record=claimed.model_copy(deep=True),
+                claim=claim.model_copy(deep=True),
             )
+            # All candidate objects above are validated before the transaction commits any
+            # map. Invalid lease/record/outcome construction therefore leaves every map at
+            # the exact pre-call state.
+            self._records[wait_id] = claimed
+            self._accepted_events[wait_id] = event.event_id
+            self._leases[wait_id] = lease_until
+            self._claims[wait_id] = claim.model_copy(deep=True)
+            return result
 
     async def abort_registration(
         self,
         wait_id: str,
         *,
         expected_registration_id: str,
+        expected_registration_attempt_id: str,
         expected_definition_digest: str,
         reason: str,
     ) -> WaitRegistrationAbortOutcome:
@@ -604,6 +650,10 @@ class InMemoryWaitCoordinator:
                 return WaitRegistrationAbortOutcome(
                     kind="refused_mismatch", record=record.model_copy(deep=True)
                 )
+            if record.registration_attempt_id != expected_registration_attempt_id:
+                return WaitRegistrationAbortOutcome(
+                    kind="not_creator", record=record.model_copy(deep=True)
+                )
             if record.status in ("completed", "failed", "cancelled"):
                 return WaitRegistrationAbortOutcome(
                     kind="already_terminal", record=record.model_copy(deep=True)
@@ -613,6 +663,13 @@ class InMemoryWaitCoordinator:
                 # compensation never preempts it (stalled claims stay operator-owned).
                 return WaitRegistrationAbortOutcome(
                     kind="refused_active_claim", record=record.model_copy(deep=True)
+                )
+            participants = self._registration_attempts.get(
+                wait_id, {record.registration_attempt_id}
+            )
+            if participants != {expected_registration_attempt_id}:
+                return WaitRegistrationAbortOutcome(
+                    kind="refused_reused", record=record.model_copy(deep=True)
                 )
             cancelled = record.model_copy(
                 update={
