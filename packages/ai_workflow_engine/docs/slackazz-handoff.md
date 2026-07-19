@@ -82,13 +82,17 @@ from ai_workflow_engine import (
 from ai_workflow_engine.testing import run_wait_registration_conformance
 ```
 
-The 11 async coordinator members are:
+The 12 async coordinator members are:
 
 - `register(record, snapshot_json, definition_json)`
 - `get(wait_id)`
+- `load_receipt(wait_id)` — v0.11.6: returns the stored `WaitReceipt` (or `None`); exact
+  crash-retry reuse and registration compensation both reload it
 - `load_snapshot(wait_id)`
 - `load_definition(wait_id)`
-- `claim_event(wait_id, event, lease_until=...)`
+- `claim_event(wait_id, event, registration_id=..., lease_until=...)` — v0.11.6: the
+  adapter must verify `registration_id` against its stored receipt BEFORE mutating any
+  record/event/attempt/lease state; a mismatch is a loud error, never a claim
 - `complete(wait_id, claim, resolution_kind=...)`
 - `fail(wait_id, claim, error=..., failure_kind=...)`
 - `due(now)`
@@ -98,10 +102,12 @@ The 11 async coordinator members are:
 
 `builder.with_wait_coordinator(coordinator, clock=...)` rejects missing or synchronous members.
 
-Public engine doors:
+Public engine doors (v0.11.6: delivery is HANDLE-BOUND — persist the complete `WaitHandle`
+you were exposed, including its required `registration_id`; a bare wait id cannot resume
+durable work):
 
 ```python
-outcome: WaitDeliveryOutcome = await engine.deliver_wait_event(wait_id, event)
+outcome: WaitDeliveryOutcome = await engine.deliver_wait_event(handle, event)
 record, observation = await engine.cancel_wait(wait_id, reason="case closed")
 ```
 

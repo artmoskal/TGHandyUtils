@@ -263,7 +263,7 @@ async def test_slackazz_shape_durable_suspend_resume_grouped_bundle(tmp_path):
     assert first.wait_handle is not None and first.snapshot is None
 
     outcome = await engine.deliver_wait_event(
-        first.wait_handle.wait_id, {"kind": "signal", "event_id": "evt-q", "payload": "approved"}
+        first.wait_handle, {"kind": "signal", "event_id": "evt-q", "payload": "approved"}
     )
     assert outcome.kind == "executed"
     assert outcome.run_result.status == "completed"

@@ -7329,11 +7329,15 @@
     },
     "WaitHandle": {
       "additionalProperties": false,
-      "description": "What a product receives for a REGISTERED wait \u2014 never the raw snapshot (C1).",
+      "description": "What a product receives for a REGISTERED wait \u2014 never the raw snapshot (C1).\n\nv0.11.6: the handle is the continuation CAPABILITY. ``registration_id`` is the\nadapter's receipt identity for the exact accepted registration incarnation \u2014 delivery\nrequires the complete handle, and the coordinator refuses a registration id that does\nnot match its stored receipt. Persist the whole handle; a bare deterministic wait id\ncan no longer resume durable work.",
       "properties": {
         "deadline_at": {
           "format": "date-time",
           "title": "Deadline At",
+          "type": "string"
+        },
+        "registration_id": {
+          "title": "Registration Id",
           "type": "string"
         },
         "run_id": {
@@ -7370,7 +7374,8 @@
         "run_id",
         "workflow_id",
         "suspended_node",
-        "deadline_at"
+        "deadline_at",
+        "registration_id"
       ],
       "title": "WaitHandle",
       "type": "object"
@@ -10279,11 +10284,15 @@
         },
         "WaitHandle": {
           "additionalProperties": false,
-          "description": "What a product receives for a REGISTERED wait \u2014 never the raw snapshot (C1).",
+          "description": "What a product receives for a REGISTERED wait \u2014 never the raw snapshot (C1).\n\nv0.11.6: the handle is the continuation CAPABILITY. ``registration_id`` is the\nadapter's receipt identity for the exact accepted registration incarnation \u2014 delivery\nrequires the complete handle, and the coordinator refuses a registration id that does\nnot match its stored receipt. Persist the whole handle; a bare deterministic wait id\ncan no longer resume durable work.",
           "properties": {
             "deadline_at": {
               "format": "date-time",
               "title": "Deadline At",
+              "type": "string"
+            },
+            "registration_id": {
+              "title": "Registration Id",
               "type": "string"
             },
             "run_id": {
@@ -10320,7 +10329,8 @@
             "run_id",
             "workflow_id",
             "suspended_node",
-            "deadline_at"
+            "deadline_at",
+            "registration_id"
           ],
           "title": "WaitHandle",
           "type": "object"

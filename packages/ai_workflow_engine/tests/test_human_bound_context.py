@@ -449,7 +449,7 @@ async def test_decorated_human_timeout_route_never_invokes_the_capability():
     assert calls["gate"] == 1, "initial ask is the only invocation so far"
 
     outcome = await engine.deliver_wait_event(
-        first.wait_handle.wait_id, {"kind": "timeout", "event_id": "evt-t", "payload": None}
+        first.wait_handle, {"kind": "timeout", "event_id": "evt-t", "payload": None}
     )
     assert outcome.kind == "executed"
     assert outcome.run_result.status == "completed"

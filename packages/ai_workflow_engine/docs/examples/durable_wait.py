@@ -70,8 +70,10 @@ async def main() -> None:
         assert suspended.status == "requires_user_input"
         assert suspended.wait_handle is not None and suspended.snapshot is None
 
+        # v0.11.6: delivery is handle-bound — persist and present the COMPLETE handle;
+        # a bare wait id cannot resume durable work.
         delivered = await engine.deliver_wait_event(
-            suspended.wait_handle.wait_id,
+            suspended.wait_handle,
             WaitEvent(
                 kind="signal",
                 event_id="approval-message-42",

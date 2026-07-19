@@ -136,7 +136,7 @@ class DurableWaitRuntime:
 
     async def deliver(
         self,
-        wait_id: str,
+        handle: WaitHandle,
         event: Any,
         *,
         current_digest: Optional[str],
@@ -144,7 +144,11 @@ class DurableWaitRuntime:
     ) -> WaitDeliveryOutcome:
         """W3.2/W3.3: the ONE delivery path — atomic claim, digest check, snapshot load,
         private resume through the injected port, then terminalize. At-least-once with
-        idempotent effects; a terminalized claim is never executed again."""
+        idempotent effects; a terminalized claim is never executed again.
+
+        v0.11.6 (C1): delivery is HANDLE-BOUND — the coordinator verifies the handle's
+        registration identity against its stored receipt before any state changes; a bare
+        deterministic wait id cannot resume durable work."""
 
         from ai_workflow_engine.waits import WaitEvent
 
@@ -154,8 +158,11 @@ class DurableWaitRuntime:
                 "deliver_wait_event requires a composed resume port — build the engine via "
                 "WorkflowEngineBuilder.with_wait_coordinator(...)"
             )
+        wait_id = handle.wait_id
         lease_until = self.now() + timedelta(seconds=lease_seconds)
-        outcome = await self.coordinator.claim_event(wait_id, event, lease_until=lease_until)
+        outcome = await self.coordinator.claim_event(
+            wait_id, event, registration_id=handle.registration_id, lease_until=lease_until
+        )
         if outcome.kind != "claimed":
             return WaitDeliveryOutcome(
                 kind=outcome.kind,
@@ -304,6 +311,16 @@ class DurableWaitRuntime:
                     f"wait {wait_id!r} exists with DIFFERENT {', '.join(mismatches)} — "
                     "changed machine state is rejected, never silently reused"
                 )
+            # v0.11.6 (C1): exact crash-retry reuse returns the SAME stored registration
+            # identity — no second incarnation is minted for the same accepted attempt.
+            stored_receipt = await self.coordinator.load_receipt(wait_id)
+            if stored_receipt is None or stored_receipt.wait_id != wait_id:
+                raise RuntimeError(
+                    f"wait {wait_id!r} is registered but its stored receipt is "
+                    f"{'missing' if stored_receipt is None else 'mis-keyed'} — adapter "
+                    "integrity failure; an exposable handle requires the accepted "
+                    "registration identity"
+                )
             return WaitRegistrationOutcome(
                 handle=WaitHandle(
                     wait_id=existing.wait_id,
@@ -311,10 +328,13 @@ class DurableWaitRuntime:
                     workflow_id=existing.workflow_id,
                     suspended_node=existing.suspended_node,
                     deadline_at=existing.deadline_at,
+                    registration_id=stored_receipt.registration_id,
                     status=existing.status,
                 ),
                 reused=True,
                 deadline_at=existing.deadline_at,
+                adapter_id=stored_receipt.adapter_id,
+                registration_id=stored_receipt.registration_id,
             )
         now = self.now()
         record = WaitRecord(
@@ -356,6 +376,7 @@ class DurableWaitRuntime:
                 workflow_id=record.workflow_id,
                 suspended_node=request.suspended_node,
                 deadline_at=record.deadline_at,
+                registration_id=receipt.registration_id,
                 status="pending",
             ),
             reused=False,

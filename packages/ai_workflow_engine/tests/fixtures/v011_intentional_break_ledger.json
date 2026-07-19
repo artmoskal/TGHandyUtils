@@ -549,7 +549,7 @@
    "path_prefix": "public.schemas.WaitRecord",
    "match": "prefix",
    "status": "spent",
-   "reason": "wait record versioned (M12): required record_schema_version Literal \u2014 subtree-scoped for this one seal, spent immediately after",
+   "reason": "wait record versioned (M12): required record_schema_version Literal — subtree-scoped for this one seal, spent immediately after",
    "manifest_row": "M12",
    "consumed_by_seal": "2026-07-14 bundle-v2 + wait-record-version seal (2A)"
   },
@@ -589,7 +589,7 @@
    "path_prefix": "human_bound_context",
    "match": "exact",
    "status": "spent",
-   "reason": "B0 (Iteration B, v0.11.3): NEW corpus row sealing the human bound-context contract \u2014 all four node decorations (plan/machine cards, agent memory, model binding) composed with retrace provenance, criticism payload, and resume events across two suspend/resume cycles. Additive row; existing rows must stay zero-delta.",
+   "reason": "B0 (Iteration B, v0.11.3): NEW corpus row sealing the human bound-context contract — all four node decorations (plan/machine cards, agent memory, model binding) composed with retrace provenance, criticism payload, and resume events across two suspend/resume cycles. Additive row; existing rows must stay zero-delta.",
    "manifest_row": "B0",
    "consumed_by_seal": "2026-07-16 B0 human-bound-context seal (1 corpus row + 1 public signature; all existing rows zero-delta)"
   },
@@ -640,6 +640,22 @@
    "reason": "v0.11.5 (U1, SlackAzz AC-11): WaitHealth gains REQUIRED failed + integrity_errors current-state counts (no defaults - an adapter without the current health contract must fail loudly). Subtree-scoped for this ONE seal.",
    "manifest_row": "U1",
    "consumed_by_seal": "2026-07-18 v0.11.5 WaitHealth failed/integrity_errors seal (3 subtree deltas; corpus 0)"
+  },
+  {
+   "path_prefix": "public.schemas.WaitHandle",
+   "match": "prefix",
+   "status": "spent",
+   "reason": "v0.11.6 (C1, exposure truth): WaitHandle gains REQUIRED registration_id — the handle is the continuation capability; delivery is handle-bound and a bare deterministic wait id cannot resume durable work. Subtree-scoped for this ONE seal (description + new property + required list).",
+   "manifest_row": "C1",
+   "consumed_by_seal": "2026-07-19 v0.11.6 C1 handle-bound WaitHandle.registration_id seal (6 subtree deltas; corpus 0)"
+  },
+  {
+   "path_prefix": "public.schemas.WorkflowRunResult.$defs.WaitHandle",
+   "match": "prefix",
+   "status": "spent",
+   "reason": "v0.11.6 (C1): the same WaitHandle registration_id delta nested inside the public run-result schema. Subtree-scoped for this ONE seal.",
+   "manifest_row": "C1",
+   "consumed_by_seal": "2026-07-19 v0.11.6 C1 handle-bound WaitHandle.registration_id seal (6 subtree deltas; corpus 0)"
   }
  ]
 }

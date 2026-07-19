@@ -40,7 +40,7 @@ def test_documented_protocol_table_matches_the_real_protocol():
         for name, value in vars(WaitCoordinator).items()
         if inspect.isfunction(value) and not name.startswith("_")
     }
-    assert len(real) == 11, f"expected the 11-member coordinator protocol, got {sorted(real)}"
+    assert len(real) == 12, f"expected the 12-member coordinator protocol, got {sorted(real)}"
     for member in real:
         assert f"`{member}(" in SLACKAZZ_DOC or f"`{member}`" in SLACKAZZ_DOC, (
             f"real coordinator member {member!r} missing from the handoff protocol table"

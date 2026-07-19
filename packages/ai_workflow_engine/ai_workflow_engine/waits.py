@@ -17,6 +17,7 @@ terminal status — a passed deadline proves nothing about timeout processing.
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Literal, Optional, Protocol, Union, runtime_checkable
 
@@ -327,11 +328,15 @@ class WaitCoordinator(Protocol):
 
     async def get(self, wait_id: str) -> Optional[WaitRecord]: ...
 
+    async def load_receipt(self, wait_id: str) -> Optional[WaitReceipt]: ...
+
     async def load_snapshot(self, wait_id: str) -> Optional[str]: ...
 
     async def load_definition(self, wait_id: str) -> Optional[str]: ...
 
-    async def claim_event(self, wait_id: str, event: WaitEvent, *, lease_until: Any) -> WaitClaimOutcome: ...
+    async def claim_event(
+        self, wait_id: str, event: WaitEvent, *, registration_id: str, lease_until: Any
+    ) -> WaitClaimOutcome: ...
 
     async def complete(self, wait_id: str, claim: WaitClaim, *, resolution_kind: str) -> WaitRecord: ...
 
@@ -356,11 +361,26 @@ class InMemoryWaitCoordinator:
 
     adapter_id = "in_memory"
 
-    def __init__(self, *, clock: Any, shared_state: Optional[Dict[str, Dict]] = None) -> None:
+    def __init__(
+        self,
+        *,
+        clock: Any,
+        shared_state: Optional[Dict[str, Dict]] = None,
+        registration_id_factory: Optional[Any] = None,
+    ) -> None:
         import asyncio
 
         if clock is None or not callable(clock):
             raise ValueError("InMemoryWaitCoordinator requires an injected clock callable")
+        if registration_id_factory is not None and not callable(registration_id_factory):
+            raise ValueError("registration_id_factory must be a callable returning a string")
+        # v0.11.6 (C1): registration identity is OPAQUE and unique per newly accepted
+        # incarnation — never derivable from the deterministic wait id, or a retired
+        # incarnation's handle could claim its successor. The factory is injectable so
+        # conformance tests assert with deterministic distinct ids instead of probability.
+        self._registration_id_factory = registration_id_factory or (
+            lambda: "reg-" + uuid.uuid4().hex
+        )
         self._clock = clock
         self._lock = asyncio.Lock()
         # W2R.3: `shared_state` lets tests reconnect a SECOND coordinator over the same
@@ -393,8 +413,14 @@ class InMemoryWaitCoordinator:
                     f"wait {record.wait_id!r} is already registered with DIFFERENT content — "
                     "duplicate registrations must be identical"
                 )
+            registration_id = str(self._registration_id_factory())
+            if not registration_id.strip():
+                raise ValueError("registration_id_factory produced a blank registration id")
             receipt = WaitReceipt(
-                registration_id=f"reg-{record.wait_id}",
+                # v0.11.6 (C1): opaque per-incarnation identity — NEVER derived from the
+                # deterministic wait id (a derivable id would let a retired incarnation's
+                # handle claim a later registration of the same logical suspension).
+                registration_id=registration_id,
                 wait_id=record.wait_id,
                 wait_version=record.version,
                 accepted_deadline=record.deadline_at,
@@ -414,6 +440,14 @@ class InMemoryWaitCoordinator:
             # defensive copy: callers cannot mutate stored state outside future claim ops
             return record.model_copy(deep=True) if record is not None else None
 
+    async def load_receipt(self, wait_id: str) -> Optional[WaitReceipt]:
+        """v0.11.6 (C1): the stored attestation for exact crash-retry reuse and
+        acknowledgement-loss compensation — None for unknown ids, never fabricated."""
+
+        async with self._lock:
+            receipt = self._receipts.get(wait_id)
+            return receipt.model_copy(deep=True) if receipt is not None else None
+
     async def load_snapshot(self, wait_id: str) -> Optional[str]:
         async with self._lock:
             return self._snapshots.get(wait_id)
@@ -422,11 +456,28 @@ class InMemoryWaitCoordinator:
         async with self._lock:
             return self._definitions.get(wait_id)
 
-    async def claim_event(self, wait_id: str, event: WaitEvent, *, lease_until: Any) -> WaitClaimOutcome:
+    async def claim_event(
+        self, wait_id: str, event: WaitEvent, *, registration_id: str, lease_until: Any
+    ) -> WaitClaimOutcome:
         async with self._lock:
             record = self._records.get(wait_id)
             if record is None:
                 raise KeyError(f"unknown wait id {wait_id!r}")
+            # v0.11.6 (C1): registration possession is verified INSIDE the adapter's
+            # transaction domain, BEFORE any record/event/attempt/lease mutation — a
+            # handle from a never-exposed or retired incarnation must change nothing.
+            receipt = self._receipts.get(wait_id)
+            if receipt is None:
+                raise ValueError(
+                    f"wait {wait_id!r} has a record but no stored receipt — adapter "
+                    "integrity failure; refusing to claim"
+                )
+            if registration_id != receipt.registration_id:
+                raise ValueError(
+                    f"registration identity mismatch for wait {wait_id!r}: the presented "
+                    "handle does not name the accepted registration incarnation — delivery "
+                    "requires the complete exposed WaitHandle"
+                )
             accepted = self._accepted_events.get(wait_id)
             if record.status in ("completed", "failed", "cancelled"):
                 kind = "duplicate" if accepted == event.event_id else "terminal"

@@ -861,14 +861,15 @@ async def test_hermetic_slack_durable_approval_full_lifecycle(tmp_path):
     first = await engine.run("slack_durable", {"message": "deploy?"}, goal=goal)
     assert first.status == "requires_user_input" and first.wait_handle is not None
     assert first.snapshot is None, "durable suspensions expose the handle door only"
-    wait_1 = first.wait_handle.wait_id
+    handle_1 = first.wait_handle
+    wait_1 = handle_1.wait_id
 
     ok = await engine.deliver_wait_event(
-        wait_1, {"kind": "signal", "event_id": "evt-approve", "payload": {"decision": "approve"}}
+        handle_1, {"kind": "signal", "event_id": "evt-approve", "payload": {"decision": "approve"}}
     )
     assert ok.kind == "executed"
     dup = await engine.deliver_wait_event(
-        wait_1, {"kind": "signal", "event_id": "evt-approve", "payload": {"decision": "approve"}}
+        handle_1, {"kind": "signal", "event_id": "evt-approve", "payload": {"decision": "approve"}}
     )
     assert dup.kind == "duplicate" and dup.run_result is None
 
@@ -876,7 +877,7 @@ async def test_hermetic_slack_durable_approval_full_lifecycle(tmp_path):
     chained = ok.run_result
     assert chained.status == "requires_user_input" and chained.wait_handle is not None
     done = await engine.deliver_wait_event(
-        chained.wait_handle.wait_id,
+        chained.wait_handle,
         {"kind": "signal", "event_id": "evt-2", "payload": {"decision": "ship"}},
     )
     assert done.kind == "executed" and done.run_result.status == "completed"
@@ -887,14 +888,19 @@ async def test_hermetic_slack_durable_approval_full_lifecycle(tmp_path):
     # must not duplicate the escalation intent.
     goal_t = WorkflowGoal(workflow_type="slack_durable", objective="timeout", metadata={"run_id": "sd-2"})
     second = await engine.run("slack_durable", {"message": "ping"}, goal=goal_t)
-    wait_t = second.wait_handle.wait_id
+    handle_t = second.wait_handle
+    wait_t = handle_t.wait_id
     current["now"] += timedelta(seconds=3601)
     due = await coordinator.due(clock())
     assert [r.wait_id for r in due] == [wait_t]
-    timed_out = await engine.deliver_wait_event(wait_t, {"kind": "timeout", "event_id": "evt-T"})
+    timed_out = await engine.deliver_wait_event(
+        handle_t, {"kind": "timeout", "event_id": "evt-T"}
+    )
     assert timed_out.kind == "executed"
     assert timed_out.run_result.output["intent_key"] == f"{wait_t}:evt-T"
-    redelivered = await engine.deliver_wait_event(wait_t, {"kind": "timeout", "event_id": "evt-T"})
+    redelivered = await engine.deliver_wait_event(
+        handle_t, {"kind": "timeout", "event_id": "evt-T"}
+    )
     assert redelivered.kind == "duplicate" and redelivered.run_result is None
     assert action_intents == {f"{wait_t}:evt-T": 1}, (
         "duplicate timeout delivery must NEVER duplicate an action intent"
@@ -1116,7 +1122,7 @@ async def test_hermetic_slack_cooldown_ack_and_membership_lifecycle(tmp_path):
     current["now"] += timedelta(seconds=901)
     assert [r.wait_id for r in await coordinator.due(clock())] == [outage.wait_handle.wait_id]
     recovered = await engine.deliver_wait_event(
-        outage.wait_handle.wait_id, {"kind": "timeout", "event_id": "evt-cool"}
+        outage.wait_handle, {"kind": "timeout", "event_id": "evt-cool"}
     )
     assert recovered.kind == "executed" and recovered.run_result.status == "completed"
     assert recovered.run_result.output.get("recovered") is True, (
@@ -1139,7 +1145,7 @@ async def test_hermetic_slack_cooldown_ack_and_membership_lifecycle(tmp_path):
     assert record.status == "cancelled" and observation == "recorded"
     assert escalation_intents == [], "an acknowledged case must never escalate"
     late_timeout = await engine.deliver_wait_event(
-        wait_esc, {"kind": "timeout", "event_id": "evt-late"}
+        esc.wait_handle, {"kind": "timeout", "event_id": "evt-late"}
     )
     assert late_timeout.kind == "terminal" and late_timeout.run_result is None, (
         "the raced timeout after cancellation is a terminal report, not an escalation"
@@ -1153,7 +1159,7 @@ async def test_hermetic_slack_cooldown_ack_and_membership_lifecycle(tmp_path):
         goal=WorkflowGoal(workflow_type="membership_flow", objective="d", metadata={"run_id": "member-run"}),
     )
     refreshed = await engine.deliver_wait_event(
-        member.wait_handle.wait_id,
+        member.wait_handle,
         {"kind": "signal", "event_id": "evt-roster", "payload": {"manager": "alice"}},
     )
     assert refreshed.kind == "executed" and refreshed.run_result.status == "completed"

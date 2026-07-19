@@ -952,7 +952,7 @@ async def _sc_durable_suspend_resume():
     first = await engine.run("dur_flow", {})
     handle = first.wait_handle
     outcome = await engine.deliver_wait_event(
-        handle.wait_id, {"kind": "signal", "event_id": "evt-1", "payload": "approved"}
+        handle, {"kind": "signal", "event_id": "evt-1", "payload": "approved"}
     )
     stored = await coordinator.get(handle.wait_id)
     final = outcome.run_result

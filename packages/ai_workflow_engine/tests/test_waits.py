@@ -49,6 +49,7 @@ def test_wait_models_are_strict_and_round_trip():
         WaitHandle(
             wait_id="w1", run_id="r1", workflow_id="wf",
             suspended_node="approval", deadline_at="2026-07-11T13:00:00+00:00",
+            registration_id="reg-1",
         ),
         WaitHealth(pending=1, claimed=0, overdue=0, failed=0, integrity_errors=0),
     ):
@@ -277,6 +278,7 @@ def test_run_result_never_carries_both_public_wait_doors():
             wait_handle=WaitHandle(
                 wait_id="x", run_id="r", workflow_id="w",
                 suspended_node="ask", deadline_at="2026-07-11T13:00:00+00:00",
+                registration_id="reg-1",
             ),
         )
 
@@ -354,6 +356,7 @@ def test_run_result_wait_door_matrix_is_status_dependent_and_typed():
     handle = WaitHandle(
         wait_id="x", run_id="r", workflow_id="w", suspended_node="ask",
         deadline_at=datetime(2026, 7, 11, 13, 0, tzinfo=timezone.utc),
+        registration_id="reg-1",
     )
 
     # suspended with NEITHER door
@@ -415,6 +418,7 @@ def test_model_copy_updates_are_fully_validated_not_just_door_checked():
     handle = WaitHandle(
         wait_id="x", run_id="r", workflow_id="w", suspended_node="ask",
         deadline_at=datetime(2026, 7, 11, 13, 0, tzinfo=timezone.utc),
+        registration_id="reg-1",
     )
     durable = WorkflowRunResult(workflow_id="w", status="requires_user_input", wait_handle=handle)
 
@@ -597,22 +601,32 @@ async def test_broken_adapters_fail_conformance_by_named_invariant():
             )
 
     class SilentReplace(InMemoryWaitCoordinator):
+        # v0.11.6: replaces the stored registration ONLY for a CHANGED duplicate, so
+        # identical retries stay idempotent and the kit reaches the changed-duplicate
+        # invariant — which must name the missing loud rejection.
+        async def register(self, record, snapshot_json, definition_json):
+            async with self._lock:
+                existing = self._records.get(record.wait_id)
+                if existing is not None and (
+                    existing != record
+                    or self._snapshots.get(record.wait_id) != snapshot_json
+                    or self._definitions.get(record.wait_id) != definition_json
+                ):
+                    self._records.pop(record.wait_id, None)
+                    self._snapshots.pop(record.wait_id, None)
+                    self._definitions.pop(record.wait_id, None)
+                    self._receipts.pop(record.wait_id, None)
+            return await super().register(record, snapshot_json, definition_json)
+
+    class NotIdempotent(InMemoryWaitCoordinator):
+        # v0.11.6: every retry re-registers as a FRESH incarnation (the base class now
+        # mints a new opaque id per accepted registration) — the idempotent-duplicate
+        # invariant must name it.
         async def register(self, record, snapshot_json, definition_json):
             self._records.pop(record.wait_id, None)
             self._snapshots.pop(record.wait_id, None)
             self._receipts.pop(record.wait_id, None)
             return await super().register(record, snapshot_json, definition_json)
-
-    class NotIdempotent(InMemoryWaitCoordinator):
-        _n = 0
-
-        async def register(self, record, snapshot_json, definition_json):
-            self._records.pop(record.wait_id, None)
-            self._snapshots.pop(record.wait_id, None)
-            self._receipts.pop(record.wait_id, None)
-            receipt = await super().register(record, snapshot_json, definition_json)
-            type(self)._n += 1
-            return receipt.model_copy(update={"registration_id": f"reg-{type(self)._n}"})
 
     class Amnesiac(InMemoryWaitCoordinator):
         async def get(self, wait_id):
@@ -627,8 +641,10 @@ async def test_broken_adapters_fail_conformance_by_named_invariant():
     class StaleAttemptOrdinal(InMemoryWaitCoordinator):
         # R0/F16 negative: returning the PRE-increment row from claim_event (a common ORM
         # pattern) makes retries reuse a dead attempt's directory — conformance must name it.
-        async def claim_event(self, wait_id, event, *, lease_until):
-            outcome = await super().claim_event(wait_id, event, lease_until=lease_until)
+        async def claim_event(self, wait_id, event, *, registration_id, lease_until):
+            outcome = await super().claim_event(
+                wait_id, event, registration_id=registration_id, lease_until=lease_until
+            )
             if outcome.kind == "claimed":
                 stale = outcome.record.model_copy(
                     update={"resume_attempts": outcome.record.resume_attempts - 1}
@@ -639,8 +655,10 @@ async def test_broken_adapters_fail_conformance_by_named_invariant():
     class LeaseIgnorer(InMemoryWaitCoordinator):
         # W5.1 negative: granting a claim to a DIFFERENT event while a lease is LIVE
         # breaks single-claimant atomicity — conformance must name it.
-        async def claim_event(self, wait_id, event, *, lease_until):
-            outcome = await super().claim_event(wait_id, event, lease_until=lease_until)
+        async def claim_event(self, wait_id, event, *, registration_id, lease_until):
+            outcome = await super().claim_event(
+                wait_id, event, registration_id=registration_id, lease_until=lease_until
+            )
             if outcome.kind == "already_processing":
                 async with self._lock:
                     record = self._records[wait_id]
@@ -664,8 +682,10 @@ async def test_broken_adapters_fail_conformance_by_named_invariant():
 
     class TerminalReviver(InMemoryWaitCoordinator):
         # W5.1 negative: claiming a TERMINAL wait re-executes settled history.
-        async def claim_event(self, wait_id, event, *, lease_until):
-            outcome = await super().claim_event(wait_id, event, lease_until=lease_until)
+        async def claim_event(self, wait_id, event, *, registration_id, lease_until):
+            outcome = await super().claim_event(
+                wait_id, event, registration_id=registration_id, lease_until=lease_until
+            )
             if outcome.kind == "terminal":
                 from ai_workflow_engine.waits import WaitClaim, WaitClaimOutcome
 
@@ -723,6 +743,7 @@ def test_builder_rejects_sync_impostor_coordinators():
     class SyncImpostor:
         def register(self, record, snapshot_json, definition_json): ...
         def get(self, wait_id): ...
+        def load_receipt(self, wait_id): ...
         def load_snapshot(self, wait_id): ...
         def load_definition(self, wait_id): ...
         def claim_event(self, wait_id, event, *, lease_until): ...
@@ -878,7 +899,8 @@ async def test_registration_reuse_and_distinct_occurrence_identity():
     first = await engine.run("durable_flow", {}, goal=goal)
     assert first.status == "requires_user_input"
     assert calls["register"] == 1
-    wait_id = first.wait_handle.wait_id
+    handle = first.wait_handle
+    wait_id = handle.wait_id
     from ai_workflow_engine.wait_runtime import DurableWaitRuntime as _DWR
 
     assert wait_id == _DWR.wait_id_for(first.wait_handle.run_id, "gate", 0), (
@@ -1209,9 +1231,12 @@ async def test_duplicate_receipt_is_a_defensive_result():
         created_at=now, deadline_at=now + timedelta(seconds=1),
     )
     first = await coordinator.register(record, "{}", _definition_json())
+    original_registration_id = first.registration_id
     first.registration_id = "corrupted"
     duplicate = await coordinator.register(record, "{}", _definition_json())
-    assert duplicate.registration_id == "reg-w-rcpt", "stored receipt must be isolated"
+    assert duplicate.registration_id == original_registration_id, (
+        "stored receipt must be isolated"
+    )
     duplicate.adapter_id = "also-corrupted"
     third = await coordinator.register(record, "{}", _definition_json())
     assert third.adapter_id == "in_memory"
@@ -1276,10 +1301,11 @@ async def test_signal_delivery_resumes_the_machine_and_terminalizes_the_wait():
 
     engine, coordinator = _delivery_engine()
     first = await engine.run("durable_flow", {})
-    wait_id = first.wait_handle.wait_id
+    handle = first.wait_handle
+    wait_id = handle.wait_id
 
     outcome = await engine.deliver_wait_event(
-        wait_id, {"kind": "signal", "event_id": "evt-1", "payload": "approved"}
+        handle, {"kind": "signal", "event_id": "evt-1", "payload": "approved"}
     )
 
     assert outcome.kind == "executed"
@@ -1298,10 +1324,11 @@ async def test_timeout_delivery_takes_the_declared_transition_without_reentering
 
     engine, coordinator = _delivery_engine()
     first = await engine.run("durable_flow", {})
-    wait_id = first.wait_handle.wait_id
+    handle = first.wait_handle
+    wait_id = handle.wait_id
 
     outcome = await engine.deliver_wait_event(
-        wait_id, {"kind": "timeout", "event_id": "evt-t", "payload": None}
+        handle, {"kind": "timeout", "event_id": "evt-t", "payload": None}
     )
 
     assert outcome.kind == "executed"
@@ -1321,20 +1348,21 @@ async def test_duplicate_and_late_events_are_idempotent_reports_not_reexecution(
 
     engine, _coordinator = _delivery_engine()
     first = await engine.run("durable_flow", {})
-    wait_id = first.wait_handle.wait_id
+    handle = first.wait_handle
+    wait_id = handle.wait_id
 
     executed = await engine.deliver_wait_event(
-        wait_id, {"kind": "signal", "event_id": "evt-1", "payload": "approved"}
+        handle, {"kind": "signal", "event_id": "evt-1", "payload": "approved"}
     )
     assert executed.kind == "executed"
 
     duplicate = await engine.deliver_wait_event(
-        wait_id, {"kind": "signal", "event_id": "evt-1", "payload": "approved"}
+        handle, {"kind": "signal", "event_id": "evt-1", "payload": "approved"}
     )
     assert duplicate.kind == "duplicate" and duplicate.run_result is None
 
     late = await engine.deliver_wait_event(
-        wait_id, {"kind": "timeout", "event_id": "evt-late", "payload": None}
+        handle, {"kind": "timeout", "event_id": "evt-late", "payload": None}
     )
     assert late.kind == "terminal" and late.run_result is None
     assert late.wait_status == "completed" and late.resolution_kind == "signal"
@@ -1348,13 +1376,14 @@ async def test_signal_vs_timeout_race_yields_exactly_one_execution():
 
     engine, coordinator = _delivery_engine()
     first = await engine.run("durable_flow", {})
-    wait_id = first.wait_handle.wait_id
+    handle = first.wait_handle
+    wait_id = handle.wait_id
 
     barrier = asyncio.Barrier(2)
 
     async def deliver(event):
         await barrier.wait()
-        return await engine.deliver_wait_event(wait_id, event)
+        return await engine.deliver_wait_event(handle, event)
 
     signal, timeout = await asyncio.gather(
         deliver({"kind": "signal", "event_id": "evt-s", "payload": "yes"}),
@@ -1383,22 +1412,24 @@ async def test_lease_expiry_allows_reclaim_and_attempts_are_bounded():
     clock = lambda: current["now"]  # noqa: E731
     engine, coordinator = _delivery_engine(clock=clock)
     first = await engine.run("durable_flow", {})
-    wait_id = first.wait_handle.wait_id
+    handle = first.wait_handle
+    wait_id = handle.wait_id
     runtime = engine.executor.wait_runtime
 
     # claim then simulate a crash (no complete); lease still live -> different event loses
     event = WaitEvent(kind="signal", event_id="evt-crash", payload="yes")
     claimed = await coordinator.claim_event(
-        wait_id, event, lease_until=clock() + timedelta(seconds=300)
+        wait_id, event, registration_id=handle.registration_id,
+        lease_until=clock() + timedelta(seconds=300),
     )
     assert claimed.kind == "claimed"
-    blocked = await runtime.deliver(wait_id, event, current_digest="whatever")
+    blocked = await runtime.deliver(handle, event, current_digest="whatever")
     assert blocked.kind == "duplicate", "same event under a LIVE lease is a duplicate report"
 
     # lease expires -> the same event reclaims and the delivery finishes the machine
     current["now"] += timedelta(seconds=301)
     outcome = await engine.deliver_wait_event(
-        wait_id, {"kind": "signal", "event_id": "evt-crash", "payload": "yes"}
+        handle, {"kind": "signal", "event_id": "evt-crash", "payload": "yes"}
     )
     assert outcome.kind == "executed"
     stored = await coordinator.get(wait_id)
@@ -1417,18 +1448,20 @@ async def test_attempt_exhaustion_fails_the_wait():
     clock = lambda: current["now"]  # noqa: E731
     engine, coordinator = _delivery_engine(clock=clock)
     first = await engine.run("durable_flow", {})
-    wait_id = first.wait_handle.wait_id
+    handle = first.wait_handle
+    wait_id = handle.wait_id
 
     event = WaitEvent(kind="signal", event_id="evt-x", payload="y")
     for _ in range(3):  # default max_resume_attempts=3: claim, crash, lease-expire
         claimed = await coordinator.claim_event(
-            wait_id, event, lease_until=clock() + timedelta(seconds=1)
+            wait_id, event, registration_id=handle.registration_id,
+            lease_until=clock() + timedelta(seconds=1),
         )
         assert claimed.kind == "claimed"
         current["now"] += timedelta(seconds=2)
 
     exhausted = await engine.deliver_wait_event(
-        wait_id, {"kind": "signal", "event_id": "evt-x", "payload": "y"}
+        handle, {"kind": "signal", "event_id": "evt-x", "payload": "y"}
     )
     assert exhausted.kind == "attempts_exhausted"
     assert (await coordinator.get(wait_id)).status == "failed"
@@ -1441,7 +1474,8 @@ async def test_changed_machine_is_rejected_at_delivery():
     shared: dict = {}
     engine, _coordinator = _delivery_engine(shared)
     first = await engine.run("durable_flow", {})
-    wait_id = first.wait_handle.wait_id
+    handle = first.wait_handle
+    wait_id = handle.wait_id
 
     changed, coordinator2 = _delivery_engine(shared)
     changed.register_workflow(
@@ -1454,7 +1488,7 @@ async def test_changed_machine_is_rejected_at_delivery():
     )
 
     outcome = await changed.deliver_wait_event(
-        wait_id, {"kind": "signal", "event_id": "evt-1", "payload": "yes"}
+        handle, {"kind": "signal", "event_id": "evt-1", "payload": "yes"}
     )
     assert outcome.kind == "rejected"
     assert "digest" in outcome.detail
@@ -1483,13 +1517,20 @@ async def test_stale_claimant_cannot_terminalize_after_reclaim():
     clock = lambda: current["now"]  # noqa: E731
     engine, coordinator = _delivery_engine(clock=clock)
     first = await engine.run("durable_flow", {})
-    wait_id = first.wait_handle.wait_id
+    handle = first.wait_handle
+    wait_id = handle.wait_id
 
     event = WaitEvent(kind="signal", event_id="evt-s", payload="y")
-    stale = await coordinator.claim_event(wait_id, event, lease_until=clock() + timedelta(seconds=1))
+    stale = await coordinator.claim_event(
+        wait_id, event, registration_id=handle.registration_id,
+        lease_until=clock() + timedelta(seconds=1),
+    )
     assert stale.kind == "claimed"
     current["now"] += timedelta(seconds=2)  # stale claimant's lease expires
-    fresh = await coordinator.claim_event(wait_id, event, lease_until=clock() + timedelta(seconds=300))
+    fresh = await coordinator.claim_event(
+        wait_id, event, registration_id=handle.registration_id,
+        lease_until=clock() + timedelta(seconds=300),
+    )
     assert fresh.kind == "claimed" and fresh.claim.wait_version > stale.claim.wait_version
 
     with pytest.raises(ValueError, match="stale claimant"):
@@ -1510,15 +1551,18 @@ async def test_different_event_cannot_steal_a_live_lease():
     clock = lambda: current["now"]  # noqa: E731
     engine, coordinator = _delivery_engine(clock=clock)
     first = await engine.run("durable_flow", {})
-    wait_id = first.wait_handle.wait_id
+    handle = first.wait_handle
+    wait_id = handle.wait_id
 
     held = await coordinator.claim_event(
         wait_id, WaitEvent(kind="signal", event_id="evt-a", payload="y"),
+        registration_id=handle.registration_id,
         lease_until=clock() + timedelta(seconds=300),
     )
     assert held.kind == "claimed"
     thief = await coordinator.claim_event(
         wait_id, WaitEvent(kind="timeout", event_id="evt-b", payload=None),
+        registration_id=handle.registration_id,
         lease_until=clock() + timedelta(seconds=300),
     )
     assert thief.kind == "already_processing" and thief.claim is None
@@ -1546,7 +1590,7 @@ async def test_chained_durable_waits_register_on_the_resume_path_too(tmp_path):
     assert first.wait_handle is not None and first.snapshot is None
 
     outcome = await engine.deliver_wait_event(
-        first.wait_handle.wait_id, {"kind": "signal", "event_id": "evt-1", "payload": "ok"}
+        first.wait_handle, {"kind": "signal", "event_id": "evt-1", "payload": "ok"}
     )
     assert outcome.kind == "executed"
     chained = outcome.run_result
@@ -1577,7 +1621,7 @@ async def test_repeated_waits_produce_ordered_segments_scan_free(tmp_path):
     for event_id in ("e1", "e2", "e3"):
         assert result.status == "requires_user_input", result.error
         outcome = await engine.deliver_wait_event(
-            result.wait_handle.wait_id,
+            result.wait_handle,
             {"kind": "signal", "event_id": event_id, "payload": f"answer-{event_id}"},
         )
         assert outcome.kind == "executed"
@@ -1625,17 +1669,19 @@ async def test_concurrent_claim_loser_opens_no_segment(tmp_path):
         workflow_type="durable_flow", objective="race", metadata={"run_id": "race-run"}
     )
     first = await engine.run("durable_flow", {}, goal=goal)
-    wait_id = first.wait_handle.wait_id
+    handle = first.wait_handle
+    wait_id = handle.wait_id
 
     dirs_before = {path.name for path in tmp_path.iterdir() if path.is_dir()}
     claimed = await coordinator.claim_event(
         wait_id,
         WaitEvent(kind="signal", event_id="evt-held", payload="mine"),
+        registration_id=handle.registration_id,
         lease_until=clock() + timedelta(seconds=300),
     )
     assert claimed.kind == "claimed"
     loser = await engine.deliver_wait_event(
-        wait_id, {"kind": "signal", "event_id": "evt-loser", "payload": "steal"}
+        handle, {"kind": "signal", "event_id": "evt-loser", "payload": "steal"}
     )
     assert loser.kind == "already_processing"
     assert {path.name for path in tmp_path.iterdir() if path.is_dir()} == dirs_before, (
@@ -1644,7 +1690,7 @@ async def test_concurrent_claim_loser_opens_no_segment(tmp_path):
 
     current["now"] += timedelta(seconds=301)  # holder crashed: lease expires
     outcome = await engine.deliver_wait_event(
-        wait_id, {"kind": "signal", "event_id": "evt-held", "payload": "mine"}
+        handle, {"kind": "signal", "event_id": "evt-held", "payload": "mine"}
     )
     assert outcome.kind == "executed"
     new_dirs = {p.name for p in tmp_path.iterdir() if p.is_dir()} - dirs_before
@@ -1673,7 +1719,8 @@ async def test_crashed_attempts_become_typed_abandoned_evidence_owned_by_retenti
         workflow_type="durable_flow", objective="crash", metadata={"run_id": "crash-run"}
     )
     first = await engine.run("durable_flow", {}, goal=goal)
-    wait_id = first.wait_handle.wait_id
+    handle = first.wait_handle
+    wait_id = handle.wait_id
 
     real_resume = engine.executor.resume
     calls = {"n": 0}
@@ -1688,12 +1735,12 @@ async def test_crashed_attempts_become_typed_abandoned_evidence_owned_by_retenti
     for _ in range(2):  # two crashed attempts
         with pytest.raises(RuntimeError, match="process death"):
             await engine.deliver_wait_event(
-                wait_id, {"kind": "signal", "event_id": "evt-c", "payload": "yes"}
+                handle, {"kind": "signal", "event_id": "evt-c", "payload": "yes"}
             )
         current["now"] += timedelta(seconds=301)
 
     outcome = await engine.deliver_wait_event(
-        wait_id, {"kind": "signal", "event_id": "evt-c", "payload": "yes"}
+        handle, {"kind": "signal", "event_id": "evt-c", "payload": "yes"}
     )
     assert outcome.kind == "executed" and outcome.run_result.status == "completed"
 
@@ -1718,7 +1765,7 @@ async def test_crashed_attempts_become_typed_abandoned_evidence_owned_by_retenti
     )
     second = await engine.run("durable_flow", {}, goal=goal2)
     done = await engine.deliver_wait_event(
-        second.wait_handle.wait_id, {"kind": "signal", "event_id": "evt-n", "payload": "ok"}
+        second.wait_handle, {"kind": "signal", "event_id": "evt-n", "payload": "ok"}
     )
     assert done.kind == "executed"
     prune_observation_bundles(tmp_path, 1)
@@ -1748,11 +1795,13 @@ async def test_accepted_event_identity_is_frozen_across_lease_expiry():
     clock = lambda: current["now"]  # noqa: E731
     engine, coordinator = _delivery_engine(clock=clock)
     first = await engine.run("durable_flow", {})
-    wait_id = first.wait_handle.wait_id
+    handle = first.wait_handle
+    wait_id = handle.wait_id
 
     original = WaitEvent(kind="signal", event_id="evt-original", payload="yes")
     claimed = await coordinator.claim_event(
-        wait_id, original, lease_until=clock() + timedelta(seconds=60)
+        wait_id, original, registration_id=handle.registration_id,
+        lease_until=clock() + timedelta(seconds=60),
     )
     assert claimed.kind == "claimed"
 
@@ -1760,6 +1809,7 @@ async def test_accepted_event_identity_is_frozen_across_lease_expiry():
     replacement = await coordinator.claim_event(
         wait_id,
         WaitEvent(kind="timeout", event_id="evt-replacement"),
+        registration_id=handle.registration_id,
         lease_until=clock() + timedelta(seconds=60),
     )
     assert replacement.kind == "not_accepted", (
@@ -1769,13 +1819,13 @@ async def test_accepted_event_identity_is_frozen_across_lease_expiry():
     # the engine door reports the same typed TRANSIENT loser (F10: distinct from the
     # terminal `rejected` — this wait is still alive and recoverable)
     outcome = await engine.deliver_wait_event(
-        wait_id, {"kind": "timeout", "event_id": "evt-timeout-2"}
+        handle, {"kind": "timeout", "event_id": "evt-timeout-2"}
     )
     assert outcome.kind == "not_accepted" and outcome.wait_status == "claimed"
 
     # crash recovery for the ACCEPTED event still works and completes the machine
     recovered = await engine.deliver_wait_event(
-        wait_id, {"kind": "signal", "event_id": "evt-original", "payload": "yes"}
+        handle, {"kind": "signal", "event_id": "evt-original", "payload": "yes"}
     )
     assert recovered.kind == "executed"
     stored = await coordinator.get(wait_id)
@@ -1794,13 +1844,20 @@ async def test_slow_old_claimant_stays_stale_after_same_event_reclaim():
     clock = lambda: current["now"]  # noqa: E731
     engine, coordinator = _delivery_engine(clock=clock)
     first = await engine.run("durable_flow", {})
-    wait_id = first.wait_handle.wait_id
+    handle = first.wait_handle
+    wait_id = handle.wait_id
 
     event = WaitEvent(kind="signal", event_id="evt-slow", payload="yes")
-    old = await coordinator.claim_event(wait_id, event, lease_until=clock() + timedelta(seconds=5))
+    old = await coordinator.claim_event(
+        wait_id, event, registration_id=handle.registration_id,
+        lease_until=clock() + timedelta(seconds=5),
+    )
     assert old.kind == "claimed"
     current["now"] += timedelta(seconds=6)
-    new = await coordinator.claim_event(wait_id, event, lease_until=clock() + timedelta(seconds=60))
+    new = await coordinator.claim_event(
+        wait_id, event, registration_id=handle.registration_id,
+        lease_until=clock() + timedelta(seconds=60),
+    )
     assert new.kind == "claimed" and new.claim.wait_version > old.claim.wait_version
 
     with pytest.raises(ValueError, match="stale claimant"):
@@ -1817,7 +1874,8 @@ async def test_durable_snapshot_cannot_resume_through_the_public_door():
 
     engine, coordinator = _delivery_engine()
     first = await engine.run("durable_flow", {})
-    wait_id = first.wait_handle.wait_id
+    handle = first.wait_handle
+    wait_id = handle.wait_id
 
     stored_snapshot = await coordinator.load_snapshot(wait_id)
     assert stored_snapshot, "the coordinator stores the raw snapshot — the attack surface"
@@ -1844,7 +1902,7 @@ async def test_durable_snapshot_cannot_resume_through_the_public_door():
     )
 
     outcome = await engine.deliver_wait_event(
-        wait_id, {"kind": "signal", "event_id": "evt-legit", "payload": "yes"}
+        handle, {"kind": "signal", "event_id": "evt-legit", "payload": "yes"}
     )
     assert outcome.kind == "executed" and outcome.run_result.status == "completed"
     assert (await coordinator.get(wait_id)).status == "completed"
@@ -1895,7 +1953,8 @@ async def test_wait_failures_without_continuation_are_observable_and_prunable(tm
         workflow_type="durable_flow", objective="wfail", metadata={"run_id": "wfail-run"}
     )
     first = await engine.run("durable_flow", {}, goal=goal)
-    wait_id = first.wait_handle.wait_id
+    handle = first.wait_handle
+    wait_id = handle.wait_id
 
     changed, coordinator2 = _delivery_engine(shared, bundle_dir=tmp_path)
     changed.register_workflow(
@@ -1907,7 +1966,7 @@ async def test_wait_failures_without_continuation_are_observable_and_prunable(tm
         .build()
     )
     outcome = await changed.deliver_wait_event(
-        wait_id, {"kind": "signal", "event_id": "evt-1", "payload": "yes"}
+        handle, {"kind": "signal", "event_id": "evt-1", "payload": "yes"}
     )
     assert outcome.kind == "rejected"
 
@@ -1952,18 +2011,20 @@ async def test_attempts_exhaustion_persists_kind_and_writes_terminal_evidence(tm
         workflow_type="durable_flow", objective="exhaust", metadata={"run_id": "exhaust-run"}
     )
     first = await engine.run("durable_flow", {}, goal=goal)
-    wait_id = first.wait_handle.wait_id
+    handle = first.wait_handle
+    wait_id = handle.wait_id
 
     event = WaitEvent(kind="signal", event_id="evt-x", payload="y")
     for _ in range(3):  # crash-claim to exhaustion (same accepted event)
         claimed = await coordinator.claim_event(
-            wait_id, event, lease_until=clock() + timedelta(seconds=1)
+            wait_id, event, registration_id=handle.registration_id,
+            lease_until=clock() + timedelta(seconds=1),
         )
         assert claimed.kind == "claimed"
         current["now"] += timedelta(seconds=2)
 
     exhausted = await engine.deliver_wait_event(
-        wait_id, {"kind": "signal", "event_id": "evt-x", "payload": "y"}
+        handle, {"kind": "signal", "event_id": "evt-x", "payload": "y"}
     )
     assert exhausted.kind == "attempts_exhausted"
     stored = await coordinator.get(wait_id)
@@ -2076,7 +2137,7 @@ async def test_budget_stays_cumulative_across_durable_suspension():
     assert first.usage.estimated_usd == 0.60
 
     outcome = await engine.deliver_wait_event(
-        first.wait_handle.wait_id, {"kind": "signal", "event_id": "evt-b", "payload": "go"}
+        first.wait_handle, {"kind": "signal", "event_id": "evt-b", "payload": "go"}
     )
     assert outcome.kind == "executed"
     resumed = outcome.run_result
@@ -2090,7 +2151,7 @@ async def test_budget_stays_cumulative_across_durable_suspension():
     loose_engine, _ = _budgeted_durable_engine(max_estimated_usd=5.00)
     first2 = await loose_engine.run("budget_wait_flow", {})
     ok = await loose_engine.deliver_wait_event(
-        first2.wait_handle.wait_id, {"kind": "signal", "event_id": "evt-b2", "payload": "go"}
+        first2.wait_handle, {"kind": "signal", "event_id": "evt-b2", "payload": "go"}
     )
     assert ok.kind == "executed" and ok.run_result.status == "completed"
     assert ok.run_result.usage.estimated_usd == 1.20, "both halves metered once each"
@@ -2117,11 +2178,12 @@ async def test_external_write_is_idempotent_across_crash_and_reclaim():
     )
 
     first = await engine.run("budget_wait_flow", {})
-    wait_id = first.wait_handle.wait_id
+    handle = first.wait_handle
+    wait_id = handle.wait_id
 
     with pytest.raises(RuntimeError, match="simulated crash"):
         await engine.deliver_wait_event(
-            wait_id, {"kind": "signal", "event_id": "evt-once", "payload": "ship-it"}
+            handle, {"kind": "signal", "event_id": "evt-once", "payload": "ship-it"}
         )
     key = f"{wait_id}:evt-once"
     assert outbox[key]["sends"] == 1, "the external write happened before the crash"
@@ -2129,7 +2191,7 @@ async def test_external_write_is_idempotent_across_crash_and_reclaim():
 
     current["now"] += timedelta(seconds=301)  # lease expires -> same event reclaims
     outcome = await engine.deliver_wait_event(
-        wait_id, {"kind": "signal", "event_id": "evt-once", "payload": "ship-it"}
+        handle, {"kind": "signal", "event_id": "evt-once", "payload": "ship-it"}
     )
     assert outcome.kind == "executed" and outcome.run_result.status == "completed"
 
@@ -2161,12 +2223,13 @@ async def test_snapshot_missing_failure_yields_a_readable_failed_group(tmp_path)
         workflow_type="durable_flow", objective="snaploss", metadata={"run_id": "snaploss-run"}
     )
     first = await engine.run("durable_flow", {}, goal=goal)
-    wait_id = first.wait_handle.wait_id
+    handle = first.wait_handle
+    wait_id = handle.wait_id
 
     shared["snapshots"].pop(wait_id)  # adapter integrity failure: snapshot lost
 
     outcome = await engine.deliver_wait_event(
-        wait_id, {"kind": "signal", "event_id": "evt-s", "payload": "yes"}
+        handle, {"kind": "signal", "event_id": "evt-s", "payload": "yes"}
     )
     assert outcome.kind == "rejected"
     assert outcome.terminal_observation == "recorded", (
@@ -2212,7 +2275,8 @@ async def test_absent_workflow_registration_still_closes_the_group(tmp_path):
         workflow_type="durable_flow", objective="restart", metadata={"run_id": "restart-run"}
     )
     first = await engine.run("durable_flow", {}, goal=goal)
-    wait_id = first.wait_handle.wait_id
+    handle = first.wait_handle
+    wait_id = handle.wait_id
 
     # restarted process: same coordinator store + observation dir, NO workflows registered
     restarted = (
@@ -2222,7 +2286,7 @@ async def test_absent_workflow_registration_still_closes_the_group(tmp_path):
         .build()
     )
     outcome = await restarted.deliver_wait_event(
-        wait_id, {"kind": "signal", "event_id": "evt-r", "payload": "yes"}
+        handle, {"kind": "signal", "event_id": "evt-r", "payload": "yes"}
     )
     assert outcome.kind == "rejected" and outcome.wait_status == "failed"
     assert outcome.terminal_observation == "recorded", (
@@ -2256,7 +2320,7 @@ async def test_absent_workflow_registration_still_closes_the_group(tmp_path):
         .build()
     )
     skipped = await bare.deliver_wait_event(
-        second.wait_handle.wait_id, {"kind": "signal", "event_id": "evt-r2", "payload": "y"}
+        second.wait_handle, {"kind": "signal", "event_id": "evt-r2", "payload": "y"}
     )
     assert skipped.kind == "rejected" and skipped.terminal_observation == "skipped"
 
@@ -2278,13 +2342,14 @@ async def test_redelivery_repairs_terminal_evidence_after_post_failure_crash(tmp
         metadata={"run_id": "repair-run"},
     )
     first = await engine.run("durable_flow", {}, goal=goal)
-    wait_id = first.wait_handle.wait_id
+    handle = first.wait_handle
+    wait_id = handle.wait_id
     event = WaitEvent(kind="signal", event_id="evt-repair", payload="yes")
 
     # Simulate process loss in WorkflowEngine.deliver_wait_event after the lifecycle
     # service commits the failed state but before _record_wait_terminal_segment runs.
     failed = await engine.executor.wait_runtime.deliver(
-        wait_id,
+        handle,
         event,
         current_digest=None,
     )
@@ -2304,7 +2369,7 @@ async def test_redelivery_repairs_terminal_evidence_after_post_failure_crash(tmp
         encoding="utf-8",
     )
 
-    repaired = await engine.deliver_wait_event(wait_id, event)
+    repaired = await engine.deliver_wait_event(handle, event)
     assert repaired.kind == "duplicate"
     assert repaired.run_result is None, "repair must never re-execute the workflow"
     assert repaired.terminal_observation == "recorded"
@@ -2314,7 +2379,7 @@ async def test_redelivery_repairs_terminal_evidence_after_post_failure_crash(tmp
     assert all(event.event_id != "stale-terminal-event" for event in grouped.trace_events)
 
     # Further at-least-once deliveries are read-only reports: no duplicate trace rows.
-    again = await engine.deliver_wait_event(wait_id, event)
+    again = await engine.deliver_wait_event(handle, event)
     assert again.kind == "duplicate" and again.terminal_observation == "recorded"
     assert len(FileEventSource(tmp_path).read_group("repair-run").trace_events) == len(
         grouped.trace_events
@@ -2340,16 +2405,17 @@ async def test_redelivery_after_resume_failed_never_writes_colliding_evidence(tm
         workflow_type="budget_wait_flow", objective="rf", metadata={"run_id": "rf-run"}
     )
     first = await engine.run("budget_wait_flow", {}, goal=goal)
-    wait_id = first.wait_handle.wait_id
+    handle = first.wait_handle
+    wait_id = handle.wait_id
 
     out1 = await engine.deliver_wait_event(
-        wait_id, {"kind": "signal", "event_id": "evt-1", "payload": "go"}
+        handle, {"kind": "signal", "event_id": "evt-1", "payload": "go"}
     )
     assert out1.kind == "executed" and out1.run_result.status == "failed"
     assert (await coordinator.get(wait_id)).failure_kind == "resume_failed"
 
     out2 = await engine.deliver_wait_event(
-        wait_id, {"kind": "signal", "event_id": "evt-1", "payload": "go"}
+        handle, {"kind": "signal", "event_id": "evt-1", "payload": "go"}
     )
     assert out2.kind == "duplicate"
     assert out2.terminal_observation == "recorded", (
@@ -2382,7 +2448,8 @@ async def test_chained_waits_survive_crash_reclaim_with_observation(tmp_path):
         workflow_type="durable_flow", objective="chain-crash", metadata={"run_id": "cc-run"}
     )
     first = await engine.run("durable_flow", {}, goal=goal)
-    wait_a = first.wait_handle.wait_id
+    handle_a = first.wait_handle
+    wait_a = handle_a.wait_id
 
     # attempt 1 executes fully (registers wait B) but the process dies BEFORE wait A is
     # terminalized: patch deliver's terminalize path by killing complete() once
@@ -2397,13 +2464,13 @@ async def test_chained_waits_survive_crash_reclaim_with_observation(tmp_path):
     coordinator.complete = complete_then_crash
     with pytest.raises(RuntimeError, match="before terminalization"):
         await engine.deliver_wait_event(
-            wait_a, {"kind": "signal", "event_id": "evt-a", "payload": "one"}
+            handle_a, {"kind": "signal", "event_id": "evt-a", "payload": "one"}
         )
     handle_b_first = None  # the crashed attempt registered wait B already
     current["now"] += timedelta(seconds=301)
 
     retry = await engine.deliver_wait_event(
-        wait_a, {"kind": "signal", "event_id": "evt-a", "payload": "one"}
+        handle_a, {"kind": "signal", "event_id": "evt-a", "payload": "one"}
     )
     assert retry.kind == "executed", (
         f"crash-retry must re-execute cleanly, got {retry.kind}: {retry.detail} / "
@@ -2414,11 +2481,12 @@ async def test_chained_waits_survive_crash_reclaim_with_observation(tmp_path):
         "the re-suspension at the child wait must RE-REGISTER identically (reused), "
         "never fold the run to failed on a routine at-least-once retry"
     )
-    wait_b = chained.wait_handle.wait_id
+    handle_b = chained.wait_handle
+    wait_b = handle_b.wait_id
     assert (await coordinator.get(wait_b)).status == "pending"
 
     done = await engine.deliver_wait_event(
-        wait_b, {"kind": "signal", "event_id": "evt-b", "payload": "two"}
+        handle_b, {"kind": "signal", "event_id": "evt-b", "payload": "two"}
     )
     assert done.kind == "executed" and done.run_result.status == "completed"
 
@@ -2449,7 +2517,8 @@ async def test_attempt_finalized_but_unterminalized_is_not_canonical(tmp_path):
         workflow_type="durable_flow", objective="fincrash", metadata={"run_id": "fc-run"}
     )
     first = await engine.run("durable_flow", {}, goal=goal)
-    wait_id = first.wait_handle.wait_id
+    handle = first.wait_handle
+    wait_id = handle.wait_id
 
     real_complete = coordinator.complete
     crash = {"armed": True}
@@ -2462,7 +2531,7 @@ async def test_attempt_finalized_but_unterminalized_is_not_canonical(tmp_path):
     coordinator.complete = complete_then_crash
     with pytest.raises(RuntimeError, match="after finalize"):
         await engine.deliver_wait_event(
-            wait_id, {"kind": "signal", "event_id": "evt-f", "payload": "yes"}
+            handle, {"kind": "signal", "event_id": "evt-f", "payload": "yes"}
         )
     # the attempt FINALIZED (meta exists, status completed) but was never committed
     dead = tmp_path / "fc-run--s001"
@@ -2470,7 +2539,7 @@ async def test_attempt_finalized_but_unterminalized_is_not_canonical(tmp_path):
 
     current["now"] += timedelta(seconds=301)
     retry = await engine.deliver_wait_event(
-        wait_id, {"kind": "signal", "event_id": "evt-f", "payload": "yes"}
+        handle, {"kind": "signal", "event_id": "evt-f", "payload": "yes"}
     )
     assert retry.kind == "executed" and retry.run_result.status == "completed"
 
@@ -2600,11 +2669,13 @@ async def test_stalled_wait_is_visible_and_cancellable_with_terminal_evidence(tm
         workflow_type="durable_flow", objective="stall", metadata={"run_id": "stall-run"}
     )
     first = await engine.run("durable_flow", {}, goal=goal)
-    wait_id = first.wait_handle.wait_id
+    handle = first.wait_handle
+    wait_id = handle.wait_id
 
     claimed = await coordinator.claim_event(
         wait_id,
         WaitEvent(kind="signal", event_id="evt-lost", payload="x"),
+        registration_id=handle.registration_id,
         lease_until=clock() + timedelta(seconds=60),
     )
     assert claimed.kind == "claimed"
@@ -2637,7 +2708,8 @@ async def test_failed_commit_marker_is_typed_and_repaired_by_redelivery(tmp_path
         workflow_type="durable_flow", objective="marker", metadata={"run_id": "marker-run"}
     )
     first = await engine.run("durable_flow", {}, goal=goal)
-    wait_id = first.wait_handle.wait_id
+    handle = first.wait_handle
+    wait_id = handle.wait_id
 
     real_commit = segment_lifecycle.commit_attempt
     calls = {"n": 0}
@@ -2651,7 +2723,7 @@ async def test_failed_commit_marker_is_typed_and_repaired_by_redelivery(tmp_path
     segment_lifecycle.commit_attempt = flaky_commit
     try:
         out1 = await engine.deliver_wait_event(
-            wait_id, {"kind": "signal", "event_id": "evt-m", "payload": "yes"}
+            handle, {"kind": "signal", "event_id": "evt-m", "payload": "yes"}
         )
         assert out1.kind == "executed" and out1.run_result.status == "completed"
         assert out1.terminal_observation == "failed", (
@@ -2660,7 +2732,7 @@ async def test_failed_commit_marker_is_typed_and_repaired_by_redelivery(tmp_path
         assert not (tmp_path / "marker-run--s001" / "commit.json").exists()
 
         out2 = await engine.deliver_wait_event(
-            wait_id, {"kind": "signal", "event_id": "evt-m", "payload": "yes"}
+            handle, {"kind": "signal", "event_id": "evt-m", "payload": "yes"}
         )
         assert out2.kind == "duplicate"
         assert out2.terminal_observation == "recorded", (
@@ -2696,7 +2768,8 @@ async def test_correlation_is_immutable_registration_truth_across_wait_lifecycle
         metadata={"run_id": "corr-run"}, correlation_id="case-42",
     )
     first = await engine.run("durable_flow", {}, goal=goal)
-    wait_id = first.wait_handle.wait_id
+    handle = first.wait_handle
+    wait_id = handle.wait_id
     stored = await coordinator.get(wait_id)
     assert stored.correlation_id == "case-42", "registration persists the related-run id"
 
@@ -2712,7 +2785,7 @@ async def test_correlation_is_immutable_registration_truth_across_wait_lifecycle
     engine.executor.resume = crash_once
     with pytest.raises(RuntimeError):
         await engine.deliver_wait_event(
-            wait_id, {"kind": "signal", "event_id": "evt-c", "payload": "x"}
+            handle, {"kind": "signal", "event_id": "evt-c", "payload": "x"}
         )
     current["now"] += timedelta(seconds=301)
 
@@ -2727,7 +2800,7 @@ async def test_correlation_is_immutable_registration_truth_across_wait_lifecycle
         .build()
     )
     outcome = await changed.deliver_wait_event(
-        wait_id, {"kind": "signal", "event_id": "evt-c", "payload": "x"}
+        handle, {"kind": "signal", "event_id": "evt-c", "payload": "x"}
     )
     assert outcome.kind == "rejected" and outcome.terminal_observation == "recorded"
 
@@ -2855,14 +2928,23 @@ async def test_health_failed_count_covers_both_producers_directly():
     live = now + timedelta(days=1)
     expired = now - timedelta(seconds=1)
 
-    await coordinator.register(_kit_record(now, wait_id="h-fail"), snapshot, definition)
-    claim = await coordinator.claim_event("h-fail", signal, lease_until=live)
+    h_fail_receipt = await coordinator.register(
+        _kit_record(now, wait_id="h-fail"), snapshot, definition
+    )
+    claim = await coordinator.claim_event(
+        "h-fail", signal, registration_id=h_fail_receipt.registration_id, lease_until=live
+    )
     await coordinator.fail("h-fail", claim.claim, error="x", failure_kind="digest_mismatch")
 
-    await coordinator.register(_kit_record(now, wait_id="h-exhaust"), snapshot, definition)
+    h_exhaust_receipt = await coordinator.register(
+        _kit_record(now, wait_id="h-exhaust"), snapshot, definition
+    )
     outcome = None
     for _ in range(4):
-        outcome = await coordinator.claim_event("h-exhaust", signal, lease_until=expired)
+        outcome = await coordinator.claim_event(
+            "h-exhaust", signal,
+            registration_id=h_exhaust_receipt.registration_id, lease_until=expired,
+        )
     assert outcome is not None and outcome.kind == "attempts_exhausted"
 
     await coordinator.register(_kit_record(now, wait_id="h-cancel"), snapshot, definition)
@@ -3118,3 +3200,327 @@ async def test_lifecycle_kit_rejects_integrity_inventor_and_failed_hider():
     except AssertionError:
         caught = True
     assert caught, "H7: integrity must be zero at the START of the lifecycle, not only the end"
+
+
+# ========================================= v0.11.6 C0: durable registration exposure truth
+#
+# Public invariant under repair: a live durable continuation is deliverable ONLY through a
+# WaitHandle the engine successfully exposed. Failure without a handle, or re-raised caller
+# cancellation before exposure, must leave the matching registration terminal/absent and
+# non-executing. Abrupt process death (nothing observed) stays recoverable by identical retry.
+#
+# Both tests are strict-XFAIL while RED on the v0.11.5 contract: they assert the CORRECTED
+# behavior and therefore fail today. Phase C2 removes the markers — strict=True forces that
+# removal the moment the repair lands (an XPASS is a loud failure).
+
+
+def _exposure_probe_engine(coordinator, clock):
+    """Durable gate flow whose capabilities COUNT executions: exposure truth must prove a
+    hidden continuation ran ZERO capabilities, not merely that some exception surfaced."""
+
+    from pydantic import BaseModel as _BM
+
+    from ai_workflow_engine import WorkflowEngineBuilder
+
+    calls = {"gate": 0, "finish": 0, "escalate": 0}
+
+    class Gate(_BM):
+        status: str
+        value: str = ""
+
+    def gate(context, _payload):
+        calls["gate"] += 1
+        event = context.metadata.get("resume_event")
+        if event is None:
+            return Gate(status="pending")
+        return Gate(status="answered", value=str(event))
+
+    def finish(context, payload):
+        calls["finish"] += 1
+        return {"answer": getattr(payload, "value", None)}
+
+    def escalate(context, _payload):
+        calls["escalate"] += 1
+        return {"escalated": True}
+
+    builder = WorkflowEngineBuilder().with_wait_coordinator(coordinator, clock=clock)
+    builder.register_capability("gate", gate)
+    builder.register_capability("finish", finish)
+    builder.register_capability("escalate", escalate)
+    builder.register_workflow(
+        WorkflowBuilder("durable_flow")
+        .human("gate", wait_policy=DurableWaitPolicy(timeout_s=60), timeout_to="escalate")
+        .step("finish")
+        .step("escalate")
+        .build()
+    )
+    return builder.build(), calls
+
+
+async def _attempt_hidden_delivery(engine, wait_id):
+    """The STRONGEST continuation attempt available to code that never received a handle.
+
+    v0.11.6 (C1): the door is handle-bound, so the attack is RECONSTRUCTION — a forged
+    handle copying every enumerable identity fact from the stored record, with the
+    registration id guessed as the retired derivable scheme (the best any no-handle
+    caller can do against an opaque per-incarnation id). A loud rejection satisfies the
+    invariant; both exposure tests additionally assert zero capability executions."""
+
+    from datetime import datetime, timezone
+
+    record = await engine.wait_coordinator.get(wait_id)
+    forged = WaitHandle(
+        wait_id=wait_id,
+        run_id=record.run_id if record is not None else "forged-run",
+        workflow_id=record.workflow_id if record is not None else "durable_flow",
+        suspended_node=record.suspended_node if record is not None else "gate",
+        deadline_at=(
+            record.deadline_at
+            if record is not None
+            else datetime(2026, 7, 11, tzinfo=timezone.utc)
+        ),
+        registration_id=f"reg-{wait_id}",
+        status="pending",
+    )
+    try:
+        return await engine.deliver_wait_event(
+            forged, {"kind": "signal", "event_id": "evt-hidden", "payload": "smuggled"}
+        )
+    except (KeyError, ValueError, TypeError) as rejection:
+
+        class _LoudRejection:
+            kind = f"rejected_loudly:{type(rejection).__name__}"
+
+        return _LoudRejection()
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="v0.11.6 C0 RED (MageQA race 1): observed cancellation leaves a hidden "
+    "executable registration on v0.11.5 — repaired in phase C2",
+)
+async def test_cancel_during_wait_registration_exposes_no_hidden_continuation():
+    """Truth-table row 'observed caller cancellation after commit': the coordinator COMMITS
+    the registration, blocks before returning its receipt, and the caller cancels the run.
+    The caller sees the ORIGINAL CancelledError and no handle — so the committed
+    registration must be terminal (cancelled) or absent, and a later delivery attempt must
+    execute ZERO capabilities. All three facts together, per the C0 contract."""
+
+    import asyncio
+
+    from ai_workflow_engine import InMemoryWaitCoordinator
+
+    committed = asyncio.Event()
+    hold = asyncio.Event()
+    seen = {}
+
+    class CommitThenBlock(InMemoryWaitCoordinator):
+        async def register(self, record, snapshot_json, definition_json):
+            receipt = await super().register(record, snapshot_json, definition_json)
+            seen["wait_id"] = record.wait_id
+            committed.set()
+            await hold.wait()  # cancelled from outside — the receipt never returns
+            return receipt
+
+    clock = _clock()
+    coordinator = CommitThenBlock(clock=clock)
+    engine, calls = _exposure_probe_engine(coordinator, clock)
+
+    run_task = asyncio.create_task(engine.run("durable_flow", {}))
+    await asyncio.wait_for(committed.wait(), timeout=5)
+    run_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await run_task
+
+    wait_id = seen["wait_id"]
+    stored = await coordinator.get(wait_id)
+    assert stored is None or stored.status == "cancelled", (
+        "observed cancellation must terminalize the committed registration, got "
+        f"{'absent' if stored is None else stored.status!r}"
+    )
+    health = await coordinator.health()
+    assert health.pending == 0 and health.claimed == 0, (
+        "no live registration may hide behind an observed cancellation"
+    )
+    before = dict(calls)
+    outcome = await _attempt_hidden_delivery(engine, wait_id)
+    assert outcome.kind != "executed", (
+        f"a never-exposed registration must not execute, got {outcome.kind!r}"
+    )
+    assert calls == before, "a hidden continuation must never execute a capability"
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="v0.11.6 C0 RED (MageQA race 2): registration acknowledgement loss leaves a "
+    "hidden executable registration on v0.11.5 — repaired in phase C2",
+)
+async def test_wait_registration_ack_loss_exposes_no_hidden_continuation():
+    """Truth-table row 'post-commit registration exception': the coordinator COMMITS the
+    complete record/snapshot/definition/receipt, then the acknowledgement is lost
+    (register raises after commit). The run truthfully folds to FAILED with no handle —
+    so the committed registration must be compensated to terminal/absent and a delivery
+    attempt must execute ZERO capabilities; the caller was told this wait does not exist."""
+
+    from ai_workflow_engine import InMemoryWaitCoordinator
+
+    seen = {}
+
+    class AckLoss(InMemoryWaitCoordinator):
+        async def register(self, record, snapshot_json, definition_json):
+            await super().register(record, snapshot_json, definition_json)
+            seen["wait_id"] = record.wait_id
+            raise RuntimeError("registration acknowledgement lost")
+
+    clock = _clock()
+    coordinator = AckLoss(clock=clock)
+    engine, calls = _exposure_probe_engine(coordinator, clock)
+
+    result = await engine.run("durable_flow", {})
+    assert result.status == "failed"
+    assert result.wait_handle is None and result.snapshot is None
+    assert "registration" in (result.error or "")
+
+    wait_id = seen["wait_id"]
+    stored = await coordinator.get(wait_id)
+    assert stored is None or stored.status == "cancelled", (
+        "acknowledgement loss must compensate the committed registration, got "
+        f"{'absent' if stored is None else stored.status!r}"
+    )
+    health = await coordinator.health()
+    assert health.pending == 0 and health.claimed == 0, (
+        "the caller was told the wait does not exist — health must agree"
+    )
+    before = dict(calls)
+    outcome = await _attempt_hidden_delivery(engine, wait_id)
+    assert outcome.kind != "executed", (
+        f"a never-exposed registration must not execute, got {outcome.kind!r}"
+    )
+    assert calls == before, "a hidden continuation must never execute a capability"
+
+
+# ============================== v0.11.6 C1: handle-bound delivery + registration identity
+
+
+async def test_delivery_requires_the_complete_exposed_handle():
+    """C1: the door refuses a bare wait id (TypeError, before any coordinator access);
+    a doctored identity field is refused against the stored record; a blank-registration
+    forgery dies at full boundary revalidation; the exposed handle works as a model AND
+    as its dict dump. Every refusal leaves the wait byte-untouched."""
+
+    engine, coordinator = _delivery_engine()
+    first = await engine.run("durable_flow", {})
+    handle = first.wait_handle
+    assert handle.registration_id and not handle.registration_id.endswith(handle.wait_id), (
+        "the exposed registration id must be opaque, never derived from the wait id"
+    )
+
+    with pytest.raises(TypeError, match="bare wait id"):
+        await engine.deliver_wait_event(
+            handle.wait_id, {"kind": "signal", "event_id": "evt-1", "payload": "x"}
+        )
+    doctored = handle.model_copy(update={"suspended_node": "other_gate"})
+    with pytest.raises(ValueError, match="does not match the registered wait"):
+        await engine.deliver_wait_event(
+            doctored, {"kind": "signal", "event_id": "evt-1", "payload": "x"}
+        )
+    blank = handle.model_copy(update={"registration_id": "   "})
+    with pytest.raises(ValidationError):
+        await engine.deliver_wait_event(
+            blank, {"kind": "signal", "event_id": "evt-1", "payload": "x"}
+        )
+    stored = await coordinator.get(handle.wait_id)
+    assert stored.status == "pending" and stored.resume_attempts == 0, (
+        "every refused delivery must leave the wait untouched"
+    )
+
+    outcome = await engine.deliver_wait_event(
+        _json.loads(handle.model_dump_json()),
+        {"kind": "signal", "event_id": "evt-ok", "payload": "yes"},
+    )
+    assert outcome.kind == "executed" and outcome.run_result.status == "completed"
+
+
+async def test_new_incarnation_after_store_replacement_rejects_the_retired_handle():
+    """C1 (the ABA hole this iteration closes): deterministic wait ids mean a replacement
+    backing store can accept the SAME wait id as a NEW registration incarnation. The new
+    receipt must mint a DIFFERENT opaque registration id, and the retired incarnation's
+    handle must be refused BEFORE any claim mutation — while the new handle claims fine."""
+
+    from datetime import timedelta
+
+    from ai_workflow_engine import InMemoryWaitCoordinator
+    from ai_workflow_engine.wait_runtime import DurableWaitRuntime
+    from ai_workflow_engine.waits import WaitEvent
+
+    clock = _clock()
+    runtime_a = DurableWaitRuntime(InMemoryWaitCoordinator(clock=clock), clock=clock)
+    retired = (await runtime_a.register_suspension(_registration_request())).handle
+
+    coordinator_b = InMemoryWaitCoordinator(clock=clock)
+    runtime_b = DurableWaitRuntime(coordinator_b, clock=clock)
+    fresh = (await runtime_b.register_suspension(_registration_request())).handle
+
+    assert fresh.wait_id == retired.wait_id, "same deterministic suspension identity"
+    assert fresh.registration_id != retired.registration_id, (
+        "a newly accepted incarnation must mint a different opaque registration id"
+    )
+
+    with pytest.raises(ValueError, match="registration identity mismatch"):
+        await coordinator_b.claim_event(
+            retired.wait_id,
+            WaitEvent(kind="signal", event_id="evt-stale", payload="x"),
+            registration_id=retired.registration_id,
+            lease_until=clock() + timedelta(seconds=300),
+        )
+    untouched = await coordinator_b.get(fresh.wait_id)
+    assert untouched.status == "pending" and untouched.resume_attempts == 0, (
+        "the retired handle's refusal must not mutate the new incarnation"
+    )
+
+    claimed = await coordinator_b.claim_event(
+        fresh.wait_id,
+        WaitEvent(kind="signal", event_id="evt-new", payload="y"),
+        registration_id=fresh.registration_id,
+        lease_until=clock() + timedelta(seconds=300),
+    )
+    assert claimed.kind == "claimed", "the exposed incarnation's handle claims normally"
+
+
+async def test_reference_registration_ids_are_opaque_and_factory_injectable():
+    """C1: default reference ids are opaque (never the derivable reg-{wait_id} shape) and
+    distinct across independent stores; the injectable factory gives deterministic ids to
+    conformance tests; a blank factory output is refused loudly at registration."""
+
+    from ai_workflow_engine import InMemoryWaitCoordinator
+    from ai_workflow_engine.testing.wait_contract import (
+        _record as _kit_record,
+        _snapshot_json as _kit_snapshot,
+    )
+
+    clock = _clock()
+    now = clock()
+    record = _kit_record(now, wait_id="w-opaque")
+    snapshot, definition = _kit_snapshot(), _definition_json()
+
+    first = await InMemoryWaitCoordinator(clock=clock).register(record, snapshot, definition)
+    second = await InMemoryWaitCoordinator(clock=clock).register(record, snapshot, definition)
+    assert first.registration_id != f"reg-{record.wait_id}", (
+        "the reference must never mint the derivable reg-{wait_id} identity"
+    )
+    assert first.registration_id != second.registration_id, (
+        "independent stores accepting the same record are distinct incarnations"
+    )
+
+    ids = iter(["reg-A", "reg-B"])
+    seeded = InMemoryWaitCoordinator(clock=clock, registration_id_factory=lambda: next(ids))
+    minted = await seeded.register(record, snapshot, definition)
+    assert minted.registration_id == "reg-A", "the injected factory owns id minting"
+    replay = await seeded.register(record, snapshot, definition)
+    assert replay.registration_id == "reg-A", "idempotent retry NEVER consumes the factory"
+
+    blank_factory = InMemoryWaitCoordinator(clock=clock, registration_id_factory=lambda: "  ")
+    with pytest.raises(ValueError, match="blank registration id"):
+        await blank_factory.register(record, snapshot, definition)
+    with pytest.raises(ValueError, match="factory must be a callable"):
+        InMemoryWaitCoordinator(clock=clock, registration_id_factory="not-callable")

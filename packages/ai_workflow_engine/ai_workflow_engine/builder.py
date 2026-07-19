@@ -209,14 +209,35 @@ class WorkflowEngine:
         self._profiles: Dict[str, WorkflowProfile] = {}
         self._plans: Dict[str, RuntimePlan] = {}
 
-    async def deliver_wait_event(self, wait_id: str, event: Any) -> WaitDeliveryOutcome:
+    async def deliver_wait_event(self, handle: Any, event: Any) -> WaitDeliveryOutcome:
         """W3.2: the ONE public door for durable continuation (signal or timeout).
+
+        v0.11.6 (C1): delivery is HANDLE-BOUND. The caller presents the complete
+        ``WaitHandle`` the engine exposed (model or its dict dump) — a bare wait id is
+        refused, and the handle's registration identity must name the accepted
+        registration incarnation before any coordinator state can change.
 
         Returns a typed ``WaitDeliveryOutcome``: executed runs carry the resumed
         ``WorkflowRunResult``; duplicate/late/racing deliveries get honest terminal
         reports without re-execution. The registered definition digest must match the
         CURRENTLY registered definition — a changed machine is rejected, never replayed."""
 
+        from ai_workflow_engine.wait_contract import WaitHandle as _WaitHandle
+        from ai_workflow_engine.waits import _stored_model_data
+
+        if isinstance(handle, _WaitHandle):
+            # Boundary revalidation from the COMPLETE raw representation: a
+            # model_copy(update=...) forgery (hidden extras included) dies here, before
+            # the coordinator sees anything.
+            handle = _WaitHandle.model_validate(_stored_model_data(handle))
+        elif isinstance(handle, dict):
+            handle = _WaitHandle.model_validate(handle)
+        else:
+            raise TypeError(
+                "deliver_wait_event requires the exposed WaitHandle (model or dict) — a "
+                "bare wait id cannot resume durable work; persist the complete handle"
+            )
+        wait_id = handle.wait_id
         runtime = getattr(self.executor, "wait_runtime", None)
         if runtime is None:
             raise RuntimeError(
@@ -226,9 +247,28 @@ class WorkflowEngine:
         record = await runtime.coordinator.get(wait_id)
         if record is None:
             raise KeyError(f"unknown wait id {wait_id!r}")
+        # C1: the handle must NAME the registered suspension — identity fields are
+        # immutable registration facts (status is lifecycle-mutable and deliberately not
+        # compared: a persisted pending-status handle legitimately delivers late events).
+        doctored = [
+            name
+            for name, presented, stored in (
+                ("run_id", handle.run_id, record.run_id),
+                ("workflow_id", handle.workflow_id, record.workflow_id),
+                ("suspended_node", handle.suspended_node, record.suspended_node),
+                ("deadline_at", handle.deadline_at, record.deadline_at),
+            )
+            if presented != stored
+        ]
+        if doctored:
+            raise ValueError(
+                f"wait handle does not match the registered wait {wait_id!r} "
+                f"(differs in {', '.join(doctored)}) — delivery requires the handle the "
+                "engine exposed, unmodified"
+            )
         current = self.workflows.get(record.workflow_id)
         current_digest = current.definition_digest() if current is not None else None
-        outcome = await runtime.deliver(wait_id, event, current_digest=current_digest)
+        outcome = await runtime.deliver(handle, event, current_digest=current_digest)
         from ai_workflow_engine import segment_lifecycle  # call-time (F1.1)
 
         observation_on = self.observation is not None and self.observation.enabled
@@ -965,6 +1005,7 @@ class WorkflowEngineBuilder:
         _PROTOCOL_METHODS = (
             "register",
             "get",
+            "load_receipt",
             "load_snapshot",
             "load_definition",
             "claim_event",

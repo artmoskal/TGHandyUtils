@@ -80,10 +80,50 @@ async def run_wait_registration_conformance(
         "timeout intent was not co-committed"
     )
     assert receipt.adapter_id, "attestation must identify the adapter"
+    # v0.11.6 (C1): registration identity is REQUIRED, non-blank, and reloadable — the
+    # engine builds the exposed handle from it and compensation reloads it after
+    # acknowledgement loss.
+    assert receipt.registration_id and receipt.registration_id.strip(), (
+        "the receipt must carry a non-blank registration_id — it is the handle-bound "
+        "delivery identity for this accepted registration incarnation"
+    )
+    reloaded = await coordinator.load_receipt(record.wait_id)
+    assert reloaded == receipt, (
+        "load_receipt must return the EXACT stored attestation — crash-retry reuse and "
+        "acknowledgement-loss compensation both depend on it"
+    )
+    assert await coordinator.load_receipt("missing-id") is None, (
+        "missing receipts are an explicit None, never an exception or fabrication"
+    )
 
-    # 2) duplicate identical registration is idempotent (crash/retry re-register)
+    # 2) duplicate identical registration is idempotent (crash/retry re-register) and
+    #    returns the SAME registration identity — one accepted attempt, one incarnation
     again = await coordinator.register(record, snapshot_json, definition_json)
     assert again == receipt, "identical duplicate registration must be idempotent"
+    assert again.registration_id == receipt.registration_id, (
+        "exact idempotent retry must reuse the stored registration_id, never mint a "
+        "second incarnation identity for the same accepted attempt"
+    )
+
+    # 2b) v0.11.6 (C1): registration identity distinguishes INCARNATIONS. A second
+    #     adapter accepting the same record decides the branch honestly: an independent
+    #     backing store is a replacement-store incarnation and MUST mint a different id;
+    #     a shared backing store is the same accepted attempt and MUST reuse the same id.
+    other_store = make_coordinator()
+    if await other_store.get(record.wait_id) is None:
+        other_receipt = await other_store.register(record, snapshot_json, definition_json)
+        assert other_receipt.registration_id != receipt.registration_id, (
+            "a newly ACCEPTED registration incarnation (independent backing store) must "
+            "mint a DIFFERENT opaque registration_id — an id derivable from the "
+            "deterministic wait id would let a retired incarnation's handle claim its "
+            "successor"
+        )
+    else:
+        shared_receipt = await other_store.register(record, snapshot_json, definition_json)
+        assert shared_receipt.registration_id == receipt.registration_id, (
+            "a shared-backing-store adapter re-registering the identical record is the "
+            "same accepted attempt and must return the same registration_id"
+        )
 
     # 3) changed duplicate is REJECTED (never silently replaced)
     changed = record.model_copy(update={"deadline_at": record.deadline_at + timedelta(seconds=5)})
@@ -168,8 +208,28 @@ async def run_wait_registration_conformance(
 
     # (a) live-lease semantics: single claimant, idempotent duplicate, losing stranger
     live = make_coordinator()
-    await live.register(_record(now, wait_id="w-live"), snapshot_json, definition_json)
-    first_claim = await live.claim_event("w-live", signal, lease_until=live_lease)
+    live_receipt = await live.register(_record(now, wait_id="w-live"), snapshot_json, definition_json)
+    # v0.11.6 (C1): a registration id that does not name the accepted incarnation is
+    # refused LOUDLY and BEFORE any mutation — the first legitimate claim below still
+    # sees attempt ordinal 1, proving the refusal changed nothing.
+    stale_refused = False
+    try:
+        await live.claim_event(
+            "w-live", signal, registration_id="reg-never-exposed", lease_until=live_lease
+        )
+    except Exception:
+        stale_refused = True
+    assert stale_refused, (
+        "claim_event must refuse a registration_id that does not match the stored "
+        "receipt — a never-exposed or retired incarnation's handle cannot claim"
+    )
+    unchanged = await live.get("w-live")
+    assert unchanged is not None and unchanged.status == "pending" and unchanged.resume_attempts == 0, (
+        "a refused registration-identity claim must leave the wait record untouched"
+    )
+    first_claim = await live.claim_event(
+        "w-live", signal, registration_id=live_receipt.registration_id, lease_until=live_lease
+    )
     assert first_claim.kind == "claimed", "a pending wait must be claimable"
     assert first_claim.claim is not None and first_claim.claim.event_id == signal.event_id
     assert first_claim.record.resume_attempts >= 1, (
@@ -177,27 +237,52 @@ async def run_wait_registration_conformance(
         "derives the physical attempt-directory key from it; a stale pre-claim row would "
         "make retries reuse a dead attempt's directory"
     )
-    duplicate = await live.claim_event("w-live", signal, lease_until=live_lease)
+    duplicate = await live.claim_event(
+        "w-live", signal, registration_id=live_receipt.registration_id, lease_until=live_lease
+    )
     assert duplicate.kind == "duplicate", "the SAME accepted event under a live lease is idempotent"
-    blocked = await live.claim_event("w-live", other, lease_until=live_lease)
+    blocked = await live.claim_event(
+        "w-live", other, registration_id=live_receipt.registration_id, lease_until=live_lease
+    )
     assert blocked.kind == "already_processing", "a DIFFERENT event loses against a live lease"
     done = await live.complete("w-live", first_claim.claim, resolution_kind="signal")
     assert done.status == "completed" and done.resolution_kind == "signal"
-    late = await live.claim_event("w-live", other, lease_until=live_lease)
+    late = await live.claim_event(
+        "w-live", other, registration_id=live_receipt.registration_id, lease_until=live_lease
+    )
     assert late.kind == "terminal", "late different events get the terminal state, never re-execution"
+    # v0.11.6 (C1): a terminal record is never revived by a fresh same-id registration —
+    # normal operation has no second incarnation inside one backing store.
+    revival_refused = False
+    try:
+        await live.register(_record(now, wait_id="w-live"), snapshot_json, definition_json)
+    except Exception:
+        revival_refused = True
+    assert revival_refused, (
+        "registering a fresh record under a TERMINAL wait's id must be refused — terminal "
+        "records are never revived as new active suspensions"
+    )
 
     # (b) expiry semantics: frozen acceptance, same-event reclaim, monotonic attempts, CAS
     expiry = make_coordinator()
-    await expiry.register(_record(now, wait_id="w-expiry"), snapshot_json, definition_json)
-    crashed = await expiry.claim_event("w-expiry", signal, lease_until=expired_lease)
+    expiry_receipt = await expiry.register(
+        _record(now, wait_id="w-expiry"), snapshot_json, definition_json
+    )
+    crashed = await expiry.claim_event(
+        "w-expiry", signal, registration_id=expiry_receipt.registration_id, lease_until=expired_lease
+    )
     assert crashed.kind == "claimed"
     first_attempt = crashed.record.resume_attempts
-    frozen = await expiry.claim_event("w-expiry", other, lease_until=live_lease)
+    frozen = await expiry.claim_event(
+        "w-expiry", other, registration_id=expiry_receipt.registration_id, lease_until=live_lease
+    )
     assert frozen.kind == "not_accepted", (
         "accepted-event identity is FROZEN: after lease expiry a DIFFERENT event must get "
         "'not_accepted' and never overwrite the acceptance"
     )
-    reclaim = await expiry.claim_event("w-expiry", signal, lease_until=live_lease)
+    reclaim = await expiry.claim_event(
+        "w-expiry", signal, registration_id=expiry_receipt.registration_id, lease_until=live_lease
+    )
     assert reclaim.kind == "claimed", "the SAME accepted event reclaims after lease expiry"
     assert reclaim.record.resume_attempts > first_attempt, (
         "attempt ordinals must be STRICTLY MONOTONIC across reclaims — equal/stale "
@@ -214,8 +299,12 @@ async def run_wait_registration_conformance(
 
     # (c) fail(): the failure_kind keyword is contract and must PERSIST; unlisted kinds refuse
     failing = make_coordinator()
-    await failing.register(_record(now, wait_id="w-fail"), snapshot_json, definition_json)
-    fail_claim = await failing.claim_event("w-fail", signal, lease_until=live_lease)
+    failing_receipt = await failing.register(
+        _record(now, wait_id="w-fail"), snapshot_json, definition_json
+    )
+    fail_claim = await failing.claim_event(
+        "w-fail", signal, registration_id=failing_receipt.registration_id, lease_until=live_lease
+    )
     failed = await failing.fail(
         "w-fail", fail_claim.claim, error="conformance failure detail", failure_kind="digest_mismatch"
     )
@@ -227,8 +316,12 @@ async def run_wait_registration_conformance(
     bogus_rejected = False
     try:
         refail = make_coordinator()
-        await refail.register(_record(now, wait_id="w-bogus"), snapshot_json, definition_json)
-        bogus_claim = await refail.claim_event("w-bogus", signal, lease_until=live_lease)
+        refail_receipt = await refail.register(
+            _record(now, wait_id="w-bogus"), snapshot_json, definition_json
+        )
+        bogus_claim = await refail.claim_event(
+            "w-bogus", signal, registration_id=refail_receipt.registration_id, lease_until=live_lease
+        )
         await refail.fail("w-bogus", bogus_claim.claim, error="x", failure_kind="not-a-kind")
     except Exception:
         bogus_rejected = True
@@ -239,16 +332,24 @@ async def run_wait_registration_conformance(
 
     # (d) cancel + stalled: the product-driven escape hatch frozen acceptance requires
     escape = make_coordinator()
-    await escape.register(_record(now, wait_id="w-guarded"), snapshot_json, definition_json)
-    await escape.claim_event("w-guarded", signal, lease_until=live_lease)
+    guarded_receipt = await escape.register(
+        _record(now, wait_id="w-guarded"), snapshot_json, definition_json
+    )
+    await escape.claim_event(
+        "w-guarded", signal, registration_id=guarded_receipt.registration_id, lease_until=live_lease
+    )
     live_blocked = False
     try:
         await escape.cancel("w-guarded", reason="operator")
     except Exception:
         live_blocked = True
     assert live_blocked, "cancel must NEVER preempt an ACTIVE claimant (live lease)"
-    await escape.register(_record(now, wait_id="w-stall"), snapshot_json, definition_json)
-    await escape.claim_event("w-stall", signal, lease_until=expired_lease)
+    stall_receipt = await escape.register(
+        _record(now, wait_id="w-stall"), snapshot_json, definition_json
+    )
+    await escape.claim_event(
+        "w-stall", signal, registration_id=stall_receipt.registration_id, lease_until=expired_lease
+    )
     stalled = await escape.stalled(now)
     assert [r.wait_id for r in stalled] == ["w-stall"], (
         "stalled(now) must surface claimed waits with expired leases — frozen acceptance "
@@ -283,11 +384,22 @@ async def run_wait_registration_conformance(
     await surface.register(due_record, snapshot_json, definition_json)
     await surface.register(not_due_record, snapshot_json, definition_json)
     # a terminal wait must never appear as due; a claimed+lease-expired wait must be 'stalled'
-    await surface.register(_record(past, wait_id="w-term", timeout_s=60.0), snapshot_json, definition_json)
-    term_claim = await surface.claim_event("w-term", signal, lease_until=live_lease)
+    term_receipt = await surface.register(
+        _record(past, wait_id="w-term", timeout_s=60.0), snapshot_json, definition_json
+    )
+    term_claim = await surface.claim_event(
+        "w-term", signal, registration_id=term_receipt.registration_id, lease_until=live_lease
+    )
     await surface.complete("w-term", term_claim.claim, resolution_kind="signal")
-    await surface.register(_record(now, wait_id="w-surface-stall"), snapshot_json, definition_json)
-    await surface.claim_event("w-surface-stall", signal, lease_until=expired_lease)
+    surface_stall_receipt = await surface.register(
+        _record(now, wait_id="w-surface-stall"), snapshot_json, definition_json
+    )
+    await surface.claim_event(
+        "w-surface-stall",
+        signal,
+        registration_id=surface_stall_receipt.registration_id,
+        lease_until=expired_lease,
+    )
 
     due_ids = {r.wait_id for r in await surface.due(now)}
     assert "w-due" in due_ids, "due(now) must surface a pending wait whose deadline has elapsed"
@@ -304,17 +416,25 @@ async def run_wait_registration_conformance(
     # v0.11.5 (U1): the failed count must cover BOTH producers — the public fail() door and
     # bounded-recovery attempts exhaustion — and the store must report a zero-integrity shape.
     fail_door = _record(now, wait_id="w-surface-fail")
-    await surface.register(fail_door, snapshot_json, definition_json)
-    surface_fail_claim = await surface.claim_event("w-surface-fail", signal, lease_until=live_lease)
+    fail_door_receipt = await surface.register(fail_door, snapshot_json, definition_json)
+    surface_fail_claim = await surface.claim_event(
+        "w-surface-fail",
+        signal,
+        registration_id=fail_door_receipt.registration_id,
+        lease_until=live_lease,
+    )
     await surface.fail(
         "w-surface-fail", surface_fail_claim.claim, error="surface failure", failure_kind="resume_failed"
     )
     exhaust = _record(now, wait_id="w-surface-exhaust")
-    await surface.register(exhaust, snapshot_json, definition_json)
+    exhaust_receipt = await surface.register(exhaust, snapshot_json, definition_json)
     exhausted_outcome = None
     for _ in range(exhaust.policy.max_resume_attempts + 1):
         exhausted_outcome = await surface.claim_event(
-            "w-surface-exhaust", signal, lease_until=expired_lease
+            "w-surface-exhaust",
+            signal,
+            registration_id=exhaust_receipt.registration_id,
+            lease_until=expired_lease,
         )
     assert exhausted_outcome is not None and exhausted_outcome.kind == "attempts_exhausted", (
         "bounded recovery must terminalize as attempts_exhausted after max_resume_attempts"
