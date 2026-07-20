@@ -24,7 +24,9 @@ domain models, provider clients, storage adapters, clocks, and side-effect deliv
 > `WaitHandle`, including its opaque registration-incarnation identity; a deterministic
 > `wait_id` alone cannot deliver. If cancellation or a registration error is observed before
 > the handle is exposed, the engine atomically settles only the registration attempt it owns.
-> Exact crash retry still recovers the same accepted receipt. Redis/DB adapters must implement
+> If an exact retry reused a registration that another caller may already hold, cancellation is
+> loud rather than revoking that handle or claiming clean settlement. Exact crash retry still
+> recovers the same accepted receipt. Redis/DB adapters must implement
 > the v0.11.6 `WaitCoordinator` contract and pass the current conformance kit; do not implement
 > a new adapter against v0.11.5's delivery signatures.
 >

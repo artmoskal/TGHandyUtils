@@ -146,10 +146,11 @@
           "test_cancel_during_wait_registration_exposes_no_hidden_continuation",
           "test_wait_registration_ack_loss_exposes_no_hidden_continuation",
           "test_crash_before_handle_retry_reuses_receipt_and_executes_once",
-          "test_cancelled_identical_retry_does_not_revoke_an_exposed_handle"
+          "test_cancelled_identical_retry_is_loud_and_does_not_revoke_an_exposed_handle",
+          "test_cancelled_crash_retry_never_reports_clean_settlement_with_a_hidden_wait"
         ],
         "oracle_rows": [],
-        "mutation": "v0.11.6 C2R/C3: bypassing shielded registration settlement, creator-attempt CAS, or exact-retry participant tracking fails the named race tests"
+        "mutation": "v0.11.6 C2R/C3: bypassing shielded registration settlement, creator-attempt CAS, exact-retry participant tracking, or the live non-creator fail-loud mapping fails the named race tests"
       }
     },
     "gopro-handoff.md": {

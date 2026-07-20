@@ -671,7 +671,9 @@ failed evidence write is visible and repaired by any redelivery). `wait_id` is a
 lookup identity, not delivery authority; stale/reconstructed handles cannot deliver into a new
 registration incarnation. Observed cancellation or handled failure before handle exposure
 atomically settles the engine-owned registration attempt; abrupt process death remains recoverable
-by an identical retry returning the accepted receipt. Local waits keep the public
+by an identical retry returning the accepted receipt. If that retry is cancelled and the store
+cannot prove whether another caller already received the reused handle, settlement is loud and the
+registration is preserved; clean cancellation never revokes possibly exposed work. Local waits keep the public
 `engine.resume(snapshot, event)` door unchanged.
 
 **Observation segments (bundle schema, additive v1).** A suspended→resumed run is a GROUP

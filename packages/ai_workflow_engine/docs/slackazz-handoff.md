@@ -102,6 +102,8 @@ The 13 async coordinator members are:
   `not_creator` (an exact retry reused an existing registration), `refused_reused` (another
   retry may already hold the exposed handle), `refused_mismatch`, and
   `refused_active_claim`. Validate BEFORE mutating; refusals must change nothing
+  - a live `not_creator`/`refused_reused` result is not clean cancellation: the engine raises
+    `WaitRegistrationSettlementError` because it cannot revoke a handle another caller may hold
 - `complete(wait_id, claim, resolution_kind=...)`
 - `fail(wait_id, claim, error=..., failure_kind=...)`
 - `due(now)`

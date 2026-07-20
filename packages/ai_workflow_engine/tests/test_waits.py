@@ -3561,14 +3561,18 @@ async def test_cancellation_during_ack_loss_cleanup_finishes_the_same_settlement
     assert next(iter(coordinator._records.values())).status == "cancelled"
 
 
-async def test_cancelled_identical_retry_does_not_revoke_an_exposed_handle():
+async def test_cancelled_identical_retry_is_loud_and_does_not_revoke_an_exposed_handle():
     """C2R-2: a second identical run may reuse a registration whose handle was already
-    returned to another caller. Cancelling that retry owns no registration side effect and
-    must not revoke the first caller's continuation."""
+    returned to another caller. Cancelling that retry owns no registration side effect,
+    must not revoke the first caller's continuation, and cannot claim clean settlement."""
 
     import asyncio
 
-    from ai_workflow_engine import InMemoryWaitCoordinator, WorkflowGoal
+    from ai_workflow_engine import (
+        InMemoryWaitCoordinator,
+        WaitRegistrationSettlementError,
+        WorkflowGoal,
+    )
 
     reuse_started = asyncio.Event()
     hold_reuse = asyncio.Event()
@@ -3600,8 +3604,9 @@ async def test_cancelled_identical_retry_does_not_revoke_an_exposed_handle():
     await asyncio.wait_for(reuse_started.wait(), timeout=5)
     retry.cancel()
     hold_reuse.set()
-    with pytest.raises(asyncio.CancelledError):
+    with pytest.raises(WaitRegistrationSettlementError, match="not_creator") as err:
         await retry
+    assert isinstance(err.value.__cause__, asyncio.CancelledError)
 
     stored = await coordinator.get(handle.wait_id)
     assert stored is not None and stored.status == "pending", (
@@ -3612,6 +3617,70 @@ async def test_cancelled_identical_retry_does_not_revoke_an_exposed_handle():
         handle, {"kind": "signal", "event_id": "evt-original-handle", "payload": "yes"}
     )
     assert delivered.kind == "executed" and delivered.run_result.status == "completed"
+
+
+async def test_cancelled_crash_retry_never_reports_clean_settlement_with_a_hidden_wait():
+    """An exact retry cannot know whether the creator exposed its handle before dying.
+
+    If the retry is cancelled before it exposes the reused handle, it must preserve the
+    registration for crash recovery AND fail loudly. Re-raising clean cancellation would
+    recreate the hidden-continuation defect when the creator died before exposure.
+    """
+
+    import asyncio
+
+    from ai_workflow_engine import (
+        InMemoryWaitCoordinator,
+        WaitRegistrationSettlementError,
+        WorkflowGoal,
+    )
+
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    class CrashAfterCommit(InMemoryWaitCoordinator):
+        async def register(self, record, snapshot_json, definition_json):
+            await super().register(record, snapshot_json, definition_json)
+            raise SimulatedProcessDeath("creator died before exposing its handle")
+
+    retry_registered = asyncio.Event()
+    hold_retry = asyncio.Event()
+
+    class CancelledRetry(InMemoryWaitCoordinator):
+        async def register(self, record, snapshot_json, definition_json):
+            receipt = await super().register(record, snapshot_json, definition_json)
+            retry_registered.set()
+            await hold_retry.wait()
+            return receipt
+
+    shared = {}
+    clock = _clock()
+    goal = WorkflowGoal(
+        workflow_type="durable_flow",
+        objective="crash then cancelled recovery",
+        metadata={"run_id": "cancelled-crash-retry-run"},
+    )
+    creator_engine, _creator_calls = _exposure_probe_engine(
+        CrashAfterCommit(clock=clock, shared_state=shared), clock
+    )
+    with pytest.raises(SimulatedProcessDeath):
+        await creator_engine.run("durable_flow", {}, goal=goal)
+
+    retry_coordinator = CancelledRetry(clock=clock, shared_state=shared)
+    retry_engine, _retry_calls = _exposure_probe_engine(retry_coordinator, clock)
+    retry = asyncio.create_task(retry_engine.run("durable_flow", {}, goal=goal))
+    await asyncio.wait_for(retry_registered.wait(), timeout=5)
+    retry.cancel()
+    hold_retry.set()
+    with pytest.raises(WaitRegistrationSettlementError, match="not_creator") as err:
+        await retry
+    assert isinstance(err.value.__cause__, asyncio.CancelledError)
+
+    record = next(iter(retry_coordinator._records.values()))
+    assert record.status == "pending", (
+        "a retry cannot revoke a registration whose handle may have been exposed elsewhere"
+    )
+    assert (await retry_coordinator.health()).pending == 1
 
 
 async def test_registration_reuse_wins_creator_compensation_race():

@@ -184,7 +184,9 @@ MageQA adoption is complete when its repository proves:
     completed direct/fan-out/child artifacts, and keeps archive failure loud.
 15. **Durable-registration exposure truth:** cancellation after registration commit and
     registration-acknowledgement loss both expose no handle and leave no executable hidden
-    continuation; abrupt process death plus an exact retry recovers the same stored receipt.
+    continuation; abrupt process death plus an exact retry recovers the same stored receipt, while
+    cancellation during an ownership-ambiguous retry fails loudly rather than revoking a handle
+    that another caller may already hold or reporting false clean settlement.
 
 Engine-side examples: `ai_workflow_engine.examples.run_toy_site_audit_pilot` and the paid
 qualification's MageQA authored-flow scenario.

@@ -86,7 +86,9 @@ registration.
 If the process dies before exposing the handle, retry the identical run so the engine recovers the
 stored receipt. If the caller observes cancellation or a handled registration failure without a
 handle, do not hunt for and deliver the hidden wait: the engine must settle its own unexposed
-registration or raise `WaitRegistrationSettlementError`.
+registration or raise `WaitRegistrationSettlementError`. A cancelled exact retry can produce that
+loud error when the same registration may already have been exposed by another caller; this is
+intentional truthfulness, not permission to reconstruct a handle.
 
 ### Missing wait timeout ownership
 

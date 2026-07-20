@@ -535,8 +535,14 @@ class DurableWaitRuntime:
             if isinstance(raw, WaitRegistrationAbortOutcome)
             else WaitRegistrationAbortOutcome.model_validate(raw)
         )
-        if outcome.kind in ("absent", "cancelled", "not_creator"):
+        if outcome.kind in ("absent", "cancelled"):
             return
+        if (
+            outcome.kind == "not_creator"
+            and outcome.record is not None
+            and outcome.record.status == "cancelled"
+        ):
+            return  # another compensation already made the registration inert
         if (
             outcome.kind == "already_terminal"
             and outcome.record is not None

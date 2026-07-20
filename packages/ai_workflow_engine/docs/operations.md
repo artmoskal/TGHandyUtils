@@ -121,7 +121,10 @@ An abrupt process death before handle exposure is not an observed cancellation. 
 registration remains pending and visible, and an exact retry of the same machine recovers the same
 stored receipt. By contrast, once a caller observes cancellation/failure without receiving a
 handle, that attempt's unexposed registration is terminal or the caller receives a
-`WaitRegistrationSettlementError`. These paths must not be collapsed into one cleanup rule.
+`WaitRegistrationSettlementError`. In particular, cancellation during an exact retry is loud when
+the store cannot prove whether another caller already received the reused handle; the engine
+preserves the registration instead of revoking possibly exposed work. These paths must not be
+collapsed into one cleanup rule.
 
 ### Scheduler health
 
