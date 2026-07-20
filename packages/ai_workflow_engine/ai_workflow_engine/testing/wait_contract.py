@@ -500,10 +500,13 @@ async def run_wait_registration_conformance(
     assert (await creator_wins_observer.get(creator_wins_record.wait_id)).status == "cancelled", (
         "creator compensation must be visible after reconnect"
     )
+    creator_wins_retry = creator_wins_record.model_copy(
+        update={"registration_attempt_id": "attempt-after-creator-compensation"}
+    )
     retry_rejected = False
     try:
         await creator_wins_observer.register(
-            creator_wins_record, snapshot_json, definition_json
+            creator_wins_retry, snapshot_json, definition_json
         )
     except Exception:
         retry_rejected = True

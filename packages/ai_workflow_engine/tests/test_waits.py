@@ -827,11 +827,16 @@ async def test_broken_adapters_fail_conformance_by_named_invariant():
             self._registration_attempts = {}
 
     class RegistrationReviver(InMemoryWaitCoordinator):
-        """Silently revives a creator-cancelled record on a later exact retry."""
+        """Revives only the production-shaped retry with a fresh attempt identity."""
 
         async def register(self, record, snapshot_json, definition_json):
             existing = await self.get(record.wait_id)
-            if existing is not None and existing.status == "cancelled":
+            if (
+                existing is not None
+                and existing.status == "cancelled"
+                and existing.registration_attempt_id
+                != record.registration_attempt_id
+            ):
                 async with self._lock:
                     self._records.pop(record.wait_id, None)
                     self._snapshots.pop(record.wait_id, None)
