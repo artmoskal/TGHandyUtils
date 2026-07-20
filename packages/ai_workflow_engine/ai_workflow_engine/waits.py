@@ -59,10 +59,6 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _new_registration_attempt_id() -> str:
-    return "attempt-" + uuid.uuid4().hex
-
-
 def _stored_model_data(value: Any) -> Any:
     """Project persisted model objects to their complete raw representation.
 
@@ -161,20 +157,21 @@ class WaitEvent(BaseModel):
         return value
 
 
-WAIT_RECORD_SCHEMA_VERSION = "wait-v1"
+WAIT_RECORD_SCHEMA_VERSION = "wait-v2"
 
 
 class WaitRecord(BaseModel):
     """The engine-owned wait state a coordinator persists (snapshot itself is store-owned).
 
-    v0.11 clean contract (manifest row M12): the record is VERSIONED and closed — a coordinator
-    returning a pre-v0.11 or unknown record shape fails loudly at validation; the current line
-    has no importer for old persisted waits (approved policy: pending old waits are discarded).
+    v0.11 clean contract (manifest row M12): the record is VERSIONED and closed — a
+    coordinator returning any non-current record shape fails loudly at validation. The
+    current line has no importer for old persisted waits (approved policy: pending old waits
+    are settled or discarded under their historical tag).
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    record_schema_version: Literal["wait-v1"]
+    record_schema_version: Literal["wait-v2"]
     wait_id: str
     run_id: str
     workflow_id: str
@@ -196,7 +193,7 @@ class WaitRecord(BaseModel):
             if found != WAIT_RECORD_SCHEMA_VERSION:
                 raise ValueError(
                     f"unsupported wait-record schema: expected {WAIT_RECORD_SCHEMA_VERSION!r}, "
-                    f"got {found!r} — pre-v0.11 waits are not readable by the current line "
+                    f"got {found!r} — non-current waits are not readable by this line "
                     f"(discard them or inspect with the matching historical tag)"
                 )
         return data
@@ -206,7 +203,7 @@ class WaitRecord(BaseModel):
     # incarnation. Exact retries carry a fresh attempted id, but the persisted record
     # retains the original creator. The adapter uses this with its attempt-participant
     # set to decide compensation atomically; it is lifecycle state, not authorization.
-    registration_attempt_id: str = Field(default_factory=_new_registration_attempt_id)
+    registration_attempt_id: str
 
     @field_validator("definition_digest", "registration_attempt_id")
     @classmethod

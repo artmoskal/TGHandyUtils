@@ -728,6 +728,54 @@
    "reason": "v0.11.6 (C2R): refused_reused occupies the second new closed-vocabulary position.",
    "manifest_row": "C2R",
    "consumed_by_seal": "2026-07-19 v0.11.6 C2R attempt-aware compensation seal (6 public deltas; corpus 0)"
+  },
+  {
+   "path_prefix": "public.schemas.WaitRecord.description",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.6 (C2RR): current-schema documentation names all non-current waits, including v0.11.5 wait-v1, rather than incorrectly calling them pre-v0.11.",
+   "manifest_row": "C2RR",
+   "consumed_by_seal": "2026-07-20 v0.11.6 C2RR persisted-attempt and wait-v2 seal (6 public deltas; corpus 0)"
+  },
+  {
+   "path_prefix": "public.schemas.WaitRecord.properties.record_schema_version.const",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.6 (C2RR): wait-v2 makes registration_attempt_id mandatory persisted state; wait-v1 is rejected with no compatibility reader.",
+   "manifest_row": "C2RR",
+   "consumed_by_seal": "2026-07-20 v0.11.6 C2RR persisted-attempt and wait-v2 seal (6 public deltas; corpus 0)"
+  },
+  {
+   "path_prefix": "public.schemas.WaitRecord.required",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.6 (C2RR): registration_attempt_id is required during decode and can never be silently invented.",
+   "manifest_row": "C2RR",
+   "consumed_by_seal": "2026-07-20 v0.11.6 C2RR persisted-attempt and wait-v2 seal (6 public deltas; corpus 0)"
+  },
+  {
+   "path_prefix": "public.schemas.WaitRegistrationAbortOutcome.$defs.WaitRecord.description",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.6 (C2RR): nested abort-outcome records publish the corrected current-schema documentation.",
+   "manifest_row": "C2RR",
+   "consumed_by_seal": "2026-07-20 v0.11.6 C2RR persisted-attempt and wait-v2 seal (6 public deltas; corpus 0)"
+  },
+  {
+   "path_prefix": "public.schemas.WaitRegistrationAbortOutcome.$defs.WaitRecord.properties.record_schema_version.const",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.6 (C2RR): nested abort-outcome records require the current wait-v2 schema.",
+   "manifest_row": "C2RR",
+   "consumed_by_seal": "2026-07-20 v0.11.6 C2RR persisted-attempt and wait-v2 seal (6 public deltas; corpus 0)"
+  },
+  {
+   "path_prefix": "public.schemas.WaitRegistrationAbortOutcome.$defs.WaitRecord.required",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.6 (C2RR): nested abort-outcome records require persisted registration_attempt_id.",
+   "manifest_row": "C2RR",
+   "consumed_by_seal": "2026-07-20 v0.11.6 C2RR persisted-attempt and wait-v2 seal (6 public deltas; corpus 0)"
   }
  ]
 }

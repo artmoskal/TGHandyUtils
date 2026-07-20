@@ -273,7 +273,7 @@ Follow [`operations.md`](operations.md) for production recovery. File missing me
 
 `engine-v0.11.6` is the release candidate for the **latest-only** line; `engine-v0.11.5`
 remains the immutable tagged release until the candidate passes review and is cut. The line uses strict versioned persisted
-contracts (snapshot `v0.11`, bundle meta v2, wait records `wait-v1`), one strict viewer loader, and
+contracts (snapshot `v0.11`, bundle meta v2, wait records `wait-v2`), one strict viewer loader, and
 NO migration layer — the sealed current-contract corpus shows 0 behavior deltas vs v0.10.1, but old
 persisted data is rejected loudly naming its historical tag. Adopt by re-pinning fresh
 (after release, pin tag `engine-v0.11.6`, verify the published `release-manifest-v2` directory, then install the
@@ -281,7 +281,8 @@ required package subset from that exact directory) and
 re-run your canaries before changing any deployed pin. The release makes node-context binding
 explicit for every node kind. v0.11.6 deliberately changes the latest-only wait contract:
 delivery requires the complete exposed handle and registration compensation is creator-attempt
-bound. The exact cache
+bound. `wait-v1` records written by v0.11.5 are non-current: settle or discard them under v0.11.5
+and start a new coordinator namespace before v0.11.6 writes `wait-v2`. The exact cache
 artifact set is the complete release directory: all three wheels, the closed
 `release-manifest.json`, `SHA256SUMS`, the two tagged verifier scripts, and command-derived
 two-build/test/smoke evidence records and logs. Verify that directory with the independently trusted

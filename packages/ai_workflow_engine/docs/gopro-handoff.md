@@ -167,12 +167,14 @@ second memory, retry, or observation runtime into the sidecar.
 
 `engine-v0.11.6` is the release candidate for the **latest-only** line; `engine-v0.11.5`
 remains the tagged release until the candidate passes review and is cut. The line uses strict versioned persisted
-contracts (snapshot `v0.11`, bundle meta v2, wait records `wait-v1`), one strict viewer loader, and
+contracts (snapshot `v0.11`, bundle meta v2, wait records `wait-v2`), one strict viewer loader, and
 NO migration layer — the sealed current-contract corpus shows 0 behavior deltas vs v0.10.1, but old
 persisted data is rejected loudly naming its historical tag. Adopt by re-pinning fresh
 (after release, pin tag `engine-v0.11.6`, verify the published `release-manifest-v2` directory, then install only
 the engine `0.11.6` wheel for the current sidecar) and
 re-run your canaries before changing any deployed pin. The release makes node-context binding
 explicit for every node kind and adds native Codex image attachment in the optional tools wheel;
-persisted schemas and the sealed behavior corpus are unchanged. Read the annotated tag for
+the sealed behavior corpus is unchanged. `wait-v1` records written by v0.11.5 are non-current:
+settle or discard them under v0.11.5 and start a new coordinator namespace before v0.11.6 writes
+`wait-v2`. Read the annotated tag for
 the exact source commit and the published release manifest for wheel hashes.

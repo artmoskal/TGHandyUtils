@@ -7516,7 +7516,7 @@
         }
       },
       "additionalProperties": false,
-      "description": "The engine-owned wait state a coordinator persists (snapshot itself is store-owned).\n\nv0.11 clean contract (manifest row M12): the record is VERSIONED and closed \u2014 a coordinator\nreturning a pre-v0.11 or unknown record shape fails loudly at validation; the current line\nhas no importer for old persisted waits (approved policy: pending old waits are discarded).",
+      "description": "The engine-owned wait state a coordinator persists (snapshot itself is store-owned).\n\nv0.11 clean contract (manifest row M12): the record is VERSIONED and closed \u2014 a\ncoordinator returning any non-current record shape fails loudly at validation. The\ncurrent line has no importer for old persisted waits (approved policy: pending old waits\nare settled or discarded under their historical tag).",
       "properties": {
         "correlation_id": {
           "anyOf": [
@@ -7593,7 +7593,7 @@
           "$ref": "#/$defs/DurableWaitPolicy"
         },
         "record_schema_version": {
-          "const": "wait-v1",
+          "const": "wait-v2",
           "title": "Record Schema Version",
           "type": "string"
         },
@@ -7666,7 +7666,8 @@
         "suspended_node",
         "policy",
         "definition_digest",
-        "deadline_at"
+        "deadline_at",
+        "registration_attempt_id"
       ],
       "title": "WaitRecord",
       "type": "object"
@@ -7709,7 +7710,7 @@
         },
         "WaitRecord": {
           "additionalProperties": false,
-          "description": "The engine-owned wait state a coordinator persists (snapshot itself is store-owned).\n\nv0.11 clean contract (manifest row M12): the record is VERSIONED and closed \u2014 a coordinator\nreturning a pre-v0.11 or unknown record shape fails loudly at validation; the current line\nhas no importer for old persisted waits (approved policy: pending old waits are discarded).",
+          "description": "The engine-owned wait state a coordinator persists (snapshot itself is store-owned).\n\nv0.11 clean contract (manifest row M12): the record is VERSIONED and closed \u2014 a\ncoordinator returning any non-current record shape fails loudly at validation. The\ncurrent line has no importer for old persisted waits (approved policy: pending old waits\nare settled or discarded under their historical tag).",
           "properties": {
             "correlation_id": {
               "anyOf": [
@@ -7786,7 +7787,7 @@
               "$ref": "#/$defs/DurableWaitPolicy"
             },
             "record_schema_version": {
-              "const": "wait-v1",
+              "const": "wait-v2",
               "title": "Record Schema Version",
               "type": "string"
             },
@@ -7859,7 +7860,8 @@
             "suspended_node",
             "policy",
             "definition_digest",
-            "deadline_at"
+            "deadline_at",
+            "registration_attempt_id"
           ],
           "title": "WaitRecord",
           "type": "object"

@@ -13,10 +13,12 @@ domain models, provider clients, storage adapters, clocks, and side-effect deliv
 > [`executable-workflow-engine-spec.md`](../../docs/executable-workflow-engine-spec.md).
 >
 > **v0.11 is a latest-only line.** The engine supports exactly one current contract: current code,
-> current persisted schemas (snapshot `v0.11`, observation bundle meta v2, wait records `wait-v1`),
+> current persisted schemas (snapshot `v0.11`, observation bundle meta v2, wait records `wait-v2`),
 > current docs. There are no importers, adapters, migration shims, or dual readers — data written
 > by older lines is REJECTED with an error naming the historical route: inspect it with its
-> matching historical tag (`engine-v0.10.1` and earlier keep working for their own data forever).
+> matching historical tag (including `engine-v0.11.5` for `wait-v1` records). In particular,
+> v0.11.6 adopters start a new wait-coordinator namespace after settling or discarding pending
+> `wait-v1` records under v0.11.5.
 > Adoption is fresh: new consumers start on the current contract; existing consumers re-adopt the
 > current surface rather than migrate state.
 >
@@ -168,13 +170,13 @@ minimal profile.
 
 ## Release Highlights
 
-`engine-v0.11.0` makes the line **latest-only**: strict versioned persisted contracts
-(MachineSnapshot `schema_version="v0.11"` with required typed identity; observation bundle meta v2
-with closed status vocabulary and segment identity; wait records `record_schema_version="wait-v1"`),
+`engine-v0.11.0` made the line **latest-only**: strict versioned persisted contracts,
 one strict viewer loader with typed status authority, a sealed current-contract oracle replacing
-old-wheel equality, and removal of every compatibility fallback — old persisted data fails loudly
-naming its historical tag. Earlier lines added, and v0.11 preserves behaviorally (sealed corpus:
-0 behavior deltas vs v0.10.1):
+old-wheel equality, and removal of every compatibility fallback. The current v0.11.6 candidate
+keeps MachineSnapshot `schema_version="v0.11"` and observation bundle meta v2, and advances wait
+records to `record_schema_version="wait-v2"` with required persisted registration-attempt
+identity. Old persisted data fails loudly naming its historical tag. Earlier lines added, and
+v0.11 preserves behaviorally (sealed corpus: 0 behavior deltas vs v0.10.1):
 
 - an engine-owned, **enforced** execution window (soft work deadline, hard timeout, completion
   reserve, named limiting sources/clamps) intersecting task request, capability limit, remaining run

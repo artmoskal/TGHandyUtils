@@ -29,12 +29,12 @@ pytestmark = pytest.mark.unit
 def test_wait_models_are_strict_and_round_trip():
     policy = DurableWaitPolicy(timeout_s=3600, signal_correlation={"ticket": "T-1"})
     record = WaitRecord(
-        record_schema_version="wait-v1",
+        record_schema_version="wait-v2",
         wait_id="w1",
         run_id="r1",
         workflow_id="wf",
         suspended_node="approval",
-        definition_digest="digest-conf", policy=policy,
+        definition_digest="digest-conf", registration_attempt_id="attempt-w1", policy=policy,
         deadline_at="2026-07-11T13:00:00+00:00",
     )
     for model in (
@@ -64,9 +64,9 @@ def test_wait_vocabulary_is_closed_and_overdue_is_not_a_status():
     assert "overdue" not in WAIT_STATUSES, "overdue is DERIVED health, never a stored status"
     assert "expired" not in WAIT_STATUSES, "resolution reason is separate from status (C5)"
     base = dict(
-        record_schema_version="wait-v1",
+        record_schema_version="wait-v2",
         wait_id="w", run_id="r", workflow_id="wf", suspended_node="n",
-        definition_digest="digest-base",
+        definition_digest="digest-base", registration_attempt_id="attempt-w",
         policy=DurableWaitPolicy(timeout_s=1), deadline_at="2026-07-11T13:00:00+00:00",
     )
     with pytest.raises(ValidationError):
@@ -313,9 +313,9 @@ def test_wait_timestamps_must_be_timezone_aware_datetimes():
     from datetime import datetime, timezone
 
     base = dict(
-        record_schema_version="wait-v1",
+        record_schema_version="wait-v2",
         wait_id="w", run_id="r", workflow_id="wf", suspended_node="n",
-        definition_digest="digest-ts",
+        definition_digest="digest-ts", registration_attempt_id="attempt-w",
         policy=DurableWaitPolicy(timeout_s=1),
     )
     with pytest.raises(ValidationError):
@@ -561,8 +561,11 @@ async def test_in_memory_coordinator_is_deterministic_and_never_self_fires():
     from ai_workflow_engine.testing.wait_contract import run_wait_registration_conformance
 
     clock = _clock()
+    shared: dict = {}
     await run_wait_registration_conformance(
-        lambda: InMemoryWaitCoordinator(clock=clock), clock=clock
+        lambda: InMemoryWaitCoordinator(clock=clock, shared_state=shared),
+        reconnect=lambda: InMemoryWaitCoordinator(clock=clock, shared_state=shared),
+        clock=clock,
     )
 
     coordinator = InMemoryWaitCoordinator(clock=clock)
@@ -570,9 +573,10 @@ async def test_in_memory_coordinator_is_deterministic_and_never_self_fires():
 
     now = clock()
     record = WaitRecord(
-        record_schema_version="wait-v1",
+        record_schema_version="wait-v2",
         wait_id="w-due", run_id="r", workflow_id="wf", suspended_node="g",
-        definition_digest="digest-conf", policy=DWP(timeout_s=30), created_at=now, deadline_at=now + timedelta(seconds=30),
+        definition_digest="digest-conf", registration_attempt_id="attempt-w-due",
+        policy=DWP(timeout_s=30), created_at=now, deadline_at=now + timedelta(seconds=30),
     )
     await coordinator.register(record, "{}", _definition_json())
     assert await coordinator.due(now) == []
@@ -581,6 +585,22 @@ async def test_in_memory_coordinator_is_deterministic_and_never_self_fires():
     source = Path(waits_module.__file__).read_text(encoding="utf-8")
     for forbidden in ("create_task", "Thread(", "sleep(", "Timer(", "while True"):
         assert forbidden not in source, f"no self-firing machinery in waits.py: {forbidden}"
+
+
+async def test_registration_conformance_requires_a_distinct_same_store_reconnect():
+    """Certification cannot silently degrade to a same-process participant check."""
+
+    from ai_workflow_engine import InMemoryWaitCoordinator
+    from ai_workflow_engine.testing.wait_contract import run_wait_registration_conformance
+
+    clock = _clock()
+    coordinator = InMemoryWaitCoordinator(clock=clock)
+    with pytest.raises(TypeError, match="reconnect"):
+        await run_wait_registration_conformance(lambda: coordinator, clock=clock)
+    with pytest.raises(AssertionError, match="NEW coordinator instance"):
+        await run_wait_registration_conformance(
+            lambda: coordinator, reconnect=lambda: coordinator, clock=clock
+        )
 
 
 async def test_broken_adapters_fail_conformance_by_named_invariant():
@@ -799,24 +819,36 @@ async def test_broken_adapters_fail_conformance_by_named_invariant():
             real = await super().health()
             return real.model_copy(update={"overdue": 0})
 
+    class ProcessLocalParticipants(InMemoryWaitCoordinator):
+        """Records reconnect, but retry participants disappear with each process."""
+
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self._registration_attempts = {}
+
     for broken, fragment in (
         (WrongDeadline, "ACCEPTED deadline"),
         (SilentReplace, "rejected"),
         (NotIdempotent, "idempotent"),
-        (Amnesiac, "retrievable"),
+        (Amnesiac, "reconnected"),
         (DefinitionDropper, "load_definition"),
         (StaleAttemptOrdinal, "ordinal"),
         (LeaseIgnorer, "DIFFERENT event"),
         (TerminalReviver, "terminal"),
         (MutatingAbort, "refused"),
-        (AbortLiar, "TRUTHFUL"),
+        (AbortLiar, "visible"),
         (ClaimPreemptor, "preempt"),
         (DueLiar, "surface"),
         (HealthLiar, "overdue"),
+        (ProcessLocalParticipants, "survive"),
     ):
+        shared: dict = {}
+        make = lambda broken=broken, shared=shared: broken(
+            clock=clock, shared_state=shared
+        )
         with pytest.raises(AssertionError, match=fragment.split()[0]):
             await run_wait_registration_conformance(
-                lambda broken=broken: broken(clock=clock), clock=clock
+                make, reconnect=make, clock=clock
             )
 
 
@@ -946,9 +978,13 @@ async def test_conformance_rejects_snapshot_loss_and_supports_reconnect():
 
     for broken, fragment in ((SnapshotDropper, "EXACT registered snapshot"),
                              (SnapshotMangler, "EXACT registered snapshot")):
+        shared_broken: dict = {}
+        make_broken = lambda broken=broken, shared=shared_broken: broken(
+            clock=clock, shared_state=shared
+        )
         with pytest.raises(AssertionError, match="EXACT"):
             await run_wait_registration_conformance(
-                lambda broken=broken: broken(clock=clock), clock=clock
+                make_broken, reconnect=make_broken, clock=clock
             )
 
     # defensive copies: mutating a returned record does not corrupt the store
@@ -959,9 +995,10 @@ async def test_conformance_rejects_snapshot_loss_and_supports_reconnect():
 
     now = clock()
     record = WaitRecord(
-        record_schema_version="wait-v1",
+        record_schema_version="wait-v2",
         wait_id="w-copy", run_id="r", workflow_id="wf", suspended_node="g",
-        definition_digest="digest-conf", policy=DWP(timeout_s=30), created_at=now, deadline_at=now + timedelta(seconds=30),
+        definition_digest="digest-conf", registration_attempt_id="attempt-w-copy",
+        policy=DWP(timeout_s=30), created_at=now, deadline_at=now + timedelta(seconds=30),
     )
     await coordinator.register(record, "{}", _definition_json())
     fetched = await coordinator.get("w-copy")
@@ -1271,9 +1308,10 @@ async def test_reference_adapter_is_async_and_alias_free():
     coordinator = InMemoryWaitCoordinator(clock=clock)
     now = clock()
     record = WaitRecord(
-        record_schema_version="wait-v1",
+        record_schema_version="wait-v2",
         wait_id="w-alias", run_id="r", workflow_id="wf", suspended_node="g",
-        policy=DWP(timeout_s=1), definition_digest="d", created_at=now,
+        policy=DWP(timeout_s=1), definition_digest="d",
+        registration_attempt_id="attempt-w-alias", created_at=now,
         deadline_at=now + timedelta(seconds=1),
     )
     await coordinator.register(record, "{}", _definition_json())
@@ -1300,8 +1338,9 @@ def test_blank_definition_digest_is_rejected_everywhere():
 
     now = _clock()()
     base = dict(
-        record_schema_version="wait-v1",
+        record_schema_version="wait-v2",
         wait_id="w", run_id="r", workflow_id="wf", suspended_node="g",
+        registration_attempt_id="attempt-w",
         policy=DWP(timeout_s=1), created_at=now, deadline_at=now + timedelta(seconds=1),
     )
     with pytest.raises(ValidationError):
@@ -1330,9 +1369,10 @@ async def test_duplicate_receipt_is_a_defensive_result():
     coordinator = InMemoryWaitCoordinator(clock=clock)
     now = clock()
     record = WaitRecord(
-        record_schema_version="wait-v1",
+        record_schema_version="wait-v2",
         wait_id="w-rcpt", run_id="r", workflow_id="wf", suspended_node="g",
-        definition_digest="d", policy=DWP(timeout_s=1),
+        definition_digest="d", registration_attempt_id="attempt-w-rcpt",
+        policy=DWP(timeout_s=1),
         created_at=now, deadline_at=now + timedelta(seconds=1),
     )
     first = await coordinator.register(record, "{}", _definition_json())
@@ -2946,10 +2986,8 @@ async def test_correlation_is_immutable_registration_truth_across_wait_lifecycle
     assert "correlation_id" not in plain_meta
 
 
-def test_wait_record_rejects_non_current_schema_versions():
-    """v0.11 (manifest row M12): the wait record is versioned and closed — a coordinator
-    returning a pre-v0.11 record (no version field) or an unknown version fails with the
-    actionable discard/historical-tag message; the conformance kit inherits this rejection."""
+def test_wait_record_v2_requires_persisted_attempt_identity_and_rejects_old_versions():
+    """The current wait record never invents lifecycle identity while decoding storage."""
 
     base = dict(
         wait_id="w-1", run_id="r-1", workflow_id="wf", suspended_node="gate",
@@ -2957,11 +2995,59 @@ def test_wait_record_rejects_non_current_schema_versions():
         deadline_at="2026-07-11T13:00:00+00:00",
     )
     with pytest.raises(ValidationError, match="unsupported wait-record schema"):
-        WaitRecord.model_validate(base)  # pre-v0.11: no version field
+        WaitRecord.model_validate(base)
     with pytest.raises(ValidationError, match="unsupported wait-record schema"):
-        WaitRecord.model_validate({**base, "record_schema_version": "wait-v0"})
-    ok = WaitRecord.model_validate({**base, "record_schema_version": "wait-v1"})
-    assert ok.record_schema_version == "wait-v1"
+        WaitRecord.model_validate({**base, "record_schema_version": "wait-v1"})
+    missing_attempt = {**base, "record_schema_version": "wait-v2"}
+    with pytest.raises(ValidationError, match="registration_attempt_id"):
+        WaitRecord.model_validate(missing_attempt)
+    missing_attempt_json = {
+        **missing_attempt,
+        "policy": missing_attempt["policy"].model_dump(mode="json"),
+    }
+    with pytest.raises(ValidationError, match="registration_attempt_id"):
+        WaitRecord.model_validate_json(_json.dumps(missing_attempt_json))
+    ok = WaitRecord.model_validate(
+        {**missing_attempt, "registration_attempt_id": "attempt-persisted"}
+    )
+    assert ok.record_schema_version == "wait-v2"
+    assert ok.registration_attempt_id == "attempt-persisted"
+
+
+async def test_missing_persisted_attempt_identity_mutates_no_coordinator_state():
+    """A malformed stored record is rejected before any coordinator mutation."""
+
+    from ai_workflow_engine import InMemoryWaitCoordinator
+
+    clock = _clock()
+    shared: dict = {}
+    coordinator = InMemoryWaitCoordinator(clock=clock, shared_state=shared)
+    before = {name: dict(values) for name, values in shared.items()}
+    raw = {
+        "record_schema_version": "wait-v2",
+        "wait_id": "w-missing-attempt",
+        "run_id": "r",
+        "workflow_id": "wf",
+        "suspended_node": "gate",
+        "policy": DurableWaitPolicy(timeout_s=60).model_dump(mode="json"),
+        "definition_digest": "digest",
+        "deadline_at": "2026-07-11T13:00:00+00:00",
+    }
+
+    async def register_mapping():
+        record = WaitRecord.model_validate(raw)
+        await coordinator.register(record, "{}", _definition_json())
+
+    async def register_json():
+        record = WaitRecord.model_validate_json(_json.dumps(raw))
+        await coordinator.register(record, "{}", _definition_json())
+
+    with pytest.raises(ValidationError, match="registration_attempt_id"):
+        await register_mapping()
+    assert {name: dict(values) for name, values in shared.items()} == before
+    with pytest.raises(ValidationError, match="registration_attempt_id"):
+        await register_json()
+    assert {name: dict(values) for name, values in shared.items()} == before
 
 
 # ======================================================================================
@@ -3270,8 +3356,10 @@ async def test_lifecycle_kit_rejects_integrity_inventor_and_failed_hider():
 
     caught = False
     try:
+        shared: dict = {}
+        make = lambda: IntegrityInventor(clock=clock, shared_state=shared)
         await run_wait_registration_conformance(
-            lambda: IntegrityInventor(clock=clock, shared_state={}), clock=clock
+            make, reconnect=make, clock=clock
         )
     except AssertionError:
         caught = True
@@ -3284,26 +3372,33 @@ async def test_lifecycle_kit_rejects_integrity_inventor_and_failed_hider():
 
     caught = False
     try:
+        shared = {}
+        make = lambda: FailedHider(clock=clock, shared_state=shared)
         await run_wait_registration_conformance(
-            lambda: FailedHider(clock=clock, shared_state={}), clock=clock
+            make, reconnect=make, clock=clock
         )
     except AssertionError:
         caught = True
     assert caught, "an adapter hiding failed records must fail lifecycle conformance"
 
+    startup_lied = {"done": False}
+
     class StartupInventor(InMemoryWaitCoordinator):
-        # dishonest ONLY while the store is empty — kills a kit that anchors integrity
-        # solely at the END of the lifecycle (H7 demands BEGINS and ends at zero)
+        # Dishonest only on the first health read. The shared reconnect store may already
+        # contain registration checks, so "empty store" is not a reliable phase marker.
         async def health(self):  # noqa: A003
             real = await super().health()
-            if not self._records:
+            if not startup_lied["done"]:
+                startup_lied["done"] = True
                 return real.model_copy(update={"integrity_errors": 99})
             return real
 
     caught = False
     try:
+        shared = {}
+        make = lambda: StartupInventor(clock=clock, shared_state=shared)
         await run_wait_registration_conformance(
-            lambda: StartupInventor(clock=clock, shared_state={}), clock=clock
+            make, reconnect=make, clock=clock
         )
     except AssertionError:
         caught = True
@@ -3711,25 +3806,28 @@ async def test_registration_reuse_wins_creator_compensation_race():
             return receipt
 
     clock = _clock()
-    coordinator = LostCreatorAck(clock=clock)
-    engine, _calls = _exposure_probe_engine(coordinator, clock)
+    shared: dict = {}
+    creator_coordinator = LostCreatorAck(clock=clock, shared_state=shared)
+    reuser_coordinator = InMemoryWaitCoordinator(clock=clock, shared_state=shared)
+    creator_engine, _creator_calls = _exposure_probe_engine(creator_coordinator, clock)
+    reuser_engine, _reuser_calls = _exposure_probe_engine(reuser_coordinator, clock)
     goal = WorkflowGoal(
         workflow_type="durable_flow",
         objective="registration race",
         metadata={"run_id": "reuse-wins-run"},
     )
 
-    creator = asyncio.create_task(engine.run("durable_flow", {}, goal=goal))
+    creator = asyncio.create_task(creator_engine.run("durable_flow", {}, goal=goal))
     await asyncio.wait_for(creator_committed.wait(), timeout=5)
-    reuser = await engine.run("durable_flow", {}, goal=goal)
+    reuser = await reuser_engine.run("durable_flow", {}, goal=goal)
     assert reuser.wait_handle is not None
     release_creator.set()
     with pytest.raises(WaitRegistrationSettlementError, match="refused_reused"):
         await creator
 
     handle = reuser.wait_handle
-    assert (await coordinator.get(handle.wait_id)).status == "pending"
-    delivered = await engine.deliver_wait_event(
+    assert (await creator_coordinator.get(handle.wait_id)).status == "pending"
+    delivered = await reuser_engine.deliver_wait_event(
         handle, {"kind": "signal", "event_id": "evt-reuse-won", "payload": "yes"}
     )
     assert delivered.kind == "executed" and delivered.run_result.status == "completed"
@@ -3764,25 +3862,28 @@ async def test_registration_compensation_wins_retry_race():
             return outcome
 
     clock = _clock()
-    coordinator = CompensationFirst(clock=clock)
-    engine, _calls = _exposure_probe_engine(coordinator, clock)
+    shared: dict = {}
+    creator_coordinator = CompensationFirst(clock=clock, shared_state=shared)
+    retry_coordinator = InMemoryWaitCoordinator(clock=clock, shared_state=shared)
+    creator_engine, _creator_calls = _exposure_probe_engine(creator_coordinator, clock)
+    retry_engine, _retry_calls = _exposure_probe_engine(retry_coordinator, clock)
     goal = WorkflowGoal(
         workflow_type="durable_flow",
         objective="registration race",
         metadata={"run_id": "compensation-wins-run"},
     )
 
-    creator = asyncio.create_task(engine.run("durable_flow", {}, goal=goal))
+    creator = asyncio.create_task(creator_engine.run("durable_flow", {}, goal=goal))
     await asyncio.wait_for(creator_committed.wait(), timeout=5)
     creator.cancel()
     await asyncio.wait_for(compensation_committed.wait(), timeout=5)
 
-    retry = await engine.run("durable_flow", {}, goal=goal)
+    retry = await retry_engine.run("durable_flow", {}, goal=goal)
     assert retry.status == "failed" and retry.wait_handle is None
     release_compensation.set()
     with pytest.raises(asyncio.CancelledError):
         await creator
-    record = next(iter(coordinator._records.values()))
+    record = next(iter(retry_coordinator._records.values()))
     assert record.status == "cancelled"
 
 
@@ -3903,13 +4004,14 @@ async def test_compensation_wins_atomic_race_with_delivery_claim():
     coordinator = OrderedRace(clock=clock)
     now = clock()
     record = WaitRecord(
-        record_schema_version="wait-v1",
+        record_schema_version="wait-v2",
         wait_id="race-compensation-wins",
         run_id="race-run",
         workflow_id="wf",
         suspended_node="gate",
         policy=DurableWaitPolicy(timeout_s=60),
         definition_digest=_definition_digest(),
+        registration_attempt_id="attempt-race-compensation",
         created_at=now,
         deadline_at=now + timedelta(seconds=60),
     )
@@ -3972,13 +4074,14 @@ async def test_delivery_claim_wins_atomic_race_with_compensation():
     coordinator = OrderedRace(clock=clock)
     now = clock()
     record = WaitRecord(
-        record_schema_version="wait-v1",
+        record_schema_version="wait-v2",
         wait_id="race-delivery-wins",
         run_id="race-run",
         workflow_id="wf",
         suspended_node="gate",
         policy=DurableWaitPolicy(timeout_s=60),
         definition_digest=_definition_digest(),
+        registration_attempt_id="attempt-race-delivery",
         created_at=now,
         deadline_at=now + timedelta(seconds=60),
     )
@@ -4486,13 +4589,14 @@ async def test_foreign_registration_under_same_id_is_not_ours_to_settle():
     now = clock()
     wait_id = DurableWaitRuntime.wait_id_for("foreign-run", "gate", 0)
     foreign = WaitRecord(
-        record_schema_version="wait-v1",
+        record_schema_version="wait-v2",
         wait_id=wait_id,
         run_id="foreign-run",
         workflow_id="durable_flow",
         suspended_node="gate",
         policy=DurableWaitPolicy(timeout_s=60),
         definition_digest=definition.definition_digest(),
+        registration_attempt_id="attempt-foreign",
         created_at=now,
         deadline_at=now + timedelta(seconds=60),
     )

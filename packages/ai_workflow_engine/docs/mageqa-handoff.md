@@ -210,12 +210,14 @@ with a scenario and acceptance proof. Upgrade via [`operations.md`](operations.m
 
 `engine-v0.11.6` is the release candidate for the **latest-only** line; `engine-v0.11.5`
 remains the tagged release until the candidate passes review and is cut. The line uses strict versioned persisted
-contracts (snapshot `v0.11`, bundle meta v2, wait records `wait-v1`), one strict viewer loader, and
+contracts (snapshot `v0.11`, bundle meta v2, wait records `wait-v2`), one strict viewer loader, and
 NO migration layer — the sealed current-contract corpus shows 0 behavior deltas vs v0.10.1, but old
 persisted data is rejected loudly naming its historical tag. Adopt by re-pinning fresh
 (after release, pin tag `engine-v0.11.6`, verify the published `release-manifest-v2` bundle, then install engine
 `0.11.6`, tools `0.5.1`, and viewer `0.3.1`) and
 re-run your canaries before changing any deployed pin.
+`wait-v1` records written by v0.11.5 are non-current: settle or discard them under v0.11.5 and
+start a new coordinator namespace before v0.11.6 writes `wait-v2`.
 
 The release supersedes exactly the two changes declared in MageQA's v0.11.1 fork. Engine
 `0.11.4` retains the stronger planner-output merge at both loss surfaces from `0.11.3` and adds

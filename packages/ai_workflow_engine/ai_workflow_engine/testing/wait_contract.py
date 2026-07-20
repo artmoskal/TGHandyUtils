@@ -3,10 +3,11 @@
 cancel/stalled).
 
 Plain-assert, dependency-free (no pytest): products call
-``await run_wait_registration_conformance(make_coordinator, clock=...)`` from their own test
-suite. Each failure names the violated invariant. The engine trusts a PASSING adapter the
-way it trusts a capability handler — this kit is the honest edge of a storage-neutral
-engine's verification power (C2/C3)."""
+``await run_wait_registration_conformance(make_coordinator, reconnect=..., clock=...)``
+from their own test suite. ``reconnect`` must construct a second adapter over the same
+backing store. Each failure names the violated invariant. The engine trusts a PASSING
+adapter the way it trusts a capability handler — this kit is the honest edge of a
+storage-neutral engine's verification power (C2/C3)."""
 
 from __future__ import annotations
 
@@ -23,12 +24,14 @@ __all__ = [
 
 def _record(now: datetime, wait_id: str = "w-1", *, timeout_s: float = 60.0) -> WaitRecord:
     return WaitRecord(
-        record_schema_version="wait-v1",
+        record_schema_version="wait-v2",
         wait_id=wait_id,
         run_id="run-1",
         workflow_id="wf",
         suspended_node="gate",
-        definition_digest="digest-conf", policy=DurableWaitPolicy(timeout_s=timeout_s),
+        definition_digest="digest-conf",
+        policy=DurableWaitPolicy(timeout_s=timeout_s),
+        registration_attempt_id=f"attempt-{wait_id}",
         created_at=now,
         deadline_at=now + timedelta(seconds=timeout_s),
     )
@@ -62,8 +65,8 @@ def _definition_json() -> str:
 async def run_wait_registration_conformance(
     make_coordinator: Callable[[], Any],
     *,
+    reconnect: Callable[[], Any],
     clock: Callable[[], datetime] | None = None,
-    reconnect: Callable[[], Any] | None = None,
 ) -> None:
     now = (clock or (lambda: datetime.now(timezone.utc)))()
     snapshot_json = _snapshot_json()
@@ -105,25 +108,21 @@ async def run_wait_registration_conformance(
         "second incarnation identity for the same accepted attempt"
     )
 
-    # 2b) v0.11.6 (C1): registration identity distinguishes INCARNATIONS. A second
-    #     adapter accepting the same record decides the branch honestly: an independent
-    #     backing store is a replacement-store incarnation and MUST mint a different id;
-    #     a shared backing store is the same accepted attempt and MUST reuse the same id.
-    other_store = make_coordinator()
-    if await other_store.get(record.wait_id) is None:
-        other_receipt = await other_store.register(record, snapshot_json, definition_json)
-        assert other_receipt.registration_id != receipt.registration_id, (
-            "a newly ACCEPTED registration incarnation (independent backing store) must "
-            "mint a DIFFERENT opaque registration_id — an id derivable from the "
-            "deterministic wait id would let a retired incarnation's handle claim its "
-            "successor"
-        )
-    else:
-        shared_receipt = await other_store.register(record, snapshot_json, definition_json)
-        assert shared_receipt.registration_id == receipt.registration_id, (
-            "a shared-backing-store adapter re-registering the identical record is the "
-            "same accepted attempt and must return the same registration_id"
-        )
+    # 2b) reconnect is explicitly a second adapter over this backing store. It must see
+    # and reuse the same accepted incarnation, not mint process-local identity.
+    other_store = reconnect()
+    assert other_store is not coordinator, (
+        "reconnect must return a NEW coordinator instance over the same backing store"
+    )
+    shared_record = await other_store.get(record.wait_id)
+    assert shared_record == record, (
+        "a reconnected adapter must see the accepted record before retry registration"
+    )
+    shared_receipt = await other_store.register(record, snapshot_json, definition_json)
+    assert shared_receipt.registration_id == receipt.registration_id, (
+        "a reconnected adapter re-registering the identical record is the same accepted "
+        "incarnation and must return the same registration_id"
+    )
 
     # 3) changed duplicate is REJECTED (never silently replaced)
     changed = record.model_copy(update={"deadline_at": record.deadline_at + timedelta(seconds=5)})
@@ -181,18 +180,21 @@ async def run_wait_registration_conformance(
         "missing definitions are an explicit None, never an exception or fabrication"
     )
 
-    # 6) reconnect/restart (where supported): a NEW adapter over the same backing store
-    #    sees the identical record + snapshot
-    if reconnect is not None:
-        fresh = reconnect()
-        again_stored = await fresh.get(record.wait_id)
-        assert again_stored == record, "reconnected adapter must see the identical record"
-        assert await fresh.load_snapshot(record.wait_id) == snapshot_json, (
-            "reconnected adapter must see the identical snapshot"
-        )
-        assert await fresh.load_definition(record.wait_id) == definition_json, (
-            "reconnected adapter must see the identical registered definition bytes"
-        )
+    # 6) reconnect/restart: a NEW adapter over the same backing store sees every
+    # lifecycle fact. This is mandatory because registration compensation races other
+    # processes; a same-process-only conformance pass is not a durable contract.
+    fresh = reconnect()
+    assert fresh is not coordinator, (
+        "reconnect must return a NEW coordinator instance over the same backing store"
+    )
+    again_stored = await fresh.get(record.wait_id)
+    assert again_stored == record, "reconnected adapter must see the identical record"
+    assert await fresh.load_snapshot(record.wait_id) == snapshot_json, (
+        "reconnected adapter must see the identical snapshot"
+    )
+    assert await fresh.load_definition(record.wait_id) == definition_json, (
+        "reconnected adapter must see the identical registered definition bytes"
+    )
 
     # ================= R0/F6+F16: claim/complete/fail lifecycle conformance =============
     # The engine's delivery path depends on ALL of this; an adapter that only passes the
@@ -428,6 +430,71 @@ async def run_wait_registration_conformance(
         "the CAS rather than revoke a potentially exposed handle"
     )
     assert (await aborter.get("w-abort-reused")).status == "pending"
+
+    # Cross-process CAS is load-bearing. The creator and exact retry use different
+    # coordinator instances over one backing store. Retry participation must be durable,
+    # or the creator could cancel a registration after another process exposed its handle.
+    cross_creator = make_coordinator()
+    cross_record = _record(now, wait_id="w-abort-cross-process")
+    cross_receipt = await cross_creator.register(
+        cross_record, snapshot_json, definition_json
+    )
+    cross_reuser = reconnect()
+    assert cross_reuser is not cross_creator, (
+        "cross-process compensation requires distinct coordinator instances"
+    )
+    cross_retry = cross_record.model_copy(
+        update={"registration_attempt_id": "attempt-cross-process-retry"}
+    )
+    cross_retry_receipt = await cross_reuser.register(
+        cross_retry, snapshot_json, definition_json
+    )
+    assert cross_retry_receipt == cross_receipt, (
+        "a reconnected exact retry must reuse the accepted receipt"
+    )
+    cross_retry_abort = await cross_reuser.abort_registration(
+        cross_record.wait_id,
+        expected_registration_id=cross_receipt.registration_id,
+        expected_registration_attempt_id=cross_retry.registration_attempt_id,
+        expected_definition_digest=cross_record.definition_digest,
+        reason="reuser cancelled",
+    )
+    assert cross_retry_abort.kind == "not_creator", (
+        "the reconnected retry must not revoke a registration created elsewhere"
+    )
+    cross_creator_abort = await cross_creator.abort_registration(
+        cross_record.wait_id,
+        expected_registration_id=cross_receipt.registration_id,
+        expected_registration_attempt_id=cross_record.registration_attempt_id,
+        expected_definition_digest=cross_record.definition_digest,
+        reason="creator cancelled after cross-process reuse",
+    )
+    assert cross_creator_abort.kind == "refused_reused", (
+        "retry participation must survive reconnect — creator compensation must not "
+        "revoke a handle another process may have exposed"
+    )
+    assert (await reconnect().get(cross_record.wait_id)).status == "pending"
+
+    # Creator-wins ordering: merely reconnecting does not invent participation. If no
+    # retry has registered yet, the creator may still cancel and every process sees it.
+    creator_wins = make_coordinator()
+    creator_wins_record = _record(now, wait_id="w-abort-creator-wins")
+    creator_wins_receipt = await creator_wins.register(
+        creator_wins_record, snapshot_json, definition_json
+    )
+    creator_wins_observer = reconnect()
+    assert (await creator_wins_observer.get(creator_wins_record.wait_id)).status == "pending"
+    creator_wins_abort = await creator_wins.abort_registration(
+        creator_wins_record.wait_id,
+        expected_registration_id=creator_wins_receipt.registration_id,
+        expected_registration_attempt_id=creator_wins_record.registration_attempt_id,
+        expected_definition_digest=creator_wins_record.definition_digest,
+        reason="creator cancelled before reuse",
+    )
+    assert creator_wins_abort.kind == "cancelled"
+    assert (await creator_wins_observer.get(creator_wins_record.wait_id)).status == "cancelled", (
+        "creator compensation must be visible after reconnect"
+    )
     settled = await aborter.abort_registration(
         "w-abort", expected_registration_id=abort_receipt.registration_id,
         expected_registration_attempt_id=abort_record.registration_attempt_id,

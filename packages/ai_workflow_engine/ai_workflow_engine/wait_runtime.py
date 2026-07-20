@@ -435,7 +435,7 @@ class DurableWaitRuntime:
             )
         now = self.now()
         record = WaitRecord(
-            record_schema_version="wait-v1",
+            record_schema_version="wait-v2",
             wait_id=wait_id,
             run_id=request.run_id,
             workflow_id=request.workflow_id,
