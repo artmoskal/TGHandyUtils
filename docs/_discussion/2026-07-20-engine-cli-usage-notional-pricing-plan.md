@@ -583,7 +583,7 @@ Purpose: close the omitted MageQA provider-call evidence contract before qualifi
 
 Purpose: close the permanent contract and installed-wheel behavior before paid validation.
 
-- [ ] Add installed-wheel hermetic qualification (estimate: 2h)
+- [x] Add installed-wheel hermetic qualification (estimate: 2h)
   - Purpose: test the real package matrix without repository imports.
   - Likely files/areas: existing release/qualification harness and tests.
   - Expected output: fake Claude/Codex calls through all three doors, bundle/readback/viewer,
@@ -937,7 +937,7 @@ qualification remains unchecked below.
 ### Explicitly Open
 
 - [x] Complete the remaining mandatory mutation matrix and clean rerun.
-- [ ] Build two reproducible candidate wheel sets and pass the installed-wheel hermetic smoke.
+- [x] Build two reproducible candidate wheel sets and pass the installed-wheel hermetic smoke.
 - [ ] Obtain the one independent cumulative counterpart review required by this plan.
 - [ ] Obtain fresh approval for one Claude and one Codex subscription canary, or record an explicit
   waiver. No paid call has been made.
@@ -945,3 +945,20 @@ qualification remains unchecked below.
 - [ ] Flip candidate docs to released truth, build the final release bundle, verify hashes/manifest,
   and create the local annotated `engine-v0.11.7` tag. No tag, push, upload, or consumer repin has
   occurred.
+
+### Candidate Artifact Evidence
+
+- Candidate source commit: `23ca57b`.
+- Two independent detached clean clones built with `SOURCE_DATE_EPOCH=1784589655`,
+  `PYTHONHASHSEED=0`, and umask `022`.
+- Both builds produced byte-identical wheels:
+  - `ai_workflow_engine-0.11.7-py3-none-any.whl`:
+    `0035c37fe41596902a230a5f28f7de97fa27992a32cade51801c248c6c7a35d5`
+  - `ai_workflow_tools-0.5.2-py3-none-any.whl`:
+    `fe227d396609ace481931e44fe286f8477a0c0fdae9b2bb73016857e1c7b7ee5`
+  - `ai_workflow_viewer-0.3.2-py3-none-any.whl`:
+    `6046ab0678b84756e91674fdc50ad6f6d6ace827f4a8dca26c71a47ce77a4939`
+- A fresh out-of-repository virtual environment installed those exact bytes and passed
+  `release_artifacts.py smoke-installed`.
+- These are candidate hashes, not the final release-manifest identities. The final release bundle
+  must be rebuilt from the reviewed annotated tag and verified independently by the release tool.
