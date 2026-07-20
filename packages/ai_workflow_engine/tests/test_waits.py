@@ -819,12 +819,26 @@ async def test_broken_adapters_fail_conformance_by_named_invariant():
             real = await super().health()
             return real.model_copy(update={"overdue": 0})
 
-    class ProcessLocalParticipants(InMemoryWaitCoordinator):
-        """Records reconnect, but retry participants disappear with each process."""
+    class InstanceLocalParticipants(InMemoryWaitCoordinator):
+        """Records reconnect, but retry participants disappear with each instance."""
 
         def __init__(self, **kwargs):
             super().__init__(**kwargs)
             self._registration_attempts = {}
+
+    class RegistrationReviver(InMemoryWaitCoordinator):
+        """Silently revives a creator-cancelled record on a later exact retry."""
+
+        async def register(self, record, snapshot_json, definition_json):
+            existing = await self.get(record.wait_id)
+            if existing is not None and existing.status == "cancelled":
+                async with self._lock:
+                    self._records.pop(record.wait_id, None)
+                    self._snapshots.pop(record.wait_id, None)
+                    self._definitions.pop(record.wait_id, None)
+                    self._receipts.pop(record.wait_id, None)
+                    self._registration_attempts.pop(record.wait_id, None)
+            return await super().register(record, snapshot_json, definition_json)
 
     for broken, fragment in (
         (WrongDeadline, "ACCEPTED deadline"),
@@ -840,7 +854,8 @@ async def test_broken_adapters_fail_conformance_by_named_invariant():
         (ClaimPreemptor, "preempt"),
         (DueLiar, "surface"),
         (HealthLiar, "overdue"),
-        (ProcessLocalParticipants, "survive"),
+        (InstanceLocalParticipants, "survive"),
+        (RegistrationReviver, "AFTER"),
     ):
         shared: dict = {}
         make = lambda broken=broken, shared=shared: broken(

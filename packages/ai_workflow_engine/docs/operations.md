@@ -94,7 +94,9 @@ engine suspension
 
 ### Product responsibilities
 
-- Implement persistent `WaitCoordinator` storage and pass the conformance kit.
+- Implement persistent `WaitCoordinator` storage and pass the distinct-instance conformance kit
+  plus process-isolated transaction races against the real store. An in-process PASS cannot prove
+  that participant state survives separate workers.
 - Persist the complete `WaitHandle`, including `registration_id`; `wait_id` is an index, not
   authority to resume a registration incarnation.
 - Run the external clock/ingress that calls `due(now)` and `stalled(now)`.

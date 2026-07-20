@@ -75,6 +75,11 @@ Durable events are deduplicated and only one claimant runs at a time, but crashe
 accepted event to be retried. Product effects must be idempotent. Do not claim coordinator/outbox
 atomicity unless a product adapter implements and proves that transaction itself.
 
+The generic wait conformance kit creates distinct adapter instances in one interpreter. It detects
+instance-local state, but cannot detect a class-level/process-local cache shared by those instances.
+Persistent adapters must also force creator/reuser and compensation/delivery races from separate OS
+processes against the real Redis/DB transaction boundary.
+
 ### Delivering by wait id or reconstructing a handle
 
 Persist the complete `WaitHandle` returned by a durable suspension and pass it back unchanged for

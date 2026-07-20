@@ -7,7 +7,11 @@ Plain-assert, dependency-free (no pytest): products call
 from their own test suite. ``reconnect`` must construct a second adapter over the same
 backing store. Each failure names the violated invariant. The engine trusts a PASSING
 adapter the way it trusts a capability handler — this kit is the honest edge of a
-storage-neutral engine's verification power (C2/C3)."""
+storage-neutral engine's verification power (C2/C3).
+
+This in-process kit proves behavior across distinct adapter instances; it cannot prove
+that an implementation persists transaction state across OS processes. Production
+adapters must additionally run process-isolated tests against their real Redis/DB store."""
 
 from __future__ import annotations
 
@@ -431,20 +435,21 @@ async def run_wait_registration_conformance(
     )
     assert (await aborter.get("w-abort-reused")).status == "pending"
 
-    # Cross-process CAS is load-bearing. The creator and exact retry use different
-    # coordinator instances over one backing store. Retry participation must be durable,
-    # or the creator could cancel a registration after another process exposed its handle.
+    # Distinct-instance CAS is load-bearing. The creator and exact retry use different
+    # coordinator instances over one backing store. Product suites must repeat this race
+    # in separate OS processes against the real store; an in-process kit cannot detect a
+    # class-level cache shared by every instance in this interpreter.
     cross_creator = make_coordinator()
-    cross_record = _record(now, wait_id="w-abort-cross-process")
+    cross_record = _record(now, wait_id="w-abort-distinct-instance")
     cross_receipt = await cross_creator.register(
         cross_record, snapshot_json, definition_json
     )
     cross_reuser = reconnect()
     assert cross_reuser is not cross_creator, (
-        "cross-process compensation requires distinct coordinator instances"
+        "distinct-instance compensation requires separate coordinator objects"
     )
     cross_retry = cross_record.model_copy(
-        update={"registration_attempt_id": "attempt-cross-process-retry"}
+        update={"registration_attempt_id": "attempt-distinct-instance-retry"}
     )
     cross_retry_receipt = await cross_reuser.register(
         cross_retry, snapshot_json, definition_json
@@ -467,7 +472,7 @@ async def run_wait_registration_conformance(
         expected_registration_id=cross_receipt.registration_id,
         expected_registration_attempt_id=cross_record.registration_attempt_id,
         expected_definition_digest=cross_record.definition_digest,
-        reason="creator cancelled after cross-process reuse",
+        reason="creator cancelled after distinct-instance reuse",
     )
     assert cross_creator_abort.kind == "refused_reused", (
         "retry participation must survive reconnect — creator compensation must not "
@@ -494,6 +499,20 @@ async def run_wait_registration_conformance(
     assert creator_wins_abort.kind == "cancelled"
     assert (await creator_wins_observer.get(creator_wins_record.wait_id)).status == "cancelled", (
         "creator compensation must be visible after reconnect"
+    )
+    retry_rejected = False
+    try:
+        await creator_wins_observer.register(
+            creator_wins_record, snapshot_json, definition_json
+        )
+    except Exception:
+        retry_rejected = True
+    assert retry_rejected, (
+        "an exact retry arriving AFTER creator compensation must fail loudly, never "
+        "revive the cancelled registration or expose a handle"
+    )
+    assert (await creator_wins_observer.get(creator_wins_record.wait_id)).status == "cancelled", (
+        "a rejected post-compensation retry must leave terminal state unchanged"
     )
     settled = await aborter.abort_registration(
         "w-abort", expected_registration_id=abort_receipt.registration_id,

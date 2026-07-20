@@ -157,7 +157,8 @@ Every adopter should test:
    bundle.
 8. Any persistent `WaitCoordinator` passes
    `ai_workflow_engine.testing.run_wait_registration_conformance` plus product transaction tests,
-   including exact crash retry, stale-handle rejection, and cancellation before handle exposure.
+   including separate-process creator/reuser races against the real store, exact crash retry,
+   stale-handle rejection, and cancellation before handle exposure.
 
 Run engine-side tests through this repository's root `./test.sh`; use the consumer's own approved
 wrapper in its repository.

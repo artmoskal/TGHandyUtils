@@ -228,7 +228,9 @@ async def test_redis_coordinator_contract():
 Add product tests proving real Redis transaction boundaries, scheduler restart, outbox idempotency,
 reconnect after process loss, and creator-attempt compensation racing exact retry/delivery. Use
 the kit from the accepted v0.11.6 tag; v0.11.5 does not define this protocol. The generic kit cannot
-inspect Redis `MULTI/EXEC` internals.
+inspect Redis `MULTI/EXEC` internals or prove process isolation: run creator and reuser in separate
+OS processes against the real store, force both transaction winner orders, and prove a
+process-local/class-level cache implementation fails the product gate.
 
 ## SlackAzz-Specific Misuse Risks
 

@@ -396,3 +396,34 @@ def test_documented_bundle_schema_version_is_the_engine_truth():
         f"operations.md claims bundle schema {found.group(1)} but the engine writes "
         f"{BUNDLE_SCHEMA_VERSION}"
     )
+
+
+def test_wait_conformance_docs_do_not_overclaim_process_atomicity():
+    """The generic kit is in-process; durable adapters need a real-store process gate."""
+
+    required = {
+        PACKAGE_ROOT / "README.md": ("process-isolated", "real store"),
+        PACKAGE_ROOT / "docs" / "getting-started.md": (
+            "separate-process",
+            "real store",
+        ),
+        PACKAGE_ROOT / "docs" / "operations.md": (
+            "process-isolated",
+            "real store",
+        ),
+        PACKAGE_ROOT / "docs" / "misuse-risks.md": (
+            "separate OS",
+            "real Redis/DB",
+        ),
+        PACKAGE_ROOT / "docs" / "slackazz-handoff.md": (
+            "separate OS",
+            "real store",
+        ),
+    }
+    for path, phrases in required.items():
+        text = " ".join(path.read_text(encoding="utf-8").split())
+        for phrase in phrases:
+            assert phrase in text, (
+                f"{path.name} must state the process-isolated real-store adoption gate; "
+                f"missing {phrase!r}"
+            )

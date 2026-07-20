@@ -29,8 +29,10 @@ domain models, provider clients, storage adapters, clocks, and side-effect deliv
 > If an exact retry reused a registration that another caller may already hold, cancellation is
 > loud rather than revoking that handle or claiming clean settlement. Exact crash retry still
 > recovers the same accepted receipt. Redis/DB adapters must implement
-> the v0.11.6 `WaitCoordinator` contract and pass the current conformance kit; do not implement
-> a new adapter against v0.11.5's delivery signatures.
+> the v0.11.6 `WaitCoordinator` contract and pass the current distinct-instance conformance kit
+> plus process-isolated transaction tests against the real store. The generic in-process kit
+> cannot prove that participant state survives separate workers. Do not implement a new adapter
+> against v0.11.5's delivery signatures.
 >
 > **v0.11.5 release delta.** `WaitHealth` gains REQUIRED current-state `failed` and
 > `integrity_errors` counts (no defaults — adapters without the current health contract fail
