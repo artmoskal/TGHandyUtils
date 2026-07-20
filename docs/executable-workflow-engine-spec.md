@@ -266,7 +266,7 @@ extended **by addition, never by editing the layer below**:
   `LLMCallable` protocol (and the LangChain-shaped `.invoke` family as a peer, not a privilege).
   Members today/planned: LangChain clients · plain async callables (raw HTTP, e.g. Ollama) · console
   executors (`claude -p` / `codex exec`) · no-API executors (browser-bridged) [FUTURE]. *Invariant:
-  parse/repair/pre_parse, metering (incl. `cost_known=false`), budgets, timeouts, model binding apply
+  parse/repair/pre_parse, typed usage/pricing truth, budgets, timeouts, and model binding apply
   IDENTICALLY through every executor — policy engine-owned, transport pluggable.*
 - **L2 — Modality/tool packs.** Reusable but non-mandatory: CLI/browser agents, MCP tool suites,
   TTS/STT, image generation, video producer/analyzer, OCR, VLM analysis, presentation building.
@@ -585,8 +585,9 @@ requires a deliberate, user-approved decision — never drift:
    work across ALL levels. UNBOUNDED recursion forbidden; AI-authored flows may not contain AI-writers
    (§6). Fence: depth-aware validation + cumulative budget + tests.
 3. **No-API/browser executor = highest-maintenance L1 member.** Brittle (UI drift), slow, ToS-gray.
-   The protocol contains the blast radius (one `LLMCallable`, `cost_known=false`, aggressive timeouts),
-   but the adapter is a maintenance pet. Build it LAST, only against a concrete paying use case.
+   The protocol contains the blast radius (one `LLMCallable`, typed unknown pricing when facts are
+   unavailable, aggressive timeouts), but the adapter is a maintenance pet. Build it LAST, only
+   against a concrete paying use case.
 4. **Protocol fattening.** `LLMRequest/LLMResponse` stayed minimal on purpose. New fields enter ONLY
    for a named consumer, additive-only, single-turn behavior bit-identical. Speculative fields,
    central worker-invocation mega-types, and core OOP taxonomies are rejected. (This is the engine's
@@ -732,6 +733,7 @@ group view is partial and the reader says so loudly.
 | Budgets/cost-honesty, trace sinks, model binding, scheduling/cancellation, evidence refs | **[BUILT]** |
 | Runtime observability graph/detail capture | **[BUILT]** — compact trace events + linked full byte-free details when internal capture is enabled; usage ledger remains separate |
 | L1 executors: LangChain, plain-callable, console (`claude -p`/`codex exec`) | **[BUILT]** |
+| Structured subscription CLI usage + versioned notional pricing | **[RELEASE CANDIDATE — target `engine-v0.11.7`, tools `0.5.2`, viewer `0.3.2`; do not repin before the immutable tag]** provider adapters retain bounded Claude/Codex usage on success/failure/timeout/caller cancellation; the engine normalizes inclusive/disjoint counters and applies one injected public/proxy/provider-reported pricing policy before persistence; result/snapshot/resume/bundle/group/viewer project the same typed basis; metered spend stays separate and unknown remains unknown |
 | L2 tool catalog + presets (`TOOL_CATALOG`, `READ_ONLY`/`WEB`/`INVESTIGATION`/`NO_TOOLS`); L0 one-call façade (`run_single_llm`/`run_single_step`); per-call-type CLI tool policy (tri-state `allowed_tools`, `--tools ""` completions, Bash side-effect honesty) | **[BUILT]** — v0.7.0 |
 | Universal worker-contract seam (§5) | **[PARTIAL]** — principle live; adapter DTOs stay specialized |
 | Contract guard program (§1a/§9K) | **[PARTIAL]** — no-product-loop and product-neutrality guards exist; provider allow-list, adopter status-projection guard template, source-inspection import/coupling guards, injected-machine description guard, and post-H1 executor/node cycle guard remain to implement |

@@ -337,7 +337,6 @@ class ParsingService(IParsingService):
                 [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)],
                 node="task_parser",
                 model=self._model_name(),
-                config=self.config,
             )
             logger.debug(f"LLM Output: {output.content}")
             
@@ -448,7 +447,6 @@ UTC offset (hours):"""
                 [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)],
                 node="timezone_offset_parser",
                 model=self._model_name(),
-                config=self.config,
             )
             offset_str = response.content.strip()
             

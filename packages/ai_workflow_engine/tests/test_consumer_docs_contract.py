@@ -204,10 +204,22 @@ def test_release_docs_name_the_current_tag_consistently():
                 f"{name} falsely assigns published wheel identity to the source tag"
             )
     assert "`engine-v0.8.1` is the current release" not in README
+    pin_tag = current
+    if candidate:
+        prior_release = re.search(
+            r"`(engine-v[0-9]+\.[0-9]+\.[0-9]+)` remains the current release",
+            README,
+        )
+        assert prior_release, "candidate README must name the immutable release consumers still pin"
+        pin_tag = prior_release.group(1)
     for name in ("gopro-handoff.md", "mageqa-handoff.md"):
         doc = (PACKAGE_ROOT / "docs" / name).read_text(encoding="utf-8")
         normalized = " ".join(doc.split())
-        assert f"pin tag `{current}`" in normalized, f"{name} PIN header must name {current}"
+        assert f"pin tag `{pin_tag}`" in normalized, f"{name} PIN header must name {pin_tag}"
+        if candidate:
+            assert f"`{current}`" in normalized and "do not" in normalized.lower(), (
+                f"{name} must name {current} as unavailable before its tag exists"
+            )
         assert "is the current pin):**" not in doc.replace(
             f"moving your pin from `engine-v0.8.1`):**", ""
         ), f"{name} still carries a stale current-pin instruction"

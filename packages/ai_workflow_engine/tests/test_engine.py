@@ -37,6 +37,7 @@ from ai_workflow_engine.models import (
     WorkflowUsageEvent,
     WorkflowUsageSummary,
 )
+from ai_workflow_engine.usage_contract import NotionalPricingResult
 from ai_workflow_engine.engine import (
     AgentCapability,
     CapabilityCall,
@@ -149,7 +150,7 @@ class FakeUsageLLM:
         return SimpleNamespace(
             content="ok",
             usage_metadata={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
-            response_metadata={"model_name": "unit-model", "id": "req-unit"},
+            response_metadata={"model_name": "gpt-5.4-mini", "id": "req-unit"},
         )
 
 
@@ -165,8 +166,7 @@ class UsageGraph:
                 self.llm,
                 [HumanMessage(content="hello")],
                 node="unit_llm",
-                model="unit-model",
-                config=self.config,
+                model="gpt-5.4-mini",
             )
         return {"ok": True, **state}
 
@@ -1810,54 +1810,46 @@ async def test_toy_inventory_pilot_uses_evidence_refs_and_external_write():
 
 
 async def test_workflow_runner_collects_usage_summary():
-    config = SimpleNamespace(
-        WORKFLOW_USAGE_TRACKING_ENABLED=True,
-        WORKFLOW_MAX_TEXT_CALLS_PER_RUN=16,
-        WORKFLOW_MAX_IMAGE_CALLS_PER_RUN=1,
-        WORKFLOW_MAX_ESTIMATED_USD_PER_RUN=0,
-        WORKFLOW_MODEL_PRICE_OVERRIDES_JSON=(
-            '{"unit-model": {"input_per_1m": 100, "output_per_1m": 200}}'
-        ),
-    )
     goal = WorkflowGoal(workflow_type="test_workflow", objective="Track usage")
 
-    result = await WorkflowRunner(config=config).run(UsageGraph(config=config), {}, goal=goal)
+    result = await WorkflowRunner().run(UsageGraph(), {}, goal=goal)
 
     summary = result["usage_summary"]
     assert summary.text_call_count == 1
     assert summary.input_tokens == 10
     assert summary.output_tokens == 5
-    assert summary.estimated_usd == 0.002
+    assert summary.estimated_usd == 0.00003
     assert summary.events[0].request_id == "req-unit"
 
 
 async def test_workflow_runner_blocks_text_calls_over_budget():
     # v0.9 clean contract: ceilings come from typed limits (engine_context), never from
     # host-config attributes; config remains a pricing/model source only.
-    config = SimpleNamespace(WORKFLOW_MODEL_PRICE_OVERRIDES_JSON="")
     goal = WorkflowGoal(workflow_type="test_workflow", objective="Track usage")
     engine_context = SimpleNamespace(limits=RuntimeLimits(max_text_calls=1))
 
     with pytest.raises(WorkflowBudgetExceeded):
-        await WorkflowRunner(config=config).run(
-            UsageGraph(config=config, calls=2), {"engine_context": engine_context}, goal=goal
+        await WorkflowRunner().run(
+            UsageGraph(calls=2), {"engine_context": engine_context}, goal=goal
         )
 
 
 async def test_workflow_runner_aborts_after_estimated_usd_cap_before_second_paid_call():
-    config = SimpleNamespace(
-        WORKFLOW_MODEL_PRICE_OVERRIDES_JSON=(
-            '{"unit-model": {"input_per_1m": 600000, "output_per_1m": 0}}'
-        ),
-    )
     goal = WorkflowGoal(workflow_type="test_workflow", objective="Prove live-spend cap")
-    graph = UsageGraph(config=config, calls=2)
+    graph = UsageGraph(calls=2)
     engine_context = SimpleNamespace(
-        limits=RuntimeLimits(max_text_calls=16, max_image_calls=1, max_estimated_usd=5)
+        limits=RuntimeLimits(
+            max_text_calls=16,
+            max_image_calls=1,
+            max_estimated_usd=0.00002,
+        )
     )
 
-    with pytest.raises(WorkflowBudgetExceeded, match=r"\$6\.000000 > \$5\.000000"):
-        await WorkflowRunner(config=config).run(
+    with pytest.raises(
+        WorkflowBudgetExceeded,
+        match=r"\$0\.000030 > \$0\.000020",
+    ):
+        await WorkflowRunner().run(
             graph, {"engine_context": engine_context}, goal=goal
         )
 
@@ -1959,8 +1951,13 @@ def test_usage_summary_separates_metered_and_subscription_notional_costs():
                 input_tokens=20,
                 output_tokens=10,
                 total_tokens=30,
-                estimated_usd=99.0,
                 notional_usd=0.42,
+                provider_reported_notional_usd=0.42,
+                notional_pricing=NotionalPricingResult(
+                    source="provider_reported",
+                    amount_usd=0.42,
+                    catalog_version="provider-reported",
+                ),
             ),
         ]
     )
@@ -1972,7 +1969,6 @@ def test_usage_summary_separates_metered_and_subscription_notional_costs():
     assert summary.notional_usd == 0.42
     assert "billed (API): $0.2500" in text
     assert "subscription: ~$0.4200 plan value, no extra charge" in text
-    assert "$99.0000" not in text
 
 
 def test_usage_summary_displays_tool_character_count_when_present():
@@ -3287,6 +3283,12 @@ def test_format_trace_events_preserves_usage_footer_when_trace_is_truncated():
                 total_tokens=50,
                 cost_class="subscription_notional",
                 notional_usd=0.02,
+                provider_reported_notional_usd=0.02,
+                notional_pricing=NotionalPricingResult(
+                    source="provider_reported",
+                    amount_usd=0.02,
+                    catalog_version="provider-reported",
+                ),
             ),
         ]
     )

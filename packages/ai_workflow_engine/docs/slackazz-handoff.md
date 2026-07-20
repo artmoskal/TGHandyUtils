@@ -1,6 +1,9 @@
 # SlackAzzCovered Engine Adoption Guide
 
 Status: **`engine-v0.11.6` is the current immutable release.**
+The pending v0.11.7 candidate adds typed CLI usage/notional economics without changing the
+v0.11.6 `wait-v2` coordinator protocol. Do not mix candidate packages; after release install the
+coherent `0.11.7 / 0.5.2 / 0.3.2` matrix only if SlackAzz enables CLI agents/viewer.
 `engine-v0.11.5` has a confirmed registration-exposure race. Do not start or update the Redis
 adapter against v0.11.5. Implement the v0.11.6 protocol and pass its conformance kit plus product
 transaction tests before enabling live effects.
@@ -33,14 +36,15 @@ client event
 
 | Package | SlackAzzCovered use |
 |---|---|
-| `ai-workflow-engine==0.11.6` | Required workflow/wait runtime |
-| `ai-workflow-tools==0.5.1` | Add for CLI agents/tool catalog if the product uses them |
-| `ai-workflow-viewer==0.3.1` | Developer diagnostics or product-linked run inspection |
+| `ai-workflow-engine==0.11.7` | Required workflow/wait runtime |
+| `ai-workflow-tools==0.5.2` | Add for CLI agents/tool catalog if the product uses them |
+| `ai-workflow-viewer==0.3.2` | Developer diagnostics or product-linked run inspection |
 
-> **Current matrix:** `engine-v0.11.6` + `ai-workflow-tools==0.5.1` + `ai-workflow-viewer==0.3.1`
-> (tools/viewer require `ai-workflow-engine>=0.11,<0.12`). The previous line
-> remains available at its historical tag for historical data; the lines never mix in one
-> environment. Verify the complete published release directory before installing any wheel.
+> **Candidate matrix:** `engine-v0.11.7` + `ai-workflow-tools==0.5.2` +
+> `ai-workflow-viewer==0.3.2` (tools/viewer require
+> `ai-workflow-engine>=0.11.7,<0.12`). Do not install this matrix until `engine-v0.11.7` is cut.
+> The previous line remains available at its historical tag for historical data; the lines never
+> mix in one environment.
 
 
 Verify the complete published directory for the immutable tag and record commit/hash. Never copy
@@ -265,6 +269,10 @@ process-local/class-level cache implementation fails the product gate.
 13. **Observation:** suspension and resume render as one logical run with honest costs.
 14. **Execution window:** provider/CLI work inherits the engine bound; cancellation suppression is a
     visible failure, and synchronous handlers are not registered under finite profiles.
+15. **CLI economics:** Claude provider-reported totals and Codex normalized usage/catalog pricing
+    remain separate from metered spend through suspension/resume and the grouped viewer. Unknown
+    rate/usage is explicit; call/token/worker/window limits, not notional dollars, prevent runaway
+    subscription work.
 
 Follow [`operations.md`](operations.md) for production recovery. File missing mechanics through
 [`extension-lifecycle.md`](extension-lifecycle.md), keeping Slack policy in product capabilities.

@@ -21,7 +21,7 @@ def test_cli_agent_models_include_spec_defaults(tmp_path):
     asset = EvidenceRef(role="screenshot", uri="file:///tmp/input.png", media_type="image/png")
 
     request = CliAgentRequest(prompt="Inspect this", workspace_dir=str(tmp_path), input_assets=[asset])
-    result = CliAgentResult(status="completed")
+    result = CliAgentResult(status="completed", invocation_id="inv-test")
 
     # v0.10 (defect 5): NO hidden default — the subprocess bound comes from the engine window
     # or an explicit positive timeout, never a silent 600s ten-minute default.
@@ -120,6 +120,7 @@ def test_codex_exec_assembly_puts_mcp_env_in_config_entries_and_prompt_last(tmp_
         "gpt-5.4-codex",
         "--config",
         'model_reasoning_effort="high"',
+        "--json",
         "--full-auto",
         "Inspect the app",
     ]

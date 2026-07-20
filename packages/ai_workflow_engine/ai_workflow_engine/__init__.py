@@ -7,7 +7,7 @@
 from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
-__version__ = "0.11.6"
+__version__ = "0.11.7"
 
 
 # F-C1 (typed public surface): the SAME export map, statically visible. Type checkers
@@ -204,6 +204,17 @@ if TYPE_CHECKING:
     )
     from ai_workflow_engine.snapshot import MachineSnapshot
     from ai_workflow_engine.transport_models import ImageInput
+    from ai_workflow_engine.usage_contract import (
+        CatalogNotionalPricingPolicy,
+        NormalizedTokenUsage,
+        NotionalPricingConfig,
+        NotionalPricingPolicy,
+        NotionalPricingResult,
+        NotionalRate,
+        UsageError,
+        default_notional_pricing_config,
+        default_notional_pricing_policy,
+    )
     from ai_workflow_engine.usage_events import (
         AsyncQueueUsageSink,
         InMemoryUsageSink,
@@ -252,6 +263,10 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "CapabilityResult": ("ai_workflow_engine.models", "CapabilityResult"),
     "CapabilityRuntime": ("ai_workflow_engine.engine", "CapabilityRuntime"),
     "CapabilitySpec": ("ai_workflow_engine.models", "CapabilitySpec"),
+    "CatalogNotionalPricingPolicy": (
+        "ai_workflow_engine.usage_contract",
+        "CatalogNotionalPricingPolicy",
+    ),
     "ChatMessage": ("ai_workflow_engine.llm_protocol", "ChatMessage"),
     "CheckpointStore": ("ai_workflow_engine.engine", "CheckpointStore"),
     "ClarificationOption": ("ai_workflow_engine.models", "ClarificationOption"),
@@ -307,6 +322,10 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "MemoryRecord": ("ai_workflow_engine.memory", "MemoryRecord"),
     "MemoryStore": ("ai_workflow_engine.memory", "MemoryStore"),
     "ModelProfile": ("ai_workflow_engine.models", "ModelProfile"),
+    "NormalizedTokenUsage": (
+        "ai_workflow_engine.usage_contract",
+        "NormalizedTokenUsage",
+    ),
     "NodeExecutionServices": ("ai_workflow_engine.node_services", "NodeExecutionServices"),
     "NodeExecutionState": ("ai_workflow_engine.executor", "NodeExecutionState"),
     "NodeResult": ("ai_workflow_engine.executor", "NodeResult"),
@@ -317,6 +336,19 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "ObservationRunBundle": ("ai_workflow_engine.observation_bundle", "ObservationRunBundle"),
     "ObservationSegment": ("ai_workflow_engine.observation_bundle", "ObservationSegment"),
     "ObservationSequence": ("ai_workflow_engine.observation_bundle", "ObservationSequence"),
+    "NotionalPricingConfig": (
+        "ai_workflow_engine.usage_contract",
+        "NotionalPricingConfig",
+    ),
+    "NotionalPricingPolicy": (
+        "ai_workflow_engine.usage_contract",
+        "NotionalPricingPolicy",
+    ),
+    "NotionalPricingResult": (
+        "ai_workflow_engine.usage_contract",
+        "NotionalPricingResult",
+    ),
+    "NotionalRate": ("ai_workflow_engine.usage_contract", "NotionalRate"),
     "PlanArtifact": ("ai_workflow_engine.planning", "PlanArtifact"),
     "PlanTask": ("ai_workflow_engine.planning", "PlanTask"),
     "PromptCapturingLLMClient": ("ai_workflow_engine.prompt_capture", "PromptCapturingLLMClient"),
@@ -354,6 +386,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "Transition": ("ai_workflow_engine.workflow", "Transition"),
     "UnsupportedNodeError": ("ai_workflow_engine.executor", "UnsupportedNodeError"),
     "UsageSink": ("ai_workflow_engine.usage_events", "UsageSink"),
+    "UsageError": ("ai_workflow_engine.usage_contract", "UsageError"),
     "WEAK_MODEL_CLEANER": ("ai_workflow_engine.parsing", "WEAK_MODEL_CLEANER"),
     "WaitClaim": ("ai_workflow_engine.waits", "WaitClaim"),
     "WaitCoordinator": ("ai_workflow_engine.waits", "WaitCoordinator"),
@@ -405,6 +438,14 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "compose_cleaners": ("ai_workflow_engine.parsing", "compose_cleaners"),
     "current_model_profile": ("ai_workflow_engine.model_binding", "current_model_profile"),
     "default_rule_based_compactor": ("ai_workflow_engine.memory", "default_rule_based_compactor"),
+    "default_notional_pricing_config": (
+        "ai_workflow_engine.usage_contract",
+        "default_notional_pricing_config",
+    ),
+    "default_notional_pricing_policy": (
+        "ai_workflow_engine.usage_contract",
+        "default_notional_pricing_policy",
+    ),
     "default_state_renderer": ("ai_workflow_engine.memory", "default_state_renderer"),
     "default_tool_state_reducer": ("ai_workflow_engine.memory", "default_tool_state_reducer"),
     "extract_fenced_json": ("ai_workflow_engine.parsing", "extract_fenced_json"),
@@ -491,6 +532,7 @@ __all__ = [
     "CapabilityRegistry",
     "CapabilityRuntime",
     "CapabilitySpec",
+    "CatalogNotionalPricingPolicy",
     "CapabilityCall",
     "CallbackTraceSink",
     "AsyncQueueDetailSink",
@@ -512,6 +554,11 @@ __all__ = [
     "TeeDetailSink",
     "TeeTraceSink",
     "ModelProfile",
+    "NormalizedTokenUsage",
+    "NotionalPricingConfig",
+    "NotionalPricingPolicy",
+    "NotionalPricingResult",
+    "NotionalRate",
     "ObservationConfig",
     "ObservationDetail",
     "ObservationBundleMetaV2",
@@ -578,6 +625,8 @@ __all__ = [
     "StructuredStateMemory",
     "WindowedMemory",
     "default_rule_based_compactor",
+    "default_notional_pricing_config",
+    "default_notional_pricing_policy",
     "default_state_renderer",
     "default_tool_state_reducer",
     "FullReplayMemory",
@@ -601,6 +650,7 @@ __all__ = [
     "render_plan",
     "PromptCapturingLLMClient",
     "UsageSink",
+    "UsageError",
     "InMemoryUsageSink",
     "JsonlUsageSink",
     "SequencedDetailSink",

@@ -300,9 +300,7 @@ def _usage_totals_from_events(events: list[WorkflowUsageEvent], *, scope: str) -
     notional = [
         float(event.notional_usd) for event in events if event.notional_usd is not None
     ]
-    unknown_cost_count = sum(
-        1 for event in events if (event.metadata or {}).get("cost_known") is False
-    )
+    unknown_cost_count = sum(1 for event in events if _event_cost_is_unknown(event))
     return {
         "scope": scope,
         "usage_count": len(events),
@@ -311,6 +309,12 @@ def _usage_totals_from_events(events: list[WorkflowUsageEvent], *, scope: str) -
         "notional_usd": round(sum(notional), 6) if notional else None,
         "unknown_cost_count": unknown_cost_count,
     }
+
+
+def _event_cost_is_unknown(event: WorkflowUsageEvent) -> bool:
+    if event.cost_class == "subscription_notional":
+        return event.notional_pricing is None or not event.notional_pricing.known
+    return event.estimated_usd is None
 
 
 __all__ = ["assemble_observation_group", "summarize_observation_groups"]

@@ -27,8 +27,9 @@ import asyncio
 from dataclasses import dataclass
 import os
 import stat
+import logging
 from pathlib import Path
-from typing import Any, Literal, Mapping, Optional
+from typing import Any, Callable, Literal, Mapping, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -43,6 +44,7 @@ __all__ = [
 
 _MIB = 1024 * 1024
 _KIB = 1024
+logger = logging.getLogger(__name__)
 
 
 class ProcessIOLimits(BaseModel):
@@ -150,8 +152,15 @@ class BoundedStreamCollector:
 
     _CHUNK = 64 * _KIB
 
-    def __init__(self, limit_bytes: int) -> None:
+    def __init__(
+        self,
+        limit_bytes: int,
+        *,
+        observer: Callable[[bytes], None] | None = None,
+    ) -> None:
         self._buffer = _HeadTailBuffer(limit_bytes)
+        self._observer = observer
+        self._observer_failed = False
 
     async def collect(self, stream: "asyncio.StreamReader | None") -> StreamCapture:
         if stream is None:
@@ -163,6 +172,14 @@ class BoundedStreamCollector:
             if not chunk:
                 break
             self._buffer.feed(chunk)
+            if self._observer is not None and not self._observer_failed:
+                try:
+                    self._observer(chunk)
+                except Exception:
+                    # Observation is evidence-only. It must never interrupt pipe draining,
+                    # process reap, or the primary subprocess result.
+                    self._observer_failed = True
+                    logger.exception("external process stdout observer failed; capture continues")
         return self._buffer.finalize()
 
 

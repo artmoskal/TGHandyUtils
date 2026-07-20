@@ -209,6 +209,31 @@ consent around the engine:
 | Observation write failed | Execution outcome remains visible; repair storage and use typed observation status |
 | Viewer says group corrupt | Preserve files, inspect duplicate/drifting segment identity, do not delete evidence first |
 
+## Subscription Usage And Notional Pricing
+
+Provider adapters own structured CLI parsing; the engine owns normalization, rate selection, and
+the one persisted pricing result on `WorkflowUsageEvent`.
+
+- Codex runs with structured JSONL enabled while `--output-last-message` remains response-text
+  authority. The final `turn.completed.usage` is cumulative and is selected, never summed.
+- Codex input/cache and output/reasoning counters are inclusive subsets. Impossible relationships
+  fail normalization; they are never clamped into a plausible amount.
+- Claude's provider-reported `total_cost_usd` is retained as `provider_reported` notional. It wins
+  over configured calculation.
+- Configured pricing persists the exact catalog version, rate version, provider/model prefix, token
+  quantities, rates, source, and amount used. The engine rechecks that provenance and arithmetic
+  before summary or bundle persistence.
+- Missing/malformed usage, a missing model, or an unmatched rate produces typed `unknown` pricing
+  while preserving the response/failure and safe diagnostics.
+- Failure, timeout, and caller cancellation retain the latest complete usage event once. Cancellation
+  still kills/reaps the process and re-raises the original `CancelledError`.
+- Notional is API-equivalent plan value, not subscription billing. It never debits
+  `max_estimated_usd`; enforce runaway protection with call/token/worker/window limits.
+
+Operators should update a public/proxy catalog deliberately, give it a new version, run the pricing
+contract tests and a representative bundle/viewer check, then deploy the complete package matrix.
+Do not silently change a rate under an existing catalog/rate version.
+
 ## Upgrade Lifecycle
 
 1. Read the current release guide and binding spec status table.

@@ -60,7 +60,6 @@ WORKFLOW_OVERRIDE_MAP = {
     "MAX_IMAGE_CALLS_PER_RUN": ("settings", "workflow_max_image_calls_per_run"),
     "MAX_VOICE_CALLS_PER_RUN": ("settings", "workflow_max_voice_calls_per_run"),
     "MAX_ESTIMATED_USD_PER_RUN": ("settings", "workflow_max_estimated_usd_per_run"),
-    "MODEL_PRICE_OVERRIDES_JSON": ("settings", "workflow_model_price_overrides_json"),
     "DATABASE_TIMEOUT": ("settings", "database_timeout"),
     "DEFAULT_TASK_PLATFORM": ("settings", "default_task_platform"),
     "SCHEDULER_INTERVAL": ("settings", "scheduler_interval"),
@@ -321,8 +320,6 @@ class Config(IConfig):
     WORKFLOW_MAX_IMAGE_CALLS_PER_RUN: int = _int_setting('workflow_max_image_calls_per_run', 1)
     # 0 disables USD budget enforcement. Token/image-call caps still apply.
     WORKFLOW_MAX_ESTIMATED_USD_PER_RUN: float = _float_setting('workflow_max_estimated_usd_per_run', 0)
-    # Optional JSON: {"model-name": {"input_per_1m": 0.1, "output_per_1m": 0.4}}
-    WORKFLOW_MODEL_PRICE_OVERRIDES_JSON: str = str(_setting('workflow_model_price_overrides_json', ''))
     ANKI_OBSERVATION_CAPTURE: bool = _env_bool('ANKI_OBSERVATION_CAPTURE', True)
     ANKI_OBSERVATION_DIR: str = os.getenv(
         'ANKI_OBSERVATION_DIR',

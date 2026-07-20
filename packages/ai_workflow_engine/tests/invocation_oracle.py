@@ -834,7 +834,7 @@ async def _sc_usage_event_semantics():
             provider="chatgpt-web", operation="chat", cost_class="subscription_notional",
             node="metered_worker", model="subscription-fixed", attempt=1,
             input_tokens=10, output_tokens=5, total_tokens=15,
-            notional_usd=0.002, request_id="req-sub", elapsed_ms=3,
+            provider_reported_notional_usd=0.002, request_id="req-sub", elapsed_ms=3,
         ))
         record_usage_event(WorkflowUsageEvent(
             provider="openai", operation="tool", cost_class="metered", node="metered_worker",

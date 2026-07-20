@@ -5,7 +5,10 @@ declare a workflow, register typed capabilities, and call one engine door. The e
 transitions, retries, fan-out, budgets, waits, trace, usage, and observation bundles; products own
 domain models, provider clients, storage adapters, clocks, and side-effect delivery.
 
-> **`engine-v0.11.6` is the current release.**
+> **`engine-v0.11.7` is the release candidate. `engine-v0.11.6` remains the current release.**
+> The candidate is not released: do not re-pin until it is cut. Install the candidate matrix only
+> after the immutable
+> `engine-v0.11.7` tag and verified release directory exist.
 > The engine owner publishes wheels bound to
 > immutable tags; consumer
 > canaries still decide whether each product changes its deployed pin. Never depend on a live
@@ -21,6 +24,15 @@ domain models, provider clients, storage adapters, clocks, and side-effect deliv
 > `wait-v1` records under v0.11.5.
 > Adoption is fresh: new consumers start on the current contract; existing consumers re-adopt the
 > current surface rather than migrate state.
+>
+> **v0.11.7 candidate delta.** All supported Claude/Codex CLI doors retain typed normalized token
+> usage on success, provider failure, timeout, and caller cancellation. Codex structured JSONL uses
+> the final cumulative `turn.completed`; cached input and reasoning output remain explicit subsets,
+> so neither is double-counted. The engine's one usage door applies an injected, versioned
+> public/proxy catalog or preserves Claude provider-reported notional, then persists the complete
+> basis through result, snapshot/resume, bundle/group, and viewer. Missing/malformed usage or an
+> unmatched rate remains typed unknown. Notional is API-equivalent subscription plan value, not
+> billed spend and not a hard monetary stop.
 >
 > **v0.11.6 release delta.** A durable continuation is now bound to the complete
 > `WaitHandle`, including its opaque registration-incarnation identity; a deterministic
@@ -88,27 +100,24 @@ Product adopters should then read exactly one delta guide:
 
 ## Install
 
-Consumers adopting `engine-v0.11.6` download its complete published release directory, obtain
-the verifier scripts from the annotated tag (or another already trusted pin), verify the bundle
-before installation, and install only the packages their product needs. Building from source is a
-producer operation, not consumer verification. The exact producer and consumer commands are in
+The source tree currently contains a non-installable release candidate. After the immutable tag is
+cut, consumers download its complete published release directory, obtain the verifier scripts from
+the tag (or another already trusted pin), verify the bundle before installation, and install only
+the packages their product needs. Building from source is a producer operation, not consumer
+verification. The exact producer and consumer commands are in
 [`docs/operations.md`](docs/operations.md#release-artifacts-and-verification-v0116).
+The required pre-install door is
+`python3 release_artifacts.py verify-bundle --dir /path/to/engine-v0.11.7`.
 
-```bash
-BUNDLE=/path/to/downloaded/engine-v0.11.6
-TRUSTED=/path/to/verifier/from/engine-v0.11.6
-python3 "$TRUSTED/release_artifacts.py" verify-bundle --dir "$BUNDLE"
-python -m pip install "$BUNDLE/ai_workflow_engine-0.11.6-py3-none-any.whl"
-python -c "import ai_workflow_engine as e; assert e.__version__ == '0.11.6'"
-```
-
-Current package matrix:
+Candidate matrix:
 
 | Package | Install when |
 |---|---|
-| `ai-workflow-engine==0.11.6` | Always. Core builder, executor, memory, waits, observation writer. |
-| `ai-workflow-tools==0.5.1` | The product uses CLI agents, the tool catalog, or media helpers. |
-| `ai-workflow-viewer==0.3.1` | A developer or product service renders observation bundles. |
+| `ai-workflow-engine==0.11.7` | Always. Core builder, executor, memory, waits, observation writer. |
+| `ai-workflow-tools==0.5.2` | The product uses CLI agents, the tool catalog, or media helpers. |
+| `ai-workflow-viewer==0.3.2` | A developer or product service renders observation bundles. |
+
+Do not install this matrix until `engine-v0.11.7` is cut.
 
 Record the engine tag, source commit, and wheel SHA-256 in the consumer repository. A tag already
 consumed by another repository is frozen; fixes require a new tag.
@@ -201,6 +210,9 @@ and, from earlier releases:
   registered capabilities;
 - strict prompt files, per-node model and memory selection, replay, evidence/artifact references;
 - metered versus subscription-notional cost accounting and cumulative budgets;
+- typed normalized CLI token usage and versioned notional pricing: Claude provider totals remain
+  provider-reported, Codex inclusive cache/reasoning counters are normalized once, and unknown
+  usage/rates remain explicit rather than becoming fake zero;
 - config-first observation bundles and the separate `ai_workflow_viewer` reader;
 - local and durable waits, product-owned `WaitCoordinator` storage, at-least-once delivery with
   idempotent effects, and grouped observation segments;
@@ -219,6 +231,9 @@ Full built/deferred status is maintained only in
 - Memory and observability are inputs and records, never transition control.
 - Subscription workers report notional or unknown cost; they are never represented as free API
   calls.
+- Subscription notional is API-equivalent plan value, not billed spend and not a monetary hard
+  stop. It never debits metered USD limits; call, token, worker, and execution-window limits remain
+  the safety boundary.
 - Durable delivery is **at-least-once with deduplication and idempotent effects**, never
   exactly-once.
 - The engine never starts a hidden timer or daemon. Products deliver due/stalled events through the

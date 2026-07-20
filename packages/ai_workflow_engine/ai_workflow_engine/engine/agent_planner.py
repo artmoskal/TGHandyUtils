@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import logging
@@ -16,7 +17,10 @@ from ai_workflow_engine._runtime_state import current_observation_capture
 from ai_workflow_engine.parsing import STRUCTURED_REPAIR_PROMPT
 from ai_workflow_engine.engine.capabilities import CapabilityRegistry, CapabilityRuntime
 from ai_workflow_engine.llm_protocol import ChatMessage, LLMCallable, LLMRequest, ToolSpec
-from ai_workflow_engine.llm_protocol import record_callable_usage
+from ai_workflow_engine.llm_protocol import (
+    record_callable_failure_usage,
+    record_callable_usage,
+)
 from ai_workflow_engine.memory import AgentMemory, AgentMemoryRenderContext, resolve_agent_memory
 from ai_workflow_engine.models import AgentRunRequest, AgentStepDecision, AgentToolCall, AgentToolStep, CapabilityContext
 from ai_workflow_engine.models import CapabilitySpec, EvidenceRef
@@ -29,6 +33,7 @@ from ai_workflow_engine.observability_capture import (
 from ai_workflow_engine.budget import check_budget_before_call, check_images_per_call, check_input_tokens_per_call
 from ai_workflow_engine.token_estimation import estimate_text_tokens
 from ai_workflow_engine.transport_models import ImageInput
+from ai_workflow_engine.usage_contract import new_provider_invocation_id
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +90,7 @@ class LLMAgentPlanner:
         last_text = ""
 
         for repair_round in range(self.max_repair_rounds + 1):
+            invocation_id = new_provider_invocation_id()
             messages = list(base_messages)
             if repair_round:
                 messages.append(ChatMessage(role="user", content=self._repair_prompt(last_error, request.prompt)))
@@ -102,14 +108,39 @@ class LLMAgentPlanner:
                     "workflow_type": context.run_context.workflow_type,
                     "repair_round": repair_round,
                 },
+                invocation_id=invocation_id,
             )
             self._check_turn_budget(llm_request)
             self._record_llm_request(llm_request, history, repair_round)
             try:
                 with engine_worker_observation_scope():
                     response = await self.llm(llm_request)
+            except asyncio.CancelledError as exc:
+                self._record_llm_error(llm_request, history, repair_round, exc)
+                raise
             except Exception as exc:
                 self._record_llm_error(llm_request, history, repair_round, exc)
+                subscription = request.subscription_mode or bool(
+                    getattr(self.llm, "subscription_mode", False)
+                )
+                record_callable_failure_usage(
+                    exc,
+                    node=self.node_name,
+                    attempt=len(history) + repair_round + 1,
+                    model=str(
+                        getattr(exc, "model", None)
+                        or getattr(self.llm, "model", None)
+                        or ""
+                    ),
+                    provider=str(
+                        getattr(self.llm, "provider_label", None) or "custom"
+                    ),
+                    cost_class=(
+                        "subscription_notional" if subscription else "metered"
+                    ),
+                    metadata={"agent_planner": True},
+                    invocation_id=invocation_id,
+                )
                 raise
             self._record_llm_response(llm_request, response, history, repair_round)
             # Honor client-declared cost truth first (e.g. ConsoleLLMClient reports subscription
@@ -126,6 +157,10 @@ class LLMAgentPlanner:
                 metadata={"agent_planner": True},
                 cost_class="subscription_notional" if subscription else "metered",
                 notional_usd=notional,
+                provider=str(
+                    getattr(self.llm, "provider_label", None) or "custom"
+                ),
+                invocation_id=invocation_id,
             )
 
             if response.tool_calls:
@@ -236,6 +271,7 @@ class LLMAgentPlanner:
                 "tool_count": len(request.tools),
             },
             digest_metadata_key="prompt_digest",
+            invocation_id=request.invocation_id,
         )
 
     def _record_llm_response(
@@ -261,6 +297,7 @@ class LLMAgentPlanner:
                 "total_tokens": getattr(response, "total_tokens", 0),
             },
             digest_metadata_key="response_digest",
+            invocation_id=request.invocation_id,
         )
 
     def _record_llm_error(
@@ -268,7 +305,7 @@ class LLMAgentPlanner:
         request: LLMRequest,
         history: Sequence[AgentToolStep],
         repair_round: int,
-        exc: Exception,
+        exc: BaseException,
     ) -> None:
         error = str(exc) or exc.__class__.__name__
         self._observation_capture().record(
@@ -287,6 +324,7 @@ class LLMAgentPlanner:
                 "error_type": exc.__class__.__name__,
             },
             digest_metadata_key="response_digest",
+            invocation_id=request.invocation_id,
         )
 
     def _observation_capture(self) -> ObservationCapture:

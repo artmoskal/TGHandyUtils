@@ -1,18 +1,37 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 
 import pytest
+from ai_workflow_engine import (
+    ObservationConfig,
+    WorkflowBuilder,
+    WorkflowEngineBuilder,
+    WorkflowGoal,
+    WorkflowProfile,
+)
 from ai_workflow_engine.engine.capabilities import CapabilityRegistry, CapabilityRuntime, InMemoryTraceSink
 from ai_workflow_engine.execution_window import (
     ExecutionWindowInputs,
     TaskExecutionRequest,
     resolve_execution_window,
 )
-from ai_workflow_engine.models import CapabilityResult, EvidenceRef, WorkflowUsageSummary
+from ai_workflow_engine.models import (
+    CapabilityResult,
+    EvidenceRef,
+    SafetyPolicy,
+    WorkflowUsageSummary,
+)
 from ai_workflow_engine.budget import WorkflowBudget, WorkflowUsageContext, workflow_usage_scope
+from ai_workflow_viewer import (
+    FileEventSource,
+    build_observation_graph,
+    observation_graph_to_html,
+)
 
 from ai_workflow_tools.cli_agents import (
     CliAgentCapability,
@@ -107,6 +126,39 @@ async def test_claude_flavor_happy_path_maps_envelope_usage_and_subscription_cos
     assert usage.notional_usd == 0.123
 
 
+async def test_claude_metered_mode_books_provider_total_only_as_metered_cost(
+    capability_context,
+    fake_cli_path,
+    monkeypatch,
+    tmp_path,
+):
+    workspace = tmp_path / "workspace-metered"
+    _configure_fake_cli(monkeypatch, tmp_path, workspace, mode="envelope")
+    cap = CliAgentCapability(_fake_flavor(claude_p, fake_cli_path), name="metered_agent")
+    request = CliAgentRequest(
+        prompt="Inspect",
+        workspace_dir=str(workspace),
+        timeout_s=30,
+        subscription_mode=False,
+    )
+    summary = WorkflowUsageSummary()
+
+    with workflow_usage_scope(
+        WorkflowUsageContext(capability_context.run_context, summary, WorkflowBudget())
+    ):
+        cap_result = await cap(capability_context, request)
+
+    assert cap_result.status == "accepted"
+    assert summary.metered_usd == pytest.approx(0.123)
+    assert summary.notional_usd is None
+    usage = summary.events[0]
+    assert usage.cost_class == "metered"
+    assert usage.estimated_usd == pytest.approx(0.123)
+    assert usage.notional_usd is None
+    assert usage.provider_reported_notional_usd is None
+    assert usage.notional_pricing is None
+
+
 async def test_mcp_startup_failure_is_a_loud_diagnosable_episode(
     capability_context,
     fake_cli_path,
@@ -148,7 +200,7 @@ async def test_mcp_startup_failure_is_a_loud_diagnosable_episode(
     assert summary.events, "failed MCP startup left no usage episode"
 
 
-async def test_codex_flavor_reads_result_file_and_records_honest_unknown_cost(
+async def test_codex_flavor_reads_result_file_and_records_final_structured_usage(
     capability_context,
     fake_cli_path,
     monkeypatch,
@@ -176,18 +228,241 @@ async def test_codex_flavor_reads_result_file_and_records_honest_unknown_cost(
     assert result.status == "completed"
     assert result.text == 'Done: {"ok": true}'
     assert result.parsed == {"ok": True}
-    assert result.notional_cost_usd is None
-    assert summary.notional_usd is None
+    assert result.input_tokens == 120
+    assert result.output_tokens == 30
+    assert result.cache_read_tokens == 20
+    assert result.notional_cost_usd == pytest.approx(0.000705)
+    assert summary.notional_usd == pytest.approx(0.000705)
     usage = summary.events[0]
-    assert usage.metadata["cost_known"] is False
-    assert usage.metadata["cost_source"] == "unknown"
+    assert usage.input_tokens == 120
+    assert usage.output_tokens == 30
+    assert usage.invocation_id == result.invocation_id
+    assert usage.elapsed_ms == result.elapsed_ms
+    assert usage.input_token_details["cache_read"] == 20
+    assert usage.output_token_details["reasoning"] == 10
     assert usage.estimated_usd is None
-    assert usage.notional_usd is None
+    assert usage.notional_usd == pytest.approx(0.000705)
 
     record = json.loads(record_path.read_text(encoding="utf-8"))
     assert record["stdin"] == ""
     assert record["argv"][-1] == "Inspect"
     assert "--output-last-message" in record["argv"]
+    assert record["argv"].count("--json") == 1
+
+
+async def test_codex_image_agent_persists_one_linked_provider_invocation_graph(
+    fake_cli_path,
+    monkeypatch,
+    tmp_path,
+):
+    from ai_workflow_tools.toolsets import BASH_SIDE_EFFECTS
+
+    workspace = tmp_path / "workspace-linked"
+    bundle_root = tmp_path / "bundles"
+    _configure_fake_cli(
+        monkeypatch,
+        tmp_path,
+        workspace,
+        mode="result_file",
+        result='Inspected image: {"label": "banner"}',
+    )
+    image_ref = EvidenceRef(
+        role="image",
+        uri="file:///fixture/banner.png",
+        media_type="image/png",
+    )
+    cap = CliAgentCapability(
+        _fake_flavor(codex_exec, fake_cli_path),
+        name="codex_agent",
+        asset_loader=lambda ref: b"\x89PNG\r\n\x1a\nfixture" if ref == image_ref else b"",
+    )
+    builder = WorkflowEngineBuilder().with_observation(
+        ObservationConfig(
+            enabled=True,
+            bundle_dir=str(bundle_root),
+            capture="full",
+        )
+    )
+    builder.register_capability_spec(cap.spec, cap)
+    builder.register_workflow(
+        WorkflowBuilder("codex_linked").step("codex_agent").build(),
+        profile=WorkflowProfile(
+            workflow_type="codex_linked",
+            safety=SafetyPolicy(allowed_side_effects=list(BASH_SIDE_EFFECTS)),
+        ),
+    )
+    engine = builder.build()
+
+    result = await engine.run(
+        "codex_linked",
+        CliAgentRequest(
+            prompt="Inspect the staged banner image.",
+            workspace_dir=str(workspace),
+            input_assets=[image_ref],
+            model="gpt-5.4-codex",
+            timeout_s=30,
+        ),
+        goal=WorkflowGoal(
+            workflow_type="codex_linked",
+            objective="Prove provider evidence linkage.",
+            metadata={"run_id": "codex-linked-run"},
+        ),
+    )
+
+    assert result.status == "completed"
+    run = FileEventSource(result.observation_bundle_path).read()
+    assert len(run.usage_events) == 1
+    usage = run.usage_events[0]
+    assert usage.invocation_id
+    assert usage.elapsed_ms is not None and usage.elapsed_ms >= 0
+    linked_traces = [
+        trace for trace in run.trace_events
+        if trace.invocation_id == usage.invocation_id
+    ]
+    assert {trace.phase for trace in linked_traces} >= {
+        "provider:request",
+        "provider:response",
+        "tool:result",
+    }
+    linked_details = [
+        detail for detail in run.details
+        if detail.invocation_id == usage.invocation_id
+    ]
+    assert linked_details
+    assert all(trace.detail_capture == "captured" for trace in linked_traces)
+    assert all(detail.invocation_id == usage.invocation_id for detail in linked_details)
+    detail_json = json.dumps(
+        [detail.model_dump(by_alias=True) for detail in linked_details],
+        default=str,
+    )
+    assert "input_fingerprints" in detail_json
+    assert "process_result" in detail_json
+
+    graph = build_observation_graph(
+        run.definition,
+        run.trace_events,
+        run.usage_events,
+        run.details,
+        run_id=run.run_id,
+    )
+    page = observation_graph_to_html(
+        run.definition,
+        graph,
+        usage_events=run.usage_events,
+    )
+    assert str(usage.invocation_id) in page
+    assert f"{usage.elapsed_ms} ms" in page
+
+    usage_path = Path(result.observation_bundle_path) / "usage.jsonl"
+    row = json.loads(usage_path.read_text(encoding="utf-8"))
+    row.pop("invocation_id")
+    usage_path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="exactly one usage event"):
+        FileEventSource(result.observation_bundle_path).read()
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_status"),
+    [("usage_then_fail", "failed"), ("usage_then_sleep", "partial")],
+)
+async def test_codex_failure_and_timeout_keep_latest_structured_usage(
+    capability_context,
+    fake_cli_path,
+    monkeypatch,
+    tmp_path,
+    mode,
+    expected_status,
+):
+    workspace = tmp_path / f"workspace-{mode}"
+    _configure_fake_cli(
+        monkeypatch,
+        tmp_path,
+        workspace,
+        mode=mode,
+        sleep_s="30",
+    )
+    cap = CliAgentCapability(_fake_flavor(codex_exec, fake_cli_path), name="codex_agent")
+    request = CliAgentRequest(
+        prompt="Inspect",
+        workspace_dir=str(workspace),
+        model="gpt-5.4-codex",
+        timeout_s=0.5 if mode == "usage_then_sleep" else 30,
+    )
+    summary = WorkflowUsageSummary()
+
+    with workflow_usage_scope(
+        WorkflowUsageContext(
+            capability_context.run_context,
+            summary,
+            WorkflowBudget(),
+        )
+    ):
+        cap_result = await cap(capability_context, request)
+
+    assert cap_result.status == expected_status
+    assert len(summary.events) == 1
+    usage = summary.events[0]
+    assert usage.success is False
+    assert usage.input_tokens == 120
+    assert usage.output_tokens == 30
+    assert usage.notional_usd == pytest.approx(0.000705)
+    assert usage.notional_pricing is not None
+    assert usage.notional_pricing.source == "configured_public_rate"
+
+
+async def test_codex_cancellation_records_latest_usage_once_and_reaps_process(
+    capability_context,
+    fake_cli_path,
+    monkeypatch,
+    tmp_path,
+):
+    workspace = tmp_path / "workspace-cancel"
+    ready = tmp_path / "codex-ready.pid"
+    _configure_fake_cli(
+        monkeypatch,
+        tmp_path,
+        workspace,
+        mode="usage_then_sleep",
+        sleep_s="30",
+    )
+    monkeypatch.setenv("FAKE_CLI_READY_FILE", str(ready))
+    cap = CliAgentCapability(_fake_flavor(codex_exec, fake_cli_path), name="codex_agent")
+    request = CliAgentRequest(
+        prompt="Inspect",
+        workspace_dir=str(workspace),
+        model="gpt-5.4-codex",
+        timeout_s=30,
+    )
+    summary = WorkflowUsageSummary()
+
+    with workflow_usage_scope(
+        WorkflowUsageContext(
+            capability_context.run_context,
+            summary,
+            WorkflowBudget(),
+        )
+    ):
+        task = asyncio.create_task(cap(capability_context, request))
+        for _ in range(200):
+            if ready.exists():
+                break
+            await asyncio.sleep(0.01)
+        assert ready.exists(), "fake Codex process never reached the cancellation barrier"
+        pid = int(ready.read_text(encoding="utf-8"))
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert len(summary.events) == 1
+    usage = summary.events[0]
+    assert usage.node == "codex_agent"
+    assert usage.success is False
+    assert usage.input_tokens == 120
+    assert usage.notional_usd == pytest.approx(0.000705)
+    assert usage.invocation_id
+    assert usage.elapsed_ms is not None and usage.elapsed_ms >= 0
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
 
 
 async def test_timeout_returns_partial_and_salvages_png(

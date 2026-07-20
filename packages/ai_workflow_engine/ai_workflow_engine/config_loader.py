@@ -19,6 +19,7 @@ import yaml
 from pydantic import ConfigDict, BaseModel, Field, ValidationError, field_validator
 
 from ai_workflow_engine.models import ModelProfile, WorkflowProfile
+from ai_workflow_engine.usage_contract import NotionalPricingConfig
 
 
 OverridePath = tuple[str, ...]
@@ -31,7 +32,7 @@ SECRET_VALUE_RE = re.compile(
     r"(sk-[A-Za-z0-9_-]{16,}|xox[baprs]-[A-Za-z0-9-]{16,}|AIza[A-Za-z0-9_-]{16,})"
 )
 
-ALLOWED_TOP_LEVEL_KEYS = {"workflow", "models", "settings", "observation"}
+ALLOWED_TOP_LEVEL_KEYS = {"workflow", "models", "settings", "observation", "pricing"}
 WORKFLOW_FIELD_KEYS = set(WorkflowProfile.model_fields)
 
 DEFAULT_ENV_OVERRIDES: dict[str, OverridePath] = {
@@ -116,10 +117,13 @@ class ObservationConfig(BaseModel):
 class WorkflowConfigBundle(BaseModel):
     """Loaded reusable workflow configuration."""
 
+    model_config = ConfigDict(extra="forbid")
+
     profile: WorkflowProfile
     models: dict[str, ModelProfile] = Field(default_factory=dict)
     settings: dict[str, Any] = Field(default_factory=dict)
     observation: Optional[ObservationConfig] = None
+    pricing: Optional[NotionalPricingConfig] = None
     warnings: list[str] = Field(default_factory=list)
 
     def model_for(self, name: str) -> ModelProfile:
@@ -240,11 +244,21 @@ def _bundle_from_raw(raw: Mapping[str, Any], warnings: list[str]) -> WorkflowCon
         if not isinstance(observation_raw, Mapping):
             raise WorkflowConfigError("observation must be an object")
         observation = ObservationConfig.model_validate(dict(observation_raw))
+    pricing_raw = raw.get("pricing")
+    pricing = None
+    if pricing_raw is not None:
+        if not isinstance(pricing_raw, Mapping):
+            raise WorkflowConfigError("pricing must be an object")
+        try:
+            pricing = NotionalPricingConfig.model_validate(dict(pricing_raw))
+        except ValidationError as exc:
+            raise WorkflowConfigError(f"pricing validation failed: {exc}") from exc
     return WorkflowConfigBundle(
         profile=profile,
         models=model_profiles,
         settings=settings,
         observation=observation,
+        pricing=pricing,
         warnings=warnings,
     )
 

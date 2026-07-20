@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import json
 import logging
 from contextlib import contextmanager
@@ -16,6 +17,11 @@ from ai_workflow_engine.budget import (
     current_usage_context,
 )
 from ai_workflow_engine.models import WorkflowUsageEvent
+from ai_workflow_engine.usage_contract import (
+    NotionalPricingResult,
+    calculate_notional_amount,
+    default_notional_pricing_policy,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +129,64 @@ class TeeUsageSink:
 
 def record_usage_event(event: WorkflowUsageEvent) -> None:
     context = current_usage_context()
+    if event.cost_class == "subscription_notional":
+        policy = (
+            context.notional_pricing_policy
+            if context is not None and context.notional_pricing_policy is not None
+            else default_notional_pricing_policy()
+        )
+        pricing = NotionalPricingResult.model_validate(
+            policy.price(
+                provider=event.provider,
+                model=event.model,
+                usage=event.normalized_usage,
+                usage_error=event.usage_error,
+                provider_reported_usd=event.provider_reported_notional_usd,
+            )
+        )
+        if pricing.source == "provider_reported":
+            reported = event.provider_reported_notional_usd
+            if (
+                reported is None
+                or pricing.amount_usd is None
+                or not math.isclose(
+                    pricing.amount_usd,
+                    reported,
+                    rel_tol=1e-12,
+                    abs_tol=1e-15,
+                )
+            ):
+                raise ValueError(
+                    "provider-reported pricing must match the provider-reported event amount"
+                )
+        elif event.provider_reported_notional_usd is not None:
+            raise ValueError(
+                "provider-reported event amount must remain provider-reported pricing"
+            )
+        if pricing.rate is not None:
+            if event.normalized_usage is None:
+                raise ValueError(
+                    "configured pricing requires normalized token usage"
+                )
+            if (
+                pricing.rate.provider != event.provider
+                or not event.model.startswith(pricing.rate.model_prefix)
+            ):
+                raise ValueError(
+                    "configured pricing rate must match the usage event provider and model"
+                )
+            expected = calculate_notional_amount(event.normalized_usage, pricing.rate)
+            if pricing.amount_usd is None or not math.isclose(
+                pricing.amount_usd,
+                expected,
+                rel_tol=1e-12,
+                abs_tol=1e-15,
+            ):
+                raise ValueError(
+                    "pricing-policy amount does not match its persisted token/rate basis"
+                )
+        event.notional_pricing = pricing
+        event.notional_usd = pricing.amount_usd
     if context:
         if event.run_id is None:
             event.run_id = context.run_context.workflow_id
@@ -153,4 +217,3 @@ def record_usage_event(event: WorkflowUsageEvent) -> None:
         return
     _publish_to_captures(event)
     logger.info("workflow_usage %s", json.dumps(event.model_dump(), sort_keys=True, default=str))
-

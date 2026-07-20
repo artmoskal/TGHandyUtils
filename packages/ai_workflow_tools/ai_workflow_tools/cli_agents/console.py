@@ -6,6 +6,7 @@ import asyncio
 import contextvars
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Sequence
 
@@ -20,10 +21,20 @@ from ai_workflow_engine.execution_window import (
     resolve_invocation_bound,
 )
 from ai_workflow_engine.llm_protocol import ChatMessage, LLMRequest, LLMResponse
+from ai_workflow_engine.llm_protocol import (
+    current_blocking_call_cancellation,
+    current_llm_usage_identity,
+)
+from ai_workflow_engine.usage_contract import new_provider_invocation_id
 
-from .capability import parse_cli_process_output
+from .usage import (
+    CliUsageAccumulator,
+    parse_cli_process_output,
+    parsed_cli_output_from_accumulator,
+    usage_accumulator_for,
+)
 from .flavors import claude_p, codex_exec
-from .assembly import claude_control_argv
+from .assembly import claude_control_argv, codex_model_argv, codex_structured_output_argv
 from .models import CliAgentInvocation, CliFlavor
 
 logger = logging.getLogger(__name__)
@@ -78,7 +89,15 @@ def _run_external_process_sync(
     """
 
     async def invoke() -> Any:
-        return await runner(None, request)
+        cancellation = current_blocking_call_cancellation()
+        task = asyncio.current_task()
+        if cancellation is not None and task is not None:
+            cancellation.bind(asyncio.get_running_loop(), task)
+        try:
+            return await runner(None, request)
+        finally:
+            if cancellation is not None and task is not None:
+                cancellation.unbind(task)
 
     try:
         asyncio.get_running_loop()
@@ -118,6 +137,12 @@ class ConsoleCliError(RuntimeError):
         failure_kind: str = "",
         worker_calls: int = 1,
         process_execution_bound: dict[str, Any] | None = None,
+        model: str = "",
+        normalized_usage: Any = None,
+        usage_error: Any = None,
+        usage_diagnostic: str | None = None,
+        invocation_id: str | None = None,
+        elapsed_ms: int | None = None,
     ) -> None:
         super().__init__(message)
         # QRF.4: the classification vocabulary is CLOSED — a typo ("timeuot") is a loud
@@ -137,6 +162,12 @@ class ConsoleCliError(RuntimeError):
         self.failure_kind = failure_kind
         self.worker_calls = worker_calls
         self.process_execution_bound = dict(process_execution_bound or {})
+        self.model = model
+        self.normalized_usage = normalized_usage
+        self.usage_error = usage_error
+        self.usage_diagnostic = usage_diagnostic
+        self.invocation_id = invocation_id
+        self.elapsed_ms = elapsed_ms
 
 
 class ConsoleLLMClient:
@@ -151,6 +182,7 @@ class ConsoleLLMClient:
         extra_argv: Sequence[str] = (),
         external_runner: ExternalProcessCapability | None = None,
         cli_max_budget_usd: float | None = None,
+        model: str | None = None,
     ) -> None:
         if cli_max_budget_usd is not None and (
             not math.isfinite(cli_max_budget_usd) or cli_max_budget_usd <= 0
@@ -163,12 +195,15 @@ class ConsoleLLMClient:
         self.subscription_mode = subscription_mode
         self.extra_argv = list(extra_argv)
         self.cli_max_budget_usd = cli_max_budget_usd
+        self.model = model
         self.external_runner = external_runner or ExternalProcessCapability()
         # Usage-event attribution for the engine's plain-callable metering path.
         self.provider_label = flavor.name
 
     async def __call__(self, request: LLMRequest) -> LLMResponse:
         self._validate_request(request)
+        invocation_id = request.invocation_id or new_provider_invocation_id()
+        request = request.model_copy(update={"invocation_id": invocation_id})
         prompt = _flatten_request(request)
         images = [*request.images, *(img for m in request.messages for img in m.images)]
         with tempfile.TemporaryDirectory(prefix="ai-workflow-console-") as workspace:
@@ -194,7 +229,9 @@ class ConsoleLLMClient:
                 # response label below reads the same source, so label == request).
                 extra_argv = [
                     *claude_control_argv(
-                        _model_from_request(request), self.cli_max_budget_usd, extra_argv
+                        _model_from_request(request) or self.model,
+                        self.cli_max_budget_usd,
+                        extra_argv,
                     ),
                     *extra_argv,
                 ]
@@ -202,6 +239,13 @@ class ConsoleLLMClient:
                 raise ValueError(
                     f"{self.flavor.name} does not support cli_max_budget_usd (no CLI budget flag)"
                 )
+            elif self.flavor.name == codex_exec.name:
+                extra_argv = [
+                    *codex_model_argv(
+                        _model_from_request(request) or self.model, extra_argv
+                    ),
+                    *extra_argv,
+                ]
             invocation = _build_console_invocation(
                 self.flavor,
                 prompt,
@@ -214,51 +258,149 @@ class ConsoleLLMClient:
             process_bound = _console_effective_bound(
                 self.timeout_s, owner=f"console_llm[{self.flavor.name}]"
             )
-            external = await self.external_runner(
-                None,
-                ExternalProcessRequest(
-                    command=invocation.argv,
-                    cwd=workspace,
-                    timeout_s=process_bound.timeout_s,
-                    stdin_data=invocation.stdin_data,
-                    result_file=invocation.result_file,
-                    kill_grace_s=process_bound.kill_grace_s,
-                    metadata={
-                        "flavor": self.flavor.name,
-                        "console_llm": True,
-                        "process_execution_bound": process_bound.metadata(),
-                    },
-                ),
-            )
+            usage_accumulator = usage_accumulator_for(self.flavor)
+            started = time.monotonic()
+            try:
+                external = await self.external_runner(
+                    None,
+                    ExternalProcessRequest(
+                        command=invocation.argv,
+                        cwd=workspace,
+                        timeout_s=process_bound.timeout_s,
+                        stdin_data=invocation.stdin_data,
+                        result_file=invocation.result_file,
+                        kill_grace_s=process_bound.kill_grace_s,
+                        stdout_observer=(
+                            usage_accumulator.feed
+                            if usage_accumulator is not None
+                            else None
+                        ),
+                        metadata={
+                            "flavor": self.flavor.name,
+                            "console_llm": True,
+                            "invocation_id": invocation_id,
+                            "process_execution_bound": process_bound.metadata(),
+                        },
+                    ),
+                )
+            except asyncio.CancelledError:
+                elapsed_ms = int((time.monotonic() - started) * 1000)
+                if usage_accumulator is not None:
+                    parsed_cancelled = parsed_cli_output_from_accumulator(
+                        {}, usage_accumulator
+                    )
+                    from ai_workflow_engine.models import WorkflowUsageEvent
+                    from ai_workflow_engine.usage_events import record_usage_event
+
+                    record_usage_event(
+                        WorkflowUsageEvent(
+                            provider=self.flavor.name,
+                            operation="chat",
+                            cost_class=(
+                                "subscription_notional"
+                                if self.subscription_mode
+                                else "metered"
+                            ),
+                            node=str(
+                                request.metadata.get("engine_usage_node")
+                                or "console_llm"
+                            ),
+                            model=(
+                                _model_from_request(request)
+                                or self.model
+                                or self.flavor.name
+                            ),
+                            attempt=(
+                                request.metadata.get("engine_usage_attempt")
+                                if type(request.metadata.get("engine_usage_attempt")) is int
+                                else 1
+                            ),
+                            invocation_id=invocation_id,
+                            input_tokens=parsed_cancelled.input_tokens,
+                            output_tokens=parsed_cancelled.output_tokens,
+                            total_tokens=(
+                                parsed_cancelled.input_tokens
+                                + parsed_cancelled.output_tokens
+                            ),
+                            input_token_details={
+                                "cache_read": parsed_cancelled.cache_read_tokens,
+                                "cache_creation": parsed_cancelled.cache_creation_tokens,
+                            },
+                            output_token_details={
+                                "reasoning": parsed_cancelled.reasoning_output_tokens,
+                            },
+                            normalized_usage=parsed_cancelled.normalized_usage,
+                            usage_error=parsed_cancelled.usage_error,
+                            usage_diagnostic=parsed_cancelled.usage_diagnostic,
+                            provider_reported_notional_usd=(
+                                parsed_cancelled.provider_reported_notional_usd
+                                if self.subscription_mode
+                                else None
+                            ),
+                            estimated_usd=(
+                                parsed_cancelled.provider_reported_notional_usd
+                                if not self.subscription_mode
+                                else None
+                            ),
+                            success=False,
+                            error="caller cancellation",
+                            elapsed_ms=elapsed_ms,
+                            metadata={"cancelled": True},
+                        )
+                    )
+                raise
+            elapsed_ms = int((time.monotonic() - started) * 1000)
             output = external.output if isinstance(external.output, dict) else {}
             if external.status != "accepted" or output.get("returncode") != 0:
                 # ONE typed failure path (Q-R2): the runner marks nonzero exits failed but
                 # still hands us stdout — claude's ERROR envelope there carries the consumed
                 # notional (e.g. error_max_budget_usd), which must survive as structured
                 # data, never just prose.
-                raise _console_failure(self.flavor, external, output)
-            parsed = parse_cli_process_output(self.flavor, output)
+                raise _console_failure(
+                    self.flavor,
+                    external,
+                    output,
+                    model=_model_from_request(request) or self.model or self.flavor.name,
+                    usage_accumulator=usage_accumulator,
+                    invocation_id=invocation_id,
+                    elapsed_ms=elapsed_ms,
+                )
+            parsed = (
+                parsed_cli_output_from_accumulator(output, usage_accumulator)
+                if usage_accumulator is not None
+                else parse_cli_process_output(self.flavor, output)
+            )
             logger.info(
                 "console_llm_call flavor=%s tokens_in=%s tokens_out=%s cost_usd=%s duration_ms=%s",
                 self.flavor.name,
                 parsed.input_tokens,
                 parsed.output_tokens,
-                parsed.notional_cost_usd,
+                parsed.provider_reported_notional_usd,
                 parsed.duration_ms,
             )
-            notional_usd = parsed.notional_cost_usd if self.subscription_mode else None
-            estimated_usd = None if self.subscription_mode else parsed.notional_cost_usd
+            provider_cost = parsed.provider_reported_notional_usd
+            notional_usd = provider_cost if self.subscription_mode else None
+            estimated_usd = None if self.subscription_mode else provider_cost
             return LLMResponse(
                 text=parsed.text,
-                model=_model_from_request(request) or self.flavor.name,
+                model=_model_from_request(request) or self.model or self.flavor.name,
                 input_tokens=parsed.input_tokens,
                 output_tokens=parsed.output_tokens,
                 total_tokens=parsed.input_tokens + parsed.output_tokens,
                 estimated_usd=estimated_usd,
                 cost_class="subscription_notional" if self.subscription_mode else "metered",
                 notional_usd=notional_usd,
+                normalized_usage=parsed.normalized_usage,
+                usage_error=parsed.usage_error,
+                usage_diagnostic=parsed.usage_diagnostic,
+                provider_reported_notional_usd=(
+                    provider_cost if self.subscription_mode else None
+                ),
+                invocation_id=invocation_id,
+                elapsed_ms=elapsed_ms,
                 raw=output,
                 metadata={
+                    "invocation_id": invocation_id,
                     "process_execution_bound": external.metadata.get(
                         "process_execution_bound", process_bound.metadata()
                     ),
@@ -337,6 +479,7 @@ class ConsoleChatModel:
         timeout_s: float = 240.0,
         extra_argv: Sequence[str] = (),
         external_runner: ExternalProcessCapability | None = None,
+        model: str | None = None,
     ) -> None:
         self.flavor = flavor
         self.timeout_s = float(timeout_s)
@@ -344,6 +487,9 @@ class ConsoleChatModel:
         self.external_runner = external_runner or ExternalProcessCapability(
             name=f"console_chat_{flavor.name}"
         )
+        self.model = model
+        self.provider_label = flavor.name
+        self.cost_class = "subscription_notional"
 
     def invoke(self, messages: Any) -> Any:
         prompt = _flatten_langchain_messages(messages)
@@ -354,9 +500,25 @@ class ConsoleChatModel:
             self.timeout_s, owner=f"console_chat[{self.flavor.name}]"
         )
         with tempfile.TemporaryDirectory(prefix="ai-workflow-console-") as workspace:
+            extra_argv = list(self.extra_argv)
+            if self.flavor.name == codex_exec.name:
+                extra_argv = [*codex_model_argv(self.model, extra_argv), *extra_argv]
+            elif self.flavor.name == claude_p.name:
+                extra_argv = [
+                    *claude_control_argv(self.model, None, extra_argv),
+                    *extra_argv,
+                ]
             invocation = _build_console_invocation(
-                self.flavor, prompt, Path(workspace), self.extra_argv
+                self.flavor, prompt, Path(workspace), extra_argv
             )
+            usage_accumulator = usage_accumulator_for(self.flavor)
+            identity = current_llm_usage_identity()
+            invocation_id = (
+                identity.invocation_id
+                if identity is not None
+                else new_provider_invocation_id()
+            )
+            started = time.monotonic()
             try:
                 external = _run_external_process_sync(
                     self.external_runner,
@@ -367,13 +529,72 @@ class ConsoleChatModel:
                         stdin_data=invocation.stdin_data,
                         result_file=invocation.result_file,
                         kill_grace_s=process_bound.kill_grace_s,
+                        stdout_observer=(
+                            usage_accumulator.feed
+                            if usage_accumulator is not None
+                            else None
+                        ),
                         metadata={
                             "flavor": self.flavor.name,
                             "console_chat": True,
+                            "invocation_id": invocation_id,
                             "process_execution_bound": process_bound.metadata(),
                         },
                     ),
                 )
+            except asyncio.CancelledError:
+                elapsed_ms = int((time.monotonic() - started) * 1000)
+                parsed_cancelled = (
+                    parsed_cli_output_from_accumulator({}, usage_accumulator)
+                    if usage_accumulator is not None
+                    else None
+                )
+                if identity is not None and parsed_cancelled is not None:
+                    from ai_workflow_engine.models import WorkflowUsageEvent
+                    from ai_workflow_engine.usage_events import record_usage_event
+
+                    record_usage_event(
+                        WorkflowUsageEvent(
+                            provider=self.flavor.name,
+                            operation="chat",
+                            cost_class=identity.cost_class,
+                            node=identity.node,
+                            model=identity.model or self.model or self.flavor.name,
+                            attempt=identity.attempt,
+                            invocation_id=invocation_id,
+                            input_tokens=parsed_cancelled.input_tokens,
+                            output_tokens=parsed_cancelled.output_tokens,
+                            total_tokens=(
+                                parsed_cancelled.input_tokens
+                                + parsed_cancelled.output_tokens
+                            ),
+                            input_token_details={
+                                "cache_read": parsed_cancelled.cache_read_tokens,
+                                "cache_creation": parsed_cancelled.cache_creation_tokens,
+                            },
+                            output_token_details={
+                                "reasoning": parsed_cancelled.reasoning_output_tokens,
+                            },
+                            normalized_usage=parsed_cancelled.normalized_usage,
+                            usage_error=parsed_cancelled.usage_error,
+                            usage_diagnostic=parsed_cancelled.usage_diagnostic,
+                            provider_reported_notional_usd=(
+                                parsed_cancelled.provider_reported_notional_usd
+                                if identity.cost_class == "subscription_notional"
+                                else None
+                            ),
+                            estimated_usd=(
+                                parsed_cancelled.provider_reported_notional_usd
+                                if identity.cost_class == "metered"
+                                else None
+                            ),
+                            success=False,
+                            error="caller cancellation",
+                            elapsed_ms=elapsed_ms,
+                            metadata={"cancelled": True},
+                        )
+                    )
+                raise
             except FileNotFoundError as exc:
                 raise RuntimeError(
                     f"console CLI binary not found for flavor {self.flavor.name!r} "
@@ -381,22 +602,38 @@ class ConsoleChatModel:
                     "or route the role back to an API model"
                 ) from exc
             output = external.output if isinstance(external.output, dict) else {}
+            elapsed_ms = int((time.monotonic() - started) * 1000)
             if external.status == "partial":
-                raise RuntimeError(
-                    f"console CLI timed out after {process_bound.timeout_s:.0f}s ({self.flavor.name})"
+                raise _console_failure(
+                    self.flavor,
+                    external,
+                    output,
+                    model=self.model or self.flavor.name,
+                    usage_accumulator=usage_accumulator,
+                    invocation_id=invocation_id,
+                    elapsed_ms=elapsed_ms,
                 )
             if external.status != "accepted" or output.get("returncode") != 0:
-                raise RuntimeError(
-                    f"console CLI exited {output.get('returncode')}: "
-                    f"{str(output.get('stderr') or '')[-800:]}"
+                raise _console_failure(
+                    self.flavor,
+                    external,
+                    output,
+                    model=self.model or self.flavor.name,
+                    usage_accumulator=usage_accumulator,
+                    invocation_id=invocation_id,
+                    elapsed_ms=elapsed_ms,
                 )
-            parsed = parse_cli_process_output(self.flavor, output)
+            parsed = (
+                parsed_cli_output_from_accumulator(output, usage_accumulator)
+                if usage_accumulator is not None
+                else parse_cli_process_output(self.flavor, output)
+            )
             logger.info(
                 "console_chat_call flavor=%s tokens_in=%s tokens_out=%s cost_usd=%s duration_ms=%s",
                 self.flavor.name,
                 parsed.input_tokens,
                 parsed.output_tokens,
-                parsed.notional_cost_usd,
+                parsed.provider_reported_notional_usd,
                 parsed.duration_ms,
             )
             if not parsed.text.strip():
@@ -405,10 +642,32 @@ class ConsoleChatModel:
                 content=parsed.text,
                 raw=output,
                 response_metadata={
+                    "invocation_id": invocation_id,
                     "process_execution_bound": external.metadata.get(
                         "process_execution_bound", process_bound.metadata()
-                    )
+                    ),
+                    **(
+                        {"process_io": external.metadata["process_io"]}
+                        if isinstance(external.metadata.get("process_io"), dict)
+                        else {}
+                    ),
                 },
+                usage_metadata={
+                    "input_tokens": parsed.input_tokens,
+                    "output_tokens": parsed.output_tokens,
+                    "total_tokens": parsed.input_tokens + parsed.output_tokens,
+                    "input_token_details": {
+                        "cache_read": parsed.cache_read_tokens,
+                        "cache_creation": parsed.cache_creation_tokens,
+                    },
+                    "output_token_details": {
+                        "reasoning": parsed.reasoning_output_tokens,
+                    },
+                },
+                normalized_usage=parsed.normalized_usage,
+                usage_error=parsed.usage_error,
+                usage_diagnostic=parsed.usage_diagnostic,
+                provider_reported_notional_usd=parsed.provider_reported_notional_usd,
             )
 
 
@@ -420,11 +679,20 @@ class _ConsoleChatReply:
         content: str,
         raw: dict[str, Any],
         response_metadata: dict[str, Any] | None = None,
+        usage_metadata: dict[str, Any] | None = None,
+        normalized_usage: Any = None,
+        usage_error: Any = None,
+        usage_diagnostic: str | None = None,
+        provider_reported_notional_usd: float | None = None,
     ):
         self.content = content
         self.raw = raw
         self.response_metadata = dict(response_metadata or {})
-        self.usage_metadata = None
+        self.usage_metadata = dict(usage_metadata or {})
+        self.normalized_usage = normalized_usage
+        self.usage_error = usage_error
+        self.usage_diagnostic = usage_diagnostic
+        self.provider_reported_notional_usd = provider_reported_notional_usd
 
 
 def _flatten_langchain_messages(messages: Any) -> str:
@@ -479,6 +747,7 @@ def _build_console_invocation(
                 str(workspace),
                 "--output-last-message",
                 str(result_file),
+                *codex_structured_output_argv(extra_argv),
                 *extra_argv,
                 prompt,
                 *(["--image", *image_paths] if image_paths else []),
@@ -511,10 +780,23 @@ def _flatten_message(message: ChatMessage) -> list[str]:
     return parts
 
 
-def _console_failure(flavor: CliFlavor, external: Any, output: dict) -> "ConsoleCliError":
+def _console_failure(
+    flavor: CliFlavor,
+    external: Any,
+    output: dict,
+    *,
+    model: str,
+    usage_accumulator: CliUsageAccumulator | None = None,
+    invocation_id: str,
+    elapsed_ms: int,
+) -> "ConsoleCliError":
     """Build the typed console failure from whatever the runner captured."""
 
-    aborted = parse_cli_process_output(flavor, output)
+    aborted = (
+        parsed_cli_output_from_accumulator(output, usage_accumulator)
+        if usage_accumulator is not None
+        else parse_cli_process_output(flavor, output)
+    )
     subtype = ""
     try:
         import json as _json
@@ -526,8 +808,8 @@ def _console_failure(flavor: CliFlavor, external: Any, output: dict) -> "Console
     returncode = output.get("returncode")
     stderr = str(output.get("stderr") or "")
     consumed = (
-        f"; consumed notional ~${aborted.notional_cost_usd:.4f}"
-        if aborted.notional_cost_usd is not None
+        f"; consumed notional ~${aborted.provider_reported_notional_usd:.4f}"
+        if aborted.provider_reported_notional_usd is not None
         else ""
     )
     base = external.error or f"console CLI exited with status {external.status}"
@@ -541,13 +823,19 @@ def _console_failure(flavor: CliFlavor, external: Any, output: dict) -> "Console
     return ConsoleCliError(
         f"{base}{f' ({subtype})' if subtype else ''}{consumed}: {stderr[-800:]}",
         cli_subtype=subtype,
-        notional_usd=aborted.notional_cost_usd,
+        notional_usd=aborted.provider_reported_notional_usd,
         returncode=returncode if isinstance(returncode, int) else None,
         num_turns=aborted.num_turns,
         failure_kind=failure_kind,
         process_execution_bound=getattr(external, "metadata", {}).get(
             "process_execution_bound", {}
         ),
+        model=model,
+        normalized_usage=aborted.normalized_usage,
+        usage_error=aborted.usage_error,
+        usage_diagnostic=aborted.usage_diagnostic,
+        invocation_id=invocation_id,
+        elapsed_ms=elapsed_ms,
     )
 
 

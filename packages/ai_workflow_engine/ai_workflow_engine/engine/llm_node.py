@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, Sequence
 
@@ -210,8 +211,16 @@ class StructuredLLMNode:
         fallback = getattr(self.config, self.default_model_attr, self.default_model)
         return getattr(self.config, self.model_attr, fallback)
 
-    def _record_failed_callable_usage(
-        self, client: Any, exc: Exception, attempt: int, profile: Any = None
+    def _record_failed_usage(
+        self,
+        client: Any,
+        exc: BaseException,
+        attempt: int,
+        profile: Any = None,
+        *,
+        invocation_id: str,
+        transport: str,
+        elapsed_ms: int | None = None,
     ) -> None:
         """Failed-attempt parity with the LangChain transport: a raising plain-callable client
         leaves the same honest usage trail — success=False, zero tokens, no invented cost.
@@ -221,22 +230,19 @@ class StructuredLLMNode:
         provider, and profile name; anonymous non-profile callables keep the fallback identity.
         """
 
-        from ai_workflow_engine.models import WorkflowUsageEvent
-        from ai_workflow_engine.usage_events import record_usage_event
+        from ai_workflow_engine.llm_protocol import record_callable_failure_usage
 
-        model = profile.model if profile is not None else str(self._model_name() or "")
+        model = (
+            profile.model
+            if profile is not None
+            else str(getattr(exc, "model", None) or self._model_name() or "")
+        )
         provider = getattr(client, "provider_label", None) or (
             profile.provider if profile is not None else None
         ) or "custom"
-        metadata = {"output_model": self.output_model.__name__, "transport": "plain_callable"}
+        metadata = {"output_model": self.output_model.__name__, "transport": transport}
         if profile is not None:
             metadata["model_profile"] = profile.name
-        # Q-R2: a typed transport error may carry what the ABORTED call actually consumed
-        # (e.g. claude aborts on --max-budget-usd AFTER burning turns) — record it, never
-        # drop it; money honesty covers failures too.
-        consumed_usd = getattr(exc, "notional_usd", None)
-        if not isinstance(consumed_usd, (int, float)):
-            consumed_usd = None
         failure_subtype = getattr(exc, "cli_subtype", None)
         if failure_subtype:
             metadata["cli_subtype"] = str(failure_subtype)
@@ -251,23 +257,18 @@ class StructuredLLMNode:
             getattr(client, "cost_class", None)
             or ("subscription_notional" if getattr(client, "subscription_mode", False) else "metered")
         )
-        record_usage_event(
-            WorkflowUsageEvent(
-                operation="chat",
-                provider=provider,
-                node=self.name,
-                model=model,
-                attempt=attempt,
-                success=False,
-                error=str(exc)[:500],
-                notional_usd=consumed_usd if resolved_cost_class == "subscription_notional" else None,
-                estimated_usd=consumed_usd if resolved_cost_class == "metered" else None,
-                # R14: honor BOTH client honesty markers — subscription-backed clients (e.g.
-                # the claude -p console client) expose subscription_mode, not cost_class; a
-                # failed subscription call must never be booked as metered spend.
-                cost_class=resolved_cost_class,
-                metadata=metadata,
-            )
+        record_callable_failure_usage(
+            exc,
+            node=self.name,
+            model=model,
+            provider=provider,
+            attempt=attempt,
+            # R14: honor BOTH client honesty markers — subscription-backed clients (e.g.
+            # the claude -p console client) expose subscription_mode, not cost_class.
+            cost_class=resolved_cost_class,
+            metadata=metadata,
+            invocation_id=invocation_id,
+            elapsed_ms=elapsed_ms,
         )
 
     async def run(
@@ -319,24 +320,38 @@ class StructuredLLMNode:
         usage_metadata: Optional[dict[str, Any]] = None,
         profile: Any = None,
     ) -> Any:
-        worker = asyncio.create_task(
-            asyncio.to_thread(
-                self._invoke_with_retry,
-                prompt_bundle,
-                content_hash,
-                message_factory,
-                usage_metadata,
-                profile,
-            )
+        from ai_workflow_engine.llm_protocol import (
+            BlockingCallCancellation,
+            blocking_call_cancellation_scope,
         )
+
+        cancellation = BlockingCallCancellation()
+
+        async def run_worker() -> Any:
+            with blocking_call_cancellation_scope(cancellation):
+                return await asyncio.to_thread(
+                    self._invoke_with_retry,
+                    prompt_bundle,
+                    content_hash,
+                    message_factory,
+                    usage_metadata,
+                    profile,
+                )
+
+        worker = asyncio.create_task(run_worker())
         try:
             return await asyncio.shield(worker)
         except asyncio.CancelledError:
-            # Blocking LangChain-style clients cannot be interrupted once their thread is running.
-            # Keep the coroutine alive until the thread finishes so scheduler slots are released only
-            # after the actual backend call exits; then propagate cancellation to the caller.
+            cancellation.cancel()
+            # Ordinary blocking clients remain uninterruptible and must settle naturally.
+            # A process-backed console adapter binds the token and stops/reaps its child.
             try:
                 await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                logger.debug(
+                    "structured_llm_node_process_cancelled node=%s",
+                    self.name,
+                )
             except Exception as exc:
                 logger.debug(
                     "structured_llm_node_blocking_cancelled_after_worker_error node=%s error=%s",
@@ -354,6 +369,7 @@ class StructuredLLMNode:
         profile: Any = None,
     ) -> Any:
         from ai_workflow_engine.llm_protocol import LLMRequest, record_callable_usage
+        from ai_workflow_engine.usage_contract import new_provider_invocation_id
         from ai_workflow_engine.budget import check_budget_before_call, check_images_per_call
         from ai_workflow_engine.budget import check_input_tokens_per_call
         from ai_workflow_engine.token_estimation import estimate_text_tokens
@@ -366,13 +382,19 @@ class StructuredLLMNode:
         client = self._llm_for_profile(profile)
         last_error = ""
         for attempt in range(1, 2 + self.max_repair_rounds):
+            invocation_id = new_provider_invocation_id()
             try:
                 if attempt == 1:
                     request = LLMRequest(
                         system=prompt_bundle.system,
                         user=prompt_bundle.user,
                         images=images,
-                        metadata=dict(request_metadata),
+                        metadata={
+                            **request_metadata,
+                            "engine_usage_node": self.name,
+                            "engine_usage_attempt": attempt,
+                        },
+                        invocation_id=invocation_id,
                     )
                 else:
                     request = LLMRequest(
@@ -381,7 +403,12 @@ class StructuredLLMNode:
                             error=last_error, original_prompt=prompt_bundle.full_text
                         ),
                         images=images,
-                        metadata=dict(request_metadata),
+                        metadata={
+                            **request_metadata,
+                            "engine_usage_node": self.name,
+                            "engine_usage_attempt": attempt,
+                        },
+                        invocation_id=invocation_id,
                     )
                 check_input_tokens_per_call(
                     estimate_text_tokens([request.system, request.user, request.messages]),
@@ -390,25 +417,66 @@ class StructuredLLMNode:
                 check_images_per_call(len(request.images), self.name)
                 check_budget_before_call("chat", self.name)
                 self._record_callable_request(request, attempt, profile)
+                started = time.monotonic()
                 try:
                     with engine_worker_observation_scope():
                         response = await client(request)
-                except Exception as exc:
-                    self._record_llm_error(attempt, exc, profile, transport="plain_callable")
-                    self._record_failed_callable_usage(client, exc, attempt, profile)
+                except asyncio.CancelledError as exc:
+                    self._record_llm_error(
+                        attempt,
+                        exc,
+                        profile,
+                        transport="plain_callable",
+                        invocation_id=invocation_id,
+                    )
+                    self._record_failed_usage(
+                        client,
+                        exc,
+                        attempt,
+                        profile,
+                        invocation_id=invocation_id,
+                        transport="plain_callable",
+                        elapsed_ms=int((time.monotonic() - started) * 1000),
+                    )
                     raise
+                except Exception as exc:
+                    self._record_llm_error(
+                        attempt,
+                        exc,
+                        profile,
+                        transport="plain_callable",
+                        invocation_id=invocation_id,
+                    )
+                    self._record_failed_usage(
+                        client,
+                        exc,
+                        attempt,
+                        profile,
+                        invocation_id=invocation_id,
+                        transport="plain_callable",
+                        elapsed_ms=int((time.monotonic() - started) * 1000),
+                    )
+                    raise
+                if response.elapsed_ms is None:
+                    response = response.model_copy(
+                        update={
+                            "elapsed_ms": int(
+                                (time.monotonic() - started) * 1000
+                            )
+                        }
+                    )
                 self._record_callable_response(request, response, attempt, profile)
                 record_callable_usage(
                     response,
                     node=self.name,
                     attempt=attempt,
                     metadata={"output_model": self.output_model.__name__, **(usage_metadata or {})},
-                    config=self.config,
                     cost_class=response.cost_class,
                     notional_usd=response.notional_usd,
                     # Traceability: clients may declare who they are (e.g. 'claude_p',
                     # 'chatgpt_browser'); anonymous callables stay 'custom'.
                     provider=getattr(client, "provider_label", None) or "custom",
+                    invocation_id=invocation_id,
                 )
                 parsed = self.parser.parse(self._apply_pre_parse(response.text, attempt, content_hash))
                 if self.validator:
@@ -456,9 +524,11 @@ class StructuredLLMNode:
     ) -> Any:
         from ai_workflow_engine.budget import check_input_tokens_per_call
         from ai_workflow_engine.token_estimation import estimate_text_tokens
+        from ai_workflow_engine.usage_contract import new_provider_invocation_id
 
         last_error = ""
         for attempt in range(1, 2 + self.max_repair_rounds):
+            invocation_id = new_provider_invocation_id()
             try:
                 messages = self._messages_for_attempt(prompt_bundle, attempt, last_error)
                 if message_factory:
@@ -467,23 +537,57 @@ class StructuredLLMNode:
                 # callables); contextvars propagate into the worker thread via asyncio.to_thread.
                 check_input_tokens_per_call(estimate_text_tokens(messages), self.name)
                 model_name = profile.model if profile is not None else self._model_name()
-                self._record_langchain_request(messages, attempt, profile)
+                self._record_langchain_request(
+                    messages, attempt, profile, invocation_id=invocation_id
+                )
+                started = time.monotonic()
+                client = self._llm_for_profile(profile)
                 try:
                     with engine_worker_observation_scope():
                         output = invoke_metered_chat(
-                            self._llm_for_profile(profile),
+                            client,
                             messages,
                             node=self.name,
                             model=model_name,
                             attempt=attempt,
                             metadata={"output_model": self.output_model.__name__, **(usage_metadata or {})},
-                            config=self.config,
+                            invocation_id=invocation_id,
                         )
+                except asyncio.CancelledError as exc:
+                    self._record_llm_error(
+                        attempt,
+                        exc,
+                        profile,
+                        transport="langchain",
+                        invocation_id=invocation_id,
+                    )
+                    self._record_failed_usage(
+                        client,
+                        exc,
+                        attempt,
+                        profile,
+                        invocation_id=invocation_id,
+                        transport="langchain",
+                        elapsed_ms=int((time.monotonic() - started) * 1000),
+                    )
+                    raise
                 except Exception as exc:
-                    self._record_llm_error(attempt, exc, profile, transport="langchain")
+                    self._record_llm_error(
+                        attempt,
+                        exc,
+                        profile,
+                        transport="langchain",
+                        invocation_id=invocation_id,
+                    )
                     raise
                 raw_text = self._message_content(output)
-                self._record_langchain_response(output, raw_text, attempt, profile)
+                self._record_langchain_response(
+                    output,
+                    raw_text,
+                    attempt,
+                    profile,
+                    invocation_id=invocation_id,
+                )
                 parsed = self.parser.parse(self._apply_pre_parse(raw_text, attempt, content_hash))
                 if self.validator:
                     self.validator(parsed)
@@ -586,6 +690,7 @@ class StructuredLLMNode:
             payload=llm_request_payload(request),
             metadata=self._observation_metadata(profile, transport="plain_callable", request=request),
             digest_metadata_key="prompt_digest",
+            invocation_id=request.invocation_id,
         )
 
     def _record_callable_response(self, request: Any, response: Any, attempt: int, profile: Any) -> None:
@@ -617,9 +722,17 @@ class StructuredLLMNode:
                 ),
             },
             digest_metadata_key="response_digest",
+            invocation_id=request.invocation_id,
         )
 
-    def _record_langchain_request(self, messages: Sequence[Any], attempt: int, profile: Any) -> None:
+    def _record_langchain_request(
+        self,
+        messages: Sequence[Any],
+        attempt: int,
+        profile: Any,
+        *,
+        invocation_id: str,
+    ) -> None:
         capture = current_observation_capture()
         if capture is None:
             return
@@ -632,9 +745,18 @@ class StructuredLLMNode:
             payload=langchain_messages_payload(messages),
             metadata=self._observation_metadata(profile, transport="langchain"),
             digest_metadata_key="prompt_digest",
+            invocation_id=invocation_id,
         )
 
-    def _record_langchain_response(self, output: Any, raw_text: str, attempt: int, profile: Any) -> None:
+    def _record_langchain_response(
+        self,
+        output: Any,
+        raw_text: str,
+        attempt: int,
+        profile: Any,
+        *,
+        invocation_id: str,
+    ) -> None:
         capture = current_observation_capture()
         if capture is None:
             return
@@ -660,9 +782,18 @@ class StructuredLLMNode:
                 ),
             },
             digest_metadata_key="response_digest",
+            invocation_id=invocation_id,
         )
 
-    def _record_llm_error(self, attempt: int, exc: Exception, profile: Any, *, transport: str) -> None:
+    def _record_llm_error(
+        self,
+        attempt: int,
+        exc: Exception,
+        profile: Any,
+        *,
+        transport: str,
+        invocation_id: str,
+    ) -> None:
         capture = current_observation_capture()
         if capture is None:
             return
@@ -686,6 +817,7 @@ class StructuredLLMNode:
                 ),
             },
             digest_metadata_key="response_digest",
+            invocation_id=invocation_id,
         )
 
     def _observation_metadata(self, profile: Any, *, transport: str, request: Any = None) -> dict[str, Any]:

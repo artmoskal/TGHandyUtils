@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from ai_workflow_engine import (
     LocalWaitPolicy,
     ObservationConfig,
+    StructuredLLMNode,
     WorkflowBuilder,
     WorkflowEngineBuilder,
     WorkflowGoal,
@@ -36,6 +37,7 @@ from ai_workflow_engine.run_artifacts import (
     ArtifactIdentityConflict,
     RunArtifactJournal,
 )
+from ai_workflow_engine.usage_contract import NormalizedTokenUsage
 from ai_workflow_engine.usage_events import record_usage_event
 
 
@@ -99,9 +101,25 @@ async def test_caller_cancellation_finalizes_bundle_and_preserves_completed_arti
         artifact_path.write_bytes(b"same-run-evidence")
         record_usage_event(
             WorkflowUsageEvent(
+                provider="codex_exec",
                 node="capture",
                 operation="tool",
-                total_tokens=3,
+                cost_class="subscription_notional",
+                model="gpt-5.4-codex",
+                input_tokens=120,
+                output_tokens=30,
+                total_tokens=150,
+                normalized_usage=NormalizedTokenUsage(
+                    counter_schema="codex_inclusive",
+                    uncached_input_tokens=100,
+                    cache_read_input_tokens=20,
+                    cache_creation_input_tokens=0,
+                    non_reasoning_output_tokens=20,
+                    reasoning_output_tokens=10,
+                    raw_input_tokens=120,
+                    raw_output_tokens=30,
+                    raw_total_tokens=150,
+                ),
                 metadata={"stage": "before-cancellation"},
             )
         )
@@ -159,6 +177,13 @@ async def test_caller_cancellation_finalizes_bundle_and_preserves_completed_arti
     assert meta.trace_count > 0
     assert meta.detail_count > 0
     assert meta.usage_count == 1
+    from ai_workflow_viewer import FileEventSource
+
+    [usage] = FileEventSource(bundle).read().usage_events
+    assert usage.notional_pricing is not None
+    assert usage.notional_pricing.amount_usd == pytest.approx(0.000705)
+    assert usage.notional_pricing.rate is not None
+    assert usage.notional_pricing.rate.rate_version == "openai-2026-07-20"
     manifest = _manifest(bundle)
     assert [entry["artifact_id"] for entry in manifest] == ["capture-artifact"]
     assert manifest[0]["copied"] is True
@@ -249,6 +274,84 @@ async def test_cancellation_before_first_capability_result_finalizes_empty_bundl
     assert _manifest(bundle) == []
     trace = (bundle / "trace.jsonl").read_text(encoding="utf-8")
     assert '"decision":"cancelled"' in trace.replace(" ", "")
+
+
+async def test_cancelled_plain_llm_finalizes_one_linked_unknown_usage_event(
+    tmp_path: Path,
+) -> None:
+    started = asyncio.Event()
+
+    class Output(BaseModel):
+        label: str
+
+    class BlockingSubscriptionLLM:
+        provider_label = "codex_exec"
+        subscription_mode = True
+
+        async def __call__(self, _request):
+            started.set()
+            await asyncio.Event().wait()
+
+    node = StructuredLLMNode(
+        name="inspect",
+        config=object(),
+        output_model=Output,
+        prompt_template="Inspect {item}.",
+        input_variables=["item"],
+        llm=BlockingSubscriptionLLM(),
+        max_repair_rounds=0,
+    )
+
+    async def inspect(_context, payload):
+        return await node.run({"item": payload["item"]})
+
+    root = tmp_path / "llm-cancel-bundles"
+    builder = WorkflowEngineBuilder().with_observation(
+        ObservationConfig(enabled=True, bundle_dir=str(root), capture="full")
+    )
+    builder.register_capability("inspect", inspect, kind="llm", metered=True)
+    builder.register_workflow(
+        WorkflowBuilder("cancel-llm").step("inspect").build()
+    )
+    task = asyncio.create_task(
+        builder.build().run(
+            "cancel-llm",
+            {"item": "banner"},
+            goal=WorkflowGoal(
+                workflow_type="cancel-llm",
+                objective="Preserve cancelled provider evidence.",
+                metadata={"run_id": "cancel-llm-run"},
+            ),
+        )
+    )
+
+    await asyncio.wait_for(started.wait(), timeout=5)
+    task.cancel("operator-stop")
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await task
+    assert caught.value.args == ("operator-stop",)
+
+    from ai_workflow_viewer import FileEventSource
+
+    run = FileEventSource(root / "cancel-llm-run").read()
+    assert run.meta.status == "cancelled"
+    assert len(run.usage_events) == 1
+    usage = run.usage_events[0]
+    assert usage.success is False
+    assert usage.usage_error == "usage_event_missing"
+    assert usage.notional_pricing is not None
+    assert usage.notional_pricing.source == "unknown"
+    assert usage.notional_usd is None
+    assert usage.invocation_id
+    assert usage.elapsed_ms is not None and usage.elapsed_ms >= 0
+    linked = [
+        event for event in run.trace_events
+        if event.invocation_id == usage.invocation_id
+    ]
+    assert {event.phase for event in linked} >= {
+        "llm:request",
+        "llm:response",
+    }
 
 
 async def test_fanout_retains_completed_siblings_before_aggregate_commit(

@@ -151,6 +151,25 @@
         ],
         "oracle_rows": [],
         "mutation": "v0.11.6 C2R/C3: bypassing shielded registration settlement, creator-attempt CAS, exact-retry participant tracking, or the live non-creator fail-loud mapping fails the named race tests"
+      },
+      "16": {
+        "anchor": "Subscription pricing truth",
+        "class": "engine-enforceable",
+        "algebra_rows": [
+          "usage_summary"
+        ],
+        "tests": [
+          "test_codex_usage_accumulator_uses_final_cumulative_turn_across_chunks",
+          "test_pricing_uses_uncached_cached_and_inclusive_output_without_reasoning_double_count",
+          "test_unknown_pricing_is_typed_and_never_fake_zero",
+          "test_codex_image_agent_persists_one_linked_provider_invocation_graph",
+          "test_codex_failure_and_timeout_keep_latest_structured_usage",
+          "test_codex_cancellation_records_latest_usage_once_and_reaps_process"
+        ],
+        "oracle_rows": [
+          "usage_event_semantics"
+        ],
+        "mutation": "final-turn replacement, cached/reasoning arithmetic, unknown-pricing coercion, invocation-link removal, and failure/cancellation omission each fail a named parser, pricing, or bundle test"
       }
     },
     "gopro-handoff.md": {
@@ -226,6 +245,25 @@
         "anchor": "Deployment",
         "class": "consumer-repo-obligation",
         "waiver": "Mac Mini/sidecar canary is GoPro operations."
+      },
+      "11": {
+        "anchor": "Economics when CLI tools are enabled",
+        "class": "engine-enforceable",
+        "algebra_rows": [
+          "usage_summary"
+        ],
+        "tests": [
+          "test_codex_usage_accumulator_uses_final_cumulative_turn_across_chunks",
+          "test_pricing_uses_uncached_cached_and_inclusive_output_without_reasoning_double_count",
+          "test_unknown_pricing_is_typed_and_never_fake_zero",
+          "test_codex_image_agent_persists_one_linked_provider_invocation_graph",
+          "test_codex_failure_and_timeout_keep_latest_structured_usage",
+          "test_codex_cancellation_records_latest_usage_once_and_reaps_process"
+        ],
+        "oracle_rows": [
+          "usage_event_semantics"
+        ],
+        "mutation": "final-turn replacement, cached/reasoning arithmetic, unknown-pricing coercion, invocation-link removal, and failure/cancellation omission each fail a named parser, pricing, or bundle test"
       }
     },
     "voice-brain-handoff.md": {
@@ -273,6 +311,25 @@
         "anchor": "latency canary",
         "class": "consumer-repo-obligation",
         "waiver": "Latency budgets are product SLOs."
+      },
+      "10": {
+        "anchor": "process-backed CLI",
+        "class": "engine-enforceable",
+        "algebra_rows": [
+          "usage_summary"
+        ],
+        "tests": [
+          "test_codex_usage_accumulator_uses_final_cumulative_turn_across_chunks",
+          "test_pricing_uses_uncached_cached_and_inclusive_output_without_reasoning_double_count",
+          "test_unknown_pricing_is_typed_and_never_fake_zero",
+          "test_codex_image_agent_persists_one_linked_provider_invocation_graph",
+          "test_codex_failure_and_timeout_keep_latest_structured_usage",
+          "test_codex_cancellation_records_latest_usage_once_and_reaps_process"
+        ],
+        "oracle_rows": [
+          "usage_event_semantics"
+        ],
+        "mutation": "final-turn replacement, cached/reasoning arithmetic, unknown-pricing coercion, invocation-link removal, and failure/cancellation omission each fail a named parser, pricing, or bundle test"
       }
     },
     "slackazz-handoff.md": {
@@ -435,6 +492,25 @@
           "process_timeout"
         ],
         "mutation": "sealed cancellation/window rows: suppression-visibility drift is an unledgered delta"
+      },
+      "15": {
+        "anchor": "CLI economics",
+        "class": "engine-enforceable",
+        "algebra_rows": [
+          "usage_summary"
+        ],
+        "tests": [
+          "test_codex_usage_accumulator_uses_final_cumulative_turn_across_chunks",
+          "test_pricing_uses_uncached_cached_and_inclusive_output_without_reasoning_double_count",
+          "test_unknown_pricing_is_typed_and_never_fake_zero",
+          "test_codex_image_agent_persists_one_linked_provider_invocation_graph",
+          "test_codex_failure_and_timeout_keep_latest_structured_usage",
+          "test_codex_cancellation_records_latest_usage_once_and_reaps_process"
+        ],
+        "oracle_rows": [
+          "usage_event_semantics"
+        ],
+        "mutation": "final-turn replacement, cached/reasoning arithmetic, unknown-pricing coercion, invocation-link removal, and failure/cancellation omission each fail a named parser, pricing, or bundle test"
       }
     }
   },

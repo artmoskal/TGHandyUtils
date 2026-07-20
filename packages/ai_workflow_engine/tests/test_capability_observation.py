@@ -65,12 +65,21 @@ class _Capture:
         self.mode = mode
         self.details = []
 
-    def record_detail(self, *, event_id, kind, payload):
+    @property
+    def unavailable_reason(self):
+        return "capture_mode_off" if self.mode == "off" else None
+
+    def record_detail(self, *, event_id, kind, payload, invocation_id=None):
         if self.mode == "off":
             return None
         from types import SimpleNamespace
 
-        d = SimpleNamespace(detail_id=f"d{len(self.details)}", kind=kind, event_id=event_id)
+        d = SimpleNamespace(
+            detail_id=f"d{len(self.details)}",
+            kind=kind,
+            event_id=event_id,
+            invocation_id=invocation_id,
+        )
         self.details.append(d)
         return d
 

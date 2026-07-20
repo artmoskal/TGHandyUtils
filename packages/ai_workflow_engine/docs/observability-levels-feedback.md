@@ -109,6 +109,8 @@ Runnable version: [`examples/observed_workflow.py`](examples/observed_workflow.p
   metadata the viewer does not invent an edge.
 - Mixed external events show accepted/failed tallies rather than last-event-wins “completed.”
 - Metered and subscription-notional costs are shown separately; unknown cost remains unknown.
+  Subscription events retain normalized cache/reasoning quantities and the exact provider-reported
+  or configured catalog/rate basis. The viewer projects these persisted facts and never reprices.
 - Archived artifacts are manifest-allowlisted. Raster images may preview inline; active/unknown
   content is downloaded rather than executed at the viewer origin.
 - Raw JSON remains available but human summaries and significant fields are the default path.

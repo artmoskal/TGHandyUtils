@@ -75,7 +75,12 @@ class JsonlObservationViewer:
             run.details,
             run_id=run.run_id,
         )
-        return observation_graph_to_html(run.definition, graph, title=self.title)
+        return observation_graph_to_html(
+            run.definition,
+            graph,
+            title=self.title,
+            usage_events=run.usage_events,
+        )
 
     def _read_group(self, run_id: Optional[str]):
         """Grouped read when the source supports it; None falls back to single-bundle.

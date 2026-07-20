@@ -56,14 +56,25 @@ class CapabilityObservationProjector:
     # ---------------------------------------------------------------- terminal projections
 
     def start(self, *, name: str, attempt: int, spec: CapabilitySpec, payload: Any) -> None:
+        invocation_id = _provider_invocation_id(payload)
         start_event = WorkflowTraceEvent(
             node=name,
             attempt=attempt,
             decision="start",
             phase="tool:request",
+            invocation_id=invocation_id,
+        )
+        detail_refs = self._tool_payload(
+            spec,
+            payload,
+            event_id=start_event.event_id,
+            invocation_id=invocation_id,
         )
         start_event = start_event.model_copy(
-            update={"detail_refs": self._tool_payload(spec, payload, event_id=start_event.event_id)}
+            update={
+                "detail_refs": detail_refs,
+                "detail_capture": self._detail_capture(detail_refs),
+            }
         )
         self._record(start_event)
 
@@ -72,6 +83,14 @@ class CapabilityObservationProjector:
         error: str, elapsed_ms: int,
     ) -> None:
         event_id = str(uuid.uuid4())
+        invocation_id = _provider_invocation_id(result)
+        detail_refs = self._tool_result(
+            spec,
+            result,
+            error=error,
+            event_id=event_id,
+            invocation_id=invocation_id,
+        )
         self._record(
             WorkflowTraceEvent(
                 node=name,
@@ -83,7 +102,9 @@ class CapabilityObservationProjector:
                 phase="tool:result",
                 severity="error",
                 event_id=event_id,
-                detail_refs=self._tool_result(spec, result, error=error, event_id=event_id),
+                detail_refs=detail_refs,
+                invocation_id=invocation_id,
+                detail_capture=self._detail_capture(detail_refs),
             )
         )
 
@@ -92,6 +113,22 @@ class CapabilityObservationProjector:
         elapsed_ms: int, metadata: dict[str, Any],
     ) -> None:
         event_id = str(uuid.uuid4())
+        invocation_id = _provider_invocation_id(output, metadata)
+        detail_refs = [
+            *self._tool_result(
+                spec,
+                output,
+                error=output.error,
+                event_id=event_id,
+                invocation_id=invocation_id,
+            ),
+            *self._artifact_previews(
+                spec,
+                output,
+                event_id=event_id,
+                invocation_id=invocation_id,
+            ),
+        ]
         self._record(
             WorkflowTraceEvent(
                 node=name,
@@ -103,10 +140,9 @@ class CapabilityObservationProjector:
                 severity="error" if output.status in {"failed", "rejected"} or output.error else "info",
                 event_id=event_id,
                 metadata=metadata,
-                detail_refs=[
-                    *self._tool_result(spec, output, error=output.error, event_id=event_id),
-                    *self._artifact_previews(spec, output, event_id=event_id),
-                ],
+                detail_refs=detail_refs,
+                invocation_id=invocation_id,
+                detail_capture=self._detail_capture(detail_refs),
             )
         )
 
@@ -115,6 +151,14 @@ class CapabilityObservationProjector:
         elapsed_ms: int, metadata: dict[str, Any],
     ) -> None:
         event_id = str(uuid.uuid4())
+        invocation_id = _provider_invocation_id(metadata)
+        detail_refs = self._tool_error(
+            spec,
+            decision="partial",
+            error=error,
+            event_id=event_id,
+            invocation_id=invocation_id,
+        )
         self._record(
             WorkflowTraceEvent(
                 node=name,
@@ -126,7 +170,9 @@ class CapabilityObservationProjector:
                 severity="error",
                 event_id=event_id,
                 metadata=metadata,
-                detail_refs=self._tool_error(spec, decision="partial", error=error, event_id=event_id),
+                detail_refs=detail_refs,
+                invocation_id=invocation_id,
+                detail_capture=self._detail_capture(detail_refs),
             )
         )
 
@@ -135,6 +181,14 @@ class CapabilityObservationProjector:
         elapsed_ms: int, metadata: dict[str, Any],
     ) -> None:
         event_id = str(uuid.uuid4())
+        invocation_id = _provider_invocation_id(metadata)
+        detail_refs = self._tool_error(
+            spec,
+            decision=decision,
+            error=error,
+            event_id=event_id,
+            invocation_id=invocation_id,
+        )
         self._record(
             WorkflowTraceEvent(
                 node=name,
@@ -146,13 +200,22 @@ class CapabilityObservationProjector:
                 severity="error",
                 event_id=event_id,
                 metadata=metadata,
-                detail_refs=self._tool_error(spec, decision=decision, error=error, event_id=event_id),
+                detail_refs=detail_refs,
+                invocation_id=invocation_id,
+                detail_capture=self._detail_capture(detail_refs),
             )
         )
 
     # ---------------------------------------------------------------- detail linkage (moved verbatim)
 
-    def _tool_payload(self, spec: CapabilitySpec, payload: Any, *, event_id: str | None = None) -> list[str]:
+    def _tool_payload(
+        self,
+        spec: CapabilitySpec,
+        payload: Any,
+        *,
+        event_id: str | None = None,
+        invocation_id: str | None = None,
+    ) -> list[str]:
         event_id = event_id or str(uuid.uuid4())
         detail = self._observation.record_detail(
             event_id=event_id,
@@ -162,12 +225,13 @@ class CapabilityObservationProjector:
                 "kind": spec.kind,
                 "payload": payload,
             },
+            invocation_id=invocation_id,
         )
         return [detail.detail_id] if detail else []
 
     def _tool_result(
         self, spec: CapabilitySpec, output: CapabilityResult, *, error: str | None = None,
-        event_id: str | None = None,
+        event_id: str | None = None, invocation_id: str | None = None,
     ) -> list[str]:
         event_id = event_id or str(uuid.uuid4())
         artifact_refs = [
@@ -191,11 +255,18 @@ class CapabilityObservationProjector:
                 "artifact_refs": artifact_refs,
                 "metadata": output.metadata,
             },
+            invocation_id=invocation_id,
         )
         return [detail.detail_id] if detail else []
 
     def _tool_error(
-        self, spec: CapabilitySpec, *, decision: str, error: str, event_id: str | None = None,
+        self,
+        spec: CapabilitySpec,
+        *,
+        decision: str,
+        error: str,
+        event_id: str | None = None,
+        invocation_id: str | None = None,
     ) -> list[str]:
         event_id = event_id or str(uuid.uuid4())
         detail = self._observation.record_detail(
@@ -207,11 +278,13 @@ class CapabilityObservationProjector:
                 "status": decision,
                 "error": error,
             },
+            invocation_id=invocation_id,
         )
         return [detail.detail_id] if detail else []
 
     def _artifact_previews(
         self, spec: CapabilitySpec, output: CapabilityResult, *, event_id: str | None = None,
+        invocation_id: str | None = None,
     ) -> list[str]:
         event_id = event_id or str(uuid.uuid4())
         detail_refs: list[str] = []
@@ -223,7 +296,37 @@ class CapabilityObservationProjector:
                     "capability": spec.name,
                     "artifact": artifact,
                 },
+                invocation_id=invocation_id,
             )
             if detail:
                 detail_refs.append(detail.detail_id)
         return detail_refs
+
+    def _detail_capture(self, detail_refs: list[str]) -> str:
+        if detail_refs:
+            return "captured"
+        return getattr(self._observation, "unavailable_reason", None) or "projection_failed"
+
+
+def _provider_invocation_id(*values: Any) -> str | None:
+    """Read one provider id through nested capability/result shapes."""
+
+    for value in values:
+        if value is None:
+            continue
+        direct = getattr(value, "invocation_id", None)
+        if direct:
+            return str(direct)
+        if isinstance(value, dict):
+            direct = value.get("invocation_id")
+            if direct:
+                return str(direct)
+        nested = getattr(value, "output", None)
+        if nested is not None and nested is not value:
+            found = _provider_invocation_id(nested)
+            if found:
+                return found
+        metadata = getattr(value, "metadata", None)
+        if isinstance(metadata, dict) and metadata.get("invocation_id"):
+            return str(metadata["invocation_id"])
+    return None

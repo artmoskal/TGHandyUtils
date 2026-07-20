@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 import signal
 import time
-from typing import Any
+from typing import Any, Callable
 
 from ai_workflow_engine.execution_window import (
     invocation_window_remaining_s,
@@ -45,6 +45,9 @@ class ExternalProcessRequest:
     # v0.10.1: OPTIONAL per-request I/O policy; it may only NARROW the capability's caps
     # (never enlarge or select unlimited).
     io_limits: ProcessIOLimits | dict[str, Any] | None = None
+    # Optional bounded protocol observer. The process owner still drains/caps stdout and
+    # owns kill/reap; the callback cannot alter process control.
+    stdout_observer: Callable[[bytes], None] | None = None
 
 
 class ExternalProcessCapability:
@@ -130,7 +133,10 @@ class ExternalProcessCapability:
         # only a bounded head+tail per stream, counting every source byte.
         io_limits = self.io_limits.narrow(request.io_limits)
         stdout_task = asyncio.create_task(
-            BoundedStreamCollector(io_limits.max_stdout_bytes).collect(process.stdout)
+            BoundedStreamCollector(
+                io_limits.max_stdout_bytes,
+                observer=request.stdout_observer,
+            ).collect(process.stdout)
         )
         stderr_task = asyncio.create_task(
             BoundedStreamCollector(io_limits.max_stderr_bytes).collect(process.stderr)

@@ -147,7 +147,6 @@ class OpenAIImageGenerator:
                         "reference_image_count": len(request.reference_image_paths),
                         "workflow_id": request.workflow_id,
                     },
-                    config=self.config,
                 )
             return GeneratedImage(
                 path=path,
@@ -185,7 +184,6 @@ class OpenAIImageGenerator:
                         "reference_image_count": len(request.reference_image_paths),
                         "workflow_id": request.workflow_id,
                     },
-                    config=self.config,
                 )
             if isinstance(exc, ImageGenerationError):
                 raise
@@ -261,7 +259,6 @@ class GeminiImageGenerator:
                         "reference_image_count": len(request.reference_image_paths),
                         "workflow_id": request.workflow_id,
                     },
-                    config=self.config,
                 )
 
             logger.info(
@@ -311,7 +308,6 @@ class GeminiImageGenerator:
                         "reference_image_count": len(request.reference_image_paths),
                         "workflow_id": request.workflow_id,
                     },
-                    config=self.config,
                 )
             if isinstance(exc, ImageGenerationError):
                 raise
@@ -418,7 +414,7 @@ class ChatGptBrowserImageGenerator:
 
     Talks to the always-on control server (`POST /generate_image`) that drives a logged-in
     ChatGPT browser — image cost is covered by the ChatGPT subscription, so usage is recorded
-    as ``subscription_notional`` with ``cost_known=false``, never phantom metered USD.
+    as ``subscription_notional`` with typed unknown pricing, never phantom metered USD.
 
     Service contract handled here (CHATGPT_API.md, FR-1 shipped 2026-07-02):
     - Reference images (style/subject conditioning) are sent as data URLs; the service
@@ -527,7 +523,6 @@ class ChatGptBrowserImageGenerator:
                     "bytes": data.get("bytes"),
                     "reference_images_used": data.get("reference_images_used"),
                     "cost_class": "subscription_notional",
-                    "cost_known": False,
                 },
                 estimated_usd=None,
                 request_id=None,
@@ -619,10 +614,8 @@ class ChatGptBrowserImageGenerator:
         error: str | None,
         source_url: str,
     ) -> None:
-        if not getattr(self.config, "WORKFLOW_USAGE_TRACKING_ENABLED", True):
-            return
-        # Subscription browser session: no per-call price exists. cost_known=false — the run
-        # stays cost-honest instead of reporting phantom $0 metered spend.
+        # Subscription browser session: no per-call price exists. The central typed pricing
+        # result stays unknown instead of reporting phantom $0 metered spend.
         record_usage_event(
             WorkflowUsageEvent(
                 provider="chatgpt_browser",
@@ -636,8 +629,6 @@ class ChatGptBrowserImageGenerator:
                 success=success,
                 error=error,
                 metadata={
-                    "cost_known": False,
-                    "cost_source": "unknown",
                     "size": request.size,
                     "output_format": request.output_format,
                     "reference_image_count": len(request.reference_image_paths),

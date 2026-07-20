@@ -175,7 +175,6 @@ class AnkiCardService:
             node="render_text_or_cloze",
             model=model_name,
             metadata={"card_type": "render"},
-            config=self.config,
             # the backend registry knows whether this model is metered or rides a
             # subscription — phantom metered $0 would break cost honesty.
             cost_class=llm_cost_class(model_name, self.config),

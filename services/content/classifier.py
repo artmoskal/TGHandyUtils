@@ -53,7 +53,6 @@ Answer (one word - reminder or anki):"""
                 ],
                 node="intent_classifier",
                 model=self._model_name(),
-                config=self.config,
             )
             answer = (resp.content or "").strip().lower()
             if "anki" in answer or "flash" in answer or "card" in answer:

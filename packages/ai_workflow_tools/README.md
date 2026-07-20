@@ -129,8 +129,10 @@ agent_result = result.output
 ```
 
 `subscription_mode=True` records `WorkflowUsageEvent.cost_class="subscription_notional"` and fills
-`notional_usd` when the CLI envelope reports a cost. If the CLI cannot report cost, usage remains
-honest with `cost_known=false` metadata instead of a fake zero.
+typed normalized usage from Claude/Codex structured output. Claude's provider-reported total wins;
+Codex counters are priced by the engine's versioned public/proxy catalog. If usage or a matching
+rate is unavailable, `notional_pricing.source="unknown"` carries a closed reason instead of a fake
+zero. This is API-equivalent plan value, not billed subscription spend.
 
 ## Console Quickstart
 

@@ -93,6 +93,33 @@ def test_is_plain_llm_callable_detection():
     assert not is_plain_llm_callable(None)
 
 
+async def test_cancelling_an_ordinary_blocking_model_still_waits_for_its_worker():
+    import threading
+    from types import SimpleNamespace
+
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockingModel:
+        def invoke(self, _messages):
+            started.set()
+            assert release.wait(timeout=5)
+            return SimpleNamespace(
+                content='{"label":"done"}',
+                usage_metadata={},
+                response_metadata={},
+            )
+
+    task = asyncio.create_task(_node(BlockingModel()).run({"item": "x"}))
+    assert await asyncio.to_thread(started.wait, 2)
+    task.cancel()
+    await asyncio.sleep(0.05)
+    assert not task.done(), "an uninterruptible model thread must settle before cancellation"
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=2)
+
+
 async def test_llm_request_tool_calling_round_trip_and_legacy_single_turn_shape():
     class EchoClient:
         def __init__(self):
@@ -189,7 +216,7 @@ async def test_structured_node_runs_against_plain_callable():
 
 
 async def test_usage_event_records_tokens_and_price_table_cost():
-    # Model present in the engine price table -> cost estimated from tokens (cost_source=price_table).
+    # Metered API calls keep their billed estimate separate from subscription notional value.
     client = FakeOllamaClient(model="gpt-5.4-mini", tokens=(1000, 500), usd=None)
     engine = _engine(client)
 
@@ -200,13 +227,12 @@ async def test_usage_event_records_tokens_and_price_table_cost():
     event = events[0]
     assert event.provider == "custom"
     assert event.total_tokens == 1500
-    assert event.metadata["cost_source"] == "price_table"
-    assert event.metadata["cost_known"] is True
     assert event.estimated_usd and event.estimated_usd > 0
+    assert event.notional_pricing is None
 
 
 async def test_unknown_cost_is_marked_not_phantom_zero():
-    # RC2: unknown local model, no cost reported -> estimated_usd stays None + cost_known=False.
+    # Unknown metered cost stays None; absence is never converted into a fake zero.
     client = FakeOllamaClient(model="qwen2.5vl:3b", tokens=(0, 0), usd=None)
     engine = _engine(client)
 
@@ -214,8 +240,7 @@ async def test_unknown_cost_is_marked_not_phantom_zero():
 
     event = [e for e in result.usage.events if e.node == "g4_node"][0]
     assert event.estimated_usd is None
-    assert event.metadata["cost_known"] is False
-    assert event.metadata["cost_source"] == "unknown"
+    assert event.notional_pricing is None
     # And the run summary does not pretend the run was free-with-authority.
     assert result.usage.estimated_usd is None
 
@@ -228,7 +253,7 @@ async def test_callable_reported_cost_wins():
 
     event = [e for e in result.usage.events if e.node == "g4_node"][0]
     assert event.estimated_usd == 0.0123
-    assert event.metadata["cost_source"] == "callable"
+    assert event.notional_pricing is None
 
 
 async def test_capability_timeout_enforced_on_slow_callable():

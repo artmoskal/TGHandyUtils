@@ -4,11 +4,27 @@ These models are intentionally product-agnostic. Product-specific graphs keep th
 but use these goal/trace/artifact records so workflow execution is observable and debuggable.
 """
 
+import math
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictFloat,
+    field_validator,
+    model_validator,
+)
+
+from ai_workflow_engine.usage_contract import (
+    NormalizedTokenUsage,
+    NotionalPricingResult,
+    ProviderInvocationId,
+    UsageError,
+    calculate_notional_amount,
+)
 
 
 CapabilityKind = Literal[
@@ -48,6 +64,12 @@ ObservationDetailKind = Literal[
     "memory_projection",
 ]
 ObservationRedactionState = Literal["none", "redacted", "digest_only"]
+DetailCaptureState = Literal[
+    "captured",
+    "capture_mode_off",
+    "detail_sink_unavailable",
+    "projection_failed",
+]
 EvaluationAction = Literal[
     "accept",
     "repair",
@@ -261,6 +283,8 @@ class WorkflowTraceEvent(BaseModel):
     error: Optional[str] = None
     artifacts: List[str] = Field(default_factory=list)
     elapsed_ms: Optional[int] = None
+    invocation_id: Optional[ProviderInvocationId] = None
+    detail_capture: Optional[DetailCaptureState] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
     event_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     detail_refs: List[str] = Field(default_factory=list)
@@ -278,6 +302,7 @@ class ObservationDetail(BaseModel):
     event_id: str
     run_id: Optional[str] = None
     sequence: Optional[int] = None
+    invocation_id: Optional[ProviderInvocationId] = None
     kind: ObservationDetailKind
     privacy: PrivacyLevel = "internal"
     redaction_state: ObservationRedactionState = "digest_only"
@@ -305,6 +330,7 @@ class WorkflowUsageEvent(BaseModel):
     node: str
     run_id: Optional[str] = None
     sequence: Optional[int] = None
+    invocation_id: Optional[ProviderInvocationId] = None
     model: str = ""
     attempt: int = 1
     input_tokens: int = 0
@@ -312,6 +338,13 @@ class WorkflowUsageEvent(BaseModel):
     total_tokens: int = 0
     input_token_details: Dict[str, Any] = Field(default_factory=dict)
     output_token_details: Dict[str, Any] = Field(default_factory=dict)
+    normalized_usage: Optional["NormalizedTokenUsage"] = None
+    usage_error: Optional["UsageError"] = None
+    usage_diagnostic: Optional[str] = Field(default=None, max_length=500)
+    provider_reported_notional_usd: Optional[StrictFloat] = Field(
+        default=None, ge=0, allow_inf_nan=False
+    )
+    notional_pricing: Optional["NotionalPricingResult"] = None
     estimated_usd: Optional[float] = None
     notional_usd: Optional[float] = None
     request_id: Optional[str] = None
@@ -320,6 +353,107 @@ class WorkflowUsageEvent(BaseModel):
     error: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
     event_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+
+    @model_validator(mode="after")
+    def _normalized_counters_match_scalar_projection(self) -> "WorkflowUsageEvent":
+        if self.cost_class == "subscription_notional" and self.estimated_usd is not None:
+            raise ValueError(
+                "subscription_notional usage cannot carry metered estimated_usd"
+            )
+        if self.cost_class == "metered" and (
+            self.notional_usd is not None
+            or self.provider_reported_notional_usd is not None
+            or self.notional_pricing is not None
+        ):
+            raise ValueError(
+                "metered usage cannot carry subscription notional pricing"
+            )
+        pricing = self.notional_pricing
+        if self.cost_class == "subscription_notional":
+            if pricing is None:
+                if self.notional_usd is not None:
+                    raise ValueError(
+                        "subscription notional_usd requires typed notional_pricing provenance"
+                    )
+            else:
+                if pricing.amount_usd is None:
+                    if self.notional_usd is not None:
+                        raise ValueError(
+                            "unknown subscription pricing cannot carry notional_usd"
+                        )
+                elif (
+                    self.notional_usd is None
+                    or not math.isclose(
+                        self.notional_usd,
+                        pricing.amount_usd,
+                        rel_tol=1e-12,
+                        abs_tol=1e-15,
+                    )
+                ):
+                    raise ValueError(
+                        "subscription notional_usd must match notional_pricing amount"
+                    )
+                if pricing.source == "provider_reported":
+                    if (
+                        self.provider_reported_notional_usd is None
+                        or pricing.amount_usd is None
+                        or not math.isclose(
+                            self.provider_reported_notional_usd,
+                            pricing.amount_usd,
+                            rel_tol=1e-12,
+                            abs_tol=1e-15,
+                        )
+                    ):
+                        raise ValueError(
+                            "provider-reported pricing must match the provider-reported amount"
+                        )
+                elif self.provider_reported_notional_usd is not None:
+                    raise ValueError(
+                        "provider-reported amount requires provider-reported pricing"
+                    )
+                if pricing.rate is not None:
+                    if self.normalized_usage is None:
+                        raise ValueError(
+                            "configured pricing requires normalized token usage"
+                        )
+                    if (
+                        pricing.rate.provider != self.provider
+                        or not self.model.startswith(pricing.rate.model_prefix)
+                    ):
+                        raise ValueError(
+                            "configured pricing rate must match the event provider and model"
+                        )
+                    expected = calculate_notional_amount(
+                        self.normalized_usage,
+                        pricing.rate,
+                    )
+                    if (
+                        pricing.amount_usd is None
+                        or not math.isclose(
+                            pricing.amount_usd,
+                            expected,
+                            rel_tol=1e-12,
+                            abs_tol=1e-15,
+                        )
+                    ):
+                        raise ValueError(
+                            "configured pricing amount must match its token/rate basis"
+                        )
+        usage = self.normalized_usage
+        if usage is None:
+            return self
+        if self.usage_error is not None:
+            raise ValueError("valid normalized_usage cannot carry usage_error")
+        expected_total = usage.raw_input_tokens + usage.raw_output_tokens
+        if (
+            self.input_tokens != usage.raw_input_tokens
+            or self.output_tokens != usage.raw_output_tokens
+            or self.total_tokens != expected_total
+        ):
+            raise ValueError(
+                "usage event scalar token totals must match normalized_usage"
+            )
+        return self
 
 
 def _contains_raw_bytes(value: Any) -> bool:

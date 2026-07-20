@@ -11,6 +11,7 @@ from typing import Any, Mapping, Optional
 
 from ai_workflow_engine.models import (
     ObservationDetail,
+    WorkflowUsageEvent,
 )
 from ai_workflow_engine.workflow import END, WorkflowDefinition
 from ai_workflow_viewer.assets import load_asset_text
@@ -55,6 +56,7 @@ def observation_graph_to_html(
     graph: ObservationGraph,
     *,
     title: Optional[str] = None,
+    usage_events: Optional[list[WorkflowUsageEvent]] = None,
 ) -> str:
     """Render a self-contained static runtime graph with Mermaid plus timeline/detail panes."""
 
@@ -68,6 +70,7 @@ def observation_graph_to_html(
     detail_rows = "\n".join(_detail_row(detail) for detail in graph.details.values()) or (
         '<p class="muted">No detail records captured.</p>'
     )
+    economics = _usage_pricing_html(usage_events or [])
     return f"""<!DOCTYPE html>
 <html>
 <head>
@@ -86,6 +89,7 @@ def observation_graph_to_html(
 <a href="#investigation">Investigation</a>
 <a href="#graph">Mermaid</a>
 <a href="#nodes">Nodes</a>
+<a href="#economics">Economics</a>
 <a href="#timeline">Timeline</a>
 <a href="#details">Raw Details</a>
 </nav>
@@ -108,6 +112,7 @@ def observation_graph_to_html(
 <tbody>{node_rows}</tbody>
 </table>
 </section>
+{economics}
 <section id="timeline">
 <h2>Timeline</h2>
 <table>
@@ -131,6 +136,80 @@ mermaid.initialize({{ startOnLoad: true }});
 </body>
 </html>
 """
+
+
+def _usage_pricing_html(events: list[WorkflowUsageEvent]) -> str:
+    rows: list[str] = []
+    for event in events:
+        usage = event.normalized_usage
+        pricing = event.notional_pricing
+        if event.cost_class == "subscription_notional":
+            if pricing is None or not pricing.known:
+                amount = "unknown"
+                source = (
+                    _pricing_label(pricing.unknown_reason)
+                    if pricing is not None
+                    else _pricing_label(event.usage_error or "pricing_not_recorded")
+                )
+            else:
+                amount = f"${_format_precise_usd(pricing.amount_usd)} notional"
+                source = (
+                    f"{_pricing_label(pricing.source)} · {pricing.catalog_version}"
+                    + (
+                        f" · {pricing.rate.rate_version}"
+                        if pricing.rate is not None
+                        else ""
+                    )
+                )
+        elif event.estimated_usd is None:
+            amount = "unknown"
+            source = "metered estimate not recorded"
+        else:
+            amount = f"${_format_precise_usd(event.estimated_usd)} metered"
+            source = "metered provider/rate estimate"
+
+        quantities = "not recorded"
+        if usage is not None:
+            quantities = (
+                f"{usage.uncached_input_tokens} uncached input · "
+                f"{usage.cache_read_input_tokens} cached input · "
+                f"{usage.cache_creation_input_tokens} cache-created input · "
+                f"{usage.output_tokens} output "
+                f"({usage.reasoning_output_tokens} reasoning output)"
+            )
+        rows.append(
+            "<tr>"
+            f"<td>{html.escape(str(event.invocation_id or 'not recorded'))}</td>"
+            f"<td>{html.escape(event.node)}</td>"
+            f"<td>{html.escape(event.provider)}</td>"
+            f"<td>{html.escape(event.model or 'not recorded')}</td>"
+            f"<td>{html.escape('completed' if event.success else 'incomplete')}</td>"
+            f"<td>{html.escape(f'{event.elapsed_ms} ms' if event.elapsed_ms is not None else 'not recorded')}</td>"
+            f"<td>{html.escape(quantities)}</td>"
+            f"<td>{html.escape(amount)}</td>"
+            f"<td>{html.escape(str(source))}</td>"
+            "</tr>"
+        )
+    body = "\n".join(rows) or (
+        '<tr><td colspan="9" class="muted">No usage events recorded.</td></tr>'
+    )
+    return f"""<section id="economics">
+<h2>Economics</h2>
+<table>
+<thead><tr><th>Invocation</th><th>Node</th><th>Provider</th><th>Model</th><th>Outcome</th><th>Elapsed</th><th>Token basis</th><th>Amount</th><th>Source</th></tr></thead>
+<tbody>{body}</tbody>
+</table>
+</section>"""
+
+
+def _pricing_label(value: str) -> str:
+    return value.replace("_", " ")
+
+
+def _format_precise_usd(value: float | None) -> str:
+    if value is None:
+        return "unknown"
+    return f"{value:.9f}".rstrip("0").rstrip(".")
 
 
 # Only inert raster formats are ever rendered inline (exported <img> or served inline
@@ -246,6 +325,7 @@ def observation_group_to_html(
         group.definition,
         graph,
         title=title or f"Workflow observation: {group.definition.workflow_id} (grouped run)",
+        usage_events=group.usage_events,
     )
     cards = "\n".join(
         (

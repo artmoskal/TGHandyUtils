@@ -1,6 +1,9 @@
 # MageQA Engine Adoption Guide
 
 Status: **`engine-v0.11.6` is the current immutable release.**
+The pending v0.11.7 candidate closes MageQA's CLI economics request. Do not repin until its
+immutable tag and complete `0.11.7 / 0.5.2 / 0.3.2` release directory exist and the E0 canary below
+passes.
 MageQA's two durable-registration race canaries fail on `engine-v0.11.5`. MageQA must stay on its
 existing pin and keep its fork until the v0.11.6 E0
 canaries pass against the immutable tag. The five historical E0 blockers (planned
@@ -47,14 +50,15 @@ a defect.
 
 | Package | MageQA use |
 |---|---|
-| `ai-workflow-engine==0.11.6` | Required orchestration/runtime |
-| `ai-workflow-tools==0.5.1` | CLI agents, `claude -p`/`codex exec`, tool catalog, media helpers |
-| `ai-workflow-viewer==0.3.1` | Low-level engine run investigation and bundle rendering |
+| `ai-workflow-engine==0.11.7` | Required orchestration/runtime |
+| `ai-workflow-tools==0.5.2` | CLI agents, `claude -p`/`codex exec`, tool catalog, media helpers |
+| `ai-workflow-viewer==0.3.2` | Low-level engine run investigation and bundle rendering |
 
-> **Current matrix:** `engine-v0.11.6` + `ai-workflow-tools==0.5.1` + `ai-workflow-viewer==0.3.1`
-> (tools/viewer require `ai-workflow-engine>=0.11,<0.12`). The previous line
-> remains available at its historical tag for historical data; the lines never mix in one
-> environment. Verify the complete published release directory before installing any wheel.
+> **Candidate matrix:** `engine-v0.11.7` + `ai-workflow-tools==0.5.2` +
+> `ai-workflow-viewer==0.3.2` (tools/viewer require
+> `ai-workflow-engine>=0.11.7,<0.12`). Do not install this matrix until `engine-v0.11.7` is cut.
+> The previous line remains available at its historical tag for historical data; the lines never
+> mix in one environment.
 
 
 The MageQA Next.js dashboard remains product-owned. It may link/embed/project engine bundle data, but
@@ -170,7 +174,10 @@ MageQA adoption is complete when its repository proves:
 6. **Fact ledger:** refuted/inconclusive claims cannot become final findings.
 7. **Partial isolation:** one failed instrument remains visible without erasing successful evidence.
 8. **Cost honesty:** metered, subscription-notional, unknown, retries, and remaining budget project
-   separately.
+   separately. For CLI workers, assert Claude provider-reported notional and Codex normalized
+   uncached/cache/reasoning quantities plus configured catalog/rate versions survive result,
+   cancellation, bundle/group read, and viewer. Reasoning is a subset of output and is not priced
+   twice.
 9. **Safety:** prohibited external effects are denied before handler spawn.
 10. **Observation/dashboard:** a real audit exposes plans, prompts, tools, screenshots, costs,
     blockers, findings, and report without a duplicate runtime.
@@ -187,6 +194,11 @@ MageQA adoption is complete when its repository proves:
     continuation; abrupt process death plus an exact retry recovers the same stored receipt, while
     cancellation during an ownership-ambiguous retry fails loudly rather than revoking a handle
     that another caller may already hold or reporting false clean settlement.
+16. **Subscription pricing truth:** one real or hermetic Codex JSONL completion uses the final
+    cumulative `turn.completed`, preserves response text from the result file, and records one
+    notional event. Missing/malformed usage or an unmatched model remains typed unknown. The
+    notional is API-equivalent plan value, never billed spend or a substitute for call/token/time
+    caps.
 
 Engine-side examples: `ai_workflow_engine.examples.run_toy_site_audit_pilot` and the paid
 qualification's MageQA authored-flow scenario.

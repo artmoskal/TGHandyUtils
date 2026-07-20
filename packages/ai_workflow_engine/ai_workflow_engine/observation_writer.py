@@ -35,6 +35,7 @@ from ai_workflow_engine.observation_contract import (
     assert_plain_identity,
     resolve_child_dir,
 )
+from ai_workflow_engine.observation_integrity import validate_provider_invocation_links
 from ai_workflow_engine.observation_retention import prune_observation_bundles
 from ai_workflow_engine.usage_events import JsonlUsageSink, UsageSink
 from ai_workflow_engine.workflow import WorkflowDefinition
@@ -182,6 +183,11 @@ class ObservationRunBundle:
                 "(v0.11, manifest row M9) — open the bundle with an ObservationSegment "
                 "(open_observation_run_bundle supplies the initial segment automatically)"
             )
+        validate_provider_invocation_links(
+            _load_jsonl_models(self.trace_path, WorkflowTraceEvent),
+            _load_jsonl_models(self.detail_path, ObservationDetail),
+            _load_jsonl_models(self.usage_path, WorkflowUsageEvent),
+        )
         definition_json = definition.model_dump_json()
         (self.path / "definition.json").write_text(definition_json, encoding="utf-8")
         usage_events = _usage_events(usage)
@@ -399,6 +405,16 @@ def _line_count(path: Path) -> int:
     if not path.exists():
         return 0
     return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+
+
+def _load_jsonl_models(path: Path, model: type[Any]) -> list[Any]:
+    if not path.exists():
+        return []
+    return [
+        model.model_validate_json(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
 
 
 def _sum_cost(values: Iterable[float | None]) -> float | None:

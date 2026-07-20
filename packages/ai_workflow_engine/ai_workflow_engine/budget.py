@@ -45,6 +45,8 @@ class WorkflowUsageContext:
     budget: WorkflowBudget
     # Typed as Any: the UsageSink protocol lives in usage_events (avoids a module cycle).
     usage_sink: Optional[Any] = None
+    # Typed as Any to keep the budget leaf independent from pricing implementation.
+    notional_pricing_policy: Optional[Any] = None
 
     @property
     def worker_call_count(self) -> int:
@@ -180,4 +182,3 @@ def _enforce_per_call_budget(event: WorkflowUsageEvent, context: WorkflowUsageCo
             f"Workflow max_estimated_usd_per_call budget exceeded after node {event.node}: "
             f"${event.estimated_usd:.6f} > ${max_usd:.6f}"
         )
-

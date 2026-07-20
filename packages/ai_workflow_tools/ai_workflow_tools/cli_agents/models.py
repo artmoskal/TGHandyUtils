@@ -5,6 +5,11 @@ from __future__ import annotations
 from typing import Any, Dict, List, Literal, Optional
 
 from ai_workflow_engine.models import EvidenceRef
+from ai_workflow_engine.usage_contract import (
+    NormalizedTokenUsage,
+    ProviderInvocationId,
+    UsageError,
+)
 from pydantic import BaseModel, Field
 
 
@@ -56,12 +61,14 @@ class CliAgentRequest(BaseModel):
     subscription_mode: bool = True
     expect_json_result: bool = True
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    invocation_id: Optional[ProviderInvocationId] = None
 
 
 class CliAgentResult(BaseModel):
     """Structured result returned by a CLI-agent capability."""
 
     status: Literal["completed", "truncated", "error"]
+    invocation_id: ProviderInvocationId
     text: str = ""
     parsed: Optional[Dict[str, Any]] = None
     artifacts: List[EvidenceRef] = Field(default_factory=list)
@@ -73,8 +80,14 @@ class CliAgentResult(BaseModel):
     output_tokens: int = 0
     cache_read_tokens: int = 0
     cache_creation_tokens: int = 0
+    reasoning_output_tokens: int = 0
+    normalized_usage: Optional[NormalizedTokenUsage] = None
+    usage_error: Optional[UsageError] = None
+    usage_diagnostic: Optional[str] = Field(default=None, max_length=500)
+    provider_reported_notional_usd: Optional[float] = None
     num_turns: Optional[int] = None
     duration_ms: Optional[int] = None
+    elapsed_ms: Optional[int] = Field(default=None, ge=0)
     notional_cost_usd: Optional[float] = None
     returncode: Optional[int] = None
     stderr_tail: str = ""

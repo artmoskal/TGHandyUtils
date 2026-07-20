@@ -35,7 +35,6 @@ settings:
   workflow_max_image_calls_per_run: 1
   workflow_max_voice_calls_per_run: 1
   workflow_max_estimated_usd_per_run: 0
-  workflow_model_price_overrides_json: ""
   database_timeout: 30
   default_task_platform: todoist
   scheduler_interval: 20

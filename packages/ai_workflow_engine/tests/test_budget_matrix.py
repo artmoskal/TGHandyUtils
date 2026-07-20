@@ -53,15 +53,16 @@ class FakeStructuredClient:
 
 
 class FakeLangChainUsageLLM:
-    def __init__(self):
+    def __init__(self, *, model_name: str = "unit-model"):
         self.messages = []
+        self.model_name = model_name
 
     def invoke(self, messages):
         self.messages.append(messages)
         return SimpleNamespace(
             content="ok",
             usage_metadata={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
-            response_metadata={"model_name": "unit-model", "id": "req-unit"},
+            response_metadata={"model_name": self.model_name, "id": "req-unit"},
         )
 
 
@@ -147,8 +148,8 @@ def test_subscription_notional_callable_usage_does_not_debit_metered_budget():
     assert event.cost_class == "subscription_notional"
     assert event.estimated_usd is None
     assert event.notional_usd == 0.42
-    assert event.metadata["cost_known"] is True
-    assert event.metadata["cost_source"] == "subscription_notional"
+    assert event.notional_pricing is not None
+    assert event.notional_pricing.source == "provider_reported"
 
 
 def test_subscription_notional_metered_chat_does_not_debit_metered_budget():
@@ -158,12 +159,6 @@ def test_subscription_notional_metered_chat_does_not_debit_metered_budget():
         WorkflowBudget(max_estimated_usd=0, max_estimated_usd_per_call=0),
     )
     llm = FakeLangChainUsageLLM()
-    config = SimpleNamespace(
-        WORKFLOW_USAGE_TRACKING_ENABLED=True,
-        WORKFLOW_MODEL_PRICE_OVERRIDES_JSON=(
-            '{"unit-model": {"input_per_1m": 1000000, "output_per_1m": 1000000}}'
-        ),
-    )
 
     with workflow_usage_scope(usage_context):
         invoke_metered_chat(
@@ -171,7 +166,6 @@ def test_subscription_notional_metered_chat_does_not_debit_metered_budget():
             [HumanMessage(content="hello")],
             node="subscription_chat",
             model="unit-model",
-            config=config,
             cost_class="subscription_notional",
             notional_usd=0.42,
         )
@@ -183,6 +177,29 @@ def test_subscription_notional_metered_chat_does_not_debit_metered_budget():
     assert event.cost_class == "subscription_notional"
     assert event.estimated_usd is None
     assert event.notional_usd == 0.42
+
+
+def test_post_call_metered_budget_refusal_records_successful_provider_call_once():
+    summary = WorkflowUsageSummary()
+    usage_context = WorkflowUsageContext(
+        WorkflowRunContext(workflow_id="wf-post-call", workflow_type="budget"),
+        summary,
+        WorkflowBudget(max_estimated_usd=0),
+    )
+    llm = FakeLangChainUsageLLM(model_name="gpt-5.4")
+
+    with workflow_usage_scope(usage_context):
+        with pytest.raises(WorkflowBudgetExceeded, match="estimated cost exceeded"):
+            invoke_metered_chat(
+                llm,
+                [HumanMessage(content="hello")],
+                node="post_call_budget",
+                model="gpt-5.4",
+            )
+
+    assert len(llm.messages) == 1
+    assert len(summary.events) == 1
+    assert summary.events[0].success is True
 
 
 async def test_profile_max_worker_calls_blocks_external_after_chat_before_handler():
@@ -350,7 +367,6 @@ def test_usage_tracking_flag_no_longer_bypasses_budget_checks():
                 llm,
                 [HumanMessage(content="hi")],
                 node="flag_off_node",
-                config=flag_off_config,
             )
 
     assert llm.messages == [], "budget must deny BEFORE the provider is invoked"

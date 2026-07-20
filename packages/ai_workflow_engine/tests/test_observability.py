@@ -22,8 +22,10 @@ from ai_workflow_engine import (
 from ai_workflow_engine.engine import InMemoryDetailSink, JsonlDetailSink
 from ai_workflow_engine.observability_capture import byte_free
 from ai_workflow_engine.observation_bundle import open_observation_run_bundle, prune_observation_bundles
+from ai_workflow_engine.observation_integrity import validate_provider_invocation_links
 from ai_workflow_engine.usage import invoke_metered_chat
 from ai_workflow_engine.usage_events import record_usage_event
+from ai_workflow_engine.usage_contract import NotionalPricingResult
 from ai_workflow_viewer import build_observation_graph, observation_graph_to_html, render_runtime_timeline
 
 pytestmark = pytest.mark.unit
@@ -306,7 +308,6 @@ async def test_invoke_metered_chat_records_prompt_response_details_for_direct_ca
             node="render",
             model="direct-unit",
             metadata={"producer": "unit"},
-            config=SimpleNamespace(WORKFLOW_USAGE_TRACKING_ENABLED=True),
         )
         return {"text": output.content}
 
@@ -344,8 +345,13 @@ def test_observation_graph_keeps_metered_and_notional_costs_separate():
                 operation="chat",
                 cost_class="subscription_notional",
                 total_tokens=20,
-                estimated_usd=99.0,
                 notional_usd=0.42,
+                provider_reported_notional_usd=0.42,
+                notional_pricing=NotionalPricingResult(
+                    source="provider_reported",
+                    amount_usd=0.42,
+                    catalog_version="provider-reported",
+                ),
                 metadata={"run_id": "run-cost"},
             ),
         ],
@@ -359,7 +365,6 @@ def test_observation_graph_keeps_metered_and_notional_costs_separate():
     html = observation_graph_to_html(definition, graph)
     assert "metered $0.2500" in html
     assert "notional $0.4200" in html
-    assert "$99.0000" not in html
 
 
 def test_observation_graph_filters_selected_run_and_referenced_details():
@@ -449,6 +454,149 @@ def test_detail_projection_failure_still_records_bare_trace_event(monkeypatch, c
     event, detail = result
     assert detail is None
     assert event.detail_refs == []
+    assert event.detail_capture == "projection_failed"
     assert [e.node for e in trace_sink.events] == ["obs_node"]
     assert len(detail_sink.details) == 0
     assert any("bare trace event" in r.getMessage() for r in caplog.records)
+
+
+def test_observation_capture_records_why_provider_details_are_absent():
+    from ai_workflow_engine.observability_capture import ObservationCapture
+
+    disabled_trace = InMemoryTraceSink()
+    disabled = ObservationCapture(disabled_trace, mode="off")
+    disabled.record(
+        node="provider",
+        phase="provider:request",
+        kind="rendered_prompt",
+        payload={"prompt": "hidden"},
+        invocation_id="inv-capture-off",
+    )
+
+    unavailable_trace = InMemoryTraceSink()
+    unavailable = ObservationCapture(unavailable_trace, mode="full")
+    unavailable.record(
+        node="provider",
+        phase="provider:request",
+        kind="rendered_prompt",
+        payload={"prompt": "hidden"},
+        invocation_id="inv-sink-unavailable",
+    )
+
+    assert disabled_trace.events[0].detail_capture == "capture_mode_off"
+    assert disabled_trace.events[0].detail_refs == []
+    assert unavailable_trace.events[0].detail_capture == "detail_sink_unavailable"
+    assert unavailable_trace.events[0].detail_refs == []
+
+
+def _linked_provider_records():
+    request = WorkflowTraceEvent(
+        node="provider",
+        phase="provider:request",
+        invocation_id="inv-link-test",
+        detail_capture="captured",
+        detail_refs=["detail-link-test"],
+    )
+    response = WorkflowTraceEvent(
+        node="provider",
+        phase="provider:response",
+        invocation_id="inv-link-test",
+        detail_capture="capture_mode_off",
+    )
+    detail = ObservationDetail(
+        detail_id="detail-link-test",
+        event_id=request.event_id,
+        invocation_id="inv-link-test",
+        kind="rendered_prompt",
+    )
+    usage = WorkflowUsageEvent(
+        node="provider",
+        operation="tool",
+        cost_class="subscription_notional",
+        invocation_id="inv-link-test",
+    )
+    return [request, response], [detail], [usage]
+
+
+def test_provider_invocation_integrity_accepts_one_complete_evidence_graph():
+    traces, details, usage = _linked_provider_records()
+
+    validate_provider_invocation_links(traces, details, usage)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("missing_usage", "exactly one usage event"),
+        ("duplicate_usage", "exactly one usage event"),
+        ("missing_request", "exactly one request trace"),
+        ("duplicate_request", "exactly one request trace"),
+        ("missing_response", "no response/tool-result trace"),
+        ("missing_capture_truth", "does not record detail_capture truth"),
+        ("missing_detail", "references missing detail"),
+        ("mismatched_detail", "trace/detail identity mismatch"),
+        ("wrong_detail_event", "does not belong to its referencing trace event"),
+        ("duplicate_detail_id", "duplicate detail_id"),
+        ("reused_detail", "referenced by more than one trace event"),
+        ("unreferenced_detail", "unreferenced details"),
+        ("all_links_removed", "missing its stable invocation_id"),
+    ],
+)
+def test_provider_invocation_integrity_rejects_broken_links(mutation, message):
+    traces, details, usage = _linked_provider_records()
+    if mutation == "missing_usage":
+        usage.clear()
+    elif mutation == "duplicate_usage":
+        usage.append(usage[0].model_copy())
+    elif mutation == "missing_request":
+        traces.pop(0)
+    elif mutation == "duplicate_request":
+        traces.append(
+            traces[0].model_copy(update={"event_id": "duplicate-request-event"})
+        )
+    elif mutation == "missing_response":
+        traces.pop()
+    elif mutation == "missing_capture_truth":
+        traces[0] = traces[0].model_copy(update={"detail_capture": None})
+    elif mutation == "missing_detail":
+        details.clear()
+    elif mutation == "mismatched_detail":
+        details[0] = details[0].model_copy(update={"invocation_id": "inv-other"})
+    elif mutation == "wrong_detail_event":
+        details[0] = details[0].model_copy(update={"event_id": traces[1].event_id})
+    elif mutation == "duplicate_detail_id":
+        details.append(
+            details[0].model_copy(update={"event_id": "duplicate-detail-event"})
+        )
+    elif mutation == "reused_detail":
+        traces[1] = traces[1].model_copy(
+            update={
+                "event_id": details[0].event_id,
+                "detail_capture": "captured",
+                "detail_refs": [details[0].detail_id],
+            }
+        )
+    elif mutation == "unreferenced_detail":
+        details.append(
+            ObservationDetail(
+                detail_id="detail-orphan",
+                event_id=traces[1].event_id,
+                invocation_id="inv-link-test",
+                kind="tool_result",
+            )
+        )
+    elif mutation == "all_links_removed":
+        traces = [
+            trace.model_copy(update={"invocation_id": None})
+            for trace in traces
+        ]
+        details = [
+            detail.model_copy(update={"invocation_id": None})
+            for detail in details
+        ]
+        usage[0] = usage[0].model_copy(
+            update={"provider": "codex_exec", "invocation_id": None}
+        )
+
+    with pytest.raises(ValueError, match=message):
+        validate_provider_invocation_links(traces, details, usage)

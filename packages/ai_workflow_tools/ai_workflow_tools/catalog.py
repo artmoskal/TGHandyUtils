@@ -127,7 +127,8 @@ TOOL_CATALOG: tuple[ToolEntry, ...] = (
         kind="llm_client",
         description=(
             "LLMCallable over the browser-driven ChatGPT HTTP service (subscription plan "
-            "value, cost_known=false); rejects images and tool turns loudly."
+            "value, typed unknown pricing when facts are unavailable); rejects images and "
+            "tool turns loudly."
         ),
         side_effects=("external_call",),
         builder=_build_chatgpt_browser_llm,

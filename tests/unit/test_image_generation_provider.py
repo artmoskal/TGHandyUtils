@@ -392,7 +392,9 @@ async def test_chatgpt_browser_generator_writes_artifact_and_notional_usage(tmp_
     event = summary.events[0]
     assert event.cost_class == "subscription_notional"
     assert event.estimated_usd is None and event.notional_usd is None
-    assert event.metadata["cost_known"] is False
+    assert event.notional_pricing is not None
+    assert event.notional_pricing.source == "unknown"
+    assert event.notional_pricing.unknown_reason == "usage_event_missing"
 
 
 @pytest.mark.unit

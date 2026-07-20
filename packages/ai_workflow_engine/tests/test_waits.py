@@ -2755,6 +2755,144 @@ def _local_seg_engine(bundle_dir):
     return builder.build()
 
 
+async def test_pricing_truth_survives_snapshot_resume_group_and_viewer(tmp_path):
+    from pydantic import BaseModel as _BM
+
+    from ai_workflow_engine import ObservationConfig, WorkflowEngineBuilder
+    from ai_workflow_engine.models import (
+        WorkflowGoal,
+        WorkflowUsageEvent,
+        WorkflowUsageSummary,
+    )
+    from ai_workflow_engine.usage_contract import (
+        CatalogNotionalPricingPolicy,
+        NormalizedTokenUsage,
+        NotionalPricingConfig,
+        NotionalRate,
+    )
+    from ai_workflow_engine.usage_events import record_usage_event
+    from ai_workflow_viewer import FileEventSource, observation_group_to_html
+
+    class Gate(_BM):
+        status: str
+        value: str = ""
+
+    def priced(node):
+        def emit(_context, payload):
+            record_usage_event(
+                WorkflowUsageEvent(
+                    provider="codex_exec",
+                    operation="tool",
+                    cost_class="subscription_notional",
+                    node=node,
+                    model="gpt-resume-test",
+                    input_tokens=120,
+                    output_tokens=30,
+                    total_tokens=150,
+                    normalized_usage=NormalizedTokenUsage(
+                        counter_schema="codex_inclusive",
+                        uncached_input_tokens=100,
+                        cache_read_input_tokens=20,
+                        cache_creation_input_tokens=0,
+                        non_reasoning_output_tokens=20,
+                        reasoning_output_tokens=10,
+                        raw_input_tokens=120,
+                        raw_output_tokens=30,
+                        raw_total_tokens=150,
+                    ),
+                )
+            )
+            return payload
+
+        return emit
+
+    def ask(context, _payload):
+        event = context.metadata.get("resume_event")
+        return (
+            Gate(status="pending")
+            if event is None
+            else Gate(status="answered", value=str(event))
+        )
+
+    policy = CatalogNotionalPricingPolicy(
+        NotionalPricingConfig(
+            catalog_version="resume-policy-v1",
+            rates=(
+                NotionalRate(
+                    provider="codex_exec",
+                    model_prefix="gpt-resume",
+                    rate_version="resume-rate-v1",
+                    source="configured_proxy_rate",
+                    uncached_input_per_1m=7.0,
+                    cached_input_per_1m=0.25,
+                    cache_creation_input_per_1m=7.0,
+                    output_per_1m=15.0,
+                ),
+            ),
+        )
+    )
+    engine = (
+        WorkflowEngineBuilder()
+        .with_observation(ObservationConfig(enabled=True, bundle_dir=str(tmp_path)))
+        .with_notional_pricing_policy(policy)
+        .register_capability("priced", priced("priced"))
+        .register_capability("priced_after", priced("priced_after"))
+        .register_capability("ask", ask)
+        .register_capability("finish", lambda _ctx, gate: {"answer": gate.value})
+        .register_workflow(
+            WorkflowBuilder("priced_resume")
+            .step("priced")
+            .human("ask", wait_policy=LocalWaitPolicy())
+            .step("priced_after")
+            .step("finish")
+            .build()
+        )
+        .build()
+    )
+    goal = WorkflowGoal(
+        workflow_type="priced_resume",
+        objective="preserve pricing",
+        metadata={"run_id": "priced-resume-run"},
+    )
+
+    first = await engine.run("priced_resume", {}, goal=goal)
+    assert first.status == "requires_user_input"
+    assert first.snapshot is not None
+    snapshot_usage = WorkflowUsageSummary.model_validate(first.snapshot.usage)
+    assert snapshot_usage.events[0].notional_pricing is not None
+    assert snapshot_usage.events[0].notional_pricing.amount_usd == pytest.approx(
+        0.001155
+    )
+    assert snapshot_usage.events[0].notional_pricing.catalog_version == "resume-policy-v1"
+
+    resumed = await engine.resume(first.snapshot.to_json(), "approved")
+    assert resumed.status == "completed"
+    assert resumed.output == {"answer": "approved"}
+    assert len(resumed.usage.events) == 2
+    assert {
+        event.notional_pricing.catalog_version for event in resumed.usage.events
+    } == {"resume-policy-v1"}
+    assert {
+        event.notional_pricing.rate.source for event in resumed.usage.events
+    } == {"configured_proxy_rate"}
+
+    group = FileEventSource(tmp_path).read_group("priced-resume-run")
+    assert len(group.usage_events) == 2
+    persisted = group.usage_events[0]
+    assert persisted.event_id == snapshot_usage.events[0].event_id
+    assert persisted.normalized_usage == snapshot_usage.events[0].normalized_usage
+    assert persisted.notional_pricing == snapshot_usage.events[0].notional_pricing
+    assert group.canonical_usage_totals["notional_usd"] == pytest.approx(0.00231)
+
+    page = observation_group_to_html(group)
+    assert page.count("$0.001155 notional") == 2
+    assert "configured proxy rate" in page
+    assert "resume-policy-v1" in page
+    assert "100 uncached input" in page
+    assert "20 cached input" in page
+    assert "10 reasoning output" in page
+
+
 async def test_double_local_resume_stays_readable_with_supersession(tmp_path):
     """F7 (permanent): resuming the SAME local snapshot twice (operator retry) must not
     corrupt the group — the LATEST committed attempt is canonical, the earlier one is

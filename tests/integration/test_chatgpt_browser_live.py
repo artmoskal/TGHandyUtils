@@ -143,7 +143,8 @@ async def test_live_image_generation_writes_a_real_png(tmp_path):
 
     event = summary.events[0]
     assert event.cost_class == "subscription_notional"
-    assert event.metadata["cost_known"] is False
+    assert event.notional_pricing is not None
+    assert event.notional_pricing.source == "unknown"
     assert summary.image_call_count == 1
 
 

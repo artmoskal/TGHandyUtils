@@ -36,7 +36,7 @@ Watch the local bot: `docker compose logs -f bot`.
 
 | Service | Used for | Config | Cost class |
 |---|---|---|---|
-| **ChatGPT-browser service** (Mac mini, Tailscale `http://100.107.180.35:8010`) | Anki IMAGE generation incl. PPLA style refs (FR-1); optional text via the `chatgpt-web` routable model | `CHATGPT_BROWSER_API_URL` env — REQUIRED when any role routes there; loud error if missing. Knobs: `anki_chatgpt_browser_timeout_seconds`, `anki_chatgpt_browser_force_fresh` | `subscription_notional` (rides ChatGPT Pro; `cost_known=false`) |
+| **ChatGPT-browser service** (Mac mini, Tailscale `http://100.107.180.35:8010`) | Anki IMAGE generation incl. PPLA style refs (FR-1); optional text via the `chatgpt-web` routable model | `CHATGPT_BROWSER_API_URL` env — REQUIRED when any role routes there; loud error if missing. Knobs: `anki_chatgpt_browser_timeout_seconds`, `anki_chatgpt_browser_force_fresh` | `subscription_notional` (rides ChatGPT Pro; typed pricing remains `unknown` when no counters/rate exist) |
 | **OpenAI API** | general bot plumbing (classifier/task parsing), whisper/audio, uploaded-photo vision, optional anki backends/image provider | `OPENAI_API_KEY` | metered |
 | **claude -p CLI** (in the bot image) | DEFAULT for all four anki text roles incl. quality (staged vision: the CLI reads generated card images). `codex-exec` is the sibling backend | `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`; no default, loud if missing). NOTE: shares the owner's Claude-subscription quota with coding sessions | `subscription_notional` |
 | **Gemini** | optional image provider (`anki_image_provider: gemini`) | `GEMINI_API_KEY` | metered |

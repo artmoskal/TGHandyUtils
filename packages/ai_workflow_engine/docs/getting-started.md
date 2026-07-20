@@ -9,14 +9,15 @@ Always install `ai-workflow-engine`. Add `ai-workflow-tools` only for reusable C
 `ai-workflow-viewer` only where bundles are rendered. Keeping optional packages out of simple runtime
 images preserves the complexity gradient.
 
-The current immutable release is `engine-v0.11.6`. Consume its complete published release
-directory, verify it
-with the tagged verifier as described in [operations](operations.md#release-artifacts-and-verification-v0116),
-then record the exact bytes installed:
+The source tree currently describes candidate `engine-v0.11.7`; `engine-v0.11.6` remains the
+immutable release until the tag is cut. Do not install candidate packages from a branch. After
+release, consume the complete published directory, verify it with the tagged verifier as described
+in [operations](operations.md#release-artifacts-and-verification-v0116), then record the exact bytes
+installed:
 
 ```text
-engine_tag=engine-v0.11.6
-engine_source_commit=<git rev-parse engine-v0.11.6^{}>
+engine_tag=engine-v0.11.7
+engine_source_commit=<git rev-parse engine-v0.11.7^{}>
 engine_wheel_sha256=<sha256 of vendored wheel>
 release_manifest_sha256=<sha256 of verified release-manifest.json>
 ```
@@ -89,6 +90,20 @@ observation:
   capture: full
   artifacts: copy
   retention_limit: 100
+
+# Optional. Omit to use the engine's versioned default public catalog.
+pricing:
+  catalog_version: product-approved-2026-07
+  rates:
+    - provider: codex_exec
+      model_prefix: gpt-5.4
+      rate_version: openai-2026-07
+      source: configured_public_rate
+      currency: USD
+      uncached_input_per_1m: 2.5
+      cached_input_per_1m: 0.25
+      cache_creation_input_per_1m: 2.5
+      output_per_1m: 15.0
 ```
 
 Load and wire:
@@ -101,6 +116,12 @@ engine.register_pack(ProductPack(configured_clients))
 Precedence is defaults → YAML files in order → explicitly supported environment overrides. Unknown
 structural keys and unsafe secrets fail or warn according to the loader contract; do not build a
 second config parser in the product.
+
+The `pricing:` catalog is strict and non-secret. Longest matching model prefix wins within the
+same provider; duplicate matches, unknown keys, blank identities, non-USD currencies, and
+negative/non-finite rates fail at load. Use `configured_proxy_rate` when a product intentionally
+models internal plan value rather than a published provider rate. There is no environment-JSON
+override or compatibility fallback.
 
 ## 4. Register A Pack
 

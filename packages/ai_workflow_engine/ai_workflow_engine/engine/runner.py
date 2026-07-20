@@ -193,10 +193,12 @@ class WorkflowRunner:
         config: Any = None,
         usage_sink: UsageSink | None = None,
         trace_sink: Any = None,
+        notional_pricing_policy: Any = None,
     ):
         self.config = config
         self.usage_sink = usage_sink
         self.trace_sink = trace_sink
+        self.notional_pricing_policy = notional_pricing_policy
 
     _GRAPH_CANCELLATION_GRACE_S = 2.0
 
@@ -261,6 +263,7 @@ class WorkflowRunner:
                 usage_summary,
                 budget_from_limits(limits),
                 usage_sink=self.usage_sink,
+                notional_pricing_policy=self.notional_pricing_policy,
             )
             with workflow_run_context_scope(ctx), workflow_usage_scope(usage_context):
                 try:

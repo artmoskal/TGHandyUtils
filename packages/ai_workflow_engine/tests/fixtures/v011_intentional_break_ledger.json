@@ -776,6 +776,643 @@
    "reason": "v0.11.6 (C2RR): nested abort-outcome records require persisted registration_attempt_id.",
    "manifest_row": "C2RR",
    "consumed_by_seal": "2026-07-20 v0.11.6 C2RR persisted-attempt and wait-v2 seal (6 public deltas; corpus 0)"
+  },
+  {
+   "path_prefix": "usage_event_semantics.usage.events[0].normalized_usage",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.2): canonical usage events expose typed normalized-token truth; metered legacy fixture has no normalized provider counters.",
+   "manifest_row": "P1.2"
+  },
+  {
+   "path_prefix": "usage_event_semantics.usage.events[0].notional_pricing",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.2): canonical usage events expose typed notional pricing; metered events carry no subscription pricing.",
+   "manifest_row": "P1.2"
+  },
+  {
+   "path_prefix": "usage_event_semantics.usage.events[0].provider_reported_notional_usd",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.2): canonical usage events expose the typed provider-reported notional field; this metered event has none.",
+   "manifest_row": "P1.2"
+  },
+  {
+   "path_prefix": "usage_event_semantics.usage.events[0].usage_diagnostic",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.2): canonical usage events expose bounded usage diagnostics; this valid event has none.",
+   "manifest_row": "P1.2"
+  },
+  {
+   "path_prefix": "usage_event_semantics.usage.events[0].usage_error",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.2): canonical usage events expose typed usage extraction failures; this valid event has none.",
+   "manifest_row": "P1.2"
+  },
+  {
+   "path_prefix": "usage_event_semantics.usage.events[1].normalized_usage",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.2): canonical usage events expose typed normalized-token truth; provider-reported pricing remains valid without normalized counters.",
+   "manifest_row": "P1.2"
+  },
+  {
+   "path_prefix": "usage_event_semantics.usage.events[1].notional_pricing",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.2): the subscription fixture preserves its amount through explicit provider-reported pricing provenance.",
+   "manifest_row": "P1.2"
+  },
+  {
+   "path_prefix": "usage_event_semantics.usage.events[1].provider_reported_notional_usd",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.2): the subscription fixture publishes the provider-reported amount that authorizes its persisted notional value.",
+   "manifest_row": "P1.2"
+  },
+  {
+   "path_prefix": "usage_event_semantics.usage.events[1].usage_diagnostic",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.2): canonical usage events expose bounded usage diagnostics; this valid event has none.",
+   "manifest_row": "P1.2"
+  },
+  {
+   "path_prefix": "usage_event_semantics.usage.events[1].usage_error",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.2): canonical usage events expose typed usage extraction failures; this provider-reported event has none.",
+   "manifest_row": "P1.2"
+  },
+  {
+   "path_prefix": "usage_event_semantics.usage.events[2].normalized_usage",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.2): canonical usage events expose typed normalized-token truth; this failed metered tool event has none.",
+   "manifest_row": "P1.2"
+  },
+  {
+   "path_prefix": "usage_event_semantics.usage.events[2].notional_pricing",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.2): canonical usage events expose typed notional pricing; metered events carry no subscription pricing.",
+   "manifest_row": "P1.2"
+  },
+  {
+   "path_prefix": "usage_event_semantics.usage.events[2].provider_reported_notional_usd",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.2): canonical usage events expose the typed provider-reported notional field; this metered event has none.",
+   "manifest_row": "P1.2"
+  },
+  {
+   "path_prefix": "usage_event_semantics.usage.events[2].usage_diagnostic",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.2): canonical usage events expose bounded usage diagnostics; this failed tool event has none.",
+   "manifest_row": "P1.2"
+  },
+  {
+   "path_prefix": "usage_event_semantics.usage.events[2].usage_error",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.2): canonical usage events expose typed usage extraction failures; this failed tool event has no provider usage payload.",
+   "manifest_row": "P1.2"
+  },
+  {
+   "path_prefix": "public.exports.CatalogNotionalPricingPolicy",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.2): export the default versioned catalog policy.",
+   "manifest_row": "P1.2"
+  },
+  {
+   "path_prefix": "public.exports.NormalizedTokenUsage",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.2): export normalized provider token truth.",
+   "manifest_row": "P1.2"
+  },
+  {
+   "path_prefix": "public.exports.NotionalPricingConfig",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.2): export strict pricing configuration.",
+   "manifest_row": "P1.2"
+  },
+  {
+   "path_prefix": "public.exports.NotionalPricingPolicy",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.2): export the injectable pricing-policy protocol.",
+   "manifest_row": "P1.2"
+  },
+  {
+   "path_prefix": "public.exports.NotionalPricingResult",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.2): export persisted pricing provenance.",
+   "manifest_row": "P1.2"
+  },
+  {
+   "path_prefix": "public.exports.NotionalRate",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.2): export strict versioned rate records.",
+   "manifest_row": "P1.2"
+  },
+  {
+   "path_prefix": "public.exports.UsageError",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.2): export the closed usage-extraction error vocabulary.",
+   "manifest_row": "P1.2"
+  },
+  {
+   "path_prefix": "public.exports.default_notional_pricing_config",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.2): export the documented default public-rate catalog.",
+   "manifest_row": "P1.2"
+  },
+  {
+   "path_prefix": "public.exports.default_notional_pricing_policy",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.2): export the default pricing policy factory.",
+   "manifest_row": "P1.2"
+  },
+  {
+   "path_prefix": "public.schemas.CapabilityContext.$defs.NormalizedTokenUsage",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.3): capability-context usage summaries carry normalized token schema.",
+   "manifest_row": "P1.3"
+  },
+  {
+   "path_prefix": "public.schemas.CapabilityContext.$defs.NotionalPricingResult",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.3): capability-context usage summaries carry pricing provenance schema.",
+   "manifest_row": "P1.3"
+  },
+  {
+   "path_prefix": "public.schemas.CapabilityContext.$defs.NotionalRate",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.3): capability-context pricing provenance carries the exact rate schema.",
+   "manifest_row": "P1.3"
+  },
+  {
+   "path_prefix": "public.schemas.CapabilityContext.$defs.WorkflowUsageEvent.properties.normalized_usage",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.3): nested usage events carry normalized token truth.",
+   "manifest_row": "P1.3"
+  },
+  {
+   "path_prefix": "public.schemas.CapabilityContext.$defs.WorkflowUsageEvent.properties.notional_pricing",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.3): nested usage events carry pricing provenance.",
+   "manifest_row": "P1.3"
+  },
+  {
+   "path_prefix": "public.schemas.CapabilityContext.$defs.WorkflowUsageEvent.properties.provider_reported_notional_usd",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.3): nested usage events distinguish provider-reported plan value.",
+   "manifest_row": "P1.3"
+  },
+  {
+   "path_prefix": "public.schemas.CapabilityContext.$defs.WorkflowUsageEvent.properties.usage_diagnostic",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.3): nested usage events carry bounded extraction diagnostics.",
+   "manifest_row": "P1.3"
+  },
+  {
+   "path_prefix": "public.schemas.CapabilityContext.$defs.WorkflowUsageEvent.properties.usage_error",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.3): nested usage events carry typed extraction failures.",
+   "manifest_row": "P1.3"
+  },
+  {
+   "path_prefix": "public.schemas.LLMResponse.$defs.NormalizedTokenUsage",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.1): provider responses expose normalized token schema.",
+   "manifest_row": "P1.1"
+  },
+  {
+   "path_prefix": "public.schemas.LLMResponse.properties.normalized_usage",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.1): provider responses expose normalized token truth.",
+   "manifest_row": "P1.1"
+  },
+  {
+   "path_prefix": "public.schemas.LLMResponse.properties.provider_reported_notional_usd",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.1): provider responses distinguish provider-reported plan value.",
+   "manifest_row": "P1.1"
+  },
+  {
+   "path_prefix": "public.schemas.LLMResponse.properties.usage_diagnostic",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.1): provider responses expose bounded extraction diagnostics.",
+   "manifest_row": "P1.1"
+  },
+  {
+   "path_prefix": "public.schemas.LLMResponse.properties.usage_error",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.1): provider responses expose typed extraction failures.",
+   "manifest_row": "P1.1"
+  },
+  {
+   "path_prefix": "public.schemas.NodeExecutionState.$defs.NormalizedTokenUsage",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.3): persisted node state carries normalized token schema.",
+   "manifest_row": "P1.3"
+  },
+  {
+   "path_prefix": "public.schemas.NodeExecutionState.$defs.NotionalPricingResult",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.3): persisted node state carries pricing provenance schema.",
+   "manifest_row": "P1.3"
+  },
+  {
+   "path_prefix": "public.schemas.NodeExecutionState.$defs.NotionalRate",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.3): persisted node state carries exact rate schema.",
+   "manifest_row": "P1.3"
+  },
+  {
+   "path_prefix": "public.schemas.NodeExecutionState.$defs.WorkflowUsageEvent.properties.normalized_usage",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.3): persisted node usage carries normalized token truth.",
+   "manifest_row": "P1.3"
+  },
+  {
+   "path_prefix": "public.schemas.NodeExecutionState.$defs.WorkflowUsageEvent.properties.notional_pricing",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.3): persisted node usage carries pricing provenance.",
+   "manifest_row": "P1.3"
+  },
+  {
+   "path_prefix": "public.schemas.NodeExecutionState.$defs.WorkflowUsageEvent.properties.provider_reported_notional_usd",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.3): persisted node usage carries provider-reported plan value.",
+   "manifest_row": "P1.3"
+  },
+  {
+   "path_prefix": "public.schemas.NodeExecutionState.$defs.WorkflowUsageEvent.properties.usage_diagnostic",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.3): persisted node usage carries bounded diagnostics.",
+   "manifest_row": "P1.3"
+  },
+  {
+   "path_prefix": "public.schemas.NodeExecutionState.$defs.WorkflowUsageEvent.properties.usage_error",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.3): persisted node usage carries typed extraction failures.",
+   "manifest_row": "P1.3"
+  },
+  {
+   "path_prefix": "public.schemas.NormalizedTokenUsage",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.2): seal the exported normalized token contract.",
+   "manifest_row": "P1.2"
+  },
+  {
+   "path_prefix": "public.schemas.NotionalPricingConfig",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.2): seal the exported strict pricing configuration.",
+   "manifest_row": "P1.2"
+  },
+  {
+   "path_prefix": "public.schemas.NotionalPricingResult",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.2): seal the exported pricing provenance contract.",
+   "manifest_row": "P1.2"
+  },
+  {
+   "path_prefix": "public.schemas.NotionalRate",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.2): seal the exported strict rate contract.",
+   "manifest_row": "P1.2"
+  },
+  {
+   "path_prefix": "public.schemas.WorkflowConfigBundle.$defs.NotionalPricingConfig",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.2): configuration bundles carry strict pricing configuration schema.",
+   "manifest_row": "P1.2"
+  },
+  {
+   "path_prefix": "public.schemas.WorkflowConfigBundle.$defs.NotionalRate",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.2): configuration bundles carry exact rate schema.",
+   "manifest_row": "P1.2"
+  },
+  {
+   "path_prefix": "public.schemas.WorkflowConfigBundle.additionalProperties",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.2): top-level workflow configuration is closed and rejects unknown keys.",
+   "manifest_row": "P1.2"
+  },
+  {
+   "path_prefix": "public.schemas.WorkflowConfigBundle.properties.pricing",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.2): workflow configuration exposes one typed pricing section.",
+   "manifest_row": "P1.2"
+  },
+  {
+   "path_prefix": "public.schemas.WorkflowRunResult.$defs.NormalizedTokenUsage",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.3): run results carry normalized token schema.",
+   "manifest_row": "P1.3"
+  },
+  {
+   "path_prefix": "public.schemas.WorkflowRunResult.$defs.NotionalPricingResult",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.3): run results carry pricing provenance schema.",
+   "manifest_row": "P1.3"
+  },
+  {
+   "path_prefix": "public.schemas.WorkflowRunResult.$defs.NotionalRate",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.3): run results carry exact rate schema.",
+   "manifest_row": "P1.3"
+  },
+  {
+   "path_prefix": "public.schemas.WorkflowRunResult.$defs.WorkflowUsageEvent.properties.normalized_usage",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.3): run-result usage events carry normalized token truth.",
+   "manifest_row": "P1.3"
+  },
+  {
+   "path_prefix": "public.schemas.WorkflowRunResult.$defs.WorkflowUsageEvent.properties.notional_pricing",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.3): run-result usage events carry pricing provenance.",
+   "manifest_row": "P1.3"
+  },
+  {
+   "path_prefix": "public.schemas.WorkflowRunResult.$defs.WorkflowUsageEvent.properties.provider_reported_notional_usd",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.3): run-result usage events carry provider-reported plan value.",
+   "manifest_row": "P1.3"
+  },
+  {
+   "path_prefix": "public.schemas.WorkflowRunResult.$defs.WorkflowUsageEvent.properties.usage_diagnostic",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.3): run-result usage events carry bounded diagnostics.",
+   "manifest_row": "P1.3"
+  },
+  {
+   "path_prefix": "public.schemas.WorkflowRunResult.$defs.WorkflowUsageEvent.properties.usage_error",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.3): run-result usage events carry typed extraction failures.",
+   "manifest_row": "P1.3"
+  },
+  {
+   "path_prefix": "public.schemas.WorkflowUsageEvent.$defs",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.2): usage events embed normalized usage and pricing schemas.",
+   "manifest_row": "P1.2"
+  },
+  {
+   "path_prefix": "public.schemas.WorkflowUsageEvent.properties.normalized_usage",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.2): usage events carry normalized token truth.",
+   "manifest_row": "P1.2"
+  },
+  {
+   "path_prefix": "public.schemas.WorkflowUsageEvent.properties.notional_pricing",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.2): usage events carry typed pricing provenance.",
+   "manifest_row": "P1.2"
+  },
+  {
+   "path_prefix": "public.schemas.WorkflowUsageEvent.properties.provider_reported_notional_usd",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.2): usage events distinguish provider-reported plan value.",
+   "manifest_row": "P1.2"
+  },
+  {
+   "path_prefix": "public.schemas.WorkflowUsageEvent.properties.usage_diagnostic",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.2): usage events carry bounded extraction diagnostics.",
+   "manifest_row": "P1.2"
+  },
+  {
+   "path_prefix": "public.schemas.WorkflowUsageEvent.properties.usage_error",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.2): usage events carry typed extraction failures.",
+   "manifest_row": "P1.2"
+  },
+  {
+   "path_prefix": "public.schemas.WorkflowUsageSummary.$defs.NormalizedTokenUsage",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.3): usage summaries carry normalized token schema.",
+   "manifest_row": "P1.3"
+  },
+  {
+   "path_prefix": "public.schemas.WorkflowUsageSummary.$defs.NotionalPricingResult",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.3): usage summaries carry pricing provenance schema.",
+   "manifest_row": "P1.3"
+  },
+  {
+   "path_prefix": "public.schemas.WorkflowUsageSummary.$defs.NotionalRate",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.3): usage summaries carry exact rate schema.",
+   "manifest_row": "P1.3"
+  },
+  {
+   "path_prefix": "public.schemas.WorkflowUsageSummary.$defs.WorkflowUsageEvent.properties.normalized_usage",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.3): summary events carry normalized token truth.",
+   "manifest_row": "P1.3"
+  },
+  {
+   "path_prefix": "public.schemas.WorkflowUsageSummary.$defs.WorkflowUsageEvent.properties.notional_pricing",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.3): summary events carry pricing provenance.",
+   "manifest_row": "P1.3"
+  },
+  {
+   "path_prefix": "public.schemas.WorkflowUsageSummary.$defs.WorkflowUsageEvent.properties.provider_reported_notional_usd",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.3): summary events carry provider-reported plan value.",
+   "manifest_row": "P1.3"
+  },
+  {
+   "path_prefix": "public.schemas.WorkflowUsageSummary.$defs.WorkflowUsageEvent.properties.usage_diagnostic",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.3): summary events carry bounded diagnostics.",
+   "manifest_row": "P1.3"
+  },
+  {
+   "path_prefix": "public.schemas.WorkflowUsageSummary.$defs.WorkflowUsageEvent.properties.usage_error",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P1.3): summary events carry typed extraction failures.",
+   "manifest_row": "P1.3"
+  },
+  {
+   "path_prefix": "usage_event_semantics.usage.events[0].invocation_id",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P2.1): canonical usage records expose optional provider-attempt identity.",
+   "manifest_row": "P2.1"
+  },
+  {
+   "path_prefix": "usage_event_semantics.usage.events[1].invocation_id",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P2.1): canonical usage records expose optional provider-attempt identity.",
+   "manifest_row": "P2.1"
+  },
+  {
+   "path_prefix": "usage_event_semantics.usage.events[2].invocation_id",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P2.1): canonical usage records expose optional provider-attempt identity.",
+   "manifest_row": "P2.1"
+  },
+  {
+   "path_prefix": "public.schemas.CapabilityContext.$defs.WorkflowUsageEvent.properties.invocation_id",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P2.1): capability usage exposes provider-attempt identity.",
+   "manifest_row": "P2.1"
+  },
+  {
+   "path_prefix": "public.schemas.LLMRequest.properties.invocation_id",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P2.1): plain-callable requests carry provider-attempt identity.",
+   "manifest_row": "P2.1"
+  },
+  {
+   "path_prefix": "public.schemas.LLMResponse.properties.elapsed_ms",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P2.1): plain-callable responses expose measured elapsed time.",
+   "manifest_row": "P2.1"
+  },
+  {
+   "path_prefix": "public.schemas.LLMResponse.properties.invocation_id",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P2.1): plain-callable responses preserve provider-attempt identity.",
+   "manifest_row": "P2.1"
+  },
+  {
+   "path_prefix": "public.schemas.NodeExecutionState.$defs.WorkflowUsageEvent.properties.invocation_id",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P2.1): node-state usage preserves provider-attempt identity.",
+   "manifest_row": "P2.1"
+  },
+  {
+   "path_prefix": "public.schemas.ObservationDetail.properties.invocation_id",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P2.1): observation details join to one provider attempt.",
+   "manifest_row": "P2.1"
+  },
+  {
+   "path_prefix": "public.schemas.WorkflowRunResult.$defs.WorkflowTraceEvent.properties.detail_capture",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P2.1): run-result traces expose typed detail-capture truth.",
+   "manifest_row": "P2.1"
+  },
+  {
+   "path_prefix": "public.schemas.WorkflowRunResult.$defs.WorkflowTraceEvent.properties.invocation_id",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P2.1): run-result traces preserve provider-attempt identity.",
+   "manifest_row": "P2.1"
+  },
+  {
+   "path_prefix": "public.schemas.WorkflowRunResult.$defs.WorkflowUsageEvent.properties.invocation_id",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P2.1): run-result usage preserves provider-attempt identity.",
+   "manifest_row": "P2.1"
+  },
+  {
+   "path_prefix": "public.schemas.WorkflowTraceEvent.properties.detail_capture",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P2.1): traces expose typed detail-capture truth.",
+   "manifest_row": "P2.1"
+  },
+  {
+   "path_prefix": "public.schemas.WorkflowTraceEvent.properties.invocation_id",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P2.1): traces preserve provider-attempt identity.",
+   "manifest_row": "P2.1"
+  },
+  {
+   "path_prefix": "public.schemas.WorkflowUsageEvent.properties.invocation_id",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P2.1): usage events expose provider-attempt identity.",
+   "manifest_row": "P2.1"
+  },
+  {
+   "path_prefix": "public.schemas.WorkflowUsageSummary.$defs.WorkflowUsageEvent.properties.invocation_id",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.7 (P2.1): usage summaries preserve provider-attempt identity.",
+   "manifest_row": "P2.1"
   }
  ]
 }

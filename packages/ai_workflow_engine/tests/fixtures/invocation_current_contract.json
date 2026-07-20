@@ -1499,6 +1499,7 @@
             "cached_tokens": 25
           },
           "input_tokens": 100,
+          "invocation_id": null,
           "metadata": {
             "run_id": "oracle-run",
             "user_id": null,
@@ -1507,6 +1508,8 @@
           },
           "model": "gpt-fixed",
           "node": "metered_worker",
+          "normalized_usage": null,
+          "notional_pricing": null,
           "notional_usd": null,
           "operation": "chat",
           "output_token_details": {
@@ -1514,11 +1517,14 @@
           },
           "output_tokens": 40,
           "provider": "openai",
+          "provider_reported_notional_usd": null,
           "request_id": "req-fixed",
           "run_id": "oracle-run",
           "sequence": null,
           "success": true,
-          "total_tokens": 140
+          "total_tokens": 140,
+          "usage_diagnostic": null,
+          "usage_error": null
         },
         {
           "attempt": 1,
@@ -1528,6 +1534,7 @@
           "estimated_usd": null,
           "input_token_details": {},
           "input_tokens": 10,
+          "invocation_id": null,
           "metadata": {
             "run_id": "oracle-run",
             "user_id": null,
@@ -1536,16 +1543,27 @@
           },
           "model": "subscription-fixed",
           "node": "metered_worker",
+          "normalized_usage": null,
+          "notional_pricing": {
+            "amount_usd": 0.002,
+            "catalog_version": "provider-reported",
+            "rate": null,
+            "source": "provider_reported",
+            "unknown_reason": null
+          },
           "notional_usd": 0.002,
           "operation": "chat",
           "output_token_details": {},
           "output_tokens": 5,
           "provider": "chatgpt-web",
+          "provider_reported_notional_usd": 0.002,
           "request_id": "req-sub",
           "run_id": "oracle-run",
           "sequence": null,
           "success": true,
-          "total_tokens": 15
+          "total_tokens": 15,
+          "usage_diagnostic": null,
+          "usage_error": null
         },
         {
           "attempt": 1,
@@ -1557,6 +1575,7 @@
             "characters": 17
           },
           "input_tokens": 0,
+          "invocation_id": null,
           "metadata": {
             "run_id": "oracle-run",
             "user_id": null,
@@ -1565,16 +1584,21 @@
           },
           "model": "tool-fixed",
           "node": "metered_worker",
+          "normalized_usage": null,
+          "notional_pricing": null,
           "notional_usd": null,
           "operation": "tool",
           "output_token_details": {},
           "output_tokens": 0,
           "provider": "openai",
+          "provider_reported_notional_usd": null,
           "request_id": "req-tool",
           "run_id": "oracle-run",
           "sequence": null,
           "success": false,
-          "total_tokens": 0
+          "total_tokens": 0,
+          "usage_diagnostic": null,
+          "usage_error": null
         }
       ],
       "image_call_count": 0,

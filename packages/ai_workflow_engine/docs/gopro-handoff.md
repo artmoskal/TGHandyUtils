@@ -1,6 +1,9 @@
 # GoPro Engine Adoption Guide
 
 Status: **`engine-v0.11.6` is the current immutable release.**
+The pending v0.11.7 candidate changes optional tools/viewer usage economics, not GoPro's direct-VLM
+workflow contract. GoPro may continue consuming only the engine wheel; if it adopts CLI agents or
+the viewer, it must install the coherent `0.11.7 / 0.5.2 / 0.3.2` matrix after release.
 To adopt, GoPro should pin tag `engine-v0.11.6`, record the source commit and wheel hash, and
 run its sidecar canary before changing the production image. Do not
 infer the actual GoPro pin from this document; the consumer repository's
@@ -35,14 +38,15 @@ The engine owns execution and gates. GoPro owns inventory semantics and storage.
 
 | Package | GoPro use |
 |---|---|
-| `ai-workflow-engine==0.11.6` | Required in the detection/sidecar runtime |
-| `ai-workflow-tools==0.5.1` | Add only when GoPro uses CLI agents or shared media helpers |
-| `ai-workflow-viewer==0.3.1` | Developer/diagnostic service; not required in the detector image |
+| `ai-workflow-engine==0.11.7` | Required in the detection/sidecar runtime |
+| `ai-workflow-tools==0.5.2` | Add only when GoPro uses CLI agents or shared media helpers |
+| `ai-workflow-viewer==0.3.2` | Developer/diagnostic service; not required in the detector image |
 
-> **Current matrix:** `engine-v0.11.6` + `ai-workflow-tools==0.5.1` + `ai-workflow-viewer==0.3.1`
-> (tools/viewer require `ai-workflow-engine>=0.11,<0.12`). The previous line
-> remains available at its historical tag for historical data; the lines never mix in one
-> environment. Verify the complete published release directory before installing any wheel.
+> **Candidate matrix:** `engine-v0.11.7` + `ai-workflow-tools==0.5.2` +
+> `ai-workflow-viewer==0.3.2` (tools/viewer require
+> `ai-workflow-engine>=0.11.7,<0.12`). Do not install this matrix until `engine-v0.11.7` is cut.
+> The previous line remains available at its historical tag for historical data; the lines never
+> mix in one environment.
 
 
 Vendoring only the engine wheel is the correct lightweight configuration for the current direct-VLM
@@ -152,6 +156,9 @@ GoPro adoption is complete when its repository proves:
    archived preview.
 9. **Failure honesty:** unavailable vision/evidence is blocked/inconclusive, not accepted inventory.
 10. **Deployment:** Mac Mini/sidecar image canary runs the pinned wheel through the public API.
+11. **Economics when CLI tools are enabled:** persisted usage distinguishes metered spend from
+    subscription notional, retains cache/reasoning quantities and rate versions, and treats unknown
+    usage/rates as unknown. Keep call/token/window limits finite; notional is not a billing cap.
 
 Engine-side examples: `ai_workflow_engine.examples.run_toy_inventory_pilot` and the live
 qualification's GoPro scenario. Consumer-side requirements remain in GoPro's own architecture docs.

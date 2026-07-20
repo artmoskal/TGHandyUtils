@@ -756,7 +756,75 @@ async def test_planner_preserves_client_reported_notional_cost():
     event = summary.events[0]
     assert event.cost_class == "subscription_notional"
     assert event.notional_usd == 0.0734
-    assert event.metadata["cost_known"] is True
+    assert event.notional_pricing is not None
+    assert event.notional_pricing.source == "provider_reported"
+
+
+async def test_planner_records_structured_codex_usage_retained_on_provider_failure():
+    from ai_workflow_engine import LLMRequest
+    from ai_workflow_engine.budget import (
+        WorkflowBudget,
+        WorkflowUsageContext,
+        workflow_usage_scope,
+    )
+    from ai_workflow_engine.engine.agent_planner import LLMAgentPlanner
+    from ai_workflow_engine.models import (
+        AgentRunRequest,
+        CapabilityContext,
+        WorkflowGoal,
+        WorkflowRunContext,
+        WorkflowUsageSummary,
+    )
+    from ai_workflow_engine.usage_contract import NormalizedTokenUsage
+
+    usage = NormalizedTokenUsage(
+        counter_schema="codex_inclusive",
+        uncached_input_tokens=100,
+        cache_read_input_tokens=20,
+        cache_creation_input_tokens=0,
+        non_reasoning_output_tokens=20,
+        reasoning_output_tokens=10,
+        raw_input_tokens=120,
+        raw_output_tokens=30,
+        raw_total_tokens=150,
+    )
+
+    class FailedCodex:
+        provider_label = "codex_exec"
+        subscription_mode = True
+        model = "gpt-5.4-codex"
+
+        async def __call__(self, _request: LLMRequest):
+            error = RuntimeError("provider failed after usage")
+            error.model = self.model
+            error.normalized_usage = usage
+            error.usage_error = None
+            raise error
+
+    planner = LLMAgentPlanner(FailedCodex(), tool_specs={}, node_name="codex_planner")
+    context = CapabilityContext(
+        goal=WorkflowGoal(workflow_type="pilot", objective="x"),
+        run_context=WorkflowRunContext(workflow_id="wf-failed", workflow_type="pilot"),
+    )
+    summary = WorkflowUsageSummary()
+    usage_context = WorkflowUsageContext(context.run_context, summary, WorkflowBudget())
+
+    with workflow_usage_scope(usage_context):
+        with pytest.raises(RuntimeError, match="provider failed"):
+            await planner.next_step(
+                context,
+                AgentRunRequest(prompt="go", subscription_mode=True),
+                history=[],
+            )
+
+    assert len(summary.events) == 1
+    event = summary.events[0]
+    assert event.success is False
+    assert event.provider == "codex_exec"
+    assert event.model == "gpt-5.4-codex"
+    assert event.normalized_usage == usage
+    assert event.notional_pricing is not None
+    assert event.notional_pricing.amount_usd == pytest.approx(0.000705)
 
 
 async def test_build_llm_agent_capability_joins_the_shared_trace_sink():

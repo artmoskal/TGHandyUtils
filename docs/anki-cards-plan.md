@@ -681,8 +681,9 @@ Cost/quality rule:
     positive value once model prices are configured/validated;
   - the default local price table covers current Anki defaults including `gpt-5.4-mini`,
     `gpt-5.4-mini-2026-03-17`, `gpt-image-2`, `gemini-2.5-flash-image`,
-    `gemini-3.1-flash-image`, and `gemini-3-pro-image`; `WORKFLOW_MODEL_PRICE_OVERRIDES_JSON`
-    can override or add provider/model prices when provider pricing changes;
+    `gemini-3.1-flash-image`, and `gemini-3-pro-image`; subscription CLI notional pricing uses the
+    engine's strict versioned `pricing:` catalog or an injected `NotionalPricingPolicy`, never an
+    environment-JSON override;
   - `WORKFLOW_SHOW_USAGE_IN_REPLY=true` adds a compact usage footer to generated-card replies;
   - image generation failure or budget exhaustion routes to text fallback, not another image try.
 

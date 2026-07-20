@@ -6,6 +6,8 @@ Modes are selected with FAKE_CLI_MODE:
 - artifacts: create screenshot/session/page artifacts under FAKE_CLI_WORKSPACE, then print envelope.
 - sleep: create a screenshot, sleep for FAKE_CLI_SLEEP_S, then print a marker.
 - result_file: write the final message to --output-last-message or FAKE_CLI_RESULT_FILE.
+- usage_then_sleep: emit complete usage, signal FAKE_CLI_READY_FILE, then sleep.
+- usage_then_fail: emit complete usage and exit nonzero.
 - garbage: print non-JSON output.
 """
 
@@ -53,8 +55,27 @@ def main() -> int:
         if result_file is None:
             raise SystemExit("result_file mode requires --output-last-message or FAKE_CLI_RESULT_FILE")
         Path(result_file).write_text(result_text, encoding="utf-8")
-        print("stdout fallback")
+        if "--json" in argv:
+            _emit_codex_usage()
+        else:
+            print("stdout fallback")
         return 0
+    if mode in {"usage_then_sleep", "usage_then_fail"}:
+        result_file = _result_file_from_args(argv) or os.environ.get("FAKE_CLI_RESULT_FILE")
+        if result_file is not None:
+            Path(result_file).write_text(result_text, encoding="utf-8")
+        if "--json" in argv:
+            _emit_codex_usage()
+        else:
+            _emit_envelope(result_text)
+        sys.stdout.flush()
+        ready_file = os.environ.get("FAKE_CLI_READY_FILE")
+        if ready_file:
+            Path(ready_file).write_text(str(os.getpid()), encoding="utf-8")
+        if mode == "usage_then_sleep":
+            time.sleep(float(os.environ.get("FAKE_CLI_SLEEP_S", "30")))
+            return 0
+        return int(os.environ.get("FAKE_CLI_EXIT_CODE", "7"))
     if mode == "flood":
         # v0.10.1: emit far more stdout than any capture cap, to prove the door bounds it.
         sys.stdout.write("F" * int(os.environ.get("FAKE_CLI_FLOOD_BYTES", str(6 * 1024 * 1024))))
@@ -118,6 +139,39 @@ def _emit_envelope(result_text: str) -> None:
         },
     }
     print(json.dumps(envelope, sort_keys=True))
+
+
+def _emit_codex_usage() -> None:
+    print(json.dumps({"type": "thread.started", "thread_id": "fake-thread"}))
+    print(
+        json.dumps(
+            {
+                "type": "turn.completed",
+                "usage": {
+                    "input_tokens": 100,
+                    "cached_input_tokens": 10,
+                    "output_tokens": 20,
+                    "reasoning_output_tokens": 5,
+                    "total_tokens": 120,
+                },
+            }
+        )
+    )
+    print("diagnostic noise that is not JSON")
+    print(
+        json.dumps(
+            {
+                "type": "turn.completed",
+                "usage": {
+                    "input_tokens": 120,
+                    "cached_input_tokens": 20,
+                    "output_tokens": 30,
+                    "reasoning_output_tokens": 10,
+                    "total_tokens": 150,
+                },
+            }
+        )
+    )
 
 
 def _write_artifacts(workspace: Path) -> None:

@@ -480,7 +480,15 @@ Cost visibility and generated-image rollout:
 - cached input tokens are charged at cached-input rates when provider usage metadata reports them;
 - for Gemini image models, cached token counts are displayed if returned, but current image-pricing
   docs do not publish cached-image discounts, so estimates price cached image input the same as
-  normal input unless `WORKFLOW_MODEL_PRICE_OVERRIDES_JSON` overrides it;
+  normal input;
+- subscription CLI usage is normalized by provider adapters and priced once by the engine's
+  injected, versioned `NotionalPricingPolicy`; products may configure a strict public/proxy rate
+  catalog, but there is no environment-JSON override or viewer-side calculator;
+- Codex inclusive counters are normalized as
+  `uncached_input = input_tokens - cached_input_tokens`; output pricing uses the provider's inclusive
+  `output_tokens` once, while `reasoning_output_tokens` remains a diagnostic subset;
+- notional amounts are API-equivalent plan value, not billed spend, and never debit metered USD
+  budgets; call, token, worker, and execution-window limits remain the hard controls;
 - usage replies include cached input tokens when present, so cache behavior is visible during live
   Telegram testing;
 - `WORKFLOW_SHOW_USAGE_IN_REPLY=true` surfaces compact usage and estimated USD in Telegram replies;

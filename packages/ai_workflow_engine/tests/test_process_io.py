@@ -101,6 +101,40 @@ async def test_stream_huge_single_line_is_captured_not_dropped():
     assert cap.total_bytes == 200 * 1024 and cap.truncated is False
 
 
+async def test_stream_observer_receives_source_bytes_without_changing_bounded_capture():
+    observed: list[bytes] = []
+    reader = asyncio.StreamReader()
+    reader.feed_data(b"A" * 200)
+    reader.feed_eof()
+
+    cap = await BoundedStreamCollector(20, observer=observed.append).collect(reader)
+
+    assert b"".join(observed) == b"A" * 200
+    assert cap.total_bytes == 200
+    assert cap.retained_bytes == 20
+    assert cap.truncated is True
+
+
+async def test_stream_observer_failure_does_not_stop_drain_or_capture():
+    calls = 0
+
+    def broken_observer(_chunk: bytes) -> None:
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("observer defect")
+
+    reader = asyncio.StreamReader()
+    reader.feed_data(b"first")
+    reader.feed_data(b"second")
+    reader.feed_eof()
+
+    cap = await BoundedStreamCollector(100, observer=broken_observer).collect(reader)
+
+    assert calls == 1
+    assert cap.text == "firstsecond"
+    assert cap.total_bytes == 11
+
+
 # ---------------------------------------------------------------------- result file
 
 

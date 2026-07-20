@@ -1,6 +1,9 @@
 # Voice Brain Engine Integration Guide
 
 Status: **`engine-v0.11.6` is the current immutable release.**
+The pending v0.11.7 candidate improves usage truth for optional process-backed Claude/Codex clients.
+It does not turn subscription CLI workers into a suitable low-latency voice hot path. Adopt only as
+the coherent `0.11.7 / 0.5.2 / 0.3.2` matrix after the immutable release exists.
 The product must pin tag `engine-v0.11.6` before running its own
 latency/cancellation canary. This replaces
 the historical June request/reply transcript.
@@ -25,15 +28,16 @@ transcript + session context
 
 ## Package Choice
 
-- `ai-workflow-engine==0.11.6` for the runtime and custom `LLMCallable`.
-- `ai-workflow-tools==0.5.1` only when using `CliAgentCapability`/console tools. CLI subscription
+- `ai-workflow-engine==0.11.7` for the runtime and custom `LLMCallable`.
+- `ai-workflow-tools==0.5.2` only when using `CliAgentCapability`/console tools. CLI subscription
   workers are usually unsuitable for a low-latency conversational hot path.
-- `ai-workflow-viewer==0.3.1` in diagnostics, not the real-time audio path.
+- `ai-workflow-viewer==0.3.2` in diagnostics, not the real-time audio path.
 
-> **Current matrix:** `engine-v0.11.6` + `ai-workflow-tools==0.5.1` + `ai-workflow-viewer==0.3.1`
-> (tools/viewer require `ai-workflow-engine>=0.11,<0.12`). The previous line
-> remains available at its historical tag for historical data; the lines never mix in one
-> environment. Verify the complete published release directory before installing any wheel.
+> **Candidate matrix:** `engine-v0.11.7` + `ai-workflow-tools==0.5.2` +
+> `ai-workflow-viewer==0.3.2` (tools/viewer require
+> `ai-workflow-engine>=0.11.7,<0.12`). Do not install this matrix until `engine-v0.11.7` is cut.
+> The previous line remains available at its historical tag for historical data; the lines never
+> mix in one environment.
 
 The release makes node-context binding explicit for every node kind and advances the optional
 tools wheel for native Codex image attachment. Persisted schemas and voice workflow behavior are
@@ -119,6 +123,9 @@ trace. Correlate calls with `correlation_id` only when product privacy policy al
 7. Session history is bounded and product-owned.
 8. Observation retention/privacy is explicit and audio bytes stay outside state.
 9. One real latency canary meets the product's first-token and total-response budgets.
+10. If a process-backed CLI is used off the hot path, its normalized token/cache/reasoning facts,
+    notional source/version, timeout/cancellation usage, and process cleanup are visible in the
+    engine bundle. Notional is plan-value telemetry, not billed spend or a hard cap.
 
 Use [the framework request lifecycle](extension-lifecycle.md) for a proven missing universal mechanic;
 keep audio/session/TTS concerns in the voice product otherwise.

@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 import hashlib
 import json
 import mimetypes
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Callable, Protocol
 from urllib.parse import urlparse
 
+from ai_workflow_engine._runtime_state import current_observation_capture
 from ai_workflow_engine.engine.external import ExternalProcessCapability, ExternalProcessRequest
 from ai_workflow_engine.execution_window import (
     invocation_window_remaining_s,
@@ -27,11 +30,18 @@ from ai_workflow_engine.models import (
 )
 from ai_workflow_engine.parsing import compose_cleaners, extract_fenced_json, extract_first_json_object
 from ai_workflow_engine.usage_events import record_usage_event
+from ai_workflow_engine.usage_contract import new_provider_invocation_id
 
 from ai_workflow_tools.toolsets import BASH_SIDE_EFFECTS, bash_in_tools
 
 from .assembly import build_cli_agent_invocation, resolve_effective_tools
 from .models import CliAgentRequest, CliAgentResult, CliFlavor
+from .usage import (
+    ParsedCliOutput,
+    parse_cli_process_output,
+    parsed_cli_output_from_accumulator,
+    usage_accumulator_for,
+)
 
 AssetLoader = Callable[[EvidenceRef], bytes]
 
@@ -39,18 +49,6 @@ AssetLoader = Callable[[EvidenceRef], bytes]
 class TraceSink(Protocol):
     def record(self, event: WorkflowTraceEvent) -> None:
         """Record one trace event."""
-
-
-@dataclass(frozen=True)
-class _ParsedCliOutput:
-    text: str
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cache_read_tokens: int = 0
-    cache_creation_tokens: int = 0
-    num_turns: int | None = None
-    duration_ms: int | None = None
-    notional_cost_usd: float | None = None
 
 
 @dataclass(frozen=True)
@@ -183,31 +181,75 @@ class CliAgentCapability:
         workspace.mkdir(parents=True, exist_ok=True)
         prompt = request.prompt if bound.notice is None else f"{request.prompt}{bound.notice}"
         effective_request = request.model_copy(
-            update={"workspace_dir": str(workspace), "prompt": prompt, "timeout_s": bound.timeout_s}
+            update={
+                "workspace_dir": str(workspace),
+                "prompt": prompt,
+                "timeout_s": bound.timeout_s,
+                "invocation_id": request.invocation_id or new_provider_invocation_id(),
+            }
         )
         input_fingerprints = self._stage_input_assets(workspace, effective_request)
         snapshot = self._snapshot_salvage(workspace, effective_request.salvage_globs)
         invocation = build_cli_agent_invocation(self.flavor, effective_request)
+        self._record_provider_request(effective_request, input_fingerprints)
 
-        external = await self.external_runner(
-            context,
-            ExternalProcessRequest(
-                command=invocation.argv,
-                cwd=str(workspace),
-                timeout_s=bound.timeout_s,
-                stdin_data=invocation.stdin_data,
-                result_file=invocation.result_file,
-                kill_grace_s=bound.kill_grace_s,
-                metadata={
-                    "flavor": self.flavor.name,
-                    "execution_bound_source": bound.source,
-                    "process_execution_bound": bound.metadata(),
-                },
-            ),
-        )
+        usage_accumulator = usage_accumulator_for(self.flavor)
+        started = time.monotonic()
+        try:
+            external = await self.external_runner(
+                context,
+                ExternalProcessRequest(
+                    command=invocation.argv,
+                    cwd=str(workspace),
+                    timeout_s=bound.timeout_s,
+                    stdin_data=invocation.stdin_data,
+                    result_file=invocation.result_file,
+                    kill_grace_s=bound.kill_grace_s,
+                    stdout_observer=(
+                        usage_accumulator.feed if usage_accumulator is not None else None
+                    ),
+                    metadata={
+                        "flavor": self.flavor.name,
+                        "invocation_id": effective_request.invocation_id,
+                        "execution_bound_source": bound.source,
+                        "process_execution_bound": bound.metadata(),
+                    },
+                ),
+            )
+        except asyncio.CancelledError:
+            elapsed_ms = int((time.monotonic() - started) * 1000)
+            parsed_cancelled = (
+                parsed_cli_output_from_accumulator({}, usage_accumulator)
+                if usage_accumulator is not None
+                else ParsedCliOutput(text="", usage_error="usage_event_missing")
+            )
+            self._record_usage(
+                effective_request,
+                self._usage_result_from_parsed(
+                    parsed_cancelled,
+                    status="error",
+                    invocation_id=str(effective_request.invocation_id),
+                    elapsed_ms=elapsed_ms,
+                ),
+                capability_status="failed",
+                error="caller cancellation",
+            )
+            self._record_provider_result(
+                effective_request,
+                status="cancelled",
+                elapsed_ms=elapsed_ms,
+                payload={"error": "caller cancellation"},
+                error="caller cancellation",
+            )
+            raise
 
+        elapsed_ms = int((time.monotonic() - started) * 1000)
         output = external.output if isinstance(external.output, dict) else {}
-        parsed_output = parse_cli_process_output(self.flavor, output)
+        parsed_output = (
+            parsed_cli_output_from_accumulator(output, usage_accumulator)
+            if usage_accumulator is not None
+            else parse_cli_process_output(self.flavor, output)
+        )
         evidence_refs, workflow_artifacts, new_count = self._salvage_artifacts(
             workspace,
             request.salvage_globs,
@@ -233,6 +275,7 @@ class CliAgentCapability:
         error = external.error if capability_status != "accepted" else None
         result = CliAgentResult(
             status=result_status,
+            invocation_id=str(effective_request.invocation_id),
             text=parsed_output.text,
             parsed=self._parse_lenient_json(parsed_output.text) if request.expect_json_result else None,
             artifacts=evidence_refs,
@@ -244,20 +287,25 @@ class CliAgentCapability:
             cache_creation_tokens=parsed_output.cache_creation_tokens,
             num_turns=parsed_output.num_turns,
             duration_ms=parsed_output.duration_ms,
-            notional_cost_usd=parsed_output.notional_cost_usd,
+            elapsed_ms=elapsed_ms,
+            notional_cost_usd=parsed_output.provider_reported_notional_usd,
+            reasoning_output_tokens=parsed_output.reasoning_output_tokens,
+            provider_reported_notional_usd=parsed_output.provider_reported_notional_usd,
+            normalized_usage=parsed_output.normalized_usage,
+            usage_error=parsed_output.usage_error,
+            usage_diagnostic=parsed_output.usage_diagnostic,
             returncode=_safe_int_or_none(output.get("returncode")),
             stderr_tail=stderr[-800:],
         )
-        self._record_usage(request, result, capability_status=capability_status, error=error)
         agent_metadata = {
             "flavor": self.flavor.name,
             "agent_status": result.status,
             "new_artifact_count": result.new_artifact_count,
             "input_fingerprints": result.input_fingerprints,
-            "cost_known": result.notional_cost_usd is not None,
             "execution_bound_s": bound.timeout_s,
             "execution_bound_source": bound.source,
             "process_execution_bound": bound.metadata(),
+            "invocation_id": effective_request.invocation_id,
         }
         # v0.10.1: surface the bounded-capture truth (byte totals / truncation / result-file
         # settlement) from the shared process owner so the CLI door is as observable as a direct
@@ -265,12 +313,111 @@ class CliAgentCapability:
         process_io = external.metadata.get("process_io") if external.metadata else None
         if isinstance(process_io, dict):
             agent_metadata["process_io"] = process_io
+        self._record_provider_result(
+            effective_request,
+            status=capability_status,
+            elapsed_ms=elapsed_ms,
+            payload={
+                "result": result,
+                "process_result": output,
+                "metadata": agent_metadata,
+            },
+            error=error,
+        )
+        # Persist terminal provider evidence before canonical accounting. The latter may
+        # raise a configured post-call budget error, but the completed provider attempt
+        # must still leave one truthful request/response/usage evidence graph.
+        usage_event = self._record_usage(
+            effective_request, result, capability_status=capability_status, error=error
+        )
+        result = result.model_copy(update={"notional_cost_usd": usage_event.notional_usd})
         return CapabilityResult(
             status=capability_status,
             output=result,
             error=error,
             artifacts=workflow_artifacts,
             metadata=agent_metadata,
+        )
+
+    @staticmethod
+    def _usage_result_from_parsed(
+        parsed: ParsedCliOutput,
+        *,
+        status: str,
+        invocation_id: str,
+        elapsed_ms: int,
+    ) -> CliAgentResult:
+        return CliAgentResult(
+            status=status,
+            invocation_id=invocation_id,
+            input_tokens=parsed.input_tokens,
+            output_tokens=parsed.output_tokens,
+            cache_read_tokens=parsed.cache_read_tokens,
+            cache_creation_tokens=parsed.cache_creation_tokens,
+            reasoning_output_tokens=parsed.reasoning_output_tokens,
+            normalized_usage=parsed.normalized_usage,
+            usage_error=parsed.usage_error,
+            usage_diagnostic=parsed.usage_diagnostic,
+            provider_reported_notional_usd=parsed.provider_reported_notional_usd,
+            duration_ms=parsed.duration_ms,
+            elapsed_ms=elapsed_ms,
+        )
+
+    def _record_provider_request(
+        self,
+        request: CliAgentRequest,
+        input_fingerprints: list[dict[str, Any]],
+    ) -> None:
+        capture = current_observation_capture()
+        if capture is None:
+            return
+        capture.record(
+            node=self.spec.name,
+            phase="provider:request",
+            decision="provider:request",
+            kind="rendered_prompt",
+            payload={
+                "flavor": self.flavor.name,
+                "prompt": request.prompt,
+                "input_fingerprints": input_fingerprints,
+                "model": request.model,
+            },
+            metadata={
+                "flavor": self.flavor.name,
+                "model": request.model,
+                "input_count": len(input_fingerprints),
+            },
+            digest_metadata_key="prompt_digest",
+            invocation_id=request.invocation_id,
+        )
+
+    def _record_provider_result(
+        self,
+        request: CliAgentRequest,
+        *,
+        status: str,
+        elapsed_ms: int,
+        payload: dict[str, Any],
+        error: str | None,
+    ) -> None:
+        capture = current_observation_capture()
+        if capture is None:
+            return
+        capture.record(
+            node=self.spec.name,
+            phase="provider:response",
+            decision=status,
+            kind="tool_result",
+            payload=payload,
+            severity="error" if error else "info",
+            error=error,
+            metadata={
+                "flavor": self.flavor.name,
+                "model": request.model,
+                "elapsed_ms": elapsed_ms,
+            },
+            digest_metadata_key="response_digest",
+            invocation_id=request.invocation_id,
         )
 
     def _resolve_execution_bound(
@@ -434,36 +581,44 @@ class CliAgentCapability:
         *,
         capability_status: str,
         error: str | None,
-    ) -> None:
+    ) -> WorkflowUsageEvent:
         cost_class = "subscription_notional" if request.subscription_mode else "metered"
-        cost_known = result.notional_cost_usd is not None
-        record_usage_event(
-            WorkflowUsageEvent(
-                provider=self.flavor.name,
-                operation="tool",
-                cost_class=cost_class,
-                node=self.spec.name,
-                model=request.model or self.flavor.name,
-                input_tokens=result.input_tokens,
-                output_tokens=result.output_tokens,
-                total_tokens=result.input_tokens + result.output_tokens,
-                input_token_details={
-                    "cache_read": result.cache_read_tokens,
-                    "cache_creation": result.cache_creation_tokens,
-                },
-                estimated_usd=result.notional_cost_usd if cost_class == "metered" else None,
-                notional_usd=result.notional_cost_usd if cost_class == "subscription_notional" else None,
-                elapsed_ms=result.duration_ms,
-                success=capability_status == "accepted",
-                error=error,
-                metadata={
-                    "cost_known": cost_known,
-                    "cost_source": cost_class if cost_known else "unknown",
-                    "returncode": result.returncode,
-                    "new_artifact_count": result.new_artifact_count,
-                },
-            )
+        event = WorkflowUsageEvent(
+            provider=self.flavor.name,
+            operation="tool",
+            cost_class=cost_class,
+            node=self.spec.name,
+            model=request.model or self.flavor.name,
+            invocation_id=result.invocation_id,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            total_tokens=result.input_tokens + result.output_tokens,
+            input_token_details={
+                "cache_read": result.cache_read_tokens,
+                "cache_creation": result.cache_creation_tokens,
+            },
+            output_token_details={"reasoning": result.reasoning_output_tokens},
+            normalized_usage=result.normalized_usage,
+            usage_error=result.usage_error,
+            usage_diagnostic=result.usage_diagnostic,
+            provider_reported_notional_usd=(
+                result.provider_reported_notional_usd
+                if cost_class == "subscription_notional"
+                else None
+            ),
+            estimated_usd=(
+                result.provider_reported_notional_usd if cost_class == "metered" else None
+            ),
+            elapsed_ms=result.elapsed_ms,
+            success=capability_status == "accepted",
+            error=error,
+            metadata={
+                "returncode": result.returncode,
+                "new_artifact_count": result.new_artifact_count,
+            },
         )
+        record_usage_event(event)
+        return event
 
 
 def _input_suffix(ref: EvidenceRef) -> str:
@@ -474,33 +629,6 @@ def _input_suffix(ref: EvidenceRef) -> str:
     parsed = urlparse(ref.uri)
     suffix = Path(parsed.path).suffix
     return suffix or ".bin"
-
-
-def parse_cli_process_output(flavor: CliFlavor, output: dict[str, Any]) -> _ParsedCliOutput:
-    """Parse flavor-specific process output into shared usage/text fields."""
-
-    stdout = str(output.get("stdout") or "")
-    if flavor.result_source == "stdout_json_envelope":
-        try:
-            envelope = json.loads(stdout)
-        except json.JSONDecodeError:
-            return _ParsedCliOutput(text=stdout)
-        if not isinstance(envelope, dict):
-            return _ParsedCliOutput(text=stdout)
-        usage = envelope.get("usage") if isinstance(envelope.get("usage"), dict) else {}
-        return _ParsedCliOutput(
-            text=_stringify_text(envelope.get("result")),
-            input_tokens=_safe_int(usage.get("input_tokens")),
-            output_tokens=_safe_int(usage.get("output_tokens")),
-            cache_read_tokens=_safe_int(usage.get("cache_read_input_tokens")),
-            cache_creation_tokens=_safe_int(usage.get("cache_creation_input_tokens")),
-            num_turns=_safe_int_or_none(envelope.get("num_turns")),
-            duration_ms=_safe_int_or_none(envelope.get("duration_ms")),
-            notional_cost_usd=_safe_float_or_none(envelope.get("total_cost_usd")),
-        )
-    if flavor.result_source == "result_file":
-        return _ParsedCliOutput(text=_stringify_text(output.get("result") or stdout))
-    return _ParsedCliOutput(text=stdout)
 
 
 def _artifact_role(path: Path) -> str:
@@ -534,12 +662,5 @@ def _safe_int(value: Any, default: int = 0) -> int:
 def _safe_int_or_none(value: Any) -> int | None:
     try:
         return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _safe_float_or_none(value: Any) -> float | None:
-    try:
-        return float(value)
     except (TypeError, ValueError):
         return None

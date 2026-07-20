@@ -136,7 +136,14 @@ retention. Export redaction is a separate concern and must not silently alter th
 - Failed calls consume call budgets when a provider attempt occurred.
 - Do not sum subscription-notional cost into metered spend.
 - Do not bypass the reviewed provider factory; direct clients lose model routing, observation, and
-  cost attribution.
+  cost attribution, and engine call/token/budget enforcement. A direct subscription CLI call may
+  drain quota while the engine sees nothing.
+- Notional pricing is explanatory API-equivalent plan value, not billed spend and not an account
+  balance. Do not use it as the only runaway guard; keep call/token/worker/time limits finite.
+- Never reinterpret provider JSON or recalculate catalog prices in a product/dashboard/viewer.
+  Consume the persisted typed quantities, source, versions, and amount. Unknown stays unknown.
+- Do not reuse an old catalog/rate version after changing rates, or label an internal proxy rate as
+  public.
 - CLI tool policy is explicit. Tool-free completion, scoped read, and workspace-writing agents have
   different side-effect declarations.
 

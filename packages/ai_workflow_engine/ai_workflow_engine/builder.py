@@ -171,6 +171,7 @@ class WorkflowEngine:
         model_profiles: Optional[Dict[str, ModelProfile]] = None,
         prompt_root: Optional[Path] = None,
         observation: Optional[ObservationConfig] = None,
+        notional_pricing_policy: Any = None,
     ) -> None:
         self.registry = registry or CapabilityRegistry()
         self.trace_sink = trace_sink or InMemoryTraceSink()
@@ -195,6 +196,24 @@ class WorkflowEngine:
             capture_detail_text=capture_detail_text,
         )
         self.executor = WorkflowExecutor(self.runtime, config=config)
+        if notional_pricing_policy is None:
+            from ai_workflow_engine.usage_contract import (
+                CatalogNotionalPricingPolicy,
+                default_notional_pricing_policy,
+            )
+
+            notional_pricing_policy = (
+                CatalogNotionalPricingPolicy(config.pricing)
+                if config is not None and config.pricing is not None
+                else default_notional_pricing_policy()
+            )
+        from ai_workflow_engine.usage_contract import NotionalPricingPolicy
+
+        if not isinstance(notional_pricing_policy, NotionalPricingPolicy):
+            raise TypeError(
+                "notional_pricing_policy does not satisfy NotionalPricingPolicy"
+            )
+        self.executor.runner.notional_pricing_policy = notional_pricing_policy
         self.executor.runner.usage_sink = SessionScopedUsageSink(usage_sink)
         self.usage_sink = usage_sink
         self.model_profiles = dict(model_profiles or {})
@@ -952,6 +971,7 @@ class WorkflowEngineBuilder:
         self._detail_sink: Optional[DetailSink] = None
         self._capture_detail_text = False
         self._usage_sink: Optional[UsageSink] = None
+        self._notional_pricing_policy: Any = None
         self._checkpoint_store: Optional[CheckpointStore] = None
         self._prompt_root: Optional[Path] = None
         self._default_profile: Optional[WorkflowProfile] = None
@@ -990,6 +1010,16 @@ class WorkflowEngineBuilder:
 
     def with_usage_sink(self, sink: UsageSink) -> "WorkflowEngineBuilder":
         self._usage_sink = sink
+        return self
+
+    def with_notional_pricing_policy(self, policy: Any) -> "WorkflowEngineBuilder":
+        """Override the pure per-run notional-pricing policy at composition time."""
+
+        from ai_workflow_engine.usage_contract import NotionalPricingPolicy
+
+        if not isinstance(policy, NotionalPricingPolicy):
+            raise TypeError("policy does not satisfy NotionalPricingPolicy")
+        self._notional_pricing_policy = policy
         return self
 
     def with_wait_coordinator(self, coordinator: Any, *, clock: Any = None) -> "WorkflowEngineBuilder":
@@ -1126,6 +1156,7 @@ class WorkflowEngineBuilder:
             model_profiles=self._model_profiles,
             prompt_root=self._prompt_root,
             observation=observation,
+            notional_pricing_policy=self._notional_pricing_policy,
         )
         for spec, handler in self._capabilities:
             engine.register_capability_spec(spec, handler)

@@ -14,9 +14,154 @@ from ai_workflow_engine import (
     WorkflowTraceEvent,
     WorkflowUsageEvent,
 )
+from ai_workflow_engine.usage_contract import (
+    NormalizedTokenUsage,
+    NotionalPricingResult,
+    NotionalRate,
+)
 from ai_workflow_viewer import JsonlObservationViewer
 
 pytestmark = pytest.mark.unit
+
+
+def test_viewer_renders_persisted_pricing_basis_without_recalculation():
+    from ai_workflow_viewer import build_observation_graph, observation_graph_to_html
+
+    definition = WorkflowBuilder("pricing-view").step("agent").build()
+    graph = build_observation_graph(definition, [], [], [], run_id="pricing-run")
+    usage = NormalizedTokenUsage(
+        counter_schema="codex_inclusive",
+        uncached_input_tokens=100,
+        cache_read_input_tokens=20,
+        cache_creation_input_tokens=0,
+        non_reasoning_output_tokens=20,
+        reasoning_output_tokens=10,
+        raw_input_tokens=120,
+        raw_output_tokens=30,
+        raw_total_tokens=150,
+    )
+    rate = NotionalRate(
+        provider="codex_exec",
+        model_prefix="gpt-5.4",
+        rate_version="rate-v1",
+        source="configured_public_rate",
+        uncached_input_per_1m=2.5,
+        cached_input_per_1m=0.25,
+        cache_creation_input_per_1m=2.5,
+        output_per_1m=15,
+    )
+    event = WorkflowUsageEvent(
+        node="agent<script>",
+        provider="codex_exec",
+        model="gpt-5.4-codex",
+        cost_class="subscription_notional",
+        input_tokens=120,
+        output_tokens=30,
+        total_tokens=150,
+        normalized_usage=usage,
+        notional_usd=0.000705,
+        notional_pricing=NotionalPricingResult(
+            source="configured_public_rate",
+            amount_usd=0.000705,
+            catalog_version="catalog-v1",
+            rate=rate,
+        ),
+    )
+
+    page = observation_graph_to_html(
+        definition,
+        graph,
+        usage_events=[event],
+    )
+
+    assert "$0.000705 notional" in page
+    assert "configured public rate · catalog-v1 · rate-v1" in page
+    assert (
+        "100 uncached input · 20 cached input · 0 cache-created input · "
+        "30 output (10 reasoning output)"
+    ) in page
+    assert "agent&lt;script&gt;" in page
+    assert "agent<script>" not in page
+
+
+def test_served_viewer_projects_persisted_pricing_basis_over_real_http(tmp_path):
+    import threading
+    import urllib.request
+
+    from ai_workflow_viewer import FileEventSource, serve_viewer
+
+    definition = WorkflowBuilder("pricing-served").step("agent").build()
+    usage = NormalizedTokenUsage(
+        counter_schema="codex_inclusive",
+        uncached_input_tokens=100,
+        cache_read_input_tokens=20,
+        cache_creation_input_tokens=0,
+        non_reasoning_output_tokens=20,
+        reasoning_output_tokens=10,
+        raw_input_tokens=120,
+        raw_output_tokens=30,
+        raw_total_tokens=150,
+    )
+    rate = NotionalRate(
+        provider="codex_exec",
+        model_prefix="gpt-5.4",
+        rate_version="served-rate-v1",
+        source="configured_proxy_rate",
+        uncached_input_per_1m=2.5,
+        cached_input_per_1m=0.25,
+        cache_creation_input_per_1m=2.5,
+        output_per_1m=15.0,
+    )
+    _write_bundle(
+        tmp_path,
+        "pricing-served-run",
+        definition,
+        trace_events=[
+            WorkflowTraceEvent(
+                node="agent",
+                node_status="completed",
+                phase="node:result",
+                run_id="pricing-served-run",
+                sequence=1,
+            )
+        ],
+        usage_events=[
+            WorkflowUsageEvent(
+                node="agent",
+                provider="codex_exec",
+                model="gpt-5.4-codex",
+                cost_class="subscription_notional",
+                input_tokens=120,
+                output_tokens=30,
+                total_tokens=150,
+                normalized_usage=usage,
+                notional_usd=0.000705,
+                notional_pricing=NotionalPricingResult(
+                    source="configured_proxy_rate",
+                    amount_usd=0.000705,
+                    catalog_version="served-catalog-v1",
+                    rate=rate,
+                ),
+                run_id="pricing-served-run",
+                sequence=2,
+            )
+        ],
+    )
+    server = serve_viewer(JsonlObservationViewer(FileEventSource(tmp_path)), port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        root = f"http://127.0.0.1:{server.server_address[1]}"
+        page = urllib.request.urlopen(
+            f"{root}/?run_id=pricing-served-run", timeout=5
+        ).read().decode("utf-8")
+        assert "$0.000705 notional" in page
+        assert "configured proxy rate · served-catalog-v1 · served-rate-v1" in page
+        assert "100 uncached input" in page
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 def test_viewer_truth_owners_have_one_way_dependencies():
@@ -214,6 +359,8 @@ def test_jsonl_observation_viewer_renders_html_from_public_contracts(tmp_path):
         node="plan",
         decision="llm:prompt",
         phase="llm:request",
+        invocation_id="inv-viewer-test",
+        detail_capture="captured",
         detail_refs=["detail-1"],
         run_id="run-1",
         sequence=1,
@@ -221,6 +368,7 @@ def test_jsonl_observation_viewer_renders_html_from_public_contracts(tmp_path):
     detail = ObservationDetail(
         detail_id="detail-1",
         event_id=event.event_id,
+        invocation_id="inv-viewer-test",
         kind="rendered_prompt",
         content_type="text/plain",
         digest="digest",
@@ -233,9 +381,26 @@ def test_jsonl_observation_viewer_renders_html_from_public_contracts(tmp_path):
         definition,
         trace_events=[
             event,
-            WorkflowTraceEvent(node="render", decision="accepted", run_id="run-1", sequence=3),
+            WorkflowTraceEvent(
+                node="plan",
+                decision="accepted",
+                phase="llm:response",
+                invocation_id="inv-viewer-test",
+                detail_capture="capture_mode_off",
+                run_id="run-1",
+                sequence=3,
+            ),
         ],
-        usage_events=[WorkflowUsageEvent(node="plan", total_tokens=9, estimated_usd=0.01, run_id="run-1", sequence=4)],
+        usage_events=[
+            WorkflowUsageEvent(
+                node="plan",
+                invocation_id="inv-viewer-test",
+                total_tokens=9,
+                estimated_usd=0.01,
+                run_id="run-1",
+                sequence=4,
+            )
+        ],
         details=[detail],
     )
 
@@ -779,12 +944,17 @@ def test_read_group_reports_abandoned_attempts_without_merging_them(tmp_path):
             WorkflowUsageEvent(
                 node="finish", total_tokens=2, notional_usd=0.007,
                 cost_class="subscription_notional", run_id="logical-run", sequence=3,
-                event_id="dead-u2", metadata={"cost_known": True},
+                event_id="dead-u2",
+                provider_reported_notional_usd=0.007,
+                notional_pricing=NotionalPricingResult(
+                    source="provider_reported",
+                    amount_usd=0.007,
+                    catalog_version="provider-reported",
+                ),
             ),
             WorkflowUsageEvent(
                 node="finish", total_tokens=1, cost_class="metered",
                 run_id="logical-run", sequence=4, event_id="dead-u3",
-                metadata={"cost_known": False},
             ),
         ],
         meta_extra=_segment_meta(

@@ -2,34 +2,12 @@
 
 from __future__ import annotations
 
-import json
-import logging
-from typing import Any, Optional
+from typing import Optional
 
-logger = logging.getLogger(__name__)
+from ai_workflow_engine.usage_contract import default_chat_rate_table
 
 _DEFAULT_PRICE_TABLE: dict[str, dict[str, float]] = {
-    # Official OpenAI pricing page, checked 2026-06-04. Keep override support because prices move.
-    "gpt-5.5": {
-        "input_per_1m": 5.0,
-        "cached_input_per_1m": 0.5,
-        "output_per_1m": 30.0,
-    },
-    "gpt-5.4": {
-        "input_per_1m": 2.5,
-        "cached_input_per_1m": 0.25,
-        "output_per_1m": 15.0,
-    },
-    "gpt-5.4-mini": {
-        "input_per_1m": 0.75,
-        "cached_input_per_1m": 0.075,
-        "output_per_1m": 4.5,
-    },
-    "gpt-5.4-nano": {
-        "input_per_1m": 0.20,
-        "cached_input_per_1m": 0.02,
-        "output_per_1m": 1.25,
-    },
+    **default_chat_rate_table(),
     "gpt-image-2": {
         "text_input_per_1m": 5.0,
         "text_cached_input_per_1m": 1.25,
@@ -40,7 +18,7 @@ _DEFAULT_PRICE_TABLE: dict[str, dict[str, float]] = {
     # Google Gemini API pricing, checked 2026-06-06. Generated images are metered as output image
     # tokens by resolution; provider adapters normalize image output into output_token_details.
     # Image-model pricing docs do not list cached-input discounts, so cached input is priced the
-    # same as normal input unless WORKFLOW_MODEL_PRICE_OVERRIDES_JSON says otherwise.
+    # same as normal input.
     "gemini-2.5-flash-image": {
         "text_input_per_1m": 0.30,
         "text_cached_input_per_1m": 0.30,
@@ -72,10 +50,8 @@ def estimate_cost_usd(
     output_tokens: int,
     input_details: Optional[dict[str, int]] = None,
     output_details: Optional[dict[str, int]] = None,
-    *,
-    config: Any = None,
 ) -> Optional[float]:
-    prices = _price_for_model(model, config)
+    prices = _price_for_model(model)
     if not prices:
         return None
 
@@ -108,35 +84,10 @@ def estimate_cost_usd(
     return round(input_cost + cached_cost + output_cost, 6)
 
 
-def _price_for_model(model: str, config: Any = None) -> Optional[dict[str, float]]:
-    overrides = _price_overrides(config)
-    if model in overrides:
-        return overrides[model]
+def _price_for_model(model: str) -> Optional[dict[str, float]]:
     if model in _DEFAULT_PRICE_TABLE:
         return _DEFAULT_PRICE_TABLE[model]
-    price_table = {**_DEFAULT_PRICE_TABLE, **overrides}
-    for key in sorted(price_table, key=len, reverse=True):
+    for key in sorted(_DEFAULT_PRICE_TABLE, key=len, reverse=True):
         if model.startswith(key):
-            return price_table[key]
+            return _DEFAULT_PRICE_TABLE[key]
     return None
-
-
-def _price_overrides(config: Any = None) -> dict[str, dict[str, float]]:
-    raw = getattr(config, "WORKFLOW_MODEL_PRICE_OVERRIDES_JSON", "") if config else ""
-    if not raw:
-        return {}
-    if not isinstance(raw, str):
-        return {}
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        logger.warning("Ignoring invalid WORKFLOW_MODEL_PRICE_OVERRIDES_JSON")
-        return {}
-    if not isinstance(data, dict):
-        return {}
-    cleaned = {}
-    for model, prices in data.items():
-        if isinstance(model, str) and isinstance(prices, dict):
-            cleaned[model] = {str(k): float(v) for k, v in prices.items()}
-    return cleaned
-

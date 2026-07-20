@@ -1,16 +1,30 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 
 import pytest
-from ai_workflow_engine import ImageInput, LLMRequest, StructuredLLMNode, ToolSpec, WEAK_MODEL_CLEANER
+from ai_workflow_engine import (
+    ImageInput,
+    LLMRequest,
+    StructuredLLMNode,
+    StructuredOutputError,
+    ToolSpec,
+    WEAK_MODEL_CLEANER,
+)
 from ai_workflow_engine.models import WorkflowRunContext, WorkflowUsageSummary
 from ai_workflow_engine.budget import WorkflowBudget, WorkflowUsageContext, workflow_usage_scope
 from pydantic import BaseModel
 
-from ai_workflow_tools.cli_agents import ConsoleLLMClient, claude_p, codex_exec
+from ai_workflow_tools.cli_agents import (
+    ConsoleCliError,
+    ConsoleLLMClient,
+    claude_p,
+    codex_exec,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -98,7 +112,7 @@ async def test_console_claude_structured_node_uses_pre_parse_and_subscription_us
     assert "--mcp-config" not in record["argv"]
 
 
-async def test_console_codex_reads_result_file_and_keeps_cost_unknown(
+async def test_console_codex_reads_result_file_and_records_final_structured_usage(
     fake_cli_path,
     monkeypatch,
     tmp_path,
@@ -109,7 +123,10 @@ async def test_console_codex_reads_result_file_and_keeps_cost_unknown(
         mode="result_file",
         result='{"label": "codex"}',
     )
-    client = ConsoleLLMClient(_fake_flavor(codex_exec, fake_cli_path))
+    client = ConsoleLLMClient(
+        _fake_flavor(codex_exec, fake_cli_path),
+        model="gpt-5.4-codex",
+    )
     node = _node(client)
     summary = WorkflowUsageSummary()
 
@@ -121,16 +138,168 @@ async def test_console_codex_reads_result_file_and_keeps_cost_unknown(
     assert result.label == "codex"
     usage = summary.events[0]
     assert usage.cost_class == "subscription_notional"
-    assert usage.notional_usd is None
+    assert usage.notional_usd == pytest.approx(0.000705)
     assert usage.estimated_usd is None
-    assert usage.metadata["cost_known"] is False
-    assert usage.metadata["cost_source"] == "unknown"
+    assert usage.input_tokens == 120
+    assert usage.output_tokens == 30
+    assert usage.invocation_id
+    assert usage.elapsed_ms is not None and usage.elapsed_ms >= 0
+    assert usage.input_token_details["cache_read"] == 20
+    assert usage.output_token_details["reasoning"] == 10
 
     record = json.loads(record_path.read_text(encoding="utf-8"))
     assert record["stdin"] == ""
     assert "--output-last-message" in record["argv"]
     assert "--config" not in record["argv"]
+    assert record["argv"][record["argv"].index("--model") + 1] == "gpt-5.4-codex"
     assert record["argv"][-1] == "user: Classify mug."
+    assert record["argv"].count("--json") == 1
+
+
+@pytest.mark.parametrize("mode", ["usage_then_fail", "usage_then_sleep"])
+async def test_console_codex_failure_and_timeout_keep_latest_structured_usage(
+    fake_cli_path,
+    monkeypatch,
+    tmp_path,
+    mode,
+):
+    _configure_fake_cli(monkeypatch, tmp_path, mode=mode)
+    monkeypatch.setenv("FAKE_CLI_SLEEP_S", "30")
+    client = ConsoleLLMClient(
+        _fake_flavor(codex_exec, fake_cli_path),
+        model="gpt-5.4-codex",
+        timeout_s=0.5 if mode == "usage_then_sleep" else 30,
+    )
+    node = _node(client, max_repair_rounds=0)
+    summary = WorkflowUsageSummary()
+
+    with workflow_usage_scope(
+        WorkflowUsageContext(
+            WorkflowRunContext(
+                workflow_id=f"wf-console-{mode}",
+                workflow_type="console",
+            ),
+            summary,
+            WorkflowBudget(),
+        )
+    ):
+        with pytest.raises(StructuredOutputError):
+            await node.run({"item": "mug"})
+
+    assert len(summary.events) == 1
+    usage = summary.events[0]
+    assert usage.node == "console_node"
+    assert usage.success is False
+    assert usage.input_tokens == 120
+    assert usage.output_tokens == 30
+    assert usage.notional_usd == pytest.approx(0.000705)
+    assert usage.invocation_id
+    assert usage.elapsed_ms is not None and usage.elapsed_ms >= 0
+
+
+async def test_console_codex_cancellation_records_latest_usage_once_with_node_identity(
+    fake_cli_path,
+    monkeypatch,
+    tmp_path,
+):
+    ready = tmp_path / "console-ready.pid"
+    _configure_fake_cli(monkeypatch, tmp_path, mode="usage_then_sleep")
+    monkeypatch.setenv("FAKE_CLI_SLEEP_S", "30")
+    monkeypatch.setenv("FAKE_CLI_READY_FILE", str(ready))
+    client = ConsoleLLMClient(
+        _fake_flavor(codex_exec, fake_cli_path),
+        model="gpt-5.4-codex",
+        timeout_s=30,
+    )
+    node = _node(client, max_repair_rounds=0)
+    summary = WorkflowUsageSummary()
+
+    with workflow_usage_scope(
+        WorkflowUsageContext(
+            WorkflowRunContext(
+                workflow_id="wf-console-cancel",
+                workflow_type="console",
+            ),
+            summary,
+            WorkflowBudget(),
+        )
+    ):
+        task = asyncio.create_task(node.run({"item": "mug"}))
+        for _ in range(200):
+            if ready.exists():
+                break
+            await asyncio.sleep(0.01)
+        assert ready.exists(), "fake Codex process never reached the cancellation barrier"
+        pid = int(ready.read_text(encoding="utf-8"))
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert len(summary.events) == 1
+    usage = summary.events[0]
+    assert usage.node == "console_node"
+    assert usage.attempt == 1
+    assert usage.success is False
+    assert usage.notional_usd == pytest.approx(0.000705)
+    assert usage.invocation_id
+    assert usage.elapsed_ms is not None and usage.elapsed_ms >= 0
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+
+
+async def test_console_chat_cancellation_crosses_worker_thread_and_records_once(
+    fake_cli_path,
+    monkeypatch,
+    tmp_path,
+):
+    from ai_workflow_tools.cli_agents import ConsoleChatModel
+
+    ready = tmp_path / "console-chat-ready.pid"
+    _configure_fake_cli(monkeypatch, tmp_path, mode="usage_then_sleep")
+    monkeypatch.setenv("FAKE_CLI_SLEEP_S", "30")
+    monkeypatch.setenv("FAKE_CLI_READY_FILE", str(ready))
+    model = ConsoleChatModel(
+        _fake_flavor(codex_exec, fake_cli_path),
+        model="gpt-5.4-codex",
+        timeout_s=30,
+    )
+    node = _node(model, max_repair_rounds=0, default_model="gpt-5.4-codex")
+    summary = WorkflowUsageSummary()
+
+    with workflow_usage_scope(
+        WorkflowUsageContext(
+            WorkflowRunContext(
+                workflow_id="wf-console-chat-cancel",
+                workflow_type="console",
+            ),
+            summary,
+            WorkflowBudget(),
+        )
+    ):
+        task = asyncio.create_task(node.run({"item": "mug"}))
+        for _ in range(200):
+            if ready.exists():
+                break
+            await asyncio.sleep(0.01)
+        assert ready.exists(), "fake Codex process never reached the cancellation barrier"
+        pid = int(ready.read_text(encoding="utf-8"))
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=5)
+
+    assert len(summary.events) == 1
+    usage = summary.events[0]
+    assert usage.node == "console_node"
+    assert usage.attempt == 1
+    assert usage.success is False
+    assert usage.cost_class == "subscription_notional"
+    assert usage.provider == "codex_exec"
+    assert usage.model == "gpt-5.4-codex"
+    assert usage.notional_usd == pytest.approx(0.000705)
+    assert usage.invocation_id
+    assert usage.elapsed_ms is not None and usage.elapsed_ms >= 0
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
 
 
 async def test_console_refuses_images_and_tools_before_spawn(fake_cli_path, monkeypatch, tmp_path):
@@ -452,6 +621,57 @@ async def test_console_chat_model_timeout_uses_the_shared_process_owner(
         model.invoke([SimpleNamespace(type="human", content="hi")])
 
 
+@pytest.mark.parametrize("mode", ["usage_then_fail", "usage_then_sleep"])
+async def test_console_chat_codex_failure_and_timeout_record_structured_usage(
+    fake_cli_path,
+    monkeypatch,
+    tmp_path,
+    mode,
+):
+    from langchain_core.messages import HumanMessage
+
+    from ai_workflow_engine.usage import invoke_metered_chat
+    from ai_workflow_tools.cli_agents import ConsoleChatModel
+
+    _configure_fake_cli(monkeypatch, tmp_path, mode=mode)
+    monkeypatch.setenv("FAKE_CLI_SLEEP_S", "30")
+    model = ConsoleChatModel(
+        _fake_flavor(codex_exec, fake_cli_path),
+        model="gpt-5.4-codex",
+        timeout_s=0.5 if mode == "usage_then_sleep" else 30,
+    )
+    summary = WorkflowUsageSummary()
+
+    with workflow_usage_scope(
+        WorkflowUsageContext(
+            WorkflowRunContext(
+                workflow_id=f"wf-chat-{mode}",
+                workflow_type="chat",
+            ),
+            summary,
+            WorkflowBudget(),
+        )
+    ):
+        with pytest.raises(ConsoleCliError):
+            invoke_metered_chat(
+                model,
+                [HumanMessage(content="hi")],
+                node="chat_node",
+                model="gpt-5.4-codex",
+                cost_class="subscription_notional",
+                provider="codex_exec",
+            )
+
+    assert len(summary.events) == 1
+    usage = summary.events[0]
+    assert usage.node == "chat_node"
+    assert usage.success is False
+    assert usage.input_tokens == 120
+    assert usage.normalized_usage is not None
+    assert usage.normalized_usage.raw_input_tokens == 120
+    assert usage.notional_usd == pytest.approx(0.000705)
+
+
 async def test_console_chat_model_rejects_image_parts_loudly(fake_cli_path):
     from types import SimpleNamespace
 
@@ -483,10 +703,13 @@ async def test_console_stages_images_and_allows_read_tool(fake_cli_path, monkeyp
         LLMRequest(
             user="What color is the image? JSON only.",
             images=[ImageInput(source="base64", data="aGVsbG8=", media_type="image/png")],
+            invocation_id="inv-console-image",
         )
     )
 
     assert response.text == '{"label": "red"}'
+    assert response.invocation_id == "inv-console-image"
+    assert response.elapsed_ms is not None and response.elapsed_ms >= 0
     record = json.loads(record_path.read_text(encoding="utf-8"))
     # image existed ON DISK in the CLI's working directory at invocation time
     assert "inputs/img-1.png" in record["cwd_files"], record["cwd_files"]
@@ -504,16 +727,19 @@ async def test_console_codex_attaches_staged_images_after_prompt(
     record_path = _configure_fake_cli(monkeypatch, tmp_path, mode="result_file")
     client = ConsoleLLMClient(_fake_flavor(codex_exec, fake_cli_path))
 
-    await client(
+    response = await client(
         LLMRequest(
             user="Inspect both images.",
             images=[
                 ImageInput(source="base64", data="aGVsbG8=", media_type="image/png"),
                 ImageInput(source="base64", data="d29ybGQ=", media_type="image/jpeg"),
             ],
+            invocation_id="inv-console-codex-images",
         )
     )
 
+    assert response.invocation_id == "inv-console-codex-images"
+    assert response.elapsed_ms is not None and response.elapsed_ms >= 0
     record = json.loads(record_path.read_text(encoding="utf-8"))
     assert "inputs/img-1.png" in record["cwd_files"]
     assert "inputs/img-2.jpg" in record["cwd_files"]
@@ -908,6 +1134,12 @@ async def test_console_chat_model_inherits_a_real_engine_window():
 
     assert result.status == "completed" and result.output.label == "ok"
     assert 0 < spy.request.timeout_s < 5.0
+    usage = result.usage.events[0]
+    assert usage.cost_class == "subscription_notional"
+    assert usage.provider == "claude_p"
+    assert usage.estimated_usd is None
+    assert usage.notional_pricing is not None
+    assert usage.notional_pricing.source == "unknown"
     process_bound = spy.request.metadata["process_execution_bound"]
     assert process_bound["work_timeout_s"] == spy.request.timeout_s
     llm_events = [

@@ -78,6 +78,22 @@ def _reject_raw_flag_conflict(argv, flag: str, *, typed_source: str) -> None:
         )
 
 
+def codex_structured_output_argv(existing_argv: "list[str] | tuple[str, ...]") -> list[str]:
+    """Enable the one Codex JSONL protocol stream without permitting duplicate controls."""
+
+    _reject_raw_flag_conflict(existing_argv, "--json", typed_source="structured usage")
+    return ["--json"]
+
+
+def codex_model_argv(
+    model: "str | None", existing_argv: "list[str] | tuple[str, ...]"
+) -> list[str]:
+    if not model:
+        return []
+    _reject_raw_flag_conflict(existing_argv, "--model", typed_source="model")
+    return ["--model", model]
+
+
 def _build_claude_p_invocation(flavor: CliFlavor, request: CliAgentRequest) -> CliAgentInvocation:
     workspace = _ensure_workspace(request.workspace_dir)
     config_path = workspace / "mcp_config.json"
@@ -132,7 +148,13 @@ def _build_codex_exec_invocation(flavor: CliFlavor, request: CliAgentRequest) ->
         argv.extend(["--model", request.model])
     if request.reasoning_effort:
         argv.extend(["--config", f"model_reasoning_effort={json.dumps(request.reasoning_effort)}"])
-    argv.extend([*request.extra_argv, request.prompt])
+    argv.extend(
+        [
+            *codex_structured_output_argv(request.extra_argv),
+            *request.extra_argv,
+            request.prompt,
+        ]
+    )
     return CliAgentInvocation(argv=argv, result_file=str(result_file))
 
 
@@ -164,4 +186,9 @@ def _codex_mcp_config_args(server: McpServerConfig) -> list[str]:
     return args
 
 
-__all__ = ["build_cli_agent_invocation", "resolve_effective_tools"]
+__all__ = [
+    "build_cli_agent_invocation",
+    "codex_model_argv",
+    "codex_structured_output_argv",
+    "resolve_effective_tools",
+]

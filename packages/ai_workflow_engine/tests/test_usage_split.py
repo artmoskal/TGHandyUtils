@@ -16,6 +16,7 @@ from ai_workflow_engine.models import (
     WorkflowUsageEvent,
     WorkflowUsageSummary,
 )
+from ai_workflow_engine.usage_contract import NotionalPricingResult
 from ai_workflow_engine.pricing import estimate_cost_usd
 from ai_workflow_engine.provider_usage import _usage_event_from_chat_output
 from ai_workflow_engine.token_estimation import estimate_text_tokens
@@ -30,6 +31,27 @@ def _ctx(budget: WorkflowBudget) -> WorkflowUsageContext:
         run_context=WorkflowRunContext(workflow_id="r1", workflow_type="t"),
         summary=WorkflowUsageSummary(),
         budget=budget,
+    )
+
+
+def _provider_reported_subscription_event(
+    *,
+    node: str,
+    model: str,
+    amount: float,
+) -> WorkflowUsageEvent:
+    return WorkflowUsageEvent(
+        node=node,
+        model=model,
+        provider="claude_p",
+        cost_class="subscription_notional",
+        provider_reported_notional_usd=amount,
+        notional_pricing=NotionalPricingResult(
+            source="provider_reported",
+            amount_usd=amount,
+            catalog_version="provider-reported",
+        ),
+        notional_usd=amount,
     )
 
 
@@ -71,18 +93,58 @@ def test_provider_metadata_fallback_shape_token_usage():
     assert (event.input_tokens, event.output_tokens, event.total_tokens) == (10, 4, 14)
 
 
+def test_dynamic_provider_objects_cannot_fabricate_usage_identity_or_counters():
+    from unittest.mock import Mock
+    from ai_workflow_engine.usage import invoke_metered_chat
+
+    llm = Mock()
+    llm.invoke.return_value = Mock(
+        content="ok",
+        usage_metadata=None,
+        response_metadata={},
+    )
+    summary = WorkflowUsageSummary()
+    context = WorkflowUsageContext(
+        WorkflowRunContext(workflow_id="wf-dynamic", workflow_type="test"),
+        summary,
+        WorkflowBudget(),
+    )
+
+    with workflow_usage_scope(context):
+        invoke_metered_chat(llm, [], node="n", model="fallback")
+
+    event = summary.events[0]
+    assert event.provider == "openai"
+    assert event.cost_class == "metered"
+    assert event.normalized_usage is None
+    assert event.usage_error is None
+    assert event.usage_diagnostic is None
+
+
 def test_subscription_notional_is_never_priced_as_metered():
     output = SimpleNamespace(usage_metadata={"input_tokens": 5, "output_tokens": 5}, response_metadata={})
-    event = _usage_event_from_chat_output(
-        output,
-        node="n",
-        model="gpt-5.4",  # priced model — must still NOT get metered USD
-        attempt=1,
-        elapsed_ms=5,
-        metadata=None,
-        cost_class="subscription_notional",
-        notional_usd=0.5,
+    summary = WorkflowUsageSummary()
+    context = WorkflowUsageContext(
+        WorkflowRunContext(workflow_id="wf-notional", workflow_type="test"),
+        summary,
+        WorkflowBudget(),
     )
+    from ai_workflow_engine.usage_events import record_usage_event
+
+    with workflow_usage_scope(context):
+        record_usage_event(
+            _usage_event_from_chat_output(
+                output,
+                node="n",
+                model="gpt-5.4",  # priced model — must still NOT get metered USD
+                attempt=1,
+                elapsed_ms=5,
+                metadata=None,
+                cost_class="subscription_notional",
+                notional_usd=0.5,
+            )
+        )
+    event = summary.events[0]
     assert event.estimated_usd is None
     assert event.notional_usd == 0.5
     assert _event_display_cost(event) == 0.5  # display shows notional, not phantom metered
@@ -113,9 +175,7 @@ def test_summary_formatting_separates_billed_from_subscription_value():
 
     mixed = WorkflowUsageSummary()
     mixed.add_event(WorkflowUsageEvent(node="a", model="m", estimated_usd=0.01))
-    mixed.add_event(
-        WorkflowUsageEvent(node="b", model="m", cost_class="subscription_notional", notional_usd=0.2)
-    )
+    mixed.add_event(_provider_reported_subscription_event(node="b", model="m", amount=0.2))
     rendered = format_usage_summary(mixed)
     assert "billed (API): $0.0100" in rendered
     assert "subscription: ~$0.2000 plan value, no extra charge" in rendered
@@ -147,7 +207,7 @@ def test_provider_detail_dump_failure_warns_instead_of_vanishing(caplog):
 def test_summary_formatting_pure_subscription_run_shows_true_zero_billed():
     subscription = WorkflowUsageSummary()
     subscription.add_event(
-        WorkflowUsageEvent(node="q", model="claude-p", cost_class="subscription_notional", notional_usd=0.05)
+        _provider_reported_subscription_event(node="q", model="claude-p", amount=0.05)
     )
     rendered = format_usage_summary(subscription)
     assert "billed (API): $0" in rendered  # NO metered events -> genuinely nothing billed

@@ -19,6 +19,7 @@ from ai_workflow_engine.observation_bundle import (
     assert_plain_identity,
     resolve_child_dir,
 )
+from ai_workflow_engine.observation_integrity import validate_provider_invocation_links
 from ai_workflow_viewer.grouping import (
     assemble_observation_group,
     summarize_observation_groups,
@@ -74,6 +75,11 @@ class FileEventSource:
         ]
         records.sort(key=_record_sort_key)
         _assert_sequence_sane(records)
+        validate_provider_invocation_links(
+            (item.record for item in records if item.type == "trace"),
+            (item.record for item in records if item.type == "detail"),
+            (item.record for item in records if item.type == "usage"),
+        )
         return ObservationRunData(
             run_id=meta.run_id,
             definition=definition,

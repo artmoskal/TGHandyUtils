@@ -22,6 +22,7 @@
     "CapabilityResult": "export",
     "CapabilityRuntime": "export",
     "CapabilitySpec": "export",
+    "CatalogNotionalPricingPolicy": "export",
     "ChatMessage": "export",
     "CheckpointStore": "export",
     "ClarificationOption": "export",
@@ -78,6 +79,11 @@
     "NodeExecutionState": "export",
     "NodeResult": "export",
     "NodeSchedulingServices": "export",
+    "NormalizedTokenUsage": "export",
+    "NotionalPricingConfig": "export",
+    "NotionalPricingPolicy": "export",
+    "NotionalPricingResult": "export",
+    "NotionalRate": "export",
     "ObservationBundleMetaV2": "export",
     "ObservationConfig": "export",
     "ObservationDetail": "export",
@@ -120,6 +126,7 @@
     "TraceSink": "export",
     "Transition": "export",
     "UnsupportedNodeError": "export",
+    "UsageError": "export",
     "UsageSink": "export",
     "WEAK_MODEL_CLEANER": "export",
     "WaitClaim": "export",
@@ -170,6 +177,8 @@
     "cleanup_artifacts": "export",
     "compose_cleaners": "export",
     "current_model_profile": "export",
+    "default_notional_pricing_config": "export",
+    "default_notional_pricing_policy": "export",
     "default_rule_based_compactor": "export",
     "default_state_renderer": "export",
     "default_tool_state_reducer": "export",
@@ -856,6 +865,221 @@
           "title": "ModelProfile",
           "type": "object"
         },
+        "NormalizedTokenUsage": {
+          "additionalProperties": false,
+          "description": "Provider-independent quantities with the provider's raw counters retained.",
+          "properties": {
+            "cache_creation_input_tokens": {
+              "minimum": 0,
+              "title": "Cache Creation Input Tokens",
+              "type": "integer"
+            },
+            "cache_read_input_tokens": {
+              "minimum": 0,
+              "title": "Cache Read Input Tokens",
+              "type": "integer"
+            },
+            "counter_schema": {
+              "enum": [
+                "codex_inclusive",
+                "claude_disjoint_cache",
+                "generic"
+              ],
+              "title": "Counter Schema",
+              "type": "string"
+            },
+            "non_reasoning_output_tokens": {
+              "minimum": 0,
+              "title": "Non Reasoning Output Tokens",
+              "type": "integer"
+            },
+            "raw_input_tokens": {
+              "minimum": 0,
+              "title": "Raw Input Tokens",
+              "type": "integer"
+            },
+            "raw_output_tokens": {
+              "minimum": 0,
+              "title": "Raw Output Tokens",
+              "type": "integer"
+            },
+            "raw_total_tokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Raw Total Tokens"
+            },
+            "reasoning_output_tokens": {
+              "minimum": 0,
+              "title": "Reasoning Output Tokens",
+              "type": "integer"
+            },
+            "uncached_input_tokens": {
+              "minimum": 0,
+              "title": "Uncached Input Tokens",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "counter_schema",
+            "uncached_input_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+            "non_reasoning_output_tokens",
+            "reasoning_output_tokens",
+            "raw_input_tokens",
+            "raw_output_tokens"
+          ],
+          "title": "NormalizedTokenUsage",
+          "type": "object"
+        },
+        "NotionalPricingResult": {
+          "additionalProperties": false,
+          "description": "Persisted pricing truth for one usage event.",
+          "properties": {
+            "amount_usd": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Amount Usd"
+            },
+            "catalog_version": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Catalog Version"
+            },
+            "rate": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/NotionalRate"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "source": {
+              "enum": [
+                "provider_reported",
+                "configured_public_rate",
+                "configured_proxy_rate",
+                "unknown"
+              ],
+              "title": "Source",
+              "type": "string"
+            },
+            "unknown_reason": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "usage_event_missing",
+                    "usage_event_malformed",
+                    "invalid_token_counters",
+                    "model_missing",
+                    "rate_missing"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Unknown Reason"
+            }
+          },
+          "required": [
+            "source"
+          ],
+          "title": "NotionalPricingResult",
+          "type": "object"
+        },
+        "NotionalRate": {
+          "additionalProperties": false,
+          "description": "One versioned provider/model rate used for observed plan-value calculation.",
+          "properties": {
+            "cache_creation_input_per_1m": {
+              "minimum": 0,
+              "title": "Cache Creation Input Per 1M",
+              "type": "number"
+            },
+            "cached_input_per_1m": {
+              "minimum": 0,
+              "title": "Cached Input Per 1M",
+              "type": "number"
+            },
+            "currency": {
+              "const": "USD",
+              "default": "USD",
+              "title": "Currency",
+              "type": "string"
+            },
+            "model_prefix": {
+              "title": "Model Prefix",
+              "type": "string"
+            },
+            "output_per_1m": {
+              "minimum": 0,
+              "title": "Output Per 1M",
+              "type": "number"
+            },
+            "provider": {
+              "title": "Provider",
+              "type": "string"
+            },
+            "rate_version": {
+              "title": "Rate Version",
+              "type": "string"
+            },
+            "source": {
+              "enum": [
+                "configured_public_rate",
+                "configured_proxy_rate"
+              ],
+              "title": "Source",
+              "type": "string"
+            },
+            "uncached_input_per_1m": {
+              "minimum": 0,
+              "title": "Uncached Input Per 1M",
+              "type": "number"
+            }
+          },
+          "required": [
+            "provider",
+            "model_prefix",
+            "rate_version",
+            "source",
+            "uncached_input_per_1m",
+            "cached_input_per_1m",
+            "cache_creation_input_per_1m",
+            "output_per_1m"
+          ],
+          "title": "NotionalRate",
+          "type": "object"
+        },
         "RetraceProvenance": {
           "additionalProperties": false,
           "description": "Typed retrace control state delivered to the retraced capability for ONE invocation.\n\nv0.10: the target learns it is being retraced as machine data \u2014 round, the evaluator\nnode, the rejected source node, and the retrace target \u2014 instead of inferring control\nstate from criticism prose. Retry/repair/replan do not produce this; only an actual\nretrace round does. The criticism rides as feedback, never as a control encoding.",
@@ -1443,6 +1667,21 @@
               "title": "Input Tokens",
               "type": "integer"
             },
+            "invocation_id": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Invocation Id"
+            },
             "metadata": {
               "additionalProperties": true,
               "title": "Metadata",
@@ -1456,6 +1695,28 @@
             "node": {
               "title": "Node",
               "type": "string"
+            },
+            "normalized_usage": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/NormalizedTokenUsage"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "notional_pricing": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/NotionalPricingResult"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
             },
             "notional_usd": {
               "anyOf": [
@@ -1493,6 +1754,19 @@
               "default": "openai",
               "title": "Provider",
               "type": "string"
+            },
+            "provider_reported_notional_usd": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Provider Reported Notional Usd"
             },
             "request_id": {
               "anyOf": [
@@ -1539,6 +1813,36 @@
               "default": 0,
               "title": "Total Tokens",
               "type": "integer"
+            },
+            "usage_diagnostic": {
+              "anyOf": [
+                {
+                  "maxLength": 500,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Usage Diagnostic"
+            },
+            "usage_error": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "usage_event_missing",
+                    "usage_event_malformed",
+                    "invalid_token_counters"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Usage Error"
             }
           },
           "required": [
@@ -3338,6 +3642,21 @@
           "title": "Images",
           "type": "array"
         },
+        "invocation_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Invocation Id"
+        },
         "messages": {
           "items": {
             "$ref": "#/$defs/ChatMessage"
@@ -3392,6 +3711,81 @@
     },
     "LLMResponse": {
       "$defs": {
+        "NormalizedTokenUsage": {
+          "additionalProperties": false,
+          "description": "Provider-independent quantities with the provider's raw counters retained.",
+          "properties": {
+            "cache_creation_input_tokens": {
+              "minimum": 0,
+              "title": "Cache Creation Input Tokens",
+              "type": "integer"
+            },
+            "cache_read_input_tokens": {
+              "minimum": 0,
+              "title": "Cache Read Input Tokens",
+              "type": "integer"
+            },
+            "counter_schema": {
+              "enum": [
+                "codex_inclusive",
+                "claude_disjoint_cache",
+                "generic"
+              ],
+              "title": "Counter Schema",
+              "type": "string"
+            },
+            "non_reasoning_output_tokens": {
+              "minimum": 0,
+              "title": "Non Reasoning Output Tokens",
+              "type": "integer"
+            },
+            "raw_input_tokens": {
+              "minimum": 0,
+              "title": "Raw Input Tokens",
+              "type": "integer"
+            },
+            "raw_output_tokens": {
+              "minimum": 0,
+              "title": "Raw Output Tokens",
+              "type": "integer"
+            },
+            "raw_total_tokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Raw Total Tokens"
+            },
+            "reasoning_output_tokens": {
+              "minimum": 0,
+              "title": "Reasoning Output Tokens",
+              "type": "integer"
+            },
+            "uncached_input_tokens": {
+              "minimum": 0,
+              "title": "Uncached Input Tokens",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "counter_schema",
+            "uncached_input_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+            "non_reasoning_output_tokens",
+            "reasoning_output_tokens",
+            "raw_input_tokens",
+            "raw_output_tokens"
+          ],
+          "title": "NormalizedTokenUsage",
+          "type": "object"
+        },
         "ToolCallRequest": {
           "description": "One LLM-requested tool call.",
           "properties": {
@@ -3428,6 +3822,19 @@
           "title": "Cost Class",
           "type": "string"
         },
+        "elapsed_ms": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Elapsed Ms"
+        },
         "estimated_usd": {
           "anyOf": [
             {
@@ -3445,6 +3852,21 @@
           "title": "Input Tokens",
           "type": "integer"
         },
+        "invocation_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Invocation Id"
+        },
         "metadata": {
           "additionalProperties": true,
           "title": "Metadata",
@@ -3454,6 +3876,17 @@
           "default": "",
           "title": "Model",
           "type": "string"
+        },
+        "normalized_usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NormalizedTokenUsage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "notional_usd": {
           "anyOf": [
@@ -3471,6 +3904,18 @@
           "default": 0,
           "title": "Output Tokens",
           "type": "integer"
+        },
+        "provider_reported_notional_usd": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider Reported Notional Usd"
         },
         "raw": {
           "default": null,
@@ -3504,6 +3949,36 @@
           "default": 0,
           "title": "Total Tokens",
           "type": "integer"
+        },
+        "usage_diagnostic": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Usage Diagnostic"
+        },
+        "usage_error": {
+          "anyOf": [
+            {
+              "enum": [
+                "usage_event_missing",
+                "usage_event_malformed",
+                "invalid_token_counters"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Usage Error"
         }
       },
       "title": "LLMResponse",
@@ -4354,6 +4829,221 @@
             "model"
           ],
           "title": "ModelProfile",
+          "type": "object"
+        },
+        "NormalizedTokenUsage": {
+          "additionalProperties": false,
+          "description": "Provider-independent quantities with the provider's raw counters retained.",
+          "properties": {
+            "cache_creation_input_tokens": {
+              "minimum": 0,
+              "title": "Cache Creation Input Tokens",
+              "type": "integer"
+            },
+            "cache_read_input_tokens": {
+              "minimum": 0,
+              "title": "Cache Read Input Tokens",
+              "type": "integer"
+            },
+            "counter_schema": {
+              "enum": [
+                "codex_inclusive",
+                "claude_disjoint_cache",
+                "generic"
+              ],
+              "title": "Counter Schema",
+              "type": "string"
+            },
+            "non_reasoning_output_tokens": {
+              "minimum": 0,
+              "title": "Non Reasoning Output Tokens",
+              "type": "integer"
+            },
+            "raw_input_tokens": {
+              "minimum": 0,
+              "title": "Raw Input Tokens",
+              "type": "integer"
+            },
+            "raw_output_tokens": {
+              "minimum": 0,
+              "title": "Raw Output Tokens",
+              "type": "integer"
+            },
+            "raw_total_tokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Raw Total Tokens"
+            },
+            "reasoning_output_tokens": {
+              "minimum": 0,
+              "title": "Reasoning Output Tokens",
+              "type": "integer"
+            },
+            "uncached_input_tokens": {
+              "minimum": 0,
+              "title": "Uncached Input Tokens",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "counter_schema",
+            "uncached_input_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+            "non_reasoning_output_tokens",
+            "reasoning_output_tokens",
+            "raw_input_tokens",
+            "raw_output_tokens"
+          ],
+          "title": "NormalizedTokenUsage",
+          "type": "object"
+        },
+        "NotionalPricingResult": {
+          "additionalProperties": false,
+          "description": "Persisted pricing truth for one usage event.",
+          "properties": {
+            "amount_usd": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Amount Usd"
+            },
+            "catalog_version": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Catalog Version"
+            },
+            "rate": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/NotionalRate"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "source": {
+              "enum": [
+                "provider_reported",
+                "configured_public_rate",
+                "configured_proxy_rate",
+                "unknown"
+              ],
+              "title": "Source",
+              "type": "string"
+            },
+            "unknown_reason": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "usage_event_missing",
+                    "usage_event_malformed",
+                    "invalid_token_counters",
+                    "model_missing",
+                    "rate_missing"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Unknown Reason"
+            }
+          },
+          "required": [
+            "source"
+          ],
+          "title": "NotionalPricingResult",
+          "type": "object"
+        },
+        "NotionalRate": {
+          "additionalProperties": false,
+          "description": "One versioned provider/model rate used for observed plan-value calculation.",
+          "properties": {
+            "cache_creation_input_per_1m": {
+              "minimum": 0,
+              "title": "Cache Creation Input Per 1M",
+              "type": "number"
+            },
+            "cached_input_per_1m": {
+              "minimum": 0,
+              "title": "Cached Input Per 1M",
+              "type": "number"
+            },
+            "currency": {
+              "const": "USD",
+              "default": "USD",
+              "title": "Currency",
+              "type": "string"
+            },
+            "model_prefix": {
+              "title": "Model Prefix",
+              "type": "string"
+            },
+            "output_per_1m": {
+              "minimum": 0,
+              "title": "Output Per 1M",
+              "type": "number"
+            },
+            "provider": {
+              "title": "Provider",
+              "type": "string"
+            },
+            "rate_version": {
+              "title": "Rate Version",
+              "type": "string"
+            },
+            "source": {
+              "enum": [
+                "configured_public_rate",
+                "configured_proxy_rate"
+              ],
+              "title": "Source",
+              "type": "string"
+            },
+            "uncached_input_per_1m": {
+              "minimum": 0,
+              "title": "Uncached Input Per 1M",
+              "type": "number"
+            }
+          },
+          "required": [
+            "provider",
+            "model_prefix",
+            "rate_version",
+            "source",
+            "uncached_input_per_1m",
+            "cached_input_per_1m",
+            "cache_creation_input_per_1m",
+            "output_per_1m"
+          ],
+          "title": "NotionalRate",
           "type": "object"
         },
         "Replan": {
@@ -5359,6 +6049,21 @@
               "title": "Input Tokens",
               "type": "integer"
             },
+            "invocation_id": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Invocation Id"
+            },
             "metadata": {
               "additionalProperties": true,
               "title": "Metadata",
@@ -5372,6 +6077,28 @@
             "node": {
               "title": "Node",
               "type": "string"
+            },
+            "normalized_usage": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/NormalizedTokenUsage"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "notional_pricing": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/NotionalPricingResult"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
             },
             "notional_usd": {
               "anyOf": [
@@ -5409,6 +6136,19 @@
               "default": "openai",
               "title": "Provider",
               "type": "string"
+            },
+            "provider_reported_notional_usd": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Provider Reported Notional Usd"
             },
             "request_id": {
               "anyOf": [
@@ -5455,6 +6195,36 @@
               "default": 0,
               "title": "Total Tokens",
               "type": "integer"
+            },
+            "usage_diagnostic": {
+              "anyOf": [
+                {
+                  "maxLength": 500,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Usage Diagnostic"
+            },
+            "usage_error": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "usage_event_missing",
+                    "usage_event_malformed",
+                    "invalid_token_counters"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Usage Error"
             }
           },
           "required": [
@@ -5587,6 +6357,376 @@
         "status"
       ],
       "title": "NodeResult",
+      "type": "object"
+    },
+    "NormalizedTokenUsage": {
+      "additionalProperties": false,
+      "description": "Provider-independent quantities with the provider's raw counters retained.",
+      "properties": {
+        "cache_creation_input_tokens": {
+          "minimum": 0,
+          "title": "Cache Creation Input Tokens",
+          "type": "integer"
+        },
+        "cache_read_input_tokens": {
+          "minimum": 0,
+          "title": "Cache Read Input Tokens",
+          "type": "integer"
+        },
+        "counter_schema": {
+          "enum": [
+            "codex_inclusive",
+            "claude_disjoint_cache",
+            "generic"
+          ],
+          "title": "Counter Schema",
+          "type": "string"
+        },
+        "non_reasoning_output_tokens": {
+          "minimum": 0,
+          "title": "Non Reasoning Output Tokens",
+          "type": "integer"
+        },
+        "raw_input_tokens": {
+          "minimum": 0,
+          "title": "Raw Input Tokens",
+          "type": "integer"
+        },
+        "raw_output_tokens": {
+          "minimum": 0,
+          "title": "Raw Output Tokens",
+          "type": "integer"
+        },
+        "raw_total_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Raw Total Tokens"
+        },
+        "reasoning_output_tokens": {
+          "minimum": 0,
+          "title": "Reasoning Output Tokens",
+          "type": "integer"
+        },
+        "uncached_input_tokens": {
+          "minimum": 0,
+          "title": "Uncached Input Tokens",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "counter_schema",
+        "uncached_input_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+        "non_reasoning_output_tokens",
+        "reasoning_output_tokens",
+        "raw_input_tokens",
+        "raw_output_tokens"
+      ],
+      "title": "NormalizedTokenUsage",
+      "type": "object"
+    },
+    "NotionalPricingConfig": {
+      "$defs": {
+        "NotionalRate": {
+          "additionalProperties": false,
+          "description": "One versioned provider/model rate used for observed plan-value calculation.",
+          "properties": {
+            "cache_creation_input_per_1m": {
+              "minimum": 0,
+              "title": "Cache Creation Input Per 1M",
+              "type": "number"
+            },
+            "cached_input_per_1m": {
+              "minimum": 0,
+              "title": "Cached Input Per 1M",
+              "type": "number"
+            },
+            "currency": {
+              "const": "USD",
+              "default": "USD",
+              "title": "Currency",
+              "type": "string"
+            },
+            "model_prefix": {
+              "title": "Model Prefix",
+              "type": "string"
+            },
+            "output_per_1m": {
+              "minimum": 0,
+              "title": "Output Per 1M",
+              "type": "number"
+            },
+            "provider": {
+              "title": "Provider",
+              "type": "string"
+            },
+            "rate_version": {
+              "title": "Rate Version",
+              "type": "string"
+            },
+            "source": {
+              "enum": [
+                "configured_public_rate",
+                "configured_proxy_rate"
+              ],
+              "title": "Source",
+              "type": "string"
+            },
+            "uncached_input_per_1m": {
+              "minimum": 0,
+              "title": "Uncached Input Per 1M",
+              "type": "number"
+            }
+          },
+          "required": [
+            "provider",
+            "model_prefix",
+            "rate_version",
+            "source",
+            "uncached_input_per_1m",
+            "cached_input_per_1m",
+            "cache_creation_input_per_1m",
+            "output_per_1m"
+          ],
+          "title": "NotionalRate",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "description": "Strict product configuration for one coherent rate catalog.",
+      "properties": {
+        "catalog_version": {
+          "title": "Catalog Version",
+          "type": "string"
+        },
+        "rates": {
+          "items": {
+            "$ref": "#/$defs/NotionalRate"
+          },
+          "title": "Rates",
+          "type": "array"
+        }
+      },
+      "required": [
+        "catalog_version",
+        "rates"
+      ],
+      "title": "NotionalPricingConfig",
+      "type": "object"
+    },
+    "NotionalPricingResult": {
+      "$defs": {
+        "NotionalRate": {
+          "additionalProperties": false,
+          "description": "One versioned provider/model rate used for observed plan-value calculation.",
+          "properties": {
+            "cache_creation_input_per_1m": {
+              "minimum": 0,
+              "title": "Cache Creation Input Per 1M",
+              "type": "number"
+            },
+            "cached_input_per_1m": {
+              "minimum": 0,
+              "title": "Cached Input Per 1M",
+              "type": "number"
+            },
+            "currency": {
+              "const": "USD",
+              "default": "USD",
+              "title": "Currency",
+              "type": "string"
+            },
+            "model_prefix": {
+              "title": "Model Prefix",
+              "type": "string"
+            },
+            "output_per_1m": {
+              "minimum": 0,
+              "title": "Output Per 1M",
+              "type": "number"
+            },
+            "provider": {
+              "title": "Provider",
+              "type": "string"
+            },
+            "rate_version": {
+              "title": "Rate Version",
+              "type": "string"
+            },
+            "source": {
+              "enum": [
+                "configured_public_rate",
+                "configured_proxy_rate"
+              ],
+              "title": "Source",
+              "type": "string"
+            },
+            "uncached_input_per_1m": {
+              "minimum": 0,
+              "title": "Uncached Input Per 1M",
+              "type": "number"
+            }
+          },
+          "required": [
+            "provider",
+            "model_prefix",
+            "rate_version",
+            "source",
+            "uncached_input_per_1m",
+            "cached_input_per_1m",
+            "cache_creation_input_per_1m",
+            "output_per_1m"
+          ],
+          "title": "NotionalRate",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "description": "Persisted pricing truth for one usage event.",
+      "properties": {
+        "amount_usd": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Amount Usd"
+        },
+        "catalog_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Catalog Version"
+        },
+        "rate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NotionalRate"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "source": {
+          "enum": [
+            "provider_reported",
+            "configured_public_rate",
+            "configured_proxy_rate",
+            "unknown"
+          ],
+          "title": "Source",
+          "type": "string"
+        },
+        "unknown_reason": {
+          "anyOf": [
+            {
+              "enum": [
+                "usage_event_missing",
+                "usage_event_malformed",
+                "invalid_token_counters",
+                "model_missing",
+                "rate_missing"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unknown Reason"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "NotionalPricingResult",
+      "type": "object"
+    },
+    "NotionalRate": {
+      "additionalProperties": false,
+      "description": "One versioned provider/model rate used for observed plan-value calculation.",
+      "properties": {
+        "cache_creation_input_per_1m": {
+          "minimum": 0,
+          "title": "Cache Creation Input Per 1M",
+          "type": "number"
+        },
+        "cached_input_per_1m": {
+          "minimum": 0,
+          "title": "Cached Input Per 1M",
+          "type": "number"
+        },
+        "currency": {
+          "const": "USD",
+          "default": "USD",
+          "title": "Currency",
+          "type": "string"
+        },
+        "model_prefix": {
+          "title": "Model Prefix",
+          "type": "string"
+        },
+        "output_per_1m": {
+          "minimum": 0,
+          "title": "Output Per 1M",
+          "type": "number"
+        },
+        "provider": {
+          "title": "Provider",
+          "type": "string"
+        },
+        "rate_version": {
+          "title": "Rate Version",
+          "type": "string"
+        },
+        "source": {
+          "enum": [
+            "configured_public_rate",
+            "configured_proxy_rate"
+          ],
+          "title": "Source",
+          "type": "string"
+        },
+        "uncached_input_per_1m": {
+          "minimum": 0,
+          "title": "Uncached Input Per 1M",
+          "type": "number"
+        }
+      },
+      "required": [
+        "provider",
+        "model_prefix",
+        "rate_version",
+        "source",
+        "uncached_input_per_1m",
+        "cached_input_per_1m",
+        "cache_creation_input_per_1m",
+        "output_per_1m"
+      ],
+      "title": "NotionalRate",
       "type": "object"
     },
     "ObservationBundleMetaV2": {
@@ -5899,6 +7039,21 @@
         "event_id": {
           "title": "Event Id",
           "type": "string"
+        },
+        "invocation_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Invocation Id"
         },
         "json": {
           "anyOf": [
@@ -8072,6 +9227,93 @@
           "title": "ModelProfile",
           "type": "object"
         },
+        "NotionalPricingConfig": {
+          "additionalProperties": false,
+          "description": "Strict product configuration for one coherent rate catalog.",
+          "properties": {
+            "catalog_version": {
+              "title": "Catalog Version",
+              "type": "string"
+            },
+            "rates": {
+              "items": {
+                "$ref": "#/$defs/NotionalRate"
+              },
+              "title": "Rates",
+              "type": "array"
+            }
+          },
+          "required": [
+            "catalog_version",
+            "rates"
+          ],
+          "title": "NotionalPricingConfig",
+          "type": "object"
+        },
+        "NotionalRate": {
+          "additionalProperties": false,
+          "description": "One versioned provider/model rate used for observed plan-value calculation.",
+          "properties": {
+            "cache_creation_input_per_1m": {
+              "minimum": 0,
+              "title": "Cache Creation Input Per 1M",
+              "type": "number"
+            },
+            "cached_input_per_1m": {
+              "minimum": 0,
+              "title": "Cached Input Per 1M",
+              "type": "number"
+            },
+            "currency": {
+              "const": "USD",
+              "default": "USD",
+              "title": "Currency",
+              "type": "string"
+            },
+            "model_prefix": {
+              "title": "Model Prefix",
+              "type": "string"
+            },
+            "output_per_1m": {
+              "minimum": 0,
+              "title": "Output Per 1M",
+              "type": "number"
+            },
+            "provider": {
+              "title": "Provider",
+              "type": "string"
+            },
+            "rate_version": {
+              "title": "Rate Version",
+              "type": "string"
+            },
+            "source": {
+              "enum": [
+                "configured_public_rate",
+                "configured_proxy_rate"
+              ],
+              "title": "Source",
+              "type": "string"
+            },
+            "uncached_input_per_1m": {
+              "minimum": 0,
+              "title": "Uncached Input Per 1M",
+              "type": "number"
+            }
+          },
+          "required": [
+            "provider",
+            "model_prefix",
+            "rate_version",
+            "source",
+            "uncached_input_per_1m",
+            "cached_input_per_1m",
+            "cache_creation_input_per_1m",
+            "output_per_1m"
+          ],
+          "title": "NotionalRate",
+          "type": "object"
+        },
         "ObservationConfig": {
           "additionalProperties": false,
           "description": "Application-level observation policy (the engine owns the per-run mechanics).\n\nv0.11 clean contract (manifest row M8): the schema is CLOSED \u2014 a misspelled or\nobsolete key fails loudly instead of being silently ignored.\n\nConfigure once in the application config; when ``enabled`` the engine auto-opens a\nper-run observation bundle, routes trace/detail/usage into it, finalizes it with the\ntrue terminal status, and prunes old finalized bundles to ``retention_limit``.\nProducts never call bundle mechanics in the normal path.",
@@ -8440,6 +9682,7 @@
           "type": "object"
         }
       },
+      "additionalProperties": false,
       "description": "Loaded reusable workflow configuration.",
       "properties": {
         "models": {
@@ -8453,6 +9696,17 @@
           "anyOf": [
             {
               "$ref": "#/$defs/ObservationConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "pricing": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NotionalPricingConfig"
             },
             {
               "type": "null"
@@ -10518,6 +11772,221 @@
           "title": "NodeResult",
           "type": "object"
         },
+        "NormalizedTokenUsage": {
+          "additionalProperties": false,
+          "description": "Provider-independent quantities with the provider's raw counters retained.",
+          "properties": {
+            "cache_creation_input_tokens": {
+              "minimum": 0,
+              "title": "Cache Creation Input Tokens",
+              "type": "integer"
+            },
+            "cache_read_input_tokens": {
+              "minimum": 0,
+              "title": "Cache Read Input Tokens",
+              "type": "integer"
+            },
+            "counter_schema": {
+              "enum": [
+                "codex_inclusive",
+                "claude_disjoint_cache",
+                "generic"
+              ],
+              "title": "Counter Schema",
+              "type": "string"
+            },
+            "non_reasoning_output_tokens": {
+              "minimum": 0,
+              "title": "Non Reasoning Output Tokens",
+              "type": "integer"
+            },
+            "raw_input_tokens": {
+              "minimum": 0,
+              "title": "Raw Input Tokens",
+              "type": "integer"
+            },
+            "raw_output_tokens": {
+              "minimum": 0,
+              "title": "Raw Output Tokens",
+              "type": "integer"
+            },
+            "raw_total_tokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Raw Total Tokens"
+            },
+            "reasoning_output_tokens": {
+              "minimum": 0,
+              "title": "Reasoning Output Tokens",
+              "type": "integer"
+            },
+            "uncached_input_tokens": {
+              "minimum": 0,
+              "title": "Uncached Input Tokens",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "counter_schema",
+            "uncached_input_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+            "non_reasoning_output_tokens",
+            "reasoning_output_tokens",
+            "raw_input_tokens",
+            "raw_output_tokens"
+          ],
+          "title": "NormalizedTokenUsage",
+          "type": "object"
+        },
+        "NotionalPricingResult": {
+          "additionalProperties": false,
+          "description": "Persisted pricing truth for one usage event.",
+          "properties": {
+            "amount_usd": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Amount Usd"
+            },
+            "catalog_version": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Catalog Version"
+            },
+            "rate": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/NotionalRate"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "source": {
+              "enum": [
+                "provider_reported",
+                "configured_public_rate",
+                "configured_proxy_rate",
+                "unknown"
+              ],
+              "title": "Source",
+              "type": "string"
+            },
+            "unknown_reason": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "usage_event_missing",
+                    "usage_event_malformed",
+                    "invalid_token_counters",
+                    "model_missing",
+                    "rate_missing"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Unknown Reason"
+            }
+          },
+          "required": [
+            "source"
+          ],
+          "title": "NotionalPricingResult",
+          "type": "object"
+        },
+        "NotionalRate": {
+          "additionalProperties": false,
+          "description": "One versioned provider/model rate used for observed plan-value calculation.",
+          "properties": {
+            "cache_creation_input_per_1m": {
+              "minimum": 0,
+              "title": "Cache Creation Input Per 1M",
+              "type": "number"
+            },
+            "cached_input_per_1m": {
+              "minimum": 0,
+              "title": "Cached Input Per 1M",
+              "type": "number"
+            },
+            "currency": {
+              "const": "USD",
+              "default": "USD",
+              "title": "Currency",
+              "type": "string"
+            },
+            "model_prefix": {
+              "title": "Model Prefix",
+              "type": "string"
+            },
+            "output_per_1m": {
+              "minimum": 0,
+              "title": "Output Per 1M",
+              "type": "number"
+            },
+            "provider": {
+              "title": "Provider",
+              "type": "string"
+            },
+            "rate_version": {
+              "title": "Rate Version",
+              "type": "string"
+            },
+            "source": {
+              "enum": [
+                "configured_public_rate",
+                "configured_proxy_rate"
+              ],
+              "title": "Source",
+              "type": "string"
+            },
+            "uncached_input_per_1m": {
+              "minimum": 0,
+              "title": "Uncached Input Per 1M",
+              "type": "number"
+            }
+          },
+          "required": [
+            "provider",
+            "model_prefix",
+            "rate_version",
+            "source",
+            "uncached_input_per_1m",
+            "cached_input_per_1m",
+            "cache_creation_input_per_1m",
+            "output_per_1m"
+          ],
+          "title": "NotionalRate",
+          "type": "object"
+        },
         "WaitHandle": {
           "additionalProperties": false,
           "description": "What a product receives for a REGISTERED wait \u2014 never the raw snapshot (C1).\n\nv0.11.6: the handle is the continuation CAPABILITY. ``registration_id`` is the\nadapter's receipt identity for the exact accepted registration incarnation \u2014 delivery\nrequires the complete handle, and the coordinator refuses a registration id that does\nnot match its stored receipt. Persist the whole handle; a bare deterministic wait id\ncan no longer resume durable work.",
@@ -10801,6 +12270,24 @@
               "default": null,
               "title": "Decision"
             },
+            "detail_capture": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "captured",
+                    "capture_mode_off",
+                    "detail_sink_unavailable",
+                    "projection_failed"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Detail Capture"
+            },
             "detail_refs": {
               "items": {
                 "type": "string"
@@ -10835,6 +12322,21 @@
             "event_id": {
               "title": "Event Id",
               "type": "string"
+            },
+            "invocation_id": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Invocation Id"
             },
             "metadata": {
               "additionalProperties": true,
@@ -10990,6 +12492,21 @@
               "title": "Input Tokens",
               "type": "integer"
             },
+            "invocation_id": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Invocation Id"
+            },
             "metadata": {
               "additionalProperties": true,
               "title": "Metadata",
@@ -11003,6 +12520,28 @@
             "node": {
               "title": "Node",
               "type": "string"
+            },
+            "normalized_usage": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/NormalizedTokenUsage"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "notional_pricing": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/NotionalPricingResult"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
             },
             "notional_usd": {
               "anyOf": [
@@ -11040,6 +12579,19 @@
               "default": "openai",
               "title": "Provider",
               "type": "string"
+            },
+            "provider_reported_notional_usd": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Provider Reported Notional Usd"
             },
             "request_id": {
               "anyOf": [
@@ -11086,6 +12638,36 @@
               "default": 0,
               "title": "Total Tokens",
               "type": "integer"
+            },
+            "usage_diagnostic": {
+              "anyOf": [
+                {
+                  "maxLength": 500,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Usage Diagnostic"
+            },
+            "usage_error": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "usage_event_missing",
+                    "usage_event_malformed",
+                    "invalid_token_counters"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Usage Error"
             }
           },
           "required": [
@@ -11256,6 +12838,24 @@
           "default": null,
           "title": "Decision"
         },
+        "detail_capture": {
+          "anyOf": [
+            {
+              "enum": [
+                "captured",
+                "capture_mode_off",
+                "detail_sink_unavailable",
+                "projection_failed"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail Capture"
+        },
         "detail_refs": {
           "items": {
             "type": "string"
@@ -11290,6 +12890,21 @@
         "event_id": {
           "title": "Event Id",
           "type": "string"
+        },
+        "invocation_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Invocation Id"
         },
         "metadata": {
           "additionalProperties": true,
@@ -11379,6 +12994,223 @@
       "type": "object"
     },
     "WorkflowUsageEvent": {
+      "$defs": {
+        "NormalizedTokenUsage": {
+          "additionalProperties": false,
+          "description": "Provider-independent quantities with the provider's raw counters retained.",
+          "properties": {
+            "cache_creation_input_tokens": {
+              "minimum": 0,
+              "title": "Cache Creation Input Tokens",
+              "type": "integer"
+            },
+            "cache_read_input_tokens": {
+              "minimum": 0,
+              "title": "Cache Read Input Tokens",
+              "type": "integer"
+            },
+            "counter_schema": {
+              "enum": [
+                "codex_inclusive",
+                "claude_disjoint_cache",
+                "generic"
+              ],
+              "title": "Counter Schema",
+              "type": "string"
+            },
+            "non_reasoning_output_tokens": {
+              "minimum": 0,
+              "title": "Non Reasoning Output Tokens",
+              "type": "integer"
+            },
+            "raw_input_tokens": {
+              "minimum": 0,
+              "title": "Raw Input Tokens",
+              "type": "integer"
+            },
+            "raw_output_tokens": {
+              "minimum": 0,
+              "title": "Raw Output Tokens",
+              "type": "integer"
+            },
+            "raw_total_tokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Raw Total Tokens"
+            },
+            "reasoning_output_tokens": {
+              "minimum": 0,
+              "title": "Reasoning Output Tokens",
+              "type": "integer"
+            },
+            "uncached_input_tokens": {
+              "minimum": 0,
+              "title": "Uncached Input Tokens",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "counter_schema",
+            "uncached_input_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+            "non_reasoning_output_tokens",
+            "reasoning_output_tokens",
+            "raw_input_tokens",
+            "raw_output_tokens"
+          ],
+          "title": "NormalizedTokenUsage",
+          "type": "object"
+        },
+        "NotionalPricingResult": {
+          "additionalProperties": false,
+          "description": "Persisted pricing truth for one usage event.",
+          "properties": {
+            "amount_usd": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Amount Usd"
+            },
+            "catalog_version": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Catalog Version"
+            },
+            "rate": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/NotionalRate"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "source": {
+              "enum": [
+                "provider_reported",
+                "configured_public_rate",
+                "configured_proxy_rate",
+                "unknown"
+              ],
+              "title": "Source",
+              "type": "string"
+            },
+            "unknown_reason": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "usage_event_missing",
+                    "usage_event_malformed",
+                    "invalid_token_counters",
+                    "model_missing",
+                    "rate_missing"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Unknown Reason"
+            }
+          },
+          "required": [
+            "source"
+          ],
+          "title": "NotionalPricingResult",
+          "type": "object"
+        },
+        "NotionalRate": {
+          "additionalProperties": false,
+          "description": "One versioned provider/model rate used for observed plan-value calculation.",
+          "properties": {
+            "cache_creation_input_per_1m": {
+              "minimum": 0,
+              "title": "Cache Creation Input Per 1M",
+              "type": "number"
+            },
+            "cached_input_per_1m": {
+              "minimum": 0,
+              "title": "Cached Input Per 1M",
+              "type": "number"
+            },
+            "currency": {
+              "const": "USD",
+              "default": "USD",
+              "title": "Currency",
+              "type": "string"
+            },
+            "model_prefix": {
+              "title": "Model Prefix",
+              "type": "string"
+            },
+            "output_per_1m": {
+              "minimum": 0,
+              "title": "Output Per 1M",
+              "type": "number"
+            },
+            "provider": {
+              "title": "Provider",
+              "type": "string"
+            },
+            "rate_version": {
+              "title": "Rate Version",
+              "type": "string"
+            },
+            "source": {
+              "enum": [
+                "configured_public_rate",
+                "configured_proxy_rate"
+              ],
+              "title": "Source",
+              "type": "string"
+            },
+            "uncached_input_per_1m": {
+              "minimum": 0,
+              "title": "Uncached Input Per 1M",
+              "type": "number"
+            }
+          },
+          "required": [
+            "provider",
+            "model_prefix",
+            "rate_version",
+            "source",
+            "uncached_input_per_1m",
+            "cached_input_per_1m",
+            "cache_creation_input_per_1m",
+            "output_per_1m"
+          ],
+          "title": "NotionalRate",
+          "type": "object"
+        }
+      },
       "description": "One metered paid-provider call inside a workflow run.",
       "properties": {
         "attempt": {
@@ -11445,6 +13277,21 @@
           "title": "Input Tokens",
           "type": "integer"
         },
+        "invocation_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Invocation Id"
+        },
         "metadata": {
           "additionalProperties": true,
           "title": "Metadata",
@@ -11458,6 +13305,28 @@
         "node": {
           "title": "Node",
           "type": "string"
+        },
+        "normalized_usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NormalizedTokenUsage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "notional_pricing": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NotionalPricingResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "notional_usd": {
           "anyOf": [
@@ -11495,6 +13364,19 @@
           "default": "openai",
           "title": "Provider",
           "type": "string"
+        },
+        "provider_reported_notional_usd": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider Reported Notional Usd"
         },
         "request_id": {
           "anyOf": [
@@ -11541,6 +13423,36 @@
           "default": 0,
           "title": "Total Tokens",
           "type": "integer"
+        },
+        "usage_diagnostic": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Usage Diagnostic"
+        },
+        "usage_error": {
+          "anyOf": [
+            {
+              "enum": [
+                "usage_event_missing",
+                "usage_event_malformed",
+                "invalid_token_counters"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Usage Error"
         }
       },
       "required": [
@@ -11551,6 +13463,221 @@
     },
     "WorkflowUsageSummary": {
       "$defs": {
+        "NormalizedTokenUsage": {
+          "additionalProperties": false,
+          "description": "Provider-independent quantities with the provider's raw counters retained.",
+          "properties": {
+            "cache_creation_input_tokens": {
+              "minimum": 0,
+              "title": "Cache Creation Input Tokens",
+              "type": "integer"
+            },
+            "cache_read_input_tokens": {
+              "minimum": 0,
+              "title": "Cache Read Input Tokens",
+              "type": "integer"
+            },
+            "counter_schema": {
+              "enum": [
+                "codex_inclusive",
+                "claude_disjoint_cache",
+                "generic"
+              ],
+              "title": "Counter Schema",
+              "type": "string"
+            },
+            "non_reasoning_output_tokens": {
+              "minimum": 0,
+              "title": "Non Reasoning Output Tokens",
+              "type": "integer"
+            },
+            "raw_input_tokens": {
+              "minimum": 0,
+              "title": "Raw Input Tokens",
+              "type": "integer"
+            },
+            "raw_output_tokens": {
+              "minimum": 0,
+              "title": "Raw Output Tokens",
+              "type": "integer"
+            },
+            "raw_total_tokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Raw Total Tokens"
+            },
+            "reasoning_output_tokens": {
+              "minimum": 0,
+              "title": "Reasoning Output Tokens",
+              "type": "integer"
+            },
+            "uncached_input_tokens": {
+              "minimum": 0,
+              "title": "Uncached Input Tokens",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "counter_schema",
+            "uncached_input_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+            "non_reasoning_output_tokens",
+            "reasoning_output_tokens",
+            "raw_input_tokens",
+            "raw_output_tokens"
+          ],
+          "title": "NormalizedTokenUsage",
+          "type": "object"
+        },
+        "NotionalPricingResult": {
+          "additionalProperties": false,
+          "description": "Persisted pricing truth for one usage event.",
+          "properties": {
+            "amount_usd": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Amount Usd"
+            },
+            "catalog_version": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Catalog Version"
+            },
+            "rate": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/NotionalRate"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "source": {
+              "enum": [
+                "provider_reported",
+                "configured_public_rate",
+                "configured_proxy_rate",
+                "unknown"
+              ],
+              "title": "Source",
+              "type": "string"
+            },
+            "unknown_reason": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "usage_event_missing",
+                    "usage_event_malformed",
+                    "invalid_token_counters",
+                    "model_missing",
+                    "rate_missing"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Unknown Reason"
+            }
+          },
+          "required": [
+            "source"
+          ],
+          "title": "NotionalPricingResult",
+          "type": "object"
+        },
+        "NotionalRate": {
+          "additionalProperties": false,
+          "description": "One versioned provider/model rate used for observed plan-value calculation.",
+          "properties": {
+            "cache_creation_input_per_1m": {
+              "minimum": 0,
+              "title": "Cache Creation Input Per 1M",
+              "type": "number"
+            },
+            "cached_input_per_1m": {
+              "minimum": 0,
+              "title": "Cached Input Per 1M",
+              "type": "number"
+            },
+            "currency": {
+              "const": "USD",
+              "default": "USD",
+              "title": "Currency",
+              "type": "string"
+            },
+            "model_prefix": {
+              "title": "Model Prefix",
+              "type": "string"
+            },
+            "output_per_1m": {
+              "minimum": 0,
+              "title": "Output Per 1M",
+              "type": "number"
+            },
+            "provider": {
+              "title": "Provider",
+              "type": "string"
+            },
+            "rate_version": {
+              "title": "Rate Version",
+              "type": "string"
+            },
+            "source": {
+              "enum": [
+                "configured_public_rate",
+                "configured_proxy_rate"
+              ],
+              "title": "Source",
+              "type": "string"
+            },
+            "uncached_input_per_1m": {
+              "minimum": 0,
+              "title": "Uncached Input Per 1M",
+              "type": "number"
+            }
+          },
+          "required": [
+            "provider",
+            "model_prefix",
+            "rate_version",
+            "source",
+            "uncached_input_per_1m",
+            "cached_input_per_1m",
+            "cache_creation_input_per_1m",
+            "output_per_1m"
+          ],
+          "title": "NotionalRate",
+          "type": "object"
+        },
         "WorkflowUsageEvent": {
           "description": "One metered paid-provider call inside a workflow run.",
           "properties": {
@@ -11618,6 +13745,21 @@
               "title": "Input Tokens",
               "type": "integer"
             },
+            "invocation_id": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Invocation Id"
+            },
             "metadata": {
               "additionalProperties": true,
               "title": "Metadata",
@@ -11631,6 +13773,28 @@
             "node": {
               "title": "Node",
               "type": "string"
+            },
+            "normalized_usage": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/NormalizedTokenUsage"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "notional_pricing": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/NotionalPricingResult"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
             },
             "notional_usd": {
               "anyOf": [
@@ -11668,6 +13832,19 @@
               "default": "openai",
               "title": "Provider",
               "type": "string"
+            },
+            "provider_reported_notional_usd": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Provider Reported Notional Usd"
             },
             "request_id": {
               "anyOf": [
@@ -11714,6 +13891,36 @@
               "default": 0,
               "title": "Total Tokens",
               "type": "integer"
+            },
+            "usage_diagnostic": {
+              "anyOf": [
+                {
+                  "maxLength": 500,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Usage Diagnostic"
+            },
+            "usage_error": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "usage_event_missing",
+                    "usage_event_malformed",
+                    "invalid_token_counters"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Usage Error"
             }
           },
           "required": [
