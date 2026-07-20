@@ -5,8 +5,8 @@ declare a workflow, register typed capabilities, and call one engine door. The e
 transitions, retries, fan-out, budgets, waits, trace, usage, and observation bundles; products own
 domain models, provider clients, storage adapters, clocks, and side-effect delivery.
 
-> **`engine-v0.11.6` is the release candidate; do not re-pin until it is cut.**
-> `engine-v0.11.5` remains the current immutable release. The engine owner publishes wheels bound to
+> **`engine-v0.11.6` is the current release.**
+> The engine owner publishes wheels bound to
 > immutable tags; consumer
 > canaries still decide whether each product changes its deployed pin. Never depend on a live
 > branch. The binding contract is the repository-level
@@ -22,7 +22,7 @@ domain models, provider clients, storage adapters, clocks, and side-effect deliv
 > Adoption is fresh: new consumers start on the current contract; existing consumers re-adopt the
 > current surface rather than migrate state.
 >
-> **v0.11.6 candidate delta.** A durable continuation is now bound to the complete
+> **v0.11.6 release delta.** A durable continuation is now bound to the complete
 > `WaitHandle`, including its opaque registration-incarnation identity; a deterministic
 > `wait_id` alone cannot deliver. If cancellation or a registration error is observed before
 > the handle is exposed, the engine atomically settles only the registration attempt it owns.
@@ -88,11 +88,11 @@ Product adopters should then read exactly one delta guide:
 
 ## Install
 
-After `engine-v0.11.6` is cut, consumers download its complete published release directory, obtain
+Consumers adopting `engine-v0.11.6` download its complete published release directory, obtain
 the verifier scripts from the annotated tag (or another already trusted pin), verify the bundle
 before installation, and install only the packages their product needs. Building from source is a
 producer operation, not consumer verification. The exact producer and consumer commands are in
-[`docs/operations.md`](docs/operations.md#release-artifacts-and-verification-v0116-candidate).
+[`docs/operations.md`](docs/operations.md#release-artifacts-and-verification-v0116).
 
 ```bash
 BUNDLE=/path/to/downloaded/engine-v0.11.6
@@ -102,7 +102,7 @@ python -m pip install "$BUNDLE/ai_workflow_engine-0.11.6-py3-none-any.whl"
 python -c "import ai_workflow_engine as e; assert e.__version__ == '0.11.6'"
 ```
 
-Candidate package matrix:
+Current package matrix:
 
 | Package | Install when |
 |---|---|
@@ -174,7 +174,7 @@ minimal profile.
 
 `engine-v0.11.0` made the line **latest-only**: strict versioned persisted contracts,
 one strict viewer loader with typed status authority, a sealed current-contract oracle replacing
-old-wheel equality, and removal of every compatibility fallback. The current v0.11.6 candidate
+old-wheel equality, and removal of every compatibility fallback. The current v0.11.6 release
 keeps MachineSnapshot `schema_version="v0.11"` and observation bundle meta v2, and advances wait
 records to `record_schema_version="wait-v2"` with required persisted registration-attempt
 identity. Old persisted data fails loudly naming its historical tag. Earlier lines added, and

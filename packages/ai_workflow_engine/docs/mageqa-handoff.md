@@ -1,13 +1,13 @@
 # MageQA Engine Adoption Guide
 
-Status: **`engine-v0.11.6` is the release candidate; do not re-pin until it is cut.**
-`engine-v0.11.5` remains the current immutable release, but MageQA's two durable-registration race
-canaries fail on it. MageQA must stay on its existing pin and keep its fork until the v0.11.6 E0
+Status: **`engine-v0.11.6` is the current immutable release.**
+MageQA's two durable-registration race canaries fail on `engine-v0.11.5`. MageQA must stay on its
+existing pin and keep its fork until the v0.11.6 E0
 canaries pass against the immutable tag. The five historical E0 blockers (planned
 `partial` rewritten to `done`, unenforced `RuntimeLimits.timeout_s`, hidden retrace provenance,
 the CLI 600s default, and the reused tools wheel identity) are addressed and carried forward;
 v0.11 additionally hardens every persisted contract (strict versioned snapshot, bundle meta v2,
-wait records) with NO migration layer. After release, MageQA must pin tag `engine-v0.11.6` from a clean checkout,
+wait records) with NO migration layer. To adopt, MageQA must pin tag `engine-v0.11.6`,
 verify the complete published release directory, install the required wheels, and pass its E0 canaries before
 adopting; it stays on its existing pin until those canaries pass.
 Do not infer the actual MageQA pin from this document; the consumer repository's pin file is
@@ -47,14 +47,14 @@ a defect.
 
 | Package | MageQA use |
 |---|---|
-| `ai-workflow-engine==0.11.6` | Required orchestration/runtime after the candidate is tagged |
+| `ai-workflow-engine==0.11.6` | Required orchestration/runtime |
 | `ai-workflow-tools==0.5.1` | CLI agents, `claude -p`/`codex exec`, tool catalog, media helpers |
 | `ai-workflow-viewer==0.3.1` | Low-level engine run investigation and bundle rendering |
 
-> **Candidate matrix:** `engine-v0.11.6` + `ai-workflow-tools==0.5.1` + `ai-workflow-viewer==0.3.1`
+> **Current matrix:** `engine-v0.11.6` + `ai-workflow-tools==0.5.1` + `ai-workflow-viewer==0.3.1`
 > (tools/viewer require `ai-workflow-engine>=0.11,<0.12`). The previous line
 > remains available at its historical tag for historical data; the lines never mix in one
-> environment. Do not install this matrix until `engine-v0.11.6` is cut.
+> environment. Verify the complete published release directory before installing any wheel.
 
 
 The MageQA Next.js dashboard remains product-owned. It may link/embed/project engine bundle data, but
@@ -208,12 +208,11 @@ with a scenario and acceptance proof. Upgrade via [`operations.md`](operations.m
 
 ## v0.11 Release Contract
 
-`engine-v0.11.6` is the release candidate for the **latest-only** line; `engine-v0.11.5`
-remains the tagged release until the candidate passes review and is cut. The line uses strict versioned persisted
+`engine-v0.11.6` is the current immutable release for the **latest-only** line. The line uses strict versioned persisted
 contracts (snapshot `v0.11`, bundle meta v2, wait records `wait-v2`), one strict viewer loader, and
 NO migration layer — the sealed current-contract corpus shows 0 behavior deltas vs v0.10.1, but old
 persisted data is rejected loudly naming its historical tag. Adopt by re-pinning fresh
-(after release, pin tag `engine-v0.11.6`, verify the published `release-manifest-v2` bundle, then install engine
+(pin tag `engine-v0.11.6`, verify the published `release-manifest-v2` bundle, then install engine
 `0.11.6`, tools `0.5.1`, and viewer `0.3.1`) and
 re-run your canaries before changing any deployed pin.
 `wait-v1` records written by v0.11.5 are non-current: settle or discard them under v0.11.5 and

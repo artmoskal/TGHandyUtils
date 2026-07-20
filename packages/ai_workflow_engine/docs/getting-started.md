@@ -9,10 +9,9 @@ Always install `ai-workflow-engine`. Add `ai-workflow-tools` only for reusable C
 `ai-workflow-viewer` only where bundles are rendered. Keeping optional packages out of simple runtime
 images preserves the complexity gradient.
 
-The source tree currently describes candidate `engine-v0.11.6`; do not re-pin until that
-immutable tag and its release directory exist. After release, consume the complete directory for
-tag `engine-v0.11.6`, verify it
-with the tagged verifier as described in [operations](operations.md#release-artifacts-and-verification-v0116-candidate),
+The current immutable release is `engine-v0.11.6`. Consume its complete published release
+directory, verify it
+with the tagged verifier as described in [operations](operations.md#release-artifacts-and-verification-v0116),
 then record the exact bytes installed:
 
 ```text

@@ -269,7 +269,7 @@ An engine release is ready only when:
 Framework requests and post-adoption feedback close through
 [`extension-lifecycle.md`](extension-lifecycle.md).
 
-## Release Artifacts And Verification (v0.11.6 candidate)
+## Release Artifacts And Verification (v0.11.6)
 
 Two roles, two identities. A consumer NEVER rebuilds as verification: the **annotated tag identifies
 source**, while the **published release directory identifies artifact bytes**. Tags do not contain
