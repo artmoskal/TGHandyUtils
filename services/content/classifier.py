@@ -4,7 +4,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from core.interfaces import Intent, IConfig
 from core.logging import get_logger
-from services.llm_factory import create_chat_llm
+from services.llm_factory import create_anki_chat_model, llm_cost_class, llm_provider_label
 from ai_workflow_engine.usage import invoke_metered_chat
 
 logger = get_logger(__name__)
@@ -33,7 +33,7 @@ Answer (one word - reminder or anki):"""
     @property
     def llm(self):
         if self._llm is None:
-            self._llm = create_chat_llm(self.config, model=self._model_name(), temperature=0.0)
+            self._llm = create_anki_chat_model(self.config, model=self._model_name(), temperature=0.0)
         return self._llm
 
     def _model_name(self) -> str:
@@ -53,6 +53,8 @@ Answer (one word - reminder or anki):"""
                 ],
                 node="intent_classifier",
                 model=self._model_name(),
+                cost_class=llm_cost_class(self._model_name(), self.config),
+                provider=llm_provider_label(self._model_name()),
             )
             answer = (resp.content or "").strip().lower()
             if "anki" in answer or "flash" in answer or "card" in answer:

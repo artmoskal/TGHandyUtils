@@ -12,7 +12,7 @@ from models.task import TaskCreate
 from core.interfaces import IParsingService, IConfig, IUserPreferencesRepository
 from core.exceptions import ParsingError
 from core.logging import get_logger
-from services.llm_factory import create_chat_llm
+from services.llm_factory import create_anki_chat_model, llm_cost_class, llm_provider_label
 from ai_workflow_engine.prompt_loader import load_prompt_template
 from ai_workflow_engine.usage import invoke_metered_chat
 
@@ -32,12 +32,14 @@ class ParsingService(IParsingService):
     def __init__(self, config: IConfig, preferences_repo: IUserPreferencesRepository = None):
         self.config = config
         self.preferences_repo = preferences_repo
-        
-        if not config.OPENAI_API_KEY:
-            raise ValueError("OpenAI API key is required for parsing service")
-        
+
+        # No eager OPENAI_API_KEY gate here (codex 2026-07-21): the routed factory fails
+        # loudly when a METERED OpenAI client is actually constructed without a key, and
+        # registry backends (chatgpt-web / claude-p) must run without one.
         # Temperature/cache/base-url handled centrally by the factory (0.0 = max precision).
-        self.llm = create_chat_llm(config, model=self._model_name(), temperature=0.0)
+        # ROUTED door: registry backends (chatgpt-web / claude-p / ...) must never be
+        # sent to the metered OpenAI client as if they were API model ids.
+        self.llm = create_anki_chat_model(config, model=self._model_name(), temperature=0.0)
         
         self.parser = PydanticOutputParser(pydantic_object=TaskCreate)
         self.prompt_template = self._create_prompt_template()
@@ -337,6 +339,10 @@ class ParsingService(IParsingService):
                 [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)],
                 node="task_parser",
                 model=self._model_name(),
+                # the backend registry knows whether this model is metered or rides a
+                # subscription — phantom metered $0 would break cost honesty.
+                cost_class=llm_cost_class(self._model_name(), self.config),
+                provider=llm_provider_label(self._model_name()),
             )
             logger.debug(f"LLM Output: {output.content}")
             
@@ -447,6 +453,8 @@ UTC offset (hours):"""
                 [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)],
                 node="timezone_offset_parser",
                 model=self._model_name(),
+                cost_class=llm_cost_class(self._model_name(), self.config),
+                provider=llm_provider_label(self._model_name()),
             )
             offset_str = response.content.strip()
             

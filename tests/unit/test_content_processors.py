@@ -348,14 +348,29 @@ async def test_reminder_processor_delegates_to_engine_and_replies(monkeypatch):
 
 
 @pytest.mark.unit
-def test_reminder_graph_runner_takes_config_from_parsing_service():
-    # Regression: RecipientTaskService has no .config; the runner must read it from the parsing
-    # service or the engine budget integration silently disables (config=None).
+def test_reminder_graph_engine_composes_the_workflow_bundle():
+    # Regression (2026-07-21 live-run finding + codex refinement): the bundle crosses at
+    # the WorkflowEngine(config=...) seam — the engine constructor is what consumes
+    # pricing — and the product IConfig must never leak there (it crashed engine
+    # construction when v0.11.x read a bundle field). The engine's OWN runner is used
+    # unless a custom runner was explicitly injected.
+    from config import WORKFLOW_CONFIG
+
     parsing = _FakeParsing(None)
-    parsing.config = "CFG-OBJ"
+    parsing.config = "CFG-OBJ"  # product config must NOT leak into the engine seam
     task_svc = _FakeTaskSvc(ServiceResult.success_with_data("ok", None))
     graph = ReminderGenerationGraph(parsing, task_svc)
-    assert graph.runner.config == "CFG-OBJ"
+    engine = graph._engine()
+    assert graph.runner is engine.executor.runner, (
+        "without an injected runner the graph must use the engine-composed one"
+    )
+    assert engine.executor.runner.config is WORKFLOW_CONFIG
+
+    custom = object.__new__(type(engine.executor.runner))  # sentinel, never run
+    graph2 = ReminderGenerationGraph(parsing, task_svc, runner=custom)
+    assert graph2._engine().executor.runner is custom, (
+        "an explicitly injected runner must still be honored"
+    )
 
 
 @pytest.mark.unit

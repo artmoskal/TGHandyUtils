@@ -32,7 +32,7 @@ class TestParsingService:
     @pytest.fixture(autouse=True)
     def mock_chat_openai(self):
         """Mock ChatOpenAI for all tests in this class."""
-        with patch('services.parsing_service.create_chat_llm') as mock:
+        with patch('services.parsing_service.create_anki_chat_model') as mock:
             mock.return_value = Mock()
             yield mock
     
@@ -63,13 +63,22 @@ class TestParsingService:
         assert service.parser is not None
         assert service.prompt_template is not None
     
-    def test_initialization_without_api_key(self, mock_config):
-        """Test parsing service raises error without API key."""
-        # Create config without API key
+    def test_initialization_without_api_key_delegates_to_the_routed_factory(
+        self, mock_config, mock_chat_openai
+    ):
+        """The key prerequisite belongs to the SELECTED backend (codex 2026-07-21): the
+        service has NO eager OpenAI-key gate — construction succeeds and delegates to the
+        routed factory, which enforces key requirements per backend (that loud metered
+        failure is proven in the factory's own suite, test_llm_one_door.py; this file's
+        autouse fixture mocks the factory out)."""
         mock_config.OPENAI_API_KEY = ""
-        
-        with pytest.raises(ValueError, match="OpenAI API key is required"):
-            ParsingService(config=mock_config)
+        mock_config.TASK_PARSING_MODEL = "chatgpt-web"
+
+        service = ParsingService(config=mock_config)
+        assert service.llm is not None
+        assert mock_chat_openai.call_args.kwargs["model"] == "chatgpt-web", (
+            "the routed factory must receive the selected backend model"
+        )
     
     
     def test_get_timezone_offset_with_factory_user_data(self, parsing_service):

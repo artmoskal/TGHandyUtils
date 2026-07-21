@@ -30,7 +30,7 @@ class TestTimezoneOffsetOverflow:
         config = Mock(spec=Config)
         config._openai_api_key = "test_key_" + "a" * 40  # Realistic format
         # Mock the ChatOpenAI to avoid actual API calls
-        with patch('services.parsing_service.create_chat_llm'):
+        with patch('services.parsing_service.create_anki_chat_model'):
             return ParsingService(config)
     
     def test_normal_timezone_offsets_with_factory_users(self, parsing_service):

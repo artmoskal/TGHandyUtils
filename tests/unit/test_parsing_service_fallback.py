@@ -16,7 +16,7 @@ class TestParsingServiceFallback:
     @pytest.fixture(autouse=True)
     def mock_chat_openai(self):
         """Mock ChatOpenAI for all tests in this class."""
-        with patch('services.parsing_service.create_chat_llm') as mock:
+        with patch('services.parsing_service.create_anki_chat_model') as mock:
             mock.return_value = Mock()
             yield mock
     

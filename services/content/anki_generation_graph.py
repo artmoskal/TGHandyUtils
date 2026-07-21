@@ -132,7 +132,12 @@ class AnkiGenerationGraph:
     ):
         self.anki_card_service = anki_card_service
         self.runner = runner
-        self._runner_config = getattr(anki_card_service, "config", None)
+        # The ENGINE's config parameter is the WorkflowConfigBundle (pricing/observation
+        # sections) — NOT the product IConfig. Passing the app Config here crashed engine
+        # construction the moment the engine read a bundle field (v0.11.x notional pricing).
+        from config import WORKFLOW_CONFIG
+
+        self._runner_config = WORKFLOW_CONFIG
         self.card_set_planner = card_set_planner
         self.text_scenario_planner = text_scenario_planner
         self.cloze_scenario_planner = cloze_scenario_planner

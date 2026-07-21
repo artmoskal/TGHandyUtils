@@ -91,3 +91,45 @@ async def test_auto_flow_button_commits_choice_and_cancels_timer():
 async def test_auto_flow_commit_choice_unknown_token_returns_false():
     from services.content import auto_flow
     assert await auto_flow.commit_choice("nonexistent-token", Intent.ANKI) is False
+
+
+@pytest.mark.unit
+def test_classifier_builds_llm_through_the_routed_factory_with_honest_labels(monkeypatch):
+    """Fence (codex 2026-07-21): the behavior tests above inject ``_llm`` directly, so
+    reverting the routed-door factory selection or the cost/provider labels would stay
+    green without this. Kill both mutations: the classifier must build its client via
+    ``create_anki_chat_model`` and meter with the registry's cost_class/provider."""
+
+    from services.content import classifier as classifier_module
+    from services.llm_factory import llm_cost_class, llm_provider_label
+
+    built = {}
+
+    class _FakeLLM:
+        def invoke(self, messages):
+            return Mock(content="anki")
+
+    def fake_factory(config, model, temperature):
+        built["model"] = model
+        return _FakeLLM()
+
+    metered = {}
+
+    def fake_invoke(llm, messages, **kwargs):
+        metered.update(kwargs)
+        return llm.invoke(messages)
+
+    monkeypatch.setattr(classifier_module, "create_anki_chat_model", fake_factory)
+    monkeypatch.setattr(classifier_module, "invoke_metered_chat", fake_invoke)
+
+    config = Mock(OPENAI_API_KEY="k", ANKI_CARD_MODEL="chatgpt-web")
+    classifier = classifier_module.IntentClassifier(config)
+    assert classifier.classify("mitochondria is the powerhouse of the cell") == Intent.ANKI
+
+    assert built["model"] == "chatgpt-web", "client must come from the ROUTED factory"
+    assert metered["cost_class"] == llm_cost_class("chatgpt-web", config), (
+        "metering must carry the registry cost class — phantom metered $0 breaks cost honesty"
+    )
+    assert metered["provider"] == llm_provider_label("chatgpt-web"), (
+        "metering must carry the registry provider label"
+    )

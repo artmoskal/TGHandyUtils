@@ -30,7 +30,8 @@ from ai_workflow_tools.media.image_generation import OpenAIImageGenerator
 
 pytestmark = pytest.mark.integration
 
-GRAPH_TEXT_MODEL = os.getenv("ANKI_GRAPH_TEST_MODEL", "gpt-5.4-mini")
+# empty-string env (e.g. a compose passthrough with no host export) means "unset"
+GRAPH_TEXT_MODEL = os.getenv("ANKI_GRAPH_TEST_MODEL") or "gpt-5.4-mini"
 
 
 def _card_text(card: AnkiCard) -> str:
@@ -40,8 +41,15 @@ def _card_text(card: AnkiCard) -> str:
 
 
 def _configure_graph_models() -> Config:
-    if not Config.OPENAI_API_KEY or Config.OPENAI_API_KEY == "test_key_not_used":
-        pytest.skip("OPENAI_API_KEY not configured")
+    from services.llm_factory import llm_provider_label
+
+    # Prerequisite depends on the SELECTED backend (codex 2026-07-21): text roles routed
+    # to a registry backend (chatgpt-web / claude-p) need no OpenAI key; only a metered
+    # OpenAI text model does. Configured-but-unavailable backends FAIL loudly, never skip.
+    if llm_provider_label(GRAPH_TEXT_MODEL) == "openai" and (
+        not Config.OPENAI_API_KEY or Config.OPENAI_API_KEY == "test_key_not_used"
+    ):
+        pytest.skip("OPENAI_API_KEY not configured for a metered OpenAI text model")
     Config.TASK_PARSING_MODEL = "gpt-5.4-mini"
     Config.ANKI_CARD_MODEL = GRAPH_TEXT_MODEL
     Config.ANKI_DECISION_MODEL = GRAPH_TEXT_MODEL

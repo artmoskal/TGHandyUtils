@@ -244,3 +244,31 @@ def test_codex_exec_cost_class_is_explicit_when_api_key_backed():
     bad_config = SimpleNamespace(WORKFLOW_CODEX_COST_CLASS="free-ish")
     with _pytest.raises(ValueError, match="WORKFLOW_CODEX_COST_CLASS"):
         llm_cost_class("codex-exec", bad_config)
+
+
+@pytest.mark.unit
+def test_metered_chat_construction_without_openai_key_fails_loudly():
+    """Backend-aware key contract (codex 2026-07-21): a METERED OpenAI model without a
+    key must fail at client construction — while a registry backend (chatgpt-web) builds
+    without any OpenAI key. Consumers (ParsingService, classifier) rely on the factory
+    for this; they carry no eager key gates of their own."""
+
+    from unittest.mock import Mock
+
+    import pytest as _pytest
+
+    from services.llm_factory import create_anki_chat_model
+
+    config = Mock(
+        OPENAI_API_KEY="",
+        LLM_BASE_URL="",
+        CHATGPT_BROWSER_API_URL="http://browser.test:8010",
+        WORKFLOW_CHATGPT_BROWSER_TIMEOUT_SECONDS=340,
+        WORKFLOW_CHATGPT_BROWSER_FORCE_FRESH=True,
+    )
+    with _pytest.raises(ValueError, match="OpenAI API key is required"):
+        create_anki_chat_model(config, "gpt-5.4-mini", 0.0)
+
+    assert create_anki_chat_model(config, "chatgpt-web", 0.0) is not None, (
+        "a registry backend must construct without an OpenAI key"
+    )

@@ -31,7 +31,7 @@ class TestTimezoneAgnosticParsing:
     def parsing_service(self, mock_config, mock_preferences_repo):
         """Create parsing service with mocked dependencies."""
         # Mock the LLM module before creating service
-        with patch('services.parsing_service.create_chat_llm') as mock_chat_openai:
+        with patch('services.parsing_service.create_anki_chat_model') as mock_chat_openai:
             mock_chat_openai.return_value = Mock()
             service = ParsingService(mock_config, preferences_repo=mock_preferences_repo)
             # Mock the LLM after creation

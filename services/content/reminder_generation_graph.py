@@ -62,9 +62,11 @@ class ReminderGenerationGraph:
     def __init__(self, parsing_service: Any, task_service: Any, runner: Optional[WorkflowRunner] = None):
         self.parsing_service = parsing_service
         self.task_service = task_service
-        # Config comes from ParsingService (which carries it); RecipientTaskService does NOT have a
-        # .config, so reading it from there would silently hand the runner None and disable budget.
-        self.runner = runner or WorkflowRunner(config=getattr(parsing_service, "config", None))
+        # Optional CUSTOM runner (tests only). Production uses the runner the ENGINE
+        # composes from its WorkflowConfigBundle — the bundle crosses at the
+        # WorkflowEngine(config=...) seam, not on a hand-built runner (whose .config the
+        # engine never reads). Budgets cross via typed WorkflowProfile limits.
+        self.runner = runner
         self.capability_trace_sink = InMemoryTraceSink()
         self.capability_registry = CapabilityRegistry()
         self.capability_runtime = CapabilityRuntime(self.capability_registry, self.capability_trace_sink)
@@ -116,11 +118,17 @@ class ReminderGenerationGraph:
         if self._workflow_engine is not None:
             return self._workflow_engine
         self._register_workflow_capabilities()
+        from config import WORKFLOW_CONFIG
+
         engine = WorkflowEngine(
             registry=self.capability_registry,
             trace_sink=self.capability_trace_sink,
+            config=WORKFLOW_CONFIG,
         )
-        engine.executor.runner = self.runner
+        if self.runner is not None:
+            engine.executor.runner = self.runner
+        else:
+            self.runner = engine.executor.runner
         engine.register_workflow(self._workflow_definition(), profile=self._workflow_profile())
         self._workflow_engine = engine
         return engine

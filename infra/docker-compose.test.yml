@@ -13,6 +13,11 @@ services:
       # both must be exported on the HOST shell; .env alone must not enable paid runs.
       - ALLOW_PAID_TESTS=${ALLOW_PAID_TESTS:-}
       - RUN_ENGINE_SUBSCRIPTION_QUALIFICATION=${RUN_ENGINE_SUBSCRIPTION_QUALIFICATION:-}
+      # Model-routing levers for the live workflow-graph integration suites: route the
+      # anki / reminder graph text roles to a specific backend (e.g. chatgpt-web) for a
+      # single run without editing config. Empty = each suite's own default.
+      - ANKI_GRAPH_TEST_MODEL=${ANKI_GRAPH_TEST_MODEL:-}
+      - REMINDER_GRAPH_TEST_MODEL=${REMINDER_GRAPH_TEST_MODEL:-}
     volumes:
       # Mount source code for development
       - ../:/app
