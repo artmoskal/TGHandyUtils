@@ -272,3 +272,174 @@ def test_metered_chat_construction_without_openai_key_fails_loudly():
     assert create_anki_chat_model(config, "chatgpt-web", 0.0) is not None, (
         "a registry backend must construct without an OpenAI key"
     )
+
+
+# ================= B1 red battery (factory path): token propagation to the wire =================
+#
+# Secured-consumer iteration, codex finding 2 (2026-07-21): the client-level auth tests in
+# packages/ai_workflow_tools/tests/test_chatgpt_browser_auth.py construct clients directly —
+# production constructs them through create_anki_text_llm / create_anki_chat_model with
+# _chatgpt_browser_kwargs(config), which today passes NO token, and config.py exposes none.
+# These reds prove the whole production chain: env -> Config -> factory kwargs -> HTTP header.
+
+_B1_RED = pytest.mark.xfail(
+    strict=True,
+    reason="B1 RED: factory/config do not propagate the bearer token yet — secured-consumer "
+    "iteration phase 1 removes this marker",
+)
+
+
+class _BrowserTokenConfig:
+    OPENAI_API_KEY = ""
+    LLM_BASE_URL = ""
+    CHATGPT_BROWSER_API_URL = "http://browser.test:8010"
+    WORKFLOW_CHATGPT_BROWSER_TOKEN = "secret-token-factory"
+    WORKFLOW_CHATGPT_BROWSER_TIMEOUT_SECONDS = 5
+    WORKFLOW_CHATGPT_BROWSER_FORCE_FRESH = True
+
+
+class _FactoryRecordingPost:
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, url, json=None, headers=None, timeout=None):
+        self.calls.append({"url": url, "headers": headers or {}})
+
+        class _Response:
+            status_code = 200
+            text = ""
+
+            def json(self):
+                return {"status": "completed", "reply": "ok"}
+
+        return _Response()
+
+
+@_B1_RED
+def test_factory_built_text_client_carries_the_configured_token(monkeypatch):
+    import asyncio
+
+    from services.llm_factory import create_anki_text_llm
+
+    post = _FactoryRecordingPost()
+    monkeypatch.setattr("requests.post", post)
+    client = create_anki_text_llm(_BrowserTokenConfig(), "chatgpt-web", 0.0)
+
+    from ai_workflow_engine.llm_protocol import ChatMessage, LLMRequest
+
+    asyncio.run(client(LLMRequest(messages=[ChatMessage(role="user", content="hi")])))
+    assert post.calls, "the factory-built client must reach the transport"
+    assert post.calls[0]["headers"].get("Authorization") == "Bearer secret-token-factory", (
+        "the configured token must reach the HTTP header through the PRODUCTION "
+        "construction path, not only through direct constructors"
+    )
+
+
+@_B1_RED
+def test_factory_built_chat_model_carries_the_configured_token(monkeypatch):
+    from services.llm_factory import create_anki_chat_model
+
+    post = _FactoryRecordingPost()
+    monkeypatch.setattr("requests.post", post)
+    model = create_anki_chat_model(_BrowserTokenConfig(), "chatgpt-web", 0.0)
+    model.invoke([("user", "hi")])
+    assert post.calls and post.calls[0]["headers"].get("Authorization") == (
+        "Bearer secret-token-factory"
+    )
+
+
+@_B1_RED
+def test_config_sources_browser_token_from_the_agreed_env_name():
+    """Secret contract: consumer env CHATGPT_BROWSER_API_TOKEN -> config value
+    WORKFLOW_CHATGPT_BROWSER_TOKEN (mirroring the URL's env->WORKFLOW_* pattern), no
+    default. Proven in a hermetic subprocess so module state stays untouched."""
+
+    import os
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import config; print(config.Config.WORKFLOW_CHATGPT_BROWSER_TOKEN)",
+        ],
+        env={**os.environ, "CHATGPT_BROWSER_API_TOKEN": "tok-from-env"},
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+        timeout=60,
+    )
+    assert result.returncode == 0, f"config import failed: {result.stderr[-500:]}"
+    assert result.stdout.strip() == "tok-from-env"
+
+
+# ================= B2 red battery: force-fresh is DELETED, explicit mode replaces it =================
+
+_B2_RED = pytest.mark.xfail(
+    strict=True,
+    reason="B2 RED: force-fresh knobs still exist / explicit conversation mode missing — "
+    "secured-consumer iteration phase 1 removes this marker",
+)
+
+
+@_B2_RED
+def test_config_replaces_force_fresh_with_explicit_conversation_mode():
+    """Latest-only: the boolean knobs are DELETED (no alias) and the committed Anki mode
+    is `reuse`, exposed as WORKFLOW_CHATGPT_BROWSER_CONVERSATION_MODE. Hermetic subprocess
+    keeps module state untouched."""
+
+    import os
+    import subprocess
+    import sys
+
+    code = (
+        "import config\n"
+        "c = config.Config\n"
+        "assert not hasattr(c, 'ANKI_CHATGPT_BROWSER_FORCE_FRESH'), 'old knob alive'\n"
+        "assert not hasattr(c, 'WORKFLOW_CHATGPT_BROWSER_FORCE_FRESH'), 'old alias alive'\n"
+        "print(c.WORKFLOW_CHATGPT_BROWSER_CONVERSATION_MODE)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        env=dict(os.environ),
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+        timeout=60,
+    )
+    assert result.returncode == 0, f"config contract failed: {result.stderr[-500:]}"
+    assert result.stdout.strip() == "reuse", "committed Anki mode is reuse"
+
+
+@_B2_RED
+def test_factory_kwargs_no_longer_carry_force_fresh():
+    from services.llm_factory import _chatgpt_browser_kwargs
+
+    class _Cfg:
+        CHATGPT_BROWSER_API_URL = "http://127.0.0.1:8010"
+        WORKFLOW_CHATGPT_BROWSER_TIMEOUT_SECONDS = 5
+
+    assert "force_fresh" not in _chatgpt_browser_kwargs(_Cfg()), (
+        "the deleted knob must not survive as a factory kwarg"
+    )
+
+
+@_B2_RED
+def test_force_fresh_is_deleted_repo_wide():
+    """Deletion proof: no production source still mentions the retired knobs (tests and
+    discussion docs excluded). REFACTORING THAT LEAVES DUPLICATES IS WORSE THAN NONE."""
+
+    offenders = []
+    for base in ("services", "config", "config.py", "packages/ai_workflow_tools"):
+        root = REPO_ROOT / base
+        candidates = [root] if root.is_file() else list(root.rglob("*.py")) + list(
+            root.rglob("*.yaml")
+        ) if root.exists() else []
+        for path in candidates:
+            if "tests" in path.parts or "build" in path.parts:
+                continue
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            if "FORCE_FRESH" in text or "force_fresh" in text:
+                offenders.append(str(path.relative_to(REPO_ROOT)))
+    assert not offenders, f"force-fresh still referenced in production sources: {offenders}"
