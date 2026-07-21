@@ -9,7 +9,7 @@ Target: fix-forward latest-only release `engine-v0.11.7` with package matrix
 Implementation owner: Codex, end-to-end for both iterations
 Independent reviewer: Claude, once after each complete iteration gate, unless explicitly waived by
 the release owner
-Status: **RELEASE AUTHORIZED; SOURCE/OFFLINE/INSTALLED-WHEEL GATES GREEN; TAG AND FINAL BUNDLE IN PROGRESS**
+Status: **RELEASED LOCALLY; IMMUTABLE TAG AND VERIFIED RELEASE BUNDLE COMPLETE; NOT PUSHED OR UPLOADED**
 
 Primary consumer request:
 `/Users/artemm/PycharmProjects/MageQA/docs/_discussion/2026-07-20-engine-cli-usage-and-notional-pricing-request.md`
@@ -667,7 +667,7 @@ Purpose: prove real provider semantics and release only the reviewed exact bytes
     persisted-surface sweep.
   - Verdict: **PASS**; evidence is recorded in the offline candidate report below.
 
-- [ ] Build, verify, and cut the immutable release (estimate: 2h)
+- [x] Build, verify, and cut the immutable release (estimate: 2h)
   - Purpose: bind reviewed source, exact wheels, evidence, and consumer action.
   - Likely files/areas: package versions, release manifest/runbook, permanent docs, local tag.
   - Expected output: reproducible wheels, SHA256SUMS, release-manifest-v2, smoke evidence, annotated
@@ -858,11 +858,11 @@ clean rerun. A surviving mutation adds a new checkbox task; it is never explaine
 - Reproducible wheels, hashes, manifest, source commit, and annotated local tag are verified.
 - Old tags are unchanged; no push/upload/publication/repin occurs without explicit approval.
 
-## Offline Candidate Gate Report — 2026-07-20
+## Offline Candidate Gate Report — 2026-07-20 (Historical Checkpoint)
 
-Verdict: **PASS for source implementation and offline repository gates. Release remains blocked by
-the explicitly unchecked installed-wheel, counterpart-review, paid-live, manual-viewer, and tag
-gates.**
+Verdict at this checkpoint: **PASS for source implementation and offline repository gates.** The
+release was still blocked at that time. The final release record below supersedes this checkpoint;
+waived gates remain recorded as `NOT RUN`, never rewritten as `PASS`.
 
 ### Delivered
 
@@ -956,9 +956,9 @@ qualification remains unchecked below.
 - [x] Manual live-provider viewer acceptance **NOT RUN; explicitly waived by the release owner for
   this tag on 2026-07-21**. Hermetic installed-wheel viewer evidence is green; manual live evidence
   is not claimed.
-- [ ] Flip candidate docs to released truth, build the final release bundle, verify hashes/manifest,
-  and create the local annotated `engine-v0.11.7` tag. No tag, push, upload, or consumer repin has
-  occurred.
+- [x] Flip candidate docs to released truth, build the final release bundle, verify hashes/manifest,
+  and create the local annotated `engine-v0.11.7` tag. The local tag and bundle are complete; no
+  push, upload, or consumer repin occurred.
 
 ### Candidate Artifact Evidence
 
@@ -976,3 +976,57 @@ qualification remains unchecked below.
   `release_artifacts.py smoke-installed`.
 - These are candidate hashes, not the final release-manifest identities. The final release bundle
   must be rebuilt from the reviewed annotated tag and verified independently by the release tool.
+
+## Final Release Record — 2026-07-21
+
+Verdict: **RELEASED LOCALLY.** The immutable source tag and complete `release-manifest-v2` directory
+are verified. This record does not authorize a push, upload, or consumer deployment.
+
+### Source And Package Identity
+
+- Annotated tag: `engine-v0.11.7`
+- Tag object: `9e1769a9d31ffab1b9222ab9056aff5db920fc19`
+- Peeled source commit: `d8cd637dcb68c696cfd3370ec9f30a0e4aa382c8`
+- Package matrix: engine `0.11.7`, tools `0.5.2`, viewer `0.3.2`
+- Previous immutable tag `engine-v0.11.6` remains at
+  `266d2cf21179df5f56d207cc004c96a26d5157e9`.
+
+### Final Artifact Identity
+
+Verified release directory:
+`/private/tmp/tghandy-v0117-release-work/bundle`
+
+- `ai_workflow_engine-0.11.7-py3-none-any.whl`:
+  `7f4a882da2e9acb7cc24d202b205167848ed51a94dd723fd1dd7900780c58af3`
+- `ai_workflow_tools-0.5.2-py3-none-any.whl`:
+  `26bdb4389470babf128306887b6bd0e3849ddd592e5cff6f3a648f2f6e43a2a2`
+- `ai_workflow_viewer-0.3.2-py3-none-any.whl`:
+  `6d8dd2ae90efff06641ac42f496d2a270214a7a2c06a488a07bbc65cf31d6489`
+- `release-manifest.json`:
+  `85d6323fbc00c79395d2929e312919cfc778a2c01c0a9f1064aaa75f849e891a`
+- `SHA256SUMS`:
+  `28deeccb2edbfb41ea5724873f31269e9513be0abd1f0d86196b78ee46041676`
+
+### Final Tagged Evidence
+
+- Two independent detached builds produced byte-identical wheels.
+- Tagged full tier via `./test.sh unit`: **1650 passed, 2 optional skips, 0 failed,
+  152 deselected** in 116.77 seconds.
+- Fresh out-of-repository venv installed the exact final wheels and passed
+  `release_artifacts.py smoke-installed`.
+- `release_artifacts.py verify-bundle` passed against the assembled directory and binds every
+  wheel, evidence record/log, verifier source, tag object, and source commit.
+- The first test-gate attempt stopped before pytest because the clean clone lacked the ignored
+  `.env`; the rerun supplied the local test environment and is the only test evidence in the
+  bundle. The first smoke attempt was denied dependency-network access; the fresh-venv rerun with
+  dependency access passed and is the only smoke evidence in the bundle.
+
+### Explicitly Unverified
+
+- Paid Claude/Codex live canary: **NOT RUN; release-owner waiver.**
+- Manual inspection of live-provider viewer pages: **NOT RUN; release-owner waiver.**
+- Formal counterpart cumulative review: **NOT RUN; release-owner waiver.**
+
+These waivers do not weaken product adoption gates. MageQA and other consumers verify the complete
+release directory, pin the exact consumed wheel hashes, and run their own authenticated provider and
+product canaries before changing a deployed pin.
