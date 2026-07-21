@@ -1,7 +1,6 @@
 # AI Workflow Engine Documentation
 
-This directory describes the `engine-v0.11.7` release candidate; `engine-v0.11.6` remains the
-current immutable release until the candidate is tagged. It is written for both
+This directory describes the current immutable release, `engine-v0.11.7`. It is written for both
 engineers and coding agents: each file has one responsibility, links to the next action, and avoids
 embedding release history in current instructions.
 

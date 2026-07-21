@@ -1,10 +1,10 @@
 # Voice Brain Engine Integration Guide
 
-Status: **`engine-v0.11.6` is the current immutable release.**
-The pending v0.11.7 candidate improves usage truth for optional process-backed Claude/Codex clients.
+Status: **`engine-v0.11.7` is the current immutable release.**
+This release improves usage truth for optional process-backed Claude/Codex clients.
 It does not turn subscription CLI workers into a suitable low-latency voice hot path. Adopt only as
-the coherent `0.11.7 / 0.5.2 / 0.3.2` matrix after the immutable release exists.
-The product must pin tag `engine-v0.11.6` before running its own
+the coherent `0.11.7 / 0.5.2 / 0.3.2` matrix.
+The product must pin tag `engine-v0.11.7` before running its own
 latency/cancellation canary. This replaces
 the historical June request/reply transcript.
 
@@ -33,9 +33,9 @@ transcript + session context
   workers are usually unsuitable for a low-latency conversational hot path.
 - `ai-workflow-viewer==0.3.2` in diagnostics, not the real-time audio path.
 
-> **Candidate matrix:** `engine-v0.11.7` + `ai-workflow-tools==0.5.2` +
+> **Current matrix:** `engine-v0.11.7` + `ai-workflow-tools==0.5.2` +
 > `ai-workflow-viewer==0.3.2` (tools/viewer require
-> `ai-workflow-engine>=0.11.7,<0.12`). Do not install this matrix until `engine-v0.11.7` is cut.
+> `ai-workflow-engine>=0.11.7,<0.12`).
 > The previous line remains available at its historical tag for historical data; the lines never
 > mix in one environment.
 

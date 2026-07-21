@@ -7,8 +7,9 @@ Target: fix-forward latest-only release `engine-v0.11.7` with package matrix
 `ai-workflow-engine==0.11.7`, `ai-workflow-tools==0.5.2`,
 `ai-workflow-viewer==0.3.2`
 Implementation owner: Codex, end-to-end for both iterations
-Independent reviewer: Claude, once after each complete iteration gate
-Status: **OFFLINE CANDIDATE GREEN; INSTALLED-WHEEL, LIVE, MANUAL, REVIEW, AND RELEASE GATES OPEN**
+Independent reviewer: Claude, once after each complete iteration gate, unless explicitly waived by
+the release owner
+Status: **RELEASE AUTHORIZED; SOURCE/OFFLINE/INSTALLED-WHEEL GATES GREEN; TAG AND FINAL BUNDLE IN PROGRESS**
 
 Primary consumer request:
 `/Users/artemm/PycharmProjects/MageQA/docs/_discussion/2026-07-20-engine-cli-usage-and-notional-pricing-request.md`
@@ -624,7 +625,7 @@ Purpose: close the permanent contract and installed-wheel behavior before paid v
 
 Purpose: prove real provider semantics and release only the reviewed exact bytes.
 
-- [ ] Run one bounded Claude and one bounded Codex subscription canary (estimate: 1.5h)
+- [x] Run one bounded Claude and one bounded Codex subscription canary, or record an explicit waiver (estimate: 1.5h)
   - Purpose: verify installed CLI output semantics, not economic quality.
   - Likely files/areas: existing clean-clone subscription qualification harness.
   - Expected output: exact candidate wheels produce provider-reported Claude notional and
@@ -633,8 +634,11 @@ Purpose: prove real provider semantics and release only the reviewed exact bytes
     call caps; target combined notional <= `$0.20`; no retry without new approval; `$0` metered;
     model/version/catalog recorded; CLI/auth/provider outage is an honest non-PASS.
   - Verification: machine-readable manifest, usage JSONL, bundle, rendered pages.
+  - Disposition: **NOT RUN; explicitly waived for this tag by the release owner on 2026-07-21.**
+    No paid provider call was made. Real installed-CLI semantics remain a consumer adoption-canary
+    responsibility and are not represented as release evidence.
 
-- [ ] Perform user-side viewer acceptance (estimate: 0.5h)
+- [x] Perform user-side viewer acceptance, or record an explicit waiver (estimate: 0.5h)
   - Purpose: validate the actual operator-facing economics.
   - Likely files/areas: served qualification viewer.
   - Expected output: user sees counts, cache/reasoning split, amount, source/version, and no fake
@@ -642,8 +646,11 @@ Purpose: prove real provider semantics and release only the reviewed exact bytes
   - Acceptance criteria: both pages open; source labels are understandable; unknown and partial
     states are truthful; no raw provider JSON or stderr noise leaks.
   - Verification: explicit user `PASS` or documented waiver; no tag before one exists.
+  - Disposition: **NOT RUN; explicitly waived for this tag by the release owner on 2026-07-21.**
+    Hermetic installed-wheel bundle/readback/viewer smoke passed; no claim of manual inspection of a
+    live-provider page is made.
 
-- [ ] Intermediate direction and architecture audit (estimate: 2h)
+- [x] Intermediate direction and architecture audit (estimate: 2h)
   - Milestones crossed: complete M-CLI-Economics milestone and release candidate.
   - Source goals/docs reread: consumer request, binding spec, Soul, both iteration reports.
   - Cumulative implementation inspected: complete baseline-to-candidate diff, all process/provider/
@@ -658,6 +665,7 @@ Purpose: prove real provider semantics and release only the reviewed exact bytes
   - Required plan changes: any finding becomes a checkbox task before release.
   - Evidence/verification: dependency/complexity scan, aggregate test matrix, provider-door and
     persisted-surface sweep.
+  - Verdict: **PASS**; evidence is recorded in the offline candidate report below.
 
 - [ ] Build, verify, and cut the immutable release (estimate: 2h)
   - Purpose: bind reviewed source, exact wheels, evidence, and consumer action.
@@ -693,7 +701,9 @@ and metered spend remains unset. Then run normal Claude and Codex calls for live
 Codex prepares one cumulative evidence handoff. Claude independently attacks the complete
 Iteration 2 diff once. Codex resolves confirmed findings in one consolidated repair batch and
 reruns the entire gate. No tag is created until counterpart `PASS`, user-side live/manual gates,
-and explicit release approval.
+and explicit release approval. For this release, the release owner explicitly waived the formal
+counterpart pass after the complete offline and installed-wheel evidence was presented; the waiver
+does not convert the missing review into `PASS`.
 
 ## Automated Test Matrix
 
@@ -938,10 +948,14 @@ qualification remains unchecked below.
 
 - [x] Complete the remaining mandatory mutation matrix and clean rerun.
 - [x] Build two reproducible candidate wheel sets and pass the installed-wheel hermetic smoke.
-- [ ] Obtain the one independent cumulative counterpart review required by this plan.
-- [ ] Obtain fresh approval for one Claude and one Codex subscription canary, or record an explicit
-  waiver. No paid call has been made.
-- [ ] Obtain user-side viewer acceptance, or record an explicit waiver.
+- [x] Formal counterpart review **NOT RUN; explicitly waived by the release owner for this tag on
+  2026-07-21** after source/offline/installed-wheel evidence and a consumer preflight were reported.
+  This is a waiver, not a `PASS` verdict.
+- [x] Paid Claude/Codex canary **NOT RUN; explicitly waived by the release owner for this tag on
+  2026-07-21**. No paid call has been made.
+- [x] Manual live-provider viewer acceptance **NOT RUN; explicitly waived by the release owner for
+  this tag on 2026-07-21**. Hermetic installed-wheel viewer evidence is green; manual live evidence
+  is not claimed.
 - [ ] Flip candidate docs to released truth, build the final release bundle, verify hashes/manifest,
   and create the local annotated `engine-v0.11.7` tag. No tag, push, upload, or consumer repin has
   occurred.

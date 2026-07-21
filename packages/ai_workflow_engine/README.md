@@ -5,10 +5,8 @@ declare a workflow, register typed capabilities, and call one engine door. The e
 transitions, retries, fan-out, budgets, waits, trace, usage, and observation bundles; products own
 domain models, provider clients, storage adapters, clocks, and side-effect delivery.
 
-> **`engine-v0.11.7` is the release candidate. `engine-v0.11.6` remains the current release.**
-> The candidate is not released: do not re-pin until it is cut. Install the candidate matrix only
-> after the immutable
-> `engine-v0.11.7` tag and verified release directory exist.
+> **`engine-v0.11.7` is the current release.**
+> Install only from the immutable `engine-v0.11.7` tag and its verified release directory.
 > The engine owner publishes wheels bound to
 > immutable tags; consumer
 > canaries still decide whether each product changes its deployed pin. Never depend on a live
@@ -25,7 +23,7 @@ domain models, provider clients, storage adapters, clocks, and side-effect deliv
 > Adoption is fresh: new consumers start on the current contract; existing consumers re-adopt the
 > current surface rather than migrate state.
 >
-> **v0.11.7 candidate delta.** All supported Claude/Codex CLI doors retain typed normalized token
+> **v0.11.7 release delta.** All supported Claude/Codex CLI doors retain typed normalized token
 > usage on success, provider failure, timeout, and caller cancellation. Codex structured JSONL uses
 > the final cumulative `turn.completed`; cached input and reasoning output remain explicit subsets,
 > so neither is double-counted. The engine's one usage door applies an injected, versioned
@@ -100,24 +98,21 @@ Product adopters should then read exactly one delta guide:
 
 ## Install
 
-The source tree currently contains a non-installable release candidate. After the immutable tag is
-cut, consumers download its complete published release directory, obtain the verifier scripts from
+Consumers download the complete published release directory, obtain the verifier scripts from
 the tag (or another already trusted pin), verify the bundle before installation, and install only
 the packages their product needs. Building from source is a producer operation, not consumer
 verification. The exact producer and consumer commands are in
-[`docs/operations.md`](docs/operations.md#release-artifacts-and-verification-v0116).
+[`docs/operations.md`](docs/operations.md#release-artifacts-and-verification-v0117).
 The required pre-install door is
 `python3 release_artifacts.py verify-bundle --dir /path/to/engine-v0.11.7`.
 
-Candidate matrix:
+Current release matrix:
 
 | Package | Install when |
 |---|---|
 | `ai-workflow-engine==0.11.7` | Always. Core builder, executor, memory, waits, observation writer. |
 | `ai-workflow-tools==0.5.2` | The product uses CLI agents, the tool catalog, or media helpers. |
 | `ai-workflow-viewer==0.3.2` | A developer or product service renders observation bundles. |
-
-Do not install this matrix until `engine-v0.11.7` is cut.
 
 Record the engine tag, source commit, and wheel SHA-256 in the consumer repository. A tag already
 consumed by another repository is frozen; fixes require a new tag.
@@ -183,7 +178,7 @@ minimal profile.
 
 `engine-v0.11.0` made the line **latest-only**: strict versioned persisted contracts,
 one strict viewer loader with typed status authority, a sealed current-contract oracle replacing
-old-wheel equality, and removal of every compatibility fallback. The current v0.11.6 release
+old-wheel equality, and removal of every compatibility fallback. The current v0.11.7 release
 keeps MachineSnapshot `schema_version="v0.11"` and observation bundle meta v2, and advances wait
 records to `record_schema_version="wait-v2"` with required persisted registration-attempt
 identity. Old persisted data fails loudly naming its historical tag. Earlier lines added, and

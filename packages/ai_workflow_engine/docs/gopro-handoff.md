@@ -1,10 +1,10 @@
 # GoPro Engine Adoption Guide
 
-Status: **`engine-v0.11.6` is the current immutable release.**
-The pending v0.11.7 candidate changes optional tools/viewer usage economics, not GoPro's direct-VLM
-workflow contract. GoPro may continue consuming only the engine wheel; if it adopts CLI agents or
-the viewer, it must install the coherent `0.11.7 / 0.5.2 / 0.3.2` matrix after release.
-To adopt, GoPro should pin tag `engine-v0.11.6`, record the source commit and wheel hash, and
+Status: **`engine-v0.11.7` is the current immutable release.**
+This release changes optional tools/viewer usage economics, not GoPro's direct-VLM workflow
+contract. GoPro may continue consuming only the engine wheel; if it adopts CLI agents or the viewer,
+it must install the coherent `0.11.7 / 0.5.2 / 0.3.2` matrix.
+To adopt, GoPro should pin tag `engine-v0.11.7`, record the source commit and wheel hash, and
 run its sidecar canary before changing the production image. Do not
 infer the actual GoPro pin from this document; the consumer repository's
 pin file is authoritative for deployed state.
@@ -42,9 +42,9 @@ The engine owns execution and gates. GoPro owns inventory semantics and storage.
 | `ai-workflow-tools==0.5.2` | Add only when GoPro uses CLI agents or shared media helpers |
 | `ai-workflow-viewer==0.3.2` | Developer/diagnostic service; not required in the detector image |
 
-> **Candidate matrix:** `engine-v0.11.7` + `ai-workflow-tools==0.5.2` +
+> **Current matrix:** `engine-v0.11.7` + `ai-workflow-tools==0.5.2` +
 > `ai-workflow-viewer==0.3.2` (tools/viewer require
-> `ai-workflow-engine>=0.11.7,<0.12`). Do not install this matrix until `engine-v0.11.7` is cut.
+> `ai-workflow-engine>=0.11.7,<0.12`).
 > The previous line remains available at its historical tag for historical data; the lines never
 > mix in one environment.
 
@@ -172,12 +172,12 @@ second memory, retry, or observation runtime into the sidecar.
 
 ## v0.11 Release Contract
 
-`engine-v0.11.6` is the current immutable release for the **latest-only** line. The line uses strict versioned persisted
+`engine-v0.11.7` is the current immutable release for the **latest-only** line. The line uses strict versioned persisted
 contracts (snapshot `v0.11`, bundle meta v2, wait records `wait-v2`), one strict viewer loader, and
 NO migration layer — the sealed current-contract corpus shows 0 behavior deltas vs v0.10.1, but old
 persisted data is rejected loudly naming its historical tag. Adopt by re-pinning fresh
-(pin tag `engine-v0.11.6`, verify the published `release-manifest-v2` directory, then install only
-the engine `0.11.6` wheel for the current sidecar) and
+(pin tag `engine-v0.11.7`, verify the published `release-manifest-v2` directory, then install only
+the engine `0.11.7` wheel for the current sidecar) and
 re-run your canaries before changing any deployed pin. The release makes node-context binding
 explicit for every node kind and adds native Codex image attachment in the optional tools wheel;
 the sealed behavior corpus is unchanged. `wait-v1` records written by v0.11.5 are non-current:
