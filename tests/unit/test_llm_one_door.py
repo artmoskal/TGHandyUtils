@@ -474,3 +474,27 @@ def test_force_fresh_is_deleted_repo_wide():
         if "FORCE_FRESH" in text or "force_fresh" in text:
             offenders.append(str(relative))
     assert not offenders, f"force-fresh still referenced in production sources: {offenders}"
+
+
+def test_compose_env_precedence_cannot_shadow_dotenv_browser_credentials():
+    """The real test container inherits URL/token from env_file, never empty passthroughs."""
+
+    import os
+    import re
+
+    from dotenv import dotenv_values
+
+    compose = (REPO_ROOT / "infra" / "docker-compose.test.yml").read_text(encoding="utf-8")
+    for key in ("CHATGPT_BROWSER_API_URL", "CHATGPT_BROWSER_API_TOKEN"):
+        assert not re.search(rf"^\s*-\s*{key}=", compose, re.MULTILINE), (
+            f"{key} in environment would outrank env_file even when interpolated empty"
+        )
+    assert re.search(r"env_file:\s*\.\./\.env|env_file:\s*\n\s*-\s*\.\./\.env", compose)
+
+    declared = dotenv_values(REPO_ROOT / ".env") if (REPO_ROOT / ".env").exists() else {}
+    if os.getenv("RUNNING_IN_DOCKER") == "1":
+        for key in ("CHATGPT_BROWSER_API_URL", "CHATGPT_BROWSER_API_TOKEN"):
+            if declared.get(key):
+                assert os.getenv(key, "") == declared[key], (
+                    f"the .env-declared {key} must reach the container unshadowed"
+                )

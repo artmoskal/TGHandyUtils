@@ -214,9 +214,10 @@ def test_image_generator_401_is_loud_and_never_retried(tmp_path):
 
     post = _RecordingPost(reply=_UNAUTHORIZED, status_code=401)
     generator = ChatGptBrowserImageGenerator(_LoopbackConfig(), http_post=post)
-    with pytest.raises(ImageGenerationError, match="401"):
+    with pytest.raises(ImageGenerationError, match="401") as err:
         asyncio.run(generator.generate(_image_request(tmp_path)))
     assert len(post.calls) == 1
+    assert "502 usually means" not in str(err.value)
 
 
 # ----------------------- RED: the token stays off the ACTUAL failure surfaces
@@ -314,3 +315,134 @@ def test_image_client_rejects_non_positive_or_non_finite_timeouts_before_http(tm
     with pytest.raises(ImageGenerationError, match="finite and positive"):
         asyncio.run(generator.generate(_image_request(tmp_path)))
     assert not post.calls
+
+
+@pytest.mark.parametrize("client_kind", ["async", "sync"])
+def test_text_clients_project_structured_terminal_error_without_private_fields(client_kind):
+    body = {
+        "status": "uncertain",
+        "task_id": "image-task-42",
+        "error": {
+            "code": "IMAGE_GENERATION_WEDGED",
+            "message": "result missing at https://provider.invalid/task secret-token-1",
+            "dom": "<main>private</main>",
+        },
+        "retry_requires_new_idempotency_key": True,
+        "prompt": "private prompt must not survive",
+    }
+    post = _RecordingPost(reply=body, status_code=409)
+    if client_kind == "async":
+        client = ChatGptBrowserLLMClient(
+            "http://browser.test:8010",
+            bearer_token="secret-token-1",
+            http_post=post,
+        )
+        invoke = lambda: _ask(client)
+    else:
+        client = ChatGptBrowserChatModel(
+            "http://browser.test:8010",
+            bearer_token="secret-token-1",
+            http_post=post,
+        )
+        invoke = lambda: client.invoke([("user", "hi")])
+
+    with pytest.raises(ChatGptBrowserError) as raised:
+        invoke()
+
+    message = str(raised.value)
+    assert "HTTP 409" in message
+    assert "status=uncertain" in message
+    assert "task_id=image-task-42" in message
+    assert "code=IMAGE_GENERATION_WEDGED" in message
+    assert "retry_requires_new_idempotency_key=true" in message
+    assert "[REDACTED_URL]" in message and "[REDACTED]" in message
+    assert "private prompt" not in message
+    assert "<main>" not in message
+    assert "extension is down" not in message
+    assert len(post.calls) == 1
+
+
+def test_image_client_projects_structured_terminal_error_into_usage_without_private_fields(
+    tmp_path, monkeypatch
+):
+    from ai_workflow_tools.media import image_generation as module
+    from ai_workflow_tools.media.image_generation import (
+        ChatGptBrowserImageGenerator,
+        ImageGenerationError,
+    )
+
+    token = _ImageConfig.WORKFLOW_CHATGPT_BROWSER_TOKEN
+    post = _RecordingPost(
+        reply={
+            "status": "uncertain",
+            "task_id": "image-task-43",
+            "error": {
+                "code": "IMAGE_GENERATION_WEDGED",
+                "message": f"no result at https://provider.invalid/task?token={token}",
+                "image_bytes": "private",
+            },
+            "retry_requires_new_idempotency_key": True,
+            "raw_provider_envelope": {"prompt": "private"},
+        },
+        status_code=409,
+    )
+    events = []
+    monkeypatch.setattr(module, "record_usage_event", lambda event: events.append(event))
+    generator = ChatGptBrowserImageGenerator(_ImageConfig(), http_post=post)
+
+    with pytest.raises(ImageGenerationError) as raised:
+        asyncio.run(generator.generate(_image_request(tmp_path)))
+
+    assert len(post.calls) == 1
+    assert len(events) == 1 and events[0].success is False
+    durable = events[0].error or ""
+    assert durable == str(raised.value)
+    assert "status=uncertain" in durable
+    assert "task_id=image-task-43" in durable
+    assert "code=IMAGE_GENERATION_WEDGED" in durable
+    assert "retry_requires_new_idempotency_key=true" in durable
+    assert token not in durable and "provider.invalid" not in durable
+    assert "image_bytes" not in durable and "raw_provider_envelope" not in durable
+    assert "extension is down" not in durable
+
+
+@pytest.mark.parametrize("client_kind", ["async", "sync"])
+def test_outage_guidance_is_specific_to_http_502(client_kind):
+    post = _RecordingPost(reply={"status": "failed", "error": "executor offline"}, status_code=502)
+    if client_kind == "async":
+        client = ChatGptBrowserLLMClient(
+            "http://browser.test:8010", bearer_token="token", http_post=post
+        )
+        invoke = lambda: _ask(client)
+    else:
+        client = ChatGptBrowserChatModel(
+            "http://browser.test:8010", bearer_token="token", http_post=post
+        )
+        invoke = lambda: client.invoke([("user", "hi")])
+
+    with pytest.raises(ChatGptBrowserError, match="extension is down"):
+        invoke()
+
+
+def test_error_projection_handles_fastapi_wrapper_and_rejects_truthy_string_flags():
+    from ai_workflow_tools.chatgpt_browser_contract import provider_error_detail
+
+    message = provider_error_detail(
+        409,
+        {
+            "status": None,
+            "detail": {
+                "status": "uncertain",
+                "task_id": "wrapped-task-9",
+                "error": {"code": "WEDGED", "message": "no result", "dom": "private"},
+                "retry_requires_new_idempotency_key": "false",
+                "prompt": "private",
+            },
+        },
+    )
+
+    assert "status=uncertain" in message
+    assert "task_id=wrapped-task-9" in message
+    assert "code=WEDGED" in message and "error=no result" in message
+    assert "retry_requires_new_idempotency_key" not in message
+    assert "private" not in message and "dom" not in message and "prompt" not in message

@@ -30,6 +30,7 @@ from ai_workflow_tools.chatgpt_browser_contract import (
     bounded_wait_budget,
     browser_headers,
     positive_timeout,
+    provider_error_detail,
     retry_after_seconds,
     sanitize_browser_error,
 )
@@ -146,11 +147,11 @@ class ChatGptBrowserLLMClient:
                 waited += delay
                 continue
             if status_code >= 400:
-                detail = data.get("detail") or data.get("error") if isinstance(data, dict) else None
+                # incident handoff 2026-07-22: structured facts preserved; 502-only hint
                 raise ChatGptBrowserError(
-                    f"chatgpt browser service HTTP {status_code}: "
-                    f"{sanitize_browser_error(detail or getattr(response, 'text', ''), self._bearer_token)} "
-                    "(502 usually means the logged-in ChatGPT browser/extension is down)"
+                    sanitize_browser_error(
+                        provider_error_detail(status_code, data), self._bearer_token
+                    )
                 )
             if not isinstance(data, dict):
                 raise ChatGptBrowserError("chatgpt browser response JSON was not an object")
@@ -283,11 +284,11 @@ class ChatGptBrowserChatModel:
                 waited += delay
                 continue
             if status_code >= 400:
-                detail = data.get("detail") or data.get("error") if isinstance(data, dict) else None
+                # incident handoff 2026-07-22: structured facts preserved; 502-only hint
                 raise ChatGptBrowserError(
-                    f"chatgpt browser service HTTP {status_code}: "
-                    f"{sanitize_browser_error(detail or getattr(response, 'text', ''), self._client._bearer_token)} "
-                    "(502 usually means the logged-in ChatGPT browser/extension is down)"
+                    sanitize_browser_error(
+                        provider_error_detail(status_code, data), self._client._bearer_token
+                    )
                 )
             if not isinstance(data, dict):
                 raise ChatGptBrowserError("chatgpt browser response JSON was not an object")

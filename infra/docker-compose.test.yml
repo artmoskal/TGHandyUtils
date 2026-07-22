@@ -18,8 +18,11 @@ services:
       # single run without editing config. Empty = each suite's own default.
       - ANKI_GRAPH_TEST_MODEL=${ANKI_GRAPH_TEST_MODEL:-}
       - REMINDER_GRAPH_TEST_MODEL=${REMINDER_GRAPH_TEST_MODEL:-}
-      - CHATGPT_BROWSER_API_URL=${CHATGPT_BROWSER_API_URL:-}
-      - CHATGPT_BROWSER_API_TOKEN=${CHATGPT_BROWSER_API_TOKEN:-}
+      # CHATGPT_BROWSER_API_URL / _TOKEN deliberately have NO passthrough here: an
+      # `environment:` entry always beats env_file, so `${VAR:-}` with an unset caller
+      # shell would shadow the real values loaded from ../.env with EMPTY strings
+      # (incident handoff 2026-07-22, consumer fix 4). The gitignored .env is the one
+      # source; secrets never ride the caller shell or this file.
     volumes:
       # Mount source code for development
       - ../:/app

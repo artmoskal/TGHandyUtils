@@ -91,6 +91,78 @@ def sanitize_browser_error(value: Any, bearer_token: str | None) -> str:
     return _URL_RE.sub("[REDACTED_URL]", text)
 
 
+def provider_error_detail(status_code: int, data: Any) -> str:
+    """Project only the provider facts that are safe and useful after a failure.
+
+    Provider bodies are external input and can contain prompts, DOM, signed URLs, or image
+    bytes. This closed projection intentionally keeps five facts and ignores every sibling.
+    FastAPI-style ``{"detail": {...}}`` and direct product envelopes share the same rule.
+    The caller applies credential/URL redaction after this structural projection.
+    """
+
+    root = data if isinstance(data, dict) else {}
+    nested = root.get("detail") if isinstance(root.get("detail"), dict) else {}
+
+    code, message = _provider_error_code_and_message(root, nested)
+
+    parts: list[str] = []
+    for key, value in (
+        ("status", _first_provider_value(root, nested, "status")),
+        ("task_id", _first_provider_value(root, nested, "task_id")),
+        ("code", code),
+    ):
+        rendered = _safe_provider_scalar(value)
+        if rendered:
+            parts.append(f"{key}={rendered}")
+    retry_flag = _first_provider_value(
+        root, nested, "retry_requires_new_idempotency_key"
+    )
+    if type(retry_flag) is bool:
+        parts.append(
+            "retry_requires_new_idempotency_key=" + str(retry_flag).lower()
+        )
+    rendered_message = _safe_provider_scalar(message, limit=500)
+    if rendered_message:
+        parts.append(f"error={rendered_message}")
+
+    detail = "; ".join(parts) if parts else "unrecognized error envelope"
+    text = f"chatgpt browser service HTTP {status_code}: {detail}"
+    if status_code == 502:
+        text += " (502 usually means the logged-in ChatGPT browser/extension is down)"
+    return text
+
+
+def _safe_provider_scalar(value: Any, *, limit: int = 160) -> str:
+    if type(value) not in (str, int):
+        return ""
+    text = " ".join(str(value).split())
+    return text[:limit]
+
+
+def _first_provider_value(root: dict[str, Any], nested: dict[str, Any], *keys: str) -> Any:
+    for container in (root, nested):
+        for key in keys:
+            if key in container and container[key] is not None:
+                return container[key]
+    return None
+
+
+def _provider_error_code_and_message(
+    root: dict[str, Any], nested: dict[str, Any]
+) -> tuple[Any, Any]:
+    error_value = _first_provider_value(root, nested, "error")
+    error_object = error_value if isinstance(error_value, dict) else {}
+    code = _first_provider_value(root, nested, "code", "error_code") or error_object.get("code")
+    message = (
+        error_object.get("message")
+        or error_object.get("detail")
+        or (error_value if not isinstance(error_value, (dict, list)) else None)
+    )
+    if message is None and isinstance(root.get("detail"), str):
+        message = root["detail"]
+    return code, message
+
+
 def _is_loopback_hostname(hostname: str) -> bool:
     if hostname.lower() == "localhost":
         return True
@@ -105,6 +177,7 @@ __all__ = [
     "bounded_wait_budget",
     "browser_headers",
     "positive_timeout",
+    "provider_error_detail",
     "retry_after_seconds",
     "sanitize_browser_error",
 ]

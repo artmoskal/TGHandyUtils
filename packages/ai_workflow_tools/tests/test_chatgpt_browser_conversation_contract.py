@@ -296,8 +296,9 @@ def test_uncertain_transport_timeout_is_never_redispatched(tmp_path):
 
 
 def test_409_conflict_is_loud_with_exactly_one_request(tmp_path):
-    # KEEP-GREEN: today's generic >=400 branch already raises loudly on the first
-    # response with no retry — the idempotency contract builds on this staying true.
+    # 409 raises loudly on the first response with no retry / no key re-mint. The
+    # structured-projection and 502-only-hint contract is owned by the dedicated
+    # projection tests in test_chatgpt_browser_auth.py (codex, incident handoff).
     from ai_workflow_tools.media.image_generation import ImageGenerationError
 
     post = _RecordingPost(reply={"error": "idempotency conflict"}, status_code=409)
