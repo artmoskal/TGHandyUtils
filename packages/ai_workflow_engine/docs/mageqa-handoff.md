@@ -1,8 +1,7 @@
 # MageQA Engine Adoption Guide
 
-Status: **`engine-v0.11.8` is the release candidate; do not re-pin until it is cut.**
-`engine-v0.11.7` remains the current immutable release.
-This release closes MageQA's CLI economics request. Repin only the coherent candidate
+Status: **`engine-v0.11.8` is the current immutable release.**
+This release closes MageQA's CLI economics request. Repin only the coherent current
 `0.11.8 / 0.5.3 / 0.3.2` matrix after verifying its complete release directory and passing the E0
 canary below.
 MageQA's two durable-registration race canaries fail on `engine-v0.11.5`. MageQA must stay on its
@@ -11,7 +10,7 @@ canaries pass against the immutable tag. The five historical E0 blockers (planne
 `partial` rewritten to `done`, unenforced `RuntimeLimits.timeout_s`, hidden retrace provenance,
 the CLI 600s default, and the reused tools wheel identity) are addressed and carried forward;
 v0.11 additionally hardens every persisted contract (strict versioned snapshot, bundle meta v2,
-wait records) with NO migration layer. To adopt, MageQA must pin tag `engine-v0.11.7`,
+wait records) with NO migration layer. To adopt, MageQA must pin tag `engine-v0.11.8`,
 verify the complete published release directory, install the required wheels, and pass its E0 canaries before
 adopting; it stays on its existing pin until those canaries pass.
 Do not infer the actual MageQA pin from this document; the consumer repository's pin file is
@@ -55,10 +54,9 @@ a defect.
 | `ai-workflow-tools==0.5.3` | CLI agents, `claude -p`/`codex exec`, tool catalog, media helpers |
 | `ai-workflow-viewer==0.3.2` | Low-level engine run investigation and bundle rendering |
 
-> **Candidate matrix:** `engine-v0.11.8` + `ai-workflow-tools==0.5.3` +
+> **Current matrix:** `engine-v0.11.8` + `ai-workflow-tools==0.5.3` +
 > `ai-workflow-viewer==0.3.2` (tools/viewer require
 > `ai-workflow-engine>=0.11.8,<0.12`).
-> Do not install this matrix until `engine-v0.11.8` is cut.
 
 
 The MageQA Next.js dashboard remains product-owned. It may link/embed/project engine bundle data, but
@@ -220,12 +218,12 @@ with a scenario and acceptance proof. Upgrade via [`operations.md`](operations.m
 
 ## v0.11 Release Contract
 
-`engine-v0.11.7` is the current immutable release for the **latest-only** line. The line uses strict versioned persisted
+`engine-v0.11.8` is the current immutable release for the **latest-only** line. The line uses strict versioned persisted
 contracts (snapshot `v0.11`, bundle meta v2, wait records `wait-v2`), one strict viewer loader, and
 NO migration layer — the sealed current-contract corpus shows 0 behavior deltas vs v0.10.1, but old
 persisted data is rejected loudly naming its historical tag. Adopt by re-pinning fresh
-(pin tag `engine-v0.11.7`, verify the published `release-manifest-v2` bundle, then install engine
-`0.11.7`, tools `0.5.2`, and viewer `0.3.2`) and
+(pin tag `engine-v0.11.8`, verify the published `release-manifest-v2` bundle, then install engine
+`0.11.8`, tools `0.5.3`, and viewer `0.3.2`) and
 re-run your canaries before changing any deployed pin.
 `wait-v1` records written by v0.11.5 are non-current: settle or discard them under v0.11.5 and
 start a new coordinator namespace before v0.11.6 writes `wait-v2`.

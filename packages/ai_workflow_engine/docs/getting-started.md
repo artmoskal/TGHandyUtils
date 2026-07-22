@@ -9,14 +9,14 @@ Always install `ai-workflow-engine`. Add `ai-workflow-tools` only for reusable C
 `ai-workflow-viewer` only where bundles are rendered. Keeping optional packages out of simple runtime
 images preserves the complexity gradient.
 
-The current immutable release is `engine-v0.11.7`. Do not install packages from a branch. Consume
+The current immutable release is `engine-v0.11.8`. Do not install packages from a branch. Consume
 the complete published directory, verify it with the tagged verifier as described in
-[operations](operations.md#release-artifacts-and-verification-v0117), then record the exact bytes
+[operations](operations.md#release-artifacts-and-verification-v0118), then record the exact bytes
 installed:
 
 ```text
-engine_tag=engine-v0.11.7
-engine_source_commit=<git rev-parse engine-v0.11.7^{}>
+engine_tag=engine-v0.11.8
+engine_source_commit=<git rev-parse engine-v0.11.8^{}>
 engine_wheel_sha256=<sha256 of vendored wheel>
 release_manifest_sha256=<sha256 of verified release-manifest.json>
 ```

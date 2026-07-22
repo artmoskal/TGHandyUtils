@@ -1,12 +1,11 @@
 # Voice Brain Engine Integration Guide
 
-Status: **`engine-v0.11.8` is the release candidate; do not re-pin until it is cut.**
-`engine-v0.11.7` remains the current immutable release.
+Status: **`engine-v0.11.8` is the current immutable release.**
 This release adds secured browser-consumer transport and preserves usage truth for optional
 process-backed Claude/Codex clients.
 It does not turn subscription CLI workers into a suitable low-latency voice hot path. Adopt only as
-the coherent candidate matrix below after the tag is cut.
-The product must pin tag `engine-v0.11.7` before running its own
+the coherent current matrix below.
+The product must pin tag `engine-v0.11.8` before running its own
 latency/cancellation canary. This replaces
 the historical June request/reply transcript.
 
@@ -35,10 +34,9 @@ transcript + session context
   workers are usually unsuitable for a low-latency conversational hot path.
 - `ai-workflow-viewer==0.3.2` in diagnostics, not the real-time audio path.
 
-> **Candidate matrix:** `engine-v0.11.8` + `ai-workflow-tools==0.5.3` +
+> **Current matrix:** `engine-v0.11.8` + `ai-workflow-tools==0.5.3` +
 > `ai-workflow-viewer==0.3.2` (tools/viewer require
 > `ai-workflow-engine>=0.11.8,<0.12`).
-> Do not install this matrix until `engine-v0.11.8` is cut.
 
 The release makes node-context binding explicit for every node kind and advances the optional
 tools wheel for native Codex image attachment. Persisted schemas and voice workflow behavior are
