@@ -29,13 +29,13 @@ from models.anki_workflow import (
 )
 from ai_workflow_engine.models import (
     CapabilityContext,
+    CapabilityResult,
     CapabilitySpec,
     CriticismEnvelope,
     EvaluationDecision,
     RuntimeLimits,
     RuntimePlan,
     SafetyPolicy,
-    WorkflowArtifact,
     WorkflowProfile,
     WorkflowRunContext,
 )
@@ -51,6 +51,13 @@ from services.content.anki_renderers import (
     VisualRenderer,
 )
 from services.content.anki_image_prompt_policy import AnkiImagePromptPolicy, ImagePromptContext
+from services.content.anki_media_contract import (
+    artifacts_for_node,
+    continuity_name,
+    image_evidence_metadata,
+    image_idempotency_key,
+    media_artifacts,
+)
 from ai_workflow_engine.engine import (
     CapabilityRegistry,
     DetailSink,
@@ -490,7 +497,10 @@ class AnkiGenerationGraph:
                 elapsed_ms = int((time.monotonic() - start) * 1000)
                 decision = self._decision_for_node(name, update)
                 merged = self._merge_trace(state, update, name, decision=decision, elapsed_ms=elapsed_ms)
-                return {**state, **merged}
+                return CapabilityResult(
+                    output={**state, **merged},
+                    artifacts=artifacts_for_node(name, update),
+                )
             except Exception as exc:
                 elapsed_ms = int((time.monotonic() - start) * 1000)
                 logger.error("Anki workflow node failed %s: %s", name, exc)
@@ -887,6 +897,9 @@ class AnkiGenerationGraph:
             return AnkiGenerationGraph._scenario_trace_details(scenario)
         if node in ("render_text_or_cloze", "render_visual", "fallback_to_text") and update.get("rendered"):
             return AnkiGenerationGraph._rendered_trace_details(update["rendered"])
+        if node == "generate_image" and update.get("generated_media"):
+            media = update["generated_media"][0]
+            return {"generated_media": dict(media.metadata)}
         if node == "evaluate_rendered_cards" and update.get("quality_evaluation"):
             evaluation = update["quality_evaluation"]
             details = {
@@ -1560,6 +1573,7 @@ class AnkiGenerationGraph:
         output_dir = os.path.join(self.generated_media_root, str(source.user_id))
         reference_paths, temp_reference_paths = self._reference_image_paths(state, output_dir)
         workflow_context = state.get("workflow_context")
+        workflow_id = getattr(workflow_context, "workflow_id", None)
         request = ImageGenerationRequest(
             prompt=self._build_image_generation_prompt(state, len(reference_paths)),
             output_dir=output_dir,
@@ -1570,7 +1584,15 @@ class AnkiGenerationGraph:
             output_format=self.image_output_format,
             reference_image_paths=reference_paths,
             style_reference_version=self.style_reference_version or None,
-            workflow_id=getattr(workflow_context, "workflow_id", None),
+            workflow_id=workflow_id,
+            continuity_key=continuity_name(
+                user_id=source.user_id,
+                style_version=self.style_reference_version or None,
+            ),
+            idempotency_key=image_idempotency_key(
+                workflow_id=workflow_id,
+                operation_slot=image_generations,
+            ),
         )
         try:
             image = await self.image_generator.generate(request)
@@ -1581,6 +1603,7 @@ class AnkiGenerationGraph:
                 except OSError:
                     pass
 
+        evidence_metadata = image_evidence_metadata(image.generation_evidence)
         media = GeneratedMedia(
             path=image.path,
             basename=image.basename,
@@ -1605,6 +1628,7 @@ class AnkiGenerationGraph:
                     image.usage_metadata.get("comparison_errors", []),
                     sort_keys=True,
                 ),
+                **evidence_metadata,
             },
         )
         return {"generated_media": [media], "validation_error": "", "retry_counts": retry_counts}
@@ -1996,18 +2020,7 @@ class AnkiGenerationGraph:
 
     @staticmethod
     def _cleanup_generated_media(media: list[GeneratedMedia]) -> None:
-        artifacts = [
-            WorkflowArtifact(
-                path=item.path,
-                kind="media",
-                source=item.source,
-                owner_node="generate_voice" if item.role == "audio" else "generate_image",
-                cleanup_on_failure=item.source == "generated",
-                metadata={"role": item.role, **item.metadata},
-            )
-            for item in media
-        ]
-        cleanup_artifacts(artifacts)
+        cleanup_artifacts(media_artifacts(media))
 
     @staticmethod
     def _route_render_repair(state: AnkiGraphState) -> Literal["render_text_or_cloze", "render_visual"]:

@@ -9,8 +9,8 @@ Contract notes (mirror of the image provider in ``media/image_generation.py``):
 - Subscription economics: responses carry ``cost_class="subscription_notional"`` with zero
   token counts and no USD — the service reports no usage, and pretending otherwise would
   break cost honesty.
-- The service caches identical questions; ``force_fresh`` (default on) appends a variation
-  token so retries produce fresh runs instead of replaying the cache.
+- The service caches identical questions; clients append an internal variation token so
+  structured retries cannot replay a previously rejected answer.
 - One browser, sequential queue, slow calls: keep timeouts generous; failures are loud
   (HTTP 502 means the browser/extension side is down).
 - No image support on ``/ask`` — requests with images are rejected loudly.
@@ -25,6 +25,14 @@ import uuid
 from typing import Any, Callable
 
 from ai_workflow_engine.llm_protocol import ChatMessage, LLMRequest, LLMResponse
+from ai_workflow_tools.chatgpt_browser_contract import (
+    ChatGptBrowserError,
+    bounded_wait_budget,
+    browser_headers,
+    positive_timeout,
+    retry_after_seconds,
+    sanitize_browser_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,21 +40,6 @@ logger = logging.getLogger(__name__)
 # Retry-After); the documented consumer contract is: back off and retry, don't hammer.
 # The wait is bounded and every wait is logged — cooperation, never a silent stall.
 DEFAULT_RATE_LIMIT_MAX_WAIT_S = 120.0
-
-
-def _retry_after_seconds(response: Any, data: Any) -> float:
-    headers = getattr(response, "headers", None) or {}
-    raw = headers.get("Retry-After") if hasattr(headers, "get") else None
-    if raw is None and isinstance(data, dict):
-        raw = data.get("retry_after")
-    try:
-        return max(1.0, float(raw))
-    except (TypeError, ValueError):
-        return 20.0  # the service's minimum inter-request gap
-
-
-class ChatGptBrowserError(RuntimeError):
-    """Raised when the ChatGPT-browser service cannot produce a usable reply."""
 
 
 class ChatGptBrowserLLMClient:
@@ -57,7 +50,7 @@ class ChatGptBrowserLLMClient:
         base_url: str,
         *,
         timeout_s: float = 200.0,
-        force_fresh: bool = True,
+        bearer_token: str | None = None,
         rate_limit_max_wait_s: float = DEFAULT_RATE_LIMIT_MAX_WAIT_S,
         http_post: Callable[..., Any] | None = None,
         sleeper: Callable[[float], Any] | None = None,
@@ -69,9 +62,10 @@ class ChatGptBrowserLLMClient:
                 "(CHATGPT_BROWSER_API_URL) — no default endpoint is assumed"
             )
         self.base_url = base_url.rstrip("/")
-        self.timeout_s = float(timeout_s)
-        self.force_fresh = force_fresh
-        self.rate_limit_max_wait_s = float(rate_limit_max_wait_s)
+        self.timeout_s = positive_timeout(timeout_s)
+        self._bearer_token = str(bearer_token or "").strip()
+        self._headers = browser_headers(self.base_url, self._bearer_token)
+        self.rate_limit_max_wait_s = bounded_wait_budget(rate_limit_max_wait_s)
         self._http_post = http_post
         self._sleeper = sleeper
         # Usage-event attribution for the engine's plain-callable metering path.
@@ -80,10 +74,8 @@ class ChatGptBrowserLLMClient:
     async def __call__(self, request: LLMRequest) -> LLMResponse:
         self._validate_request(request)
         question = _flatten_request(request)
-        if self.force_fresh:
-            # The service caches identical questions; without this a structured-node retry
-            # would replay the same (already rejected) answer forever.
-            question = f"{question}\n\n(request {uuid.uuid4().hex[:8]})"
+        # Cache busting is invariant text behavior, not an image-conversation mode.
+        question = f"{question}\n\n(request {uuid.uuid4().hex[:8]})"
         data = await self._post_json(
             f"{self.base_url}/ask",
             {"question": question, "timeout": int(self.timeout_s)},
@@ -114,13 +106,19 @@ class ChatGptBrowserLLMClient:
         sleep = self._sleeper or asyncio.sleep
         waited = 0.0
         while True:
-            response = await asyncio.to_thread(
-                http_post,
-                url,
-                json=payload,
-                headers={"Content-Type": "application/json"},
-                timeout=self.timeout_s + 30,
-            )
+            try:
+                response = await asyncio.to_thread(
+                    http_post,
+                    url,
+                    json=payload,
+                    headers=dict(self._headers),
+                    timeout=self.timeout_s + 30,
+                )
+            except Exception as exc:
+                raise ChatGptBrowserError(
+                    "chatgpt browser transport failed: "
+                    f"{sanitize_browser_error(exc, self._bearer_token)}"
+                ) from None
             try:
                 data = response.json()
             except Exception as exc:
@@ -129,7 +127,7 @@ class ChatGptBrowserLLMClient:
             if status_code == 429:
                 # Documented consumer contract: the service self-throttles to protect the
                 # shared ChatGPT account — honour Retry-After, bounded, loud when exhausted.
-                delay = _retry_after_seconds(response, data)
+                delay = retry_after_seconds(response, data)
                 if waited + delay > self.rate_limit_max_wait_s:
                     raise ChatGptBrowserError(
                         f"chatgpt browser rate-limited beyond the {self.rate_limit_max_wait_s:.0f}s "
@@ -151,7 +149,7 @@ class ChatGptBrowserLLMClient:
                 detail = data.get("detail") or data.get("error") if isinstance(data, dict) else None
                 raise ChatGptBrowserError(
                     f"chatgpt browser service HTTP {status_code}: "
-                    f"{detail or getattr(response, 'text', '')} "
+                    f"{sanitize_browser_error(detail or getattr(response, 'text', ''), self._bearer_token)} "
                     "(502 usually means the logged-in ChatGPT browser/extension is down)"
                 )
             if not isinstance(data, dict):
@@ -213,21 +211,22 @@ class ChatGptBrowserChatModel:
         base_url: str,
         *,
         timeout_s: float = 200.0,
-        force_fresh: bool = True,
+        bearer_token: str | None = None,
+        rate_limit_max_wait_s: float = DEFAULT_RATE_LIMIT_MAX_WAIT_S,
         http_post: Callable[..., Any] | None = None,
     ) -> None:
         # Reuse the async client's transport/validation by composition.
         self._client = ChatGptBrowserLLMClient(
             base_url,
             timeout_s=timeout_s,
-            force_fresh=force_fresh,
+            bearer_token=bearer_token,
+            rate_limit_max_wait_s=rate_limit_max_wait_s,
             http_post=http_post,
         )
 
     def invoke(self, messages: Any) -> Any:
         question = _flatten_langchain_messages(messages)
-        if self._client.force_fresh:
-            question = f"{question}\n\n(request {uuid.uuid4().hex[:8]})"
+        question = f"{question}\n\n(request {uuid.uuid4().hex[:8]})"
         data = self._post_json_sync(
             f"{self._client.base_url}/ask",
             {"question": question, "timeout": int(self._client.timeout_s)},
@@ -249,19 +248,25 @@ class ChatGptBrowserChatModel:
         budget = self._client.rate_limit_max_wait_s
         waited = 0.0
         while True:
-            response = http_post(
-                url,
-                json=payload,
-                headers={"Content-Type": "application/json"},
-                timeout=self._client.timeout_s + 30,
-            )
+            try:
+                response = http_post(
+                    url,
+                    json=payload,
+                    headers=dict(self._client._headers),
+                    timeout=self._client.timeout_s + 30,
+                )
+            except Exception as exc:
+                raise ChatGptBrowserError(
+                    "chatgpt browser transport failed: "
+                    f"{sanitize_browser_error(exc, self._client._bearer_token)}"
+                ) from None
             try:
                 data = response.json()
             except Exception as exc:
                 raise ChatGptBrowserError("chatgpt browser response was not valid JSON") from exc
             status_code = int(getattr(response, "status_code", 200) or 200)
             if status_code == 429:
-                delay = _retry_after_seconds(response, data)
+                delay = retry_after_seconds(response, data)
                 if waited + delay > budget:
                     raise ChatGptBrowserError(
                         f"chatgpt browser rate-limited beyond the {budget:.0f}s wait budget "
@@ -281,7 +286,7 @@ class ChatGptBrowserChatModel:
                 detail = data.get("detail") or data.get("error") if isinstance(data, dict) else None
                 raise ChatGptBrowserError(
                     f"chatgpt browser service HTTP {status_code}: "
-                    f"{detail or getattr(response, 'text', '')} "
+                    f"{sanitize_browser_error(detail or getattr(response, 'text', ''), self._client._bearer_token)} "
                     "(502 usually means the logged-in ChatGPT browser/extension is down)"
                 )
             if not isinstance(data, dict):

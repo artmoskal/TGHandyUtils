@@ -178,7 +178,10 @@ def _chatgpt_browser_kwargs(config: IConfig) -> dict:
     return {
         "base_url": url,
         "timeout_s": float(getattr(config, "WORKFLOW_CHATGPT_BROWSER_TIMEOUT_SECONDS", 340)),
-        "force_fresh": bool(getattr(config, "WORKFLOW_CHATGPT_BROWSER_FORCE_FRESH", True)),
+        "bearer_token": str(getattr(config, "WORKFLOW_CHATGPT_BROWSER_TOKEN", "") or ""),
+        "rate_limit_max_wait_s": float(
+            getattr(config, "WORKFLOW_CHATGPT_BROWSER_RATE_WAIT_MAX_SECONDS", 120)
+        ),
     }
 
 

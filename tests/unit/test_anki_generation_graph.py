@@ -14,7 +14,11 @@ from models.anki_workflow import (
     TextCardScenario,
     VisualCardScenario,
 )
-from ai_workflow_tools.media.image_models import GeneratedImage
+from ai_workflow_tools.media.image_models import (
+    GeneratedImage,
+    ImageFreshnessEvidence,
+    ImageGenerationEvidence,
+)
 from ai_workflow_tools.media.voice_generation import GeneratedVoiceAudio
 from ai_workflow_engine.engine import InMemoryDetailSink
 from ai_workflow_viewer import JsonlObservationViewer, build_observation_graph
@@ -54,8 +58,9 @@ class FakeScenarioPlanner:
 
 
 class FakeImageGenerator:
-    def __init__(self, fail=False):
+    def __init__(self, fail=False, generation_evidence=None):
         self.fail = fail
+        self.generation_evidence = generation_evidence
         self.requests = []
 
     async def generate(self, request):
@@ -77,6 +82,7 @@ class FakeImageGenerator:
             output_format=request.output_format,
             reference_image_count=len(request.reference_image_paths),
             style_reference_version=request.style_reference_version,
+            generation_evidence=self.generation_evidence,
         )
 
 
@@ -970,6 +976,168 @@ async def test_graph_ai_visual_choice_generates_when_possible(tmp_path):
     assert len(generator.requests) == 1
     assert rendered.image_asset_plan.image_role == "generate_new_visual"
     assert rendered.generated_media[0].source == "generated"
+
+
+@pytest.mark.unit
+async def test_graph_propagates_private_image_identity_and_safe_evidence_to_bundle(tmp_path):
+    import json
+    from pathlib import Path
+
+    from services.content.anki_media_contract import continuity_name
+
+    svc = Mock()
+    svc.extract_cards.return_value = [AnkiCard(question="What is shown?", answer="A valve")]
+    planner = FakeCardSetPlanner(
+        CardBuildPlan(
+            card_kind="visual_basic",
+            image_policy="generate",
+            source_facts=["The valve controls flow"],
+            study_goal="Remember the valve visually",
+            visual_rationale="A simple valve illustration is useful",
+            fallback_kind="basic",
+        )
+    )
+    evidence = ImageGenerationEvidence(
+        conversation_mode="reuse",
+        reference_images_used=0,
+        generation=3,
+        reused=True,
+        rotated=False,
+        freshness=ImageFreshnessEvidence(
+            schema=4,
+            strategy="resultFreshnessFenceV3",
+            source="captured",
+            state="result_observed",
+            anchor_owned=True,
+            result_owned=True,
+            result_scope_count=1,
+            candidate_count=2,
+            reason=None,
+        ),
+    )
+    generator = FakeImageGenerator(generation_evidence=evidence)
+    source = build_content_source(
+        [("U", "Valve controls fluid flow")],
+        user_id=987654321,
+        owner_name="U",
+    )
+    graph = AnkiGenerationGraph(
+        svc,
+        card_set_planner=planner,
+        image_generator=generator,
+        enable_image_generation=True,
+        enable_auto_image_generation=True,
+        generated_media_root=str(tmp_path / "media"),
+        style_reference_version="ppla-split-v3",
+        observation_bundle_dir=str(tmp_path / "observations"),
+    )
+
+    rendered = await graph.run(source)
+
+    request = generator.requests[0]
+    assert request.continuity_key == continuity_name(
+        user_id=987654321,
+        style_version="ppla-split-v3",
+    )
+    assert "987654321" not in request.continuity_key
+    assert request.idempotency_key.startswith("anki-image-")
+    assert request.workflow_id not in request.idempotency_key
+
+    metadata = rendered.generated_media[0].metadata
+    assert metadata["generation_conversation_mode"] == "reuse"
+    assert metadata["generation_generation"] == "3"
+    assert metadata["generation_reused"] == "true"
+    freshness = json.loads(metadata["generation_freshness"])
+    assert freshness["strategy"] == "resultFreshnessFenceV3"
+    assert freshness["candidate_count"] == 2
+
+    generated_trace = next(
+        event for event in graph.last_run_state["trace"] if event.node == "generate_image"
+    )
+    assert generated_trace.metadata["generated_media"] == metadata
+
+    bundle = Path(graph.last_observation_bundle_path())
+    manifest = json.loads((bundle / "artifacts.json").read_text(encoding="utf-8"))
+    generated = next(item for item in manifest if item["owner_node"] == "generate_image")
+    assert generated["copied"] is True
+    assert generated["metadata"]["generation_conversation_mode"] == "reuse"
+    durable_text = "\n".join(
+        (bundle / name).read_text(encoding="utf-8")
+        for name in ("trace.jsonl", "details.jsonl", "usage.jsonl", "artifacts.json")
+    )
+    assert "source_url" not in durable_text
+    assert "CHATGPT_BROWSER_API_TOKEN" not in durable_text
+
+
+@pytest.mark.unit
+async def test_graph_bundle_redacts_browser_token_from_failed_image_call(tmp_path):
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from ai_workflow_tools.media.image_generation import ChatGptBrowserImageGenerator
+
+    secret = "browser-secret-must-never-persist"
+
+    class _Unauthorized:
+        status_code = 401
+        text = f"authorization failed for {secret} at https://provider.invalid/signed/private"
+
+        @staticmethod
+        def json():
+            return {
+                "detail": (
+                    f"authorization failed for {secret} at "
+                    "https://provider.invalid/signed/private"
+                )
+            }
+
+    def post(*_args, **_kwargs):
+        return _Unauthorized()
+
+    config = SimpleNamespace(
+        WORKFLOW_CHATGPT_BROWSER_URL="https://browser.example",
+        WORKFLOW_CHATGPT_BROWSER_TOKEN=secret,
+        WORKFLOW_CHATGPT_BROWSER_TIMEOUT_SECONDS=5,
+        WORKFLOW_CHATGPT_BROWSER_RATE_WAIT_MAX_SECONDS=1,
+        WORKFLOW_CHATGPT_BROWSER_CONVERSATION_MODE="reuse",
+        WORKFLOW_USAGE_TRACKING_ENABLED=False,
+    )
+    svc = Mock()
+    svc.extract_cards.return_value = [AnkiCard(question="What controls flow?", answer="A valve")]
+    planner = FakeCardSetPlanner(
+        CardBuildPlan(
+            card_kind="visual_basic",
+            image_policy="generate",
+            source_facts=["A valve controls flow"],
+            study_goal="Remember the valve",
+            visual_rationale="A diagram is useful",
+            fallback_kind="basic",
+        )
+    )
+    graph = AnkiGenerationGraph(
+        svc,
+        card_set_planner=planner,
+        image_generator=ChatGptBrowserImageGenerator(config, http_post=post),
+        enable_image_generation=True,
+        enable_auto_image_generation=True,
+        generated_media_root=str(tmp_path / "media"),
+        observation_bundle_dir=str(tmp_path / "observations"),
+    )
+    source = build_content_source([("U", "Valve controls fluid flow")], user_id=7, owner_name="U")
+
+    rendered = await graph.run(source)
+
+    assert rendered.fallback_used is True
+    bundle = Path(graph.last_observation_bundle_path())
+    durable_text = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in bundle.iterdir()
+        if path.is_file()
+    )
+    assert secret not in durable_text
+    assert "provider.invalid/signed" not in durable_text
+    assert "[REDACTED]" in durable_text
+    assert "[REDACTED_URL]" in durable_text
 
 
 @pytest.mark.unit

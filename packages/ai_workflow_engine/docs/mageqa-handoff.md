@@ -1,8 +1,9 @@
 # MageQA Engine Adoption Guide
 
-Status: **`engine-v0.11.7` is the current immutable release.**
-This release closes MageQA's CLI economics request. Repin only the coherent
-`0.11.7 / 0.5.2 / 0.3.2` matrix after verifying its complete release directory and passing the E0
+Status: **`engine-v0.11.8` is the release candidate; do not re-pin until it is cut.**
+`engine-v0.11.7` remains the current immutable release.
+This release closes MageQA's CLI economics request. Repin only the coherent candidate
+`0.11.8 / 0.5.3 / 0.3.2` matrix after verifying its complete release directory and passing the E0
 canary below.
 MageQA's two durable-registration race canaries fail on `engine-v0.11.5`. MageQA must stay on its
 existing pin and keep its fork until the v0.11.7 E0
@@ -50,15 +51,14 @@ a defect.
 
 | Package | MageQA use |
 |---|---|
-| `ai-workflow-engine==0.11.7` | Required orchestration/runtime |
-| `ai-workflow-tools==0.5.2` | CLI agents, `claude -p`/`codex exec`, tool catalog, media helpers |
+| `ai-workflow-engine==0.11.8` | Required orchestration/runtime |
+| `ai-workflow-tools==0.5.3` | CLI agents, `claude -p`/`codex exec`, tool catalog, media helpers |
 | `ai-workflow-viewer==0.3.2` | Low-level engine run investigation and bundle rendering |
 
-> **Current matrix:** `engine-v0.11.7` + `ai-workflow-tools==0.5.2` +
+> **Candidate matrix:** `engine-v0.11.8` + `ai-workflow-tools==0.5.3` +
 > `ai-workflow-viewer==0.3.2` (tools/viewer require
-> `ai-workflow-engine>=0.11.7,<0.12`).
-> The previous line remains available at its historical tag for historical data; the lines never
-> mix in one environment.
+> `ai-workflow-engine>=0.11.8,<0.12`).
+> Do not install this matrix until `engine-v0.11.8` is cut.
 
 
 The MageQA Next.js dashboard remains product-owned. It may link/embed/project engine bundle data, but

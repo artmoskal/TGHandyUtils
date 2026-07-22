@@ -5,8 +5,9 @@ declare a workflow, register typed capabilities, and call one engine door. The e
 transitions, retries, fan-out, budgets, waits, trace, usage, and observation bundles; products own
 domain models, provider clients, storage adapters, clocks, and side-effect delivery.
 
-> **`engine-v0.11.7` is the current release.**
-> Install only from the immutable `engine-v0.11.7` tag and its verified release directory.
+> **`engine-v0.11.8` is the release candidate; do not re-pin until it is cut.**
+> `engine-v0.11.7` remains the current release. Install only from that immutable tag and its
+> verified release directory until the candidate's live-image gate and release review close.
 > The engine owner publishes wheels bound to
 > immutable tags; consumer
 > canaries still decide whether each product changes its deployed pin. Never depend on a live
@@ -22,6 +23,14 @@ domain models, provider clients, storage adapters, clocks, and side-effect deliv
 > `wait-v1` records under v0.11.5.
 > Adoption is fresh: new consumers start on the current contract; existing consumers re-adopt the
 > current surface rather than migrate state.
+>
+> **v0.11.8 candidate delta.** The optional browser-backed tools share one authenticated transport
+> contract, reject missing remote credentials before HTTP, use explicit `reuse|fresh` image modes,
+> preserve caller-owned idempotency across the only retryable response (`429`), and validate
+> PNG/JPEG/WebP bytes plus closed freshness evidence before publication. The Anki consumer derives
+> privacy-safe continuity/operation identities and publishes generated media through the engine's
+> normal artifact boundary. Text and hermetic media gates pass; the one-shot paid image gate reached
+> the provider but received an external `409 IMAGE_GENERATION_FAILED`, so this remains a candidate.
 >
 > **v0.11.7 release delta.** All supported Claude/Codex CLI doors retain typed normalized token
 > usage on success, provider failure, timeout, and caller cancellation. Codex structured JSONL uses

@@ -883,11 +883,12 @@ def test_tools_wheel_identity_advanced_for_changed_code():
     wheels must never share name+version. v0.10 advanced to 0.4.0; v0.10.1 changed the tools
     process-I/O surfacing again (0.4.1); the v0.11 latest-only line changed the tools surface
     again, advancing the identity to 0.5.0; native Codex image attachment advances the
-    next distinguishable tools wheel to 0.5.1; structured CLI usage advances it to 0.5.2."""
+    next distinguishable tools wheel to 0.5.1; structured CLI usage advanced it to 0.5.2;
+    secured browser consumers advance it to 0.5.3."""
 
     import ai_workflow_tools
 
-    assert ai_workflow_tools.__version__ == "0.5.2", (
+    assert ai_workflow_tools.__version__ == "0.5.3", (
         "tools code changed since the last released wheel identity; the version must "
         f"advance (found {ai_workflow_tools.__version__})"
     )

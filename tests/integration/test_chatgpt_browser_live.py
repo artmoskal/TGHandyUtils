@@ -29,6 +29,7 @@ from ai_workflow_tools.media.image_models import ImageGenerationRequest
 pytestmark = pytest.mark.integration
 
 BASE_URL = os.getenv("CHATGPT_BROWSER_API_URL", "").strip()
+BEARER_TOKEN = os.getenv("CHATGPT_BROWSER_API_TOKEN", "").strip()
 
 if not BASE_URL:
     pytest.skip(
@@ -54,8 +55,9 @@ def _service_must_be_up():
 def _config():
     return SimpleNamespace(
         WORKFLOW_CHATGPT_BROWSER_URL=BASE_URL,
+        WORKFLOW_CHATGPT_BROWSER_TOKEN=BEARER_TOKEN,
         WORKFLOW_CHATGPT_BROWSER_TIMEOUT_SECONDS=320,
-        WORKFLOW_CHATGPT_BROWSER_FORCE_FRESH=True,
+        WORKFLOW_CHATGPT_BROWSER_CONVERSATION_MODE="reuse",
         WORKFLOW_USAGE_TRACKING_ENABLED=True,
     )
 
@@ -65,7 +67,7 @@ class Verdict(BaseModel):
 
 
 async def test_live_ask_answers_and_reports_notional_cost():
-    client = ChatGptBrowserLLMClient(BASE_URL)
+    client = ChatGptBrowserLLMClient(BASE_URL, bearer_token=BEARER_TOKEN)
 
     response = await client(
         LLMRequest(user="Reply with exactly one word: bridge. No punctuation, nothing else.")
@@ -85,7 +87,7 @@ async def test_live_structured_node_parses_chatgpt_reply_like_anki_would():
     WEAK_MODEL_CLEANER must absorb that.
     """
 
-    client = ChatGptBrowserLLMClient(BASE_URL)
+    client = ChatGptBrowserLLMClient(BASE_URL, bearer_token=BEARER_TOKEN)
     node = StructuredLLMNode(
         name="chatgpt_browser_live",
         config=object(),
@@ -111,43 +113,6 @@ async def test_live_structured_node_parses_chatgpt_reply_like_anki_would():
     assert result.label == "noun"
 
 
-async def test_live_image_generation_writes_a_real_png(tmp_path):
-    """End-to-end through OUR provider code — the same path the Anki flow will take with
-    ANKI_IMAGE_PROVIDER=chatgpt (no reference images until the service ships FR-1)."""
-
-    generator = ChatGptBrowserImageGenerator(_config())
-    summary = WorkflowUsageSummary()
-    scope = WorkflowUsageContext(
-        WorkflowRunContext(workflow_id="wf-chatgpt-live", workflow_type="anki_generation"),
-        summary,
-        WorkflowBudget(max_image_calls=1),
-    )
-
-    with workflow_usage_scope(scope):
-        result = await generator.generate(
-            ImageGenerationRequest(
-                prompt=(
-                    "flashcard illustration of the word bridge: a simple stone bridge over "
-                    "a small river, flat vector style, clean white background"
-                ),
-                output_dir=str(tmp_path),
-                output_basename="live-bridge.png",
-            )
-        )
-
-    with open(result.path, "rb") as fh:
-        header = fh.read(8)
-    assert header.startswith(b"\x89PNG"), "artifact is not a PNG"
-    assert result.provider == "chatgpt_browser"
-    assert result.estimated_usd is None
-
-    event = summary.events[0]
-    assert event.cost_class == "subscription_notional"
-    assert event.notional_pricing is not None
-    assert event.notional_pricing.source == "unknown"
-    assert summary.image_call_count == 1
-
-
 async def test_live_chat_model_renders_card_shaped_json():
     """The render path's shape: sync LangChain-style invoke → parseable card JSON."""
 
@@ -157,7 +122,7 @@ async def test_live_chat_model_renders_card_shaped_json():
     from ai_workflow_engine import WEAK_MODEL_CLEANER
     from ai_workflow_tools.chatgpt_browser import ChatGptBrowserChatModel
 
-    model = ChatGptBrowserChatModel(BASE_URL)
+    model = ChatGptBrowserChatModel(BASE_URL, bearer_token=BEARER_TOKEN)
     output = model.invoke(
         [
             SimpleNamespace(
@@ -205,30 +170,150 @@ def _solid_png(width=64, height=64, rgb=(220, 30, 30)) -> bytes:
     )
 
 
-async def test_live_image_with_style_reference_is_honored(tmp_path):
-    """FR-1 acceptance from the consumer side: a style ref goes up, the service echoes
-    reference_images_used, and our provider enforces it — the PPLA styled-deck path."""
+async def test_live_two_generation_anki_consumer_gate(tmp_path):
+    """Canonical paid gate: one provider generation + replay + one full graph generation.
 
-    ref = tmp_path / "style-red.png"
-    ref.write_bytes(_solid_png())
+    A fresh synthetic user gives the test its own named conversation. The replay repeats the
+    exact provider payload and must return generation 1 unchanged; the real Anki graph then uses
+    the same user/style continuity with a new operation key and must produce generation 2.
+    Running this test once therefore spends exactly two image generations.
+    """
 
-    generator = ChatGptBrowserImageGenerator(_config())
-    result = await generator.generate(
-        ImageGenerationRequest(
-            prompt=(
-                "flashcard illustration of the word bridge, matching the attached style "
-                "reference's dominant color palette, flat vector, white background"
-            ),
-            output_dir=str(tmp_path / "out"),
-            output_basename="live-bridge-styled.png",
-            reference_image_paths=[str(ref)],
-        )
+    import json
+    import uuid
+    import zipfile
+    from pathlib import Path
+
+    from config import Config
+    from services.anki_card_service import AnkiCardService
+    from services.content.anki_card_set_planner import AnkiCardSetPlanner
+    from services.content.anki_media_contract import continuity_name
+    from services.content.anki_generation_graph import AnkiGenerationGraph
+    from services.content.anki_quality_evaluator import AnkiRenderedCardEvaluator
+    from services.content.anki_scenario_planners import (
+        ClozeScenarioPlanner,
+        TextScenarioPlanner,
+        VisualScenarioPlanner,
+    )
+    from services.content.anki_source import build_content_source
+    from ai_workflow_viewer import JsonlObservationViewer
+
+    references = [
+        Path("assets/anki/ppla-character-reference-v3.png").resolve(),
+        Path("assets/anki/ppla-design-reference-v2.png").resolve(),
+    ]
+    assert all(path.is_file() for path in references)
+
+    synthetic_user_id = int(uuid.uuid4().hex[:12], 16)
+    style_version = "ppla-split-v3"
+    continuity = continuity_name(user_id=synthetic_user_id, style_version=style_version)
+    operation_key = f"anki-live-{uuid.uuid4().hex}:image:0"
+    direct_request = ImageGenerationRequest(
+        prompt=(
+            "PPLA flashcard illustration: a cheerful single-engine trainer crossing a stone "
+            "bridge over a river, matching both attached character and deck-design references, "
+            "clean study-card composition, no photorealism"
+        ),
+        output_dir=str(tmp_path / "provider"),
+        output_basename="provider-generation.png",
+        reference_image_paths=[str(path) for path in references],
+        style_reference_version=style_version,
+        workflow_id="provider-qualification",
+        continuity_key=continuity,
+        idempotency_key=operation_key,
     )
 
-    with open(result.path, "rb") as fh:
-        assert fh.read(8).startswith(b"\x89PNG")
-    assert result.reference_image_count == 1
-    assert result.usage_metadata["reference_images_used"] == 1
+    generator = ChatGptBrowserImageGenerator(_config())
+    direct_summary = WorkflowUsageSummary()
+    direct_scope = WorkflowUsageContext(
+        WorkflowRunContext(workflow_id="provider-qualification", workflow_type="anki_generation"),
+        direct_summary,
+        WorkflowBudget(max_image_calls=2),
+    )
+    with workflow_usage_scope(direct_scope):
+        first = await generator.generate(direct_request)
+        first_bytes = Path(first.path).read_bytes()
+        replay = await generator.generate(direct_request)
+
+    replay_bytes = Path(replay.path).read_bytes()
+    assert first_bytes.startswith(b"\x89PNG") and replay_bytes == first_bytes
+    assert first.generation_evidence == replay.generation_evidence
+    assert first.generation_evidence.generation == 1
+    assert first.generation_evidence.reference_images_used == 2
+    assert direct_summary.image_call_count == 2, "one generation plus one cached replay reached HTTP"
+    assert all(event.cost_class == "subscription_notional" for event in direct_summary.events)
+
+    Config.WORKFLOW_CHATGPT_BROWSER_URL = BASE_URL
+    Config.WORKFLOW_CHATGPT_BROWSER_TOKEN = BEARER_TOKEN
+    Config.WORKFLOW_CHATGPT_BROWSER_CONVERSATION_MODE = "reuse"
+    Config.ANKI_CARD_MODEL = "chatgpt-web"
+    Config.ANKI_DECISION_MODEL = "chatgpt-web"
+    Config.ANKI_SCENARIO_MODEL = "chatgpt-web"
+    Config.ANKI_RENDER_MODEL = "chatgpt-web"
+    Config.ANKI_QUALITY_MODEL = "chatgpt-web"
+    service = AnkiCardService(Config)
+    graph = AnkiGenerationGraph(
+        service,
+        card_set_planner=AnkiCardSetPlanner(Config),
+        text_scenario_planner=TextScenarioPlanner(Config),
+        cloze_scenario_planner=ClozeScenarioPlanner(Config),
+        visual_scenario_planner=VisualScenarioPlanner(Config),
+        quality_evaluator=AnkiRenderedCardEvaluator(Config, inspect_images=False),
+        enable_quality_evaluation=False,
+        image_generator=ChatGptBrowserImageGenerator(Config),
+        enable_image_generation=True,
+        enable_auto_image_generation=False,
+        max_image_generations_per_run=1,
+        max_quality_repairs_per_run=0,
+        image_model="chatgpt-web",
+        image_output_format="png",
+        style_reference_images=[str(path) for path in references],
+        style_reference_version=style_version,
+        generated_media_root=str(tmp_path / "graph-media"),
+        observation_bundle_dir=str(tmp_path / "observations"),
+    )
+    source = build_content_source(
+        [
+            (
+                "paid-consumer-gate",
+                "[i visual gen] Make one basic card explaining why indicated airspeed falls "
+                "with altitude at the same true airspeed. Use a simple trainer-aircraft visual.[i]",
+            )
+        ],
+        user_id=synthetic_user_id,
+        owner_name="paid-consumer-gate",
+    )
+    rendered = await graph.run(source)
+
+    assert rendered.fallback_used is False
+    assert len(rendered.cards) == 1 and len(rendered.generated_media) == 1
+    media = rendered.generated_media[0]
+    assert Path(media.path).read_bytes().startswith(b"\x89PNG")
+    assert media.metadata["generation_generation"] == "2"
+    assert media.metadata["generation_reused"] == "true"
+    assert media.metadata["generation_reference_images_used"] == "2"
+
+    package = tmp_path / "paid-consumer-gate.apkg"
+    service.build_package(
+        rendered.cards,
+        deck_name="Engine v0.11.8 paid consumer gate",
+        output_path=str(package),
+        media_files=[media.path],
+    )
+    assert package.is_file() and zipfile.is_zipfile(package)
+
+    bundle = Path(graph.last_observation_bundle_path())
+    run = JsonlObservationViewer.from_run_bundle(bundle).source.read()
+    assert run.meta.status == "completed"
+    manifest = json.loads((bundle / "artifacts.json").read_text(encoding="utf-8"))
+    assert any(row["owner_node"] == "generate_image" and row["copied"] for row in manifest)
+    persisted = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in bundle.iterdir()
+        if path.is_file()
+    )
+    assert BEARER_TOKEN not in persisted
+    assert "source_url" not in persisted
 
 
 # --- Staged-vision sandbox: canary exfiltration attack (Q2, re-verified every live run) --

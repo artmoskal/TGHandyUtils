@@ -1,9 +1,10 @@
 # GoPro Engine Adoption Guide
 
-Status: **`engine-v0.11.7` is the current immutable release.**
+Status: **`engine-v0.11.8` is the release candidate; do not re-pin until it is cut.**
+`engine-v0.11.7` remains the current immutable release.
 This release changes optional tools/viewer usage economics, not GoPro's direct-VLM workflow
 contract. GoPro may continue consuming only the engine wheel; if it adopts CLI agents or the viewer,
-it must install the coherent `0.11.7 / 0.5.2 / 0.3.2` matrix.
+it must install the coherent candidate matrix below after the tag is cut.
 To adopt, GoPro should pin tag `engine-v0.11.7`, record the source commit and wheel hash, and
 run its sidecar canary before changing the production image. Do not
 infer the actual GoPro pin from this document; the consumer repository's
@@ -16,37 +17,38 @@ The line is **latest-only** — no migration guides exist. Adopt the current con
 
 ## Product Outcome
 
-GoPro uses the engine to turn image/video evidence and prior inventory knowledge into bounded,
-observable inventory-processing workflows. Flexible model workers may inspect evidence; deterministic
-workers validate, deduplicate, and persist product facts.
+GoPro's current product shape is a direct video nanny/manual investigation workflow with companion
+memory: bounded model workers inspect selected frames or clips, deterministic workers validate
+grounding and safety policy, and the product decides when to notify, remember, or request review.
+Inventory/deduplication is an example future domain pack, not the primary adoption target.
 
 Recommended machine:
 
 ```text
-input evidence refs
+video/frame evidence refs + current companion context
   -> select evidence
   -> inspect/describe (VLM or agent)
-  -> validate grounded observations
-  -> deduplicate against current inventory
-  -> branch: accept | retry/reinspect | human review
-  -> produce idempotent inventory write intent
+  -> validate grounded observations and uncertainty
+  -> branch: accept | retry/reinspect | human/manual review
+  -> project bounded companion memory
+  -> produce an idempotent notification/report intent when policy allows
 ```
 
-The engine owns execution and gates. GoPro owns inventory semantics and storage.
+The engine owns execution and gates. GoPro owns video/nanny meaning, companion policy, storage,
+and delivery. Inventory may reuse the same mechanics later without changing the engine.
 
 ## Package Choice
 
 | Package | GoPro use |
 |---|---|
-| `ai-workflow-engine==0.11.7` | Required in the detection/sidecar runtime |
-| `ai-workflow-tools==0.5.2` | Add only when GoPro uses CLI agents or shared media helpers |
+| `ai-workflow-engine==0.11.8` | Required in the detection/sidecar runtime |
+| `ai-workflow-tools==0.5.3` | Add only when GoPro uses CLI agents or shared media helpers |
 | `ai-workflow-viewer==0.3.2` | Developer/diagnostic service; not required in the detector image |
 
-> **Current matrix:** `engine-v0.11.7` + `ai-workflow-tools==0.5.2` +
+> **Candidate matrix:** `engine-v0.11.8` + `ai-workflow-tools==0.5.3` +
 > `ai-workflow-viewer==0.3.2` (tools/viewer require
-> `ai-workflow-engine>=0.11.7,<0.12`).
-> The previous line remains available at its historical tag for historical data; the lines never
-> mix in one environment.
+> `ai-workflow-engine>=0.11.8,<0.12`).
+> Do not install this matrix until `engine-v0.11.8` is cut.
 
 
 Vendoring only the engine wheel is the correct lightweight configuration for the current direct-VLM
@@ -65,7 +67,7 @@ path.
 ### GoPro owns
 
 - frame/segment extraction and evidence lifecycle;
-- inventory domain models, reducers, confidence policy, deduplication, and DB transactions;
+- nanny/companion domain models, reducers, confidence/notification policy, and DB transactions;
 - configured VLM/provider clients and credentials;
 - sidecar process/thread lifecycle and final inventory writes;
 - durable `MemoryStore` backend and meaning of learned flows/finding history.
@@ -89,10 +91,10 @@ GoPro was the named consumer for the shipped prompt-projection policies:
 - `CompactingMemory` — deterministic threshold-gated compaction, no hidden model call;
 - per-node `memory=` — apply rich state only to workers that need it.
 
-Recommended namespace:
+Recommended namespace for companion memory:
 
 ```python
-MemoryNamespace("gopro", tenant_id, target_or_location_id, "inventory_history")
+MemoryNamespace("gopro", tenant_id, subject_or_location_id, "companion_history")
 ```
 
 Reducers emit dictionaries/lists/scalars/value objects or evidence references. They do not return
@@ -108,6 +110,9 @@ input; current sensor evidence and deterministic validators remain authoritative
 - Configure artifact retention separately from the inventory database.
 
 ## Workflow Pack Shape
+
+The current pack should model video investigation and companion decisions. The inventory pack below
+is intentionally only an example of how another GoPro domain can reuse the same engine boundary.
 
 GoPro should expose a domain pack, for example:
 

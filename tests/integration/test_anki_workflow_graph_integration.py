@@ -7,8 +7,12 @@ generated images disabled; the dedicated image smoke cases spend low-quality GPT
 import json
 import os
 import shutil
+import threading
 import zipfile
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -26,7 +30,10 @@ from services.content.anki_quality_evaluator import AnkiRenderedCardEvaluator
 from services.content.anki_source import build_content_source
 from ai_workflow_engine.engine import InMemoryDetailSink
 from ai_workflow_viewer import JsonlObservationViewer, build_observation_graph
-from ai_workflow_tools.media.image_generation import OpenAIImageGenerator
+from ai_workflow_tools.media.image_generation import (
+    ChatGptBrowserImageGenerator,
+    OpenAIImageGenerator,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -166,6 +173,171 @@ def _preserve_manual_review_artifacts(
     )
 
 
+@pytest.mark.asyncio
+async def test_browser_image_fake_service_runs_graph_package_and_bundle(tmp_path):
+    """Production-shaped offline gate: HTTP -> graph -> copied artifact -> valid package."""
+
+    png_bytes = (
+        b"\x89PNG\r\n\x1a\n"
+        b"\x00\x00\x00\rIHDR"
+        b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00"
+        b"\x90wS\xde"
+        b"\x00\x00\x00\x0cIDAT\x08\xd7c\xf8\xcf\xc0\x00\x00\x03\x01\x01\x00"
+        b"\x18\xdd\x8d\xb4"
+        b"\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    calls = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", "0"))
+            payload = json.loads(self.rfile.read(length))
+            calls.append(
+                {
+                    "path": self.path,
+                    "authorization": self.headers.get("Authorization"),
+                    "payload": payload,
+                }
+            )
+            if len(calls) == 1:
+                body = {"error": "slow down", "retry_after": 1}
+                self.send_response(429)
+                self.send_header("Retry-After", "1")
+            else:
+                import base64
+
+                body = {
+                    "status": "completed",
+                    "image_data_url": (
+                        "data:image/png;base64," + base64.b64encode(png_bytes).decode("ascii")
+                    ),
+                    "mime": "image/png",
+                    "bytes": len(png_bytes),
+                    "source_url": "https://provider.invalid/private-signed-url",
+                    "reference_images_used": len(payload.get("reference_images", [])),
+                    "conversation_mode": "reuse",
+                    "conversation_name": payload["conversation_name"],
+                    "generation": 4,
+                    "reused": True,
+                    "rotated": False,
+                    "freshness": {
+                        "schema": 4,
+                        "strategy": "resultFreshnessFenceV3",
+                        "source": "captured",
+                        "state": "result_observed",
+                        "anchor_owned": True,
+                        "result_owned": True,
+                        "result_scope_count": 1,
+                        "candidate_count": 2,
+                        "reason": None,
+                    },
+                }
+                self.send_response(200)
+            encoded = json.dumps(body).encode("utf-8")
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def log_message(self, _format, *_args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        token = "hermetic-browser-token"
+        config = SimpleNamespace(
+            WORKFLOW_CHATGPT_BROWSER_URL=f"http://127.0.0.1:{server.server_port}",
+            WORKFLOW_CHATGPT_BROWSER_TOKEN=token,
+            WORKFLOW_CHATGPT_BROWSER_TIMEOUT_SECONDS=5,
+            WORKFLOW_CHATGPT_BROWSER_RATE_WAIT_MAX_SECONDS=2,
+            WORKFLOW_CHATGPT_BROWSER_CONVERSATION_MODE="reuse",
+            WORKFLOW_USAGE_TRACKING_ENABLED=False,
+        )
+        generator = ChatGptBrowserImageGenerator(config, sleeper=lambda _seconds: None)
+        style_a = tmp_path / "style-a.png"
+        style_b = tmp_path / "style-b.png"
+        style_a.write_bytes(png_bytes)
+        style_b.write_bytes(png_bytes)
+
+        planner = Mock()
+        planner.plan = Mock()
+
+        async def plan(*_args):
+            from models.anki_workflow import CardBuildPlan
+
+            return CardBuildPlan(
+                card_kind="visual_basic",
+                image_policy="generate",
+                source_facts=["A bridge crosses a river"],
+                study_goal="Remember bridge vocabulary",
+                visual_rationale="A visual is useful",
+                fallback_kind="basic",
+            )
+
+        planner.plan.side_effect = plan
+        graph_service = Mock()
+        graph_service.config = config
+        graph_service.extract_cards.return_value = [
+            AnkiCard(question="What crosses the river?", answer="A bridge")
+        ]
+        graph = AnkiGenerationGraph(
+            graph_service,
+            card_set_planner=planner,
+            image_generator=generator,
+            enable_image_generation=True,
+            enable_auto_image_generation=True,
+            max_image_generations_per_run=1,
+            style_reference_images=[str(style_a), str(style_b)],
+            style_reference_version="hermetic-v1",
+            generated_media_root=str(tmp_path / "generated"),
+            observation_bundle_dir=str(tmp_path / "observations"),
+        )
+        source = build_content_source(
+            [("hermetic", "A bridge crosses a river")],
+            user_id=24680,
+            owner_name="hermetic",
+        )
+
+        rendered = await graph.run(source)
+        package = _assert_package_writes(
+            AnkiCardService(Config()),
+            rendered.cards,
+            tmp_path,
+            "browser-hermetic",
+            media_files=[rendered.generated_media[0].path],
+        )
+
+        assert package.is_file() and zipfile.is_zipfile(package)
+        assert len(calls) == 2
+        assert calls[0]["authorization"] == calls[1]["authorization"] == f"Bearer {token}"
+        assert calls[0]["payload"] == calls[1]["payload"]
+        assert len(calls[0]["payload"]["reference_images"]) == 2
+        assert calls[0]["payload"]["idempotency_key"]
+        assert "24680" not in calls[0]["payload"]["conversation_name"]
+
+        media = rendered.generated_media[0]
+        assert media.metadata["generation_generation"] == "4"
+        assert media.metadata["generation_reference_images_used"] == "2"
+        bundle = Path(graph.last_observation_bundle_path())
+        viewer_run = JsonlObservationViewer.from_run_bundle(bundle).source.read()
+        assert viewer_run.meta.status == "completed"
+        manifest = json.loads((bundle / "artifacts.json").read_text(encoding="utf-8"))
+        assert any(item["owner_node"] == "generate_image" and item["copied"] for item in manifest)
+        persisted = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in bundle.iterdir()
+            if path.is_file()
+        )
+        assert token not in persisted
+        assert "private-signed-url" not in persisted
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
 @pytest.mark.api
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
@@ -215,6 +387,20 @@ async def test_anki_workflow_small_real_graph_integration(name, message, expecte
 
     if name == "visual_disabled_fallback":
         assert rendered.image_asset_plan.image_role == "ignore_media"
+    elif name == "auto_definition":
+        assert rendered.fallback_used is False, (
+            "the live browser-backed Anki path must complete its structured scenario; "
+            "a successful provider event followed by static fallback is not qualification"
+        )
+        successful_browser_events = [
+            event
+            for event in rendered.usage_summary.events
+            if event.operation == "chat"
+            and event.success
+            and event.provider == "chatgpt_browser"
+            and event.cost_class == "subscription_notional"
+        ]
+        assert successful_browser_events, "the routed browser backend must own the successful calls"
 
     _assert_package_writes(service, rendered.cards, tmp_path, name)
 

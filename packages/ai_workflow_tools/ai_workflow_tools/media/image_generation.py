@@ -8,9 +8,22 @@ import os
 import time
 import uuid
 from contextlib import ExitStack
-from typing import Any, Callable, Protocol
+from dataclasses import dataclass
+from typing import Any, Callable, NoReturn, Protocol
 
+from ai_workflow_tools.chatgpt_browser_contract import (
+    bounded_wait_budget,
+    browser_headers,
+    positive_timeout,
+    retry_after_seconds,
+    sanitize_browser_error,
+)
 from ai_workflow_tools.media.image_models import GeneratedImage, ImageGenerationRequest
+from ai_workflow_tools.media.image_contract import (
+    ImageEnvelopeError,
+    safe_generation_metadata,
+    validate_browser_image_response,
+)
 from ai_workflow_engine.models import WorkflowUsageEvent
 from ai_workflow_engine.budget import check_budget_before_call
 from ai_workflow_engine.usage import record_image_usage
@@ -409,6 +422,16 @@ class GeminiImageGenerator:
         }
 
 
+@dataclass(frozen=True)
+class _BrowserImageCall:
+    base_url: str
+    conversation_mode: str
+    service_timeout: int
+    headers: dict[str, str]
+    payload: dict[str, Any]
+    reference_count: int
+
+
 class ChatGptBrowserImageGenerator:
     """ChatGPT-over-API browser service (subscription ChatGPT session over plain HTTP).
 
@@ -420,9 +443,8 @@ class ChatGptBrowserImageGenerator:
     - Reference images (style/subject conditioning) are sent as data URLs; the service
       fails loudly if it cannot attach them, and the response echoes
       ``reference_images_used`` — a mismatch raises here (no silent style drop, ever).
-    - The service caches identical requests; with ``WORKFLOW_CHATGPT_BROWSER_FORCE_FRESH``
-      (default on) the first-class ``no_cache`` flag forces a fresh generation so
-      retries/regenerations never replay a previously rejected image.
+    - ``reuse`` and ``fresh`` are explicit conversation modes. Every paid operation carries
+      a caller-owned idempotency key; only HTTP 429 is retried, with the same payload.
     - Calls are synchronous and slow (~30–90 s) and run sequentially on one browser; the read
       timeout must exceed the service-side timeout.
     """
@@ -440,12 +462,7 @@ class ChatGptBrowserImageGenerator:
     async def generate(self, request: ImageGenerationRequest) -> GeneratedImage:
         if not request.prompt.strip():
             raise ImageGenerationError("Image generation prompt is empty")
-        base_url = str(_config_value(self.config, "WORKFLOW_CHATGPT_BROWSER_URL", "") or "").strip()
-        if not base_url:
-            raise ImageGenerationError(
-                "WORKFLOW_CHATGPT_BROWSER_URL (CHATGPT_BROWSER_API_URL) is required for the "
-                "chatgpt browser image provider — no default endpoint is assumed"
-            )
+        call = self._prepare_call(request)
 
         if getattr(self.config, "WORKFLOW_USAGE_TRACKING_ENABLED", True):
             check_budget_before_call("image", "generate_image")
@@ -453,101 +470,182 @@ class ChatGptBrowserImageGenerator:
         os.makedirs(request.output_dir, exist_ok=True)
         basename = request.output_basename or f"{uuid.uuid4().hex}.{request.output_format}"
         path = os.path.join(request.output_dir, basename)
-        service_timeout = int(
-            _config_value(self.config, "WORKFLOW_CHATGPT_BROWSER_TIMEOUT_SECONDS", 340)
-        )
+        start = time.monotonic()
+        try:
+            data = await self._post_json(
+                f"{call.base_url.rstrip('/')}/generate_image",
+                call.payload,
+                read_timeout=call.service_timeout + 30,
+                headers=call.headers,
+            )
+            return self._materialize_result(
+                request,
+                call=call,
+                data=data,
+                path=path,
+                basename=basename,
+                elapsed_ms=int((time.monotonic() - start) * 1000),
+            )
+        except Exception as exc:
+            self._handle_failure(
+                request,
+                path=path,
+                error=exc,
+                elapsed_ms=int((time.monotonic() - start) * 1000),
+            )
+
+    def _prepare_call(self, request: ImageGenerationRequest) -> _BrowserImageCall:
+        base_url = str(_config_value(self.config, "WORKFLOW_CHATGPT_BROWSER_URL", "") or "").strip()
+        if not base_url:
+            raise ImageGenerationError(
+                "WORKFLOW_CHATGPT_BROWSER_URL (CHATGPT_BROWSER_API_URL) is required for the "
+                "chatgpt browser image provider — no default endpoint is assumed"
+            )
+        mode = str(
+            _config_value(
+                self.config,
+                "WORKFLOW_CHATGPT_BROWSER_CONVERSATION_MODE",
+                "reuse",
+            )
+            or ""
+        ).strip().lower()
+        if mode not in {"reuse", "fresh"}:
+            raise ImageGenerationError(
+                "WORKFLOW_CHATGPT_BROWSER_CONVERSATION_MODE must be 'reuse' or 'fresh'"
+            )
+        if not request.idempotency_key:
+            raise ImageGenerationError("chatgpt browser image generation requires idempotency_key")
+        if mode == "reuse" and not request.continuity_key:
+            raise ImageGenerationError(
+                "chatgpt browser reuse mode requires a continuity_key/conversation identity"
+            )
+        try:
+            headers = browser_headers(
+                base_url,
+                _config_value(self.config, "WORKFLOW_CHATGPT_BROWSER_TOKEN", ""),
+            )
+            service_timeout_value = positive_timeout(
+                _config_value(self.config, "WORKFLOW_CHATGPT_BROWSER_TIMEOUT_SECONDS", 340)
+            )
+        except Exception as exc:
+            raise ImageGenerationError(str(exc)) from exc
+
+        if service_timeout_value < 1:
+            raise ImageGenerationError("chatgpt browser image timeout must be at least 1 second")
+        service_timeout = int(service_timeout_value)
         reference_images = [
             {"data_url": _file_data_url(ref_path), "role": "style"}
             for ref_path in request.reference_image_paths
         ]
-        payload: dict[str, Any] = {"description": request.prompt, "timeout": service_timeout}
+        payload: dict[str, Any] = {
+            "description": request.prompt,
+            "timeout": service_timeout,
+            "conversation_mode": mode,
+            "idempotency_key": request.idempotency_key,
+        }
         if reference_images:
             payload["reference_images"] = reference_images
-        if _config_bool(self.config, "WORKFLOW_CHATGPT_BROWSER_FORCE_FRESH", True):
-            # The service caches identical requests; a retry after a rejected image would
-            # otherwise replay the SAME image forever.
+        if mode == "reuse":
+            payload["conversation_name"] = request.continuity_key
+        else:
             payload["no_cache"] = True
+        return _BrowserImageCall(
+            base_url=base_url,
+            conversation_mode=mode,
+            service_timeout=service_timeout,
+            headers=headers,
+            payload=payload,
+            reference_count=len(reference_images),
+        )
 
-        start = time.monotonic()
+    def _materialize_result(
+        self,
+        request: ImageGenerationRequest,
+        *,
+        call: _BrowserImageCall,
+        data: dict[str, Any],
+        path: str,
+        basename: str,
+        elapsed_ms: int,
+    ) -> GeneratedImage:
         try:
-            data = await self._post_json(
-                f"{base_url.rstrip('/')}/generate_image",
-                payload,
-                read_timeout=service_timeout + 30,
+            image_bytes, evidence = validate_browser_image_response(
+                data,
+                request=request,
+                conversation_mode=call.conversation_mode,
+                expected_reference_count=call.reference_count,
             )
-            elapsed_ms = int((time.monotonic() - start) * 1000)
+        except ImageEnvelopeError as exc:
+            raise ImageGenerationError(str(exc)) from exc
+        with open(path, "wb") as fh:
+            fh.write(image_bytes)
+        self._record_notional_usage(
+            request,
+            elapsed_ms=elapsed_ms,
+            success=True,
+            error=None,
+            evidence=evidence,
+        )
+        logger.info(
+            "image_generation_artifact provider=chatgpt_browser size=%s output_format=%s path=%s",
+            request.size,
+            request.output_format,
+            path,
+        )
+        return GeneratedImage(
+            path=path,
+            basename=basename,
+            provider="chatgpt_browser",
+            model="chatgpt-web",
+            size=request.size,
+            quality=request.quality,
+            output_format=request.output_format,
+            reference_image_count=call.reference_count,
+            style_reference_version=request.style_reference_version,
+            usage_metadata={
+                "mime": data.get("mime"),
+                "bytes": data.get("bytes"),
+                "cost_class": "subscription_notional",
+                "generation_evidence": safe_generation_metadata(evidence),
+            },
+            generation_evidence=evidence,
+            estimated_usd=None,
+            request_id=None,
+        )
 
-            image_data_url = str(data.get("image_data_url") or "")
-            if data.get("status") != "completed" or "," not in image_data_url:
-                raise ImageGenerationError(
-                    f"chatgpt browser image response missing image data (status="
-                    f"{data.get('status')!r})"
-                )
-            if reference_images:
-                used = int(data.get("reference_images_used") or 0)
-                if used != len(reference_images):
-                    # Service-side contract says this cannot happen (it fails loudly), but a
-                    # silently style-dropped image is undetectable downstream — enforce here too.
-                    raise ImageGenerationError(
-                        f"chatgpt browser honored {used} of {len(reference_images)} reference "
-                        "images — refusing a style-dropped result"
-                    )
-            with open(path, "wb") as fh:
-                fh.write(base64.b64decode(image_data_url.split(",", 1)[1]))
+    def _handle_failure(
+        self,
+        request: ImageGenerationRequest,
+        *,
+        path: str,
+        error: Exception,
+        elapsed_ms: int,
+    ) -> NoReturn:
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except OSError as cleanup_error:
+            logger.debug("image_generation_cleanup_failed path=%s error=%s", path, cleanup_error)
+        safe_error = self._safe_error(error)
+        self._record_notional_usage(
+            request,
+            elapsed_ms=elapsed_ms,
+            success=False,
+            error=safe_error[:500],
+            evidence=None,
+        )
+        if isinstance(error, ImageGenerationError):
+            raise error
+        raise ImageGenerationError(f"chatgpt browser image generation failed: {safe_error}") from None
 
-            self._record_notional_usage(
-                request,
-                elapsed_ms=elapsed_ms,
-                success=True,
-                error=None,
-                source_url=str(data.get("source_url") or ""),
-            )
-            logger.info(
-                "image_generation_artifact provider=chatgpt_browser size=%s output_format=%s path=%s",
-                request.size,
-                request.output_format,
-                path,
-            )
-            return GeneratedImage(
-                path=path,
-                basename=basename,
-                provider="chatgpt_browser",
-                model="chatgpt-web",
-                size=request.size,
-                quality=request.quality,
-                output_format=request.output_format,
-                reference_image_count=len(reference_images),
-                style_reference_version=request.style_reference_version,
-                usage_metadata={
-                    "mime": data.get("mime"),
-                    "bytes": data.get("bytes"),
-                    "reference_images_used": data.get("reference_images_used"),
-                    "cost_class": "subscription_notional",
-                },
-                estimated_usd=None,
-                request_id=None,
-            )
-        except Exception as exc:
-            elapsed_ms = int((time.monotonic() - start) * 1000)
-            try:
-                if os.path.exists(path):
-                    os.remove(path)
-            except OSError as cleanup_error:
-                logger.debug("image_generation_cleanup_failed path=%s error=%s", path, cleanup_error)
-            self._record_notional_usage(
-                request,
-                elapsed_ms=elapsed_ms,
-                success=False,
-                error=str(exc)[:500],
-                source_url="",
-            )
-            if isinstance(exc, ImageGenerationError):
-                raise
-            raise ImageGenerationError(f"chatgpt browser image generation failed: {exc}") from exc
-
-    async def _post_json(self, url: str, payload: dict[str, Any], *, read_timeout: float) -> dict[str, Any]:
-        from ai_workflow_tools.chatgpt_browser import _retry_after_seconds
-
+    async def _post_json(
+        self,
+        url: str,
+        payload: dict[str, Any],
+        *,
+        read_timeout: float,
+        headers: dict[str, str],
+    ) -> dict[str, Any]:
         http_post = self._http_post
         if http_post is None:
             import requests
@@ -555,7 +653,7 @@ class ChatGptBrowserImageGenerator:
             http_post = requests.post
         # Images are occasional and allowed to be slow: the default budget rides out the
         # service's 15-min account-protection cooldown instead of failing the run.
-        budget = float(
+        budget = bounded_wait_budget(
             _config_value(self.config, "WORKFLOW_CHATGPT_BROWSER_RATE_WAIT_MAX_SECONDS", 1200)
         )
         sleep = self._sleeper or asyncio.sleep
@@ -565,7 +663,7 @@ class ChatGptBrowserImageGenerator:
                 http_post,
                 url,
                 json=payload,
-                headers={"Content-Type": "application/json"},
+                headers=dict(headers),
                 timeout=read_timeout,
             )
             try:
@@ -576,7 +674,7 @@ class ChatGptBrowserImageGenerator:
             if status_code == 429:
                 # Documented consumer contract: the service self-throttles to protect the
                 # shared ChatGPT account — honour Retry-After, bounded, loud when exhausted.
-                delay = _retry_after_seconds(response, data)
+                delay = retry_after_seconds(response, data)
                 if waited + delay > budget:
                     raise ImageGenerationError(
                         f"chatgpt browser rate-limited beyond the {budget:.0f}s wait budget "
@@ -596,9 +694,10 @@ class ChatGptBrowserImageGenerator:
                 continue
             if status_code >= 400:
                 detail = data.get("detail") or data.get("error") if isinstance(data, dict) else None
+                token = _config_value(self.config, "WORKFLOW_CHATGPT_BROWSER_TOKEN", "")
                 raise ImageGenerationError(
                     f"chatgpt browser service HTTP {status_code}: "
-                    f"{detail or getattr(response, 'text', '')} "
+                    f"{sanitize_browser_error(detail or getattr(response, 'text', ''), token)} "
                     "(502 usually means the logged-in ChatGPT browser/extension is down on the mini)"
                 )
             if not isinstance(data, dict):
@@ -612,7 +711,7 @@ class ChatGptBrowserImageGenerator:
         elapsed_ms: int,
         success: bool,
         error: str | None,
-        source_url: str,
+        evidence: Any | None,
     ) -> None:
         # Subscription browser session: no per-call price exists. The central typed pricing
         # result stays unknown instead of reporting phantom $0 metered spend.
@@ -633,9 +732,19 @@ class ChatGptBrowserImageGenerator:
                     "output_format": request.output_format,
                     "reference_image_count": len(request.reference_image_paths),
                     "workflow_id": request.workflow_id,
-                    "source_url": source_url,
+                    **(
+                        {"generation_evidence": safe_generation_metadata(evidence)}
+                        if evidence is not None
+                        else {}
+                    ),
                 },
             )
+        )
+
+    def _safe_error(self, error: Any) -> str:
+        return sanitize_browser_error(
+            error,
+            _config_value(self.config, "WORKFLOW_CHATGPT_BROWSER_TOKEN", ""),
         )
 
 

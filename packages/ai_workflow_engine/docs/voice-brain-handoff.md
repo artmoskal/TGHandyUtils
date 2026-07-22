@@ -1,9 +1,11 @@
 # Voice Brain Engine Integration Guide
 
-Status: **`engine-v0.11.7` is the current immutable release.**
-This release improves usage truth for optional process-backed Claude/Codex clients.
+Status: **`engine-v0.11.8` is the release candidate; do not re-pin until it is cut.**
+`engine-v0.11.7` remains the current immutable release.
+This release adds secured browser-consumer transport and preserves usage truth for optional
+process-backed Claude/Codex clients.
 It does not turn subscription CLI workers into a suitable low-latency voice hot path. Adopt only as
-the coherent `0.11.7 / 0.5.2 / 0.3.2` matrix.
+the coherent candidate matrix below after the tag is cut.
 The product must pin tag `engine-v0.11.7` before running its own
 latency/cancellation canary. This replaces
 the historical June request/reply transcript.
@@ -28,16 +30,15 @@ transcript + session context
 
 ## Package Choice
 
-- `ai-workflow-engine==0.11.7` for the runtime and custom `LLMCallable`.
-- `ai-workflow-tools==0.5.2` only when using `CliAgentCapability`/console tools. CLI subscription
+- `ai-workflow-engine==0.11.8` for the runtime and custom `LLMCallable`.
+- `ai-workflow-tools==0.5.3` only when using `CliAgentCapability`/console tools. CLI subscription
   workers are usually unsuitable for a low-latency conversational hot path.
 - `ai-workflow-viewer==0.3.2` in diagnostics, not the real-time audio path.
 
-> **Current matrix:** `engine-v0.11.7` + `ai-workflow-tools==0.5.2` +
+> **Candidate matrix:** `engine-v0.11.8` + `ai-workflow-tools==0.5.3` +
 > `ai-workflow-viewer==0.3.2` (tools/viewer require
-> `ai-workflow-engine>=0.11.7,<0.12`).
-> The previous line remains available at its historical tag for historical data; the lines never
-> mix in one environment.
+> `ai-workflow-engine>=0.11.8,<0.12`).
+> Do not install this matrix until `engine-v0.11.8` is cut.
 
 The release makes node-context binding explicit for every node kind and advances the optional
 tools wheel for native Codex image attachment. Persisted schemas and voice workflow behavior are

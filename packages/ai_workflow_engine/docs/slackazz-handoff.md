@@ -1,9 +1,10 @@
 # SlackAzzCovered Engine Adoption Guide
 
-Status: **`engine-v0.11.7` is the current immutable release.**
-This release adds typed CLI usage/notional economics without changing the v0.11.6 `wait-v2`
-coordinator protocol. Install the coherent `0.11.7 / 0.5.2 / 0.3.2` matrix if SlackAzz enables CLI
-agents/viewer.
+Status: **`engine-v0.11.8` is the release candidate; do not re-pin until it is cut.**
+`engine-v0.11.7` remains the current immutable release.
+This release adds secured browser-consumer transport and media evidence without changing the
+v0.11.6 `wait-v2` coordinator protocol. Install the coherent candidate matrix below if SlackAzz
+enables CLI agents/viewer, but only after the tag is cut.
 `engine-v0.11.5` has a confirmed registration-exposure race. Do not start or update the Redis
 adapter against v0.11.5. Implement the v0.11.6 protocol and pass its conformance kit plus product
 transaction tests before enabling live effects.
@@ -36,15 +37,14 @@ client event
 
 | Package | SlackAzzCovered use |
 |---|---|
-| `ai-workflow-engine==0.11.7` | Required workflow/wait runtime |
-| `ai-workflow-tools==0.5.2` | Add for CLI agents/tool catalog if the product uses them |
+| `ai-workflow-engine==0.11.8` | Required workflow/wait runtime |
+| `ai-workflow-tools==0.5.3` | Add for CLI agents/tool catalog if the product uses them |
 | `ai-workflow-viewer==0.3.2` | Developer diagnostics or product-linked run inspection |
 
-> **Current matrix:** `engine-v0.11.7` + `ai-workflow-tools==0.5.2` +
+> **Candidate matrix:** `engine-v0.11.8` + `ai-workflow-tools==0.5.3` +
 > `ai-workflow-viewer==0.3.2` (tools/viewer require
-> `ai-workflow-engine>=0.11.7,<0.12`).
-> The previous line remains available at its historical tag for historical data; the lines never
-> mix in one environment.
+> `ai-workflow-engine>=0.11.8,<0.12`).
+> Do not install this matrix until `engine-v0.11.8` is cut.
 
 
 Verify the complete published directory for the immutable tag and record commit/hash. Never copy

@@ -17,6 +17,7 @@ from models.anki_workflow import (
     RenderedCardEvaluation,
     RenderedCardSet,
 )
+from ai_workflow_engine import WEAK_MODEL_CLEANER
 from ai_workflow_engine.engine import StructuredLLMNode, StructuredOutputError
 from ai_workflow_engine.prompt_loader import load_prompt_template
 from services.llm_factory import create_anki_text_llm, llm_supports_vision
@@ -69,6 +70,7 @@ class AnkiRenderedCardEvaluator:
             llm_factory=create_anki_text_llm,
             validator=self._validate_evaluation,
             repair_prompt_template=self._REPAIR_PROMPT,
+            pre_parse=WEAK_MODEL_CLEANER,
         )
 
     @property

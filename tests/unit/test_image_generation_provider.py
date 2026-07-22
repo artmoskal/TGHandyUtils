@@ -327,24 +327,60 @@ class FakeChatGptResponse:
 
 def _chatgpt_config(**overrides):
     values = {
-        "WORKFLOW_CHATGPT_BROWSER_URL": "http://mini.test:8010",
+        "WORKFLOW_CHATGPT_BROWSER_URL": "http://127.0.0.1:8010",
+        "WORKFLOW_CHATGPT_BROWSER_TOKEN": "",
         "WORKFLOW_CHATGPT_BROWSER_TIMEOUT_SECONDS": 340,
-        "WORKFLOW_CHATGPT_BROWSER_FORCE_FRESH": True,
+        "WORKFLOW_CHATGPT_BROWSER_CONVERSATION_MODE": "reuse",
         "WORKFLOW_USAGE_TRACKING_ENABLED": True,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
 
 
-def _chatgpt_image_payload(image_bytes=b"chatgpt-image"):
+_CHATGPT_PNG_BYTES = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+)
+
+
+def _chatgpt_image_payload(image_bytes=_CHATGPT_PNG_BYTES, **overrides):
     encoded = base64.b64encode(image_bytes).decode("ascii")
-    return {
+    payload = {
         "status": "completed",
         "mime": "image/png",
         "bytes": len(image_bytes),
         "source_url": "https://chatgpt.com/backend-api/x",
         "image_data_url": f"data:image/png;base64,{encoded}",
+        "reference_images_used": 0,
+        "conversation_mode": "reuse",
+        "conversation_name": "anki-provider-contract",
+        "generation": 1,
+        "reused": True,
+        "rotated": False,
+        "freshness": {
+            "schema": 4,
+            "strategy": "resultFreshnessFenceV3",
+            "source": "captured",
+            "state": "result_observed",
+            "anchor_owned": True,
+            "result_owned": True,
+            "result_scope_count": 1,
+            "candidate_count": 1,
+            "reason": None,
+        },
     }
+    payload.update(overrides)
+    return payload
+
+
+def _chatgpt_request(tmp_path, **overrides):
+    values = {
+        "prompt": "study image",
+        "output_dir": str(tmp_path),
+        "continuity_key": "anki-provider-contract",
+        "idempotency_key": "provider-contract:image:0",
+    }
+    values.update(overrides)
+    return ImageGenerationRequest(**values)
 
 
 @pytest.mark.unit
@@ -367,18 +403,16 @@ async def test_chatgpt_browser_generator_writes_artifact_and_notional_usage(tmp_
 
     with workflow_usage_scope(context):
         result = await generator.generate(
-            ImageGenerationRequest(
-                prompt="study image",
-                output_dir=str(tmp_path),
-                output_basename="card.png",
-            )
+            _chatgpt_request(tmp_path, output_basename="card.png")
         )
 
     url, kwargs = calls[0]
-    assert url == "http://mini.test:8010/generate_image"
-    # cache-bust is first-class: prompt stays verbatim, no_cache forces a fresh generation
+    assert url == "http://127.0.0.1:8010/generate_image"
     assert kwargs["json"]["description"] == "study image"
-    assert kwargs["json"]["no_cache"] is True
+    assert kwargs["json"]["conversation_mode"] == "reuse"
+    assert kwargs["json"]["conversation_name"] == "anki-provider-contract"
+    assert kwargs["json"]["idempotency_key"] == "provider-contract:image:0"
+    assert "no_cache" not in kwargs["json"]
     assert "reference_images" not in kwargs["json"]
     assert kwargs["json"]["timeout"] == 340
     assert kwargs["timeout"] == 370  # read timeout = service budget + headroom
@@ -387,7 +421,7 @@ async def test_chatgpt_browser_generator_writes_artifact_and_notional_usage(tmp_
     assert result.model == "chatgpt-web"
     assert result.estimated_usd is None
     with open(result.path, "rb") as fh:
-        assert fh.read() == b"chatgpt-image"
+        assert fh.read() == _CHATGPT_PNG_BYTES
 
     event = summary.events[0]
     assert event.cost_class == "subscription_notional"
@@ -398,23 +432,33 @@ async def test_chatgpt_browser_generator_writes_artifact_and_notional_usage(tmp_
 
 
 @pytest.mark.unit
-async def test_chatgpt_browser_generator_force_fresh_off_keeps_prompt_verbatim(tmp_path):
+async def test_chatgpt_browser_generator_fresh_mode_keeps_prompt_and_omits_continuity(tmp_path):
     from ai_workflow_tools.media.image_generation import ChatGptBrowserImageGenerator
 
     calls = []
 
     def http_post(url, **kwargs):
         calls.append((url, kwargs))
-        return FakeChatGptResponse(_chatgpt_image_payload())
+        payload = _chatgpt_image_payload(conversation_mode="fresh")
+        for name in ("conversation_name", "generation", "reused", "rotated", "freshness"):
+            payload.pop(name)
+        return FakeChatGptResponse(payload)
 
     generator = ChatGptBrowserImageGenerator(
-        _chatgpt_config(WORKFLOW_CHATGPT_BROWSER_FORCE_FRESH=False, WORKFLOW_USAGE_TRACKING_ENABLED=False),
+        _chatgpt_config(
+            WORKFLOW_CHATGPT_BROWSER_CONVERSATION_MODE="fresh",
+            WORKFLOW_USAGE_TRACKING_ENABLED=False,
+        ),
         http_post=http_post,
     )
-    await generator.generate(ImageGenerationRequest(prompt="study image", output_dir=str(tmp_path)))
+    await generator.generate(
+        _chatgpt_request(tmp_path, continuity_key=None)
+    )
 
     assert calls[0][1]["json"]["description"] == "study image"
-    assert "no_cache" not in calls[0][1]["json"]
+    assert calls[0][1]["json"]["conversation_mode"] == "fresh"
+    assert calls[0][1]["json"]["no_cache"] is True
+    assert "conversation_name" not in calls[0][1]["json"]
 
 
 @pytest.mark.unit
@@ -423,7 +467,7 @@ async def test_chatgpt_browser_generator_requires_explicit_url(tmp_path):
 
     generator = ChatGptBrowserImageGenerator(_chatgpt_config(WORKFLOW_CHATGPT_BROWSER_URL=""))
     with pytest.raises(ImageGenerationError, match="CHATGPT_BROWSER_API_URL"):
-        await generator.generate(ImageGenerationRequest(prompt="x", output_dir=str(tmp_path)))
+        await generator.generate(_chatgpt_request(tmp_path, prompt="x"))
 
 
 @pytest.mark.unit
@@ -446,10 +490,8 @@ async def test_chatgpt_browser_generator_sends_reference_images_and_asserts_hono
         _chatgpt_config(WORKFLOW_USAGE_TRACKING_ENABLED=False), http_post=http_post
     )
     result = await generator.generate(
-        ImageGenerationRequest(
-            prompt="styled card",
-            output_dir=str(tmp_path / "out"),
-            reference_image_paths=[str(ref)],
+        _chatgpt_request(
+            tmp_path / "out", prompt="styled card", reference_image_paths=[str(ref)]
         )
     )
 
@@ -457,7 +499,7 @@ async def test_chatgpt_browser_generator_sends_reference_images_and_asserts_hono
     assert len(sent) == 1 and sent[0]["role"] == "style"
     assert sent[0]["data_url"] == "data:image/png;base64," + base64.b64encode(b"style-bytes").decode()
     assert result.reference_image_count == 1
-    assert result.usage_metadata["reference_images_used"] == 1
+    assert result.generation_evidence.reference_images_used == 1
 
 
 @pytest.mark.unit
@@ -477,12 +519,10 @@ async def test_chatgpt_browser_generator_refuses_style_dropped_result(tmp_path):
     generator = ChatGptBrowserImageGenerator(
         _chatgpt_config(WORKFLOW_USAGE_TRACKING_ENABLED=False), http_post=http_post
     )
-    with pytest.raises(ImageGenerationError, match="style-dropped"):
+    with pytest.raises(ImageGenerationError, match="reference image count mismatch"):
         await generator.generate(
-            ImageGenerationRequest(
-                prompt="styled card",
-                output_dir=str(tmp_path / "out"),
-                reference_image_paths=[str(ref)],
+            _chatgpt_request(
+                tmp_path / "out", prompt="styled card", reference_image_paths=[str(ref)]
             )
         )
     assert not (tmp_path / "out").exists() or not list((tmp_path / "out").iterdir())
@@ -495,9 +535,9 @@ async def test_chatgpt_browser_generator_unreadable_reference_is_loud(tmp_path):
     generator = ChatGptBrowserImageGenerator(_chatgpt_config(WORKFLOW_USAGE_TRACKING_ENABLED=False))
     with pytest.raises(ImageGenerationError, match="unreadable"):
         await generator.generate(
-            ImageGenerationRequest(
+            _chatgpt_request(
+                tmp_path,
                 prompt="x",
-                output_dir=str(tmp_path),
                 reference_image_paths=[str(tmp_path / "missing.png")],
             )
         )
@@ -514,7 +554,7 @@ async def test_chatgpt_browser_generator_surfaces_service_errors_loudly(tmp_path
         _chatgpt_config(WORKFLOW_USAGE_TRACKING_ENABLED=False), http_post=http_post
     )
     with pytest.raises(ImageGenerationError, match="HTTP 502"):
-        await generator.generate(ImageGenerationRequest(prompt="x", output_dir=str(tmp_path)))
+        await generator.generate(_chatgpt_request(tmp_path, prompt="x"))
     assert not list(tmp_path.iterdir()), "failed generation left a partial artifact behind"
 
 
@@ -552,10 +592,10 @@ async def test_chatgpt_browser_generator_honours_429_retry_after(tmp_path):
         sleeper=sleeper,
     )
     result = await generator.generate(
-        ImageGenerationRequest(prompt="study image", output_dir=str(tmp_path))
+        _chatgpt_request(tmp_path)
     )
 
     assert sleeps == [6]
     assert calls["n"] == 2
     with open(result.path, "rb") as fh:
-        assert fh.read() == b"chatgpt-image"
+        assert fh.read() == _CHATGPT_PNG_BYTES

@@ -14,6 +14,7 @@ from models.anki_workflow import (
     TextCardScenario,
     VisualCardScenario,
 )
+from ai_workflow_engine import WEAK_MODEL_CLEANER
 from ai_workflow_engine.engine import StructuredLLMNode, StructuredOutputError
 from ai_workflow_engine.prompt_loader import load_prompt_template
 from services.llm_factory import create_anki_text_llm
@@ -54,6 +55,7 @@ class _ScenarioPlannerBase:
             llm_factory=create_anki_text_llm,
             validator=self._validate_scenario,
             repair_prompt_template=self._REPAIR_PROMPT,
+            pre_parse=WEAK_MODEL_CLEANER,
         )
 
     @property

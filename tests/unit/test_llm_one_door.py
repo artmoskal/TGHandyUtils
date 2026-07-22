@@ -114,7 +114,11 @@ def test_registered_backend_routes_by_model_name_per_role():
     from ai_workflow_tools.chatgpt_browser import ChatGptBrowserChatModel, ChatGptBrowserLLMClient
     from services.llm_factory import create_anki_chat_model, create_anki_text_llm
 
-    config = SimpleNamespace(CHATGPT_BROWSER_API_URL="http://mini.test:8010", OPENAI_API_KEY="k")
+    config = SimpleNamespace(
+        CHATGPT_BROWSER_API_URL="http://mini.test:8010",
+        WORKFLOW_CHATGPT_BROWSER_TOKEN="test-token",
+        OPENAI_API_KEY="k",
+    )
 
     assert isinstance(create_anki_text_llm(config, "chatgpt-web", 0.1), ChatGptBrowserLLMClient)
     assert isinstance(create_anki_chat_model(config, "chatgpt-web", 0.1), ChatGptBrowserChatModel)
@@ -263,8 +267,9 @@ def test_metered_chat_construction_without_openai_key_fails_loudly():
         OPENAI_API_KEY="",
         LLM_BASE_URL="",
         CHATGPT_BROWSER_API_URL="http://browser.test:8010",
+        WORKFLOW_CHATGPT_BROWSER_TOKEN="test-browser-token",
         WORKFLOW_CHATGPT_BROWSER_TIMEOUT_SECONDS=340,
-        WORKFLOW_CHATGPT_BROWSER_FORCE_FRESH=True,
+        WORKFLOW_CHATGPT_BROWSER_RATE_WAIT_MAX_SECONDS=1200,
     )
     with _pytest.raises(ValueError, match="OpenAI API key is required"):
         create_anki_chat_model(config, "gpt-5.4-mini", 0.0)
@@ -274,19 +279,13 @@ def test_metered_chat_construction_without_openai_key_fails_loudly():
     )
 
 
-# ================= B1 red battery (factory path): token propagation to the wire =================
+# ================= B1 factory path: token propagation to the wire =================
 #
 # Secured-consumer iteration, codex finding 2 (2026-07-21): the client-level auth tests in
 # packages/ai_workflow_tools/tests/test_chatgpt_browser_auth.py construct clients directly —
 # production constructs them through create_anki_text_llm / create_anki_chat_model with
 # _chatgpt_browser_kwargs(config), which today passes NO token, and config.py exposes none.
-# These reds prove the whole production chain: env -> Config -> factory kwargs -> HTTP header.
-
-_B1_RED = pytest.mark.xfail(
-    strict=True,
-    reason="B1 RED: factory/config do not propagate the bearer token yet — secured-consumer "
-    "iteration phase 1 removes this marker",
-)
+# These tests prove the whole production chain: env -> Config -> factory kwargs -> HTTP header.
 
 
 class _BrowserTokenConfig:
@@ -295,7 +294,7 @@ class _BrowserTokenConfig:
     CHATGPT_BROWSER_API_URL = "http://browser.test:8010"
     WORKFLOW_CHATGPT_BROWSER_TOKEN = "secret-token-factory"
     WORKFLOW_CHATGPT_BROWSER_TIMEOUT_SECONDS = 5
-    WORKFLOW_CHATGPT_BROWSER_FORCE_FRESH = True
+    WORKFLOW_CHATGPT_BROWSER_RATE_WAIT_MAX_SECONDS = 1200
 
 
 class _FactoryRecordingPost:
@@ -315,7 +314,6 @@ class _FactoryRecordingPost:
         return _Response()
 
 
-@_B1_RED
 def test_factory_built_text_client_carries_the_configured_token(monkeypatch):
     import asyncio
 
@@ -324,6 +322,7 @@ def test_factory_built_text_client_carries_the_configured_token(monkeypatch):
     post = _FactoryRecordingPost()
     monkeypatch.setattr("requests.post", post)
     client = create_anki_text_llm(_BrowserTokenConfig(), "chatgpt-web", 0.0)
+    assert client.rate_limit_max_wait_s == 1200
 
     from ai_workflow_engine.llm_protocol import ChatMessage, LLMRequest
 
@@ -335,20 +334,19 @@ def test_factory_built_text_client_carries_the_configured_token(monkeypatch):
     )
 
 
-@_B1_RED
 def test_factory_built_chat_model_carries_the_configured_token(monkeypatch):
     from services.llm_factory import create_anki_chat_model
 
     post = _FactoryRecordingPost()
     monkeypatch.setattr("requests.post", post)
     model = create_anki_chat_model(_BrowserTokenConfig(), "chatgpt-web", 0.0)
+    assert model._client.rate_limit_max_wait_s == 1200
     model.invoke([("user", "hi")])
     assert post.calls and post.calls[0]["headers"].get("Authorization") == (
         "Bearer secret-token-factory"
     )
 
 
-@_B1_RED
 def test_config_sources_browser_token_from_the_agreed_env_name():
     """Secret contract: consumer env CHATGPT_BROWSER_API_TOKEN -> config value
     WORKFLOW_CHATGPT_BROWSER_TOKEN (mirroring the URL's env->WORKFLOW_* pattern), no
@@ -374,16 +372,9 @@ def test_config_sources_browser_token_from_the_agreed_env_name():
     assert result.stdout.strip() == "tok-from-env"
 
 
-# ================= B2 red battery: force-fresh is DELETED, explicit mode replaces it =================
-
-_B2_RED = pytest.mark.xfail(
-    strict=True,
-    reason="B2 RED: force-fresh knobs still exist / explicit conversation mode missing — "
-    "secured-consumer iteration phase 1 removes this marker",
-)
+# ================= B2: force-fresh is DELETED, explicit mode replaces it =================
 
 
-@_B2_RED
 def test_config_replaces_force_fresh_with_explicit_conversation_mode():
     """Latest-only: the boolean knobs are DELETED (no alias) and the committed Anki mode
     is `reuse`, exposed as WORKFLOW_CHATGPT_BROWSER_CONVERSATION_MODE. Hermetic subprocess
@@ -412,7 +403,29 @@ def test_config_replaces_force_fresh_with_explicit_conversation_mode():
     assert result.stdout.strip() == "reuse", "committed Anki mode is reuse"
 
 
-@_B2_RED
+def test_config_sources_browser_conversation_mode_from_deployment_env():
+    """The Ansible-rendered WORKFLOW_* key must reach the setting Config reads."""
+
+    import os
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import config; print(config.Config.WORKFLOW_CHATGPT_BROWSER_CONVERSATION_MODE)",
+        ],
+        env={**os.environ, "WORKFLOW_CHATGPT_BROWSER_CONVERSATION_MODE": "fresh"},
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+        timeout=60,
+    )
+    assert result.returncode == 0, f"config import failed: {result.stderr[-500:]}"
+    assert result.stdout.strip() == "fresh"
+
+
 def test_factory_kwargs_no_longer_carry_force_fresh():
     from services.llm_factory import _chatgpt_browser_kwargs
 
@@ -425,21 +438,39 @@ def test_factory_kwargs_no_longer_carry_force_fresh():
     )
 
 
-@_B2_RED
 def test_force_fresh_is_deleted_repo_wide():
-    """Deletion proof: no production source still mentions the retired knobs (tests and
-    discussion docs excluded). REFACTORING THAT LEAVES DUPLICATES IS WORSE THAN NONE."""
+    """Deletion proof over every permanent source/config/doc/deployment surface.
+
+    Tests and historical discussion are excluded because they name the removed contract as
+    evidence. Build/cache/VCS directories are excluded because they are not source truth.
+    """
 
     offenders = []
-    for base in ("services", "config", "config.py", "packages/ai_workflow_tools"):
-        root = REPO_ROOT / base
-        candidates = [root] if root.is_file() else list(root.rglob("*.py")) + list(
-            root.rglob("*.yaml")
-        ) if root.exists() else []
-        for path in candidates:
-            if "tests" in path.parts or "build" in path.parts:
-                continue
-            text = path.read_text(encoding="utf-8", errors="ignore")
-            if "FORCE_FRESH" in text or "force_fresh" in text:
-                offenders.append(str(path.relative_to(REPO_ROOT)))
+    permanent_suffixes = {".py", ".md", ".toml", ".yaml", ".yml", ".example"}
+    excluded_parts = {
+        ".git",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        "__pycache__",
+        "build",
+        "dist",
+        "graphify-out",
+        "node_modules",
+        "tests",
+    }
+    for path in REPO_ROOT.rglob("*"):
+        relative = path.relative_to(REPO_ROOT)
+        if not path.is_file() or excluded_parts.intersection(relative.parts):
+            continue
+        if relative.parts[:2] == ("docs", "_discussion"):
+            continue
+        if path.suffix not in permanent_suffixes and path.name not in {
+            ".env.example",
+            "Dockerfile",
+        }:
+            continue
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        if "FORCE_FRESH" in text or "force_fresh" in text:
+            offenders.append(str(relative))
     assert not offenders, f"force-fresh still referenced in production sources: {offenders}"

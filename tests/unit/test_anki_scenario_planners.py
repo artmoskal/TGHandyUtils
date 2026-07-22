@@ -80,6 +80,36 @@ async def test_text_scenario_planner_returns_rendering_guidance():
 
 
 @pytest.mark.unit
+async def test_text_scenario_planner_cleans_reasoning_and_fenced_json():
+    llm = FakeLLM(
+        [
+            """<think>draft private reasoning</think>
+```json
+{
+  "source_content": "A valve controls flow.",
+  "guide": null,
+  "rendering_guide": "Ask what controls flow.",
+  "facts_to_test": ["A valve controls flow"],
+  "answer_constraints": "One phrase.",
+  "strategy": "split",
+  "count": 1
+}
+```
+This prose must not reach the parser."""
+        ]
+    )
+
+    scenario = await TextScenarioPlanner(FakeConfig(), llm=llm).plan(
+        ContentSource(content="A valve controls flow.", user_id=10),
+        AnkiDirectiveConstraints(),
+        _build_plan(),
+    )
+
+    assert scenario.source_content == "A valve controls flow."
+    assert len(llm.messages) == 1, "cleaning should avoid an unnecessary repair call"
+
+
+@pytest.mark.unit
 def test_scenario_planner_uses_scenario_model_profile(monkeypatch):
     calls = []
 

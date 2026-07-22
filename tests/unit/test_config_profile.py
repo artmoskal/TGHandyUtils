@@ -129,6 +129,9 @@ def test_application_config_direct_env_reads_are_secrets_or_deployment_knobs():
         # always-on box (Tailscale address). No default — selecting the provider without
         # it fails loudly.
         "CHATGPT_BROWSER_API_URL",
+        # Secret consumed by the secured browser transport. The application config owns
+        # environment sourcing; downstream factories receive only the resolved value.
+        "CHATGPT_BROWSER_API_TOKEN",
     }
 
     assert direct_env_keys == allowed

@@ -36,7 +36,7 @@ Watch the local bot: `docker compose logs -f bot`.
 
 | Service | Used for | Config | Cost class |
 |---|---|---|---|
-| **ChatGPT-browser service** (Mac mini, Tailscale `http://100.107.180.35:8010`) | Anki IMAGE generation incl. PPLA style refs (FR-1); optional text via the `chatgpt-web` routable model | `CHATGPT_BROWSER_API_URL` env — REQUIRED when any role routes there; loud error if missing. Knobs: `anki_chatgpt_browser_timeout_seconds`, `anki_chatgpt_browser_force_fresh` | `subscription_notional` (rides ChatGPT Pro; typed pricing remains `unknown` when no counters/rate exist) |
+| **ChatGPT-browser service** (Mac mini, private network) | Anki image generation with style refs; optional text via the `chatgpt-web` routable model | `CHATGPT_BROWSER_API_URL` and `CHATGPT_BROWSER_API_TOKEN`; image mode is closed `reuse|fresh` via `anki_chatgpt_browser_conversation_mode` | `subscription_notional` (rides ChatGPT Pro; typed pricing remains `unknown` when no counters/rate exist) |
 | **OpenAI API** | general bot plumbing (classifier/task parsing), whisper/audio, uploaded-photo vision, optional anki backends/image provider | `OPENAI_API_KEY` | metered |
 | **claude -p CLI** (in the bot image) | DEFAULT for all four anki text roles incl. quality (staged vision: the CLI reads generated card images). `codex-exec` is the sibling backend | `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`; no default, loud if missing). NOTE: shares the owner's Claude-subscription quota with coding sessions | `subscription_notional` |
 | **Gemini** | optional image provider (`anki_image_provider: gemini`) | `GEMINI_API_KEY` | metered |
@@ -50,8 +50,8 @@ Watch the local bot: `docker compose logs -f bot`.
 - Single logged-in browser ⇒ strictly sequential calls (text ~5–30 s, image ~30–90 s).
 - Known issue FR-2: the FIRST interaction after idle can exceed its own timeout (504) —
   retry once; warm calls are fast. Our clients fail loudly, never auto-retry.
-- Auth is coming (their review BUG 2): expect a Bearer token → new env
-  `CHATGPT_BROWSER_API_TOKEN` on our side (no default; loud if required and missing).
+- Every non-loopback request requires `CHATGPT_BROWSER_API_TOKEN`; clients fail before HTTP
+  when it is absent and never persist the token in errors, usage, or observations.
 - Backend selection is per-role via the model name: set any `anki_*` role model to
   `chatgpt-web` (browser) or an API model name (metered). Registry:
   `services/llm_factory.py` (`LLMBackend`, `register_llm_backend`).

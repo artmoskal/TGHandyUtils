@@ -44,6 +44,10 @@ WORKFLOW_OVERRIDE_MAP = {
     "IMAGE_OUTPUT_FORMAT": ("settings", "anki_image_output_format"),
     "GEMINI_IMAGE_SIZE": ("settings", "anki_gemini_image_size"),
     "IMAGE_PROVIDER_TIMEOUT_SECONDS": ("settings", "anki_image_provider_timeout_seconds"),
+    "CHATGPT_BROWSER_CONVERSATION_MODE": (
+        "settings",
+        "anki_chatgpt_browser_conversation_mode",
+    ),
     "CODEX_COST_CLASS": ("settings", "anki_codex_cost_class"),
     "STYLE_CHARACTER_REFERENCE_IMAGE": ("settings", "anki_style_character_reference_image"),
     "STYLE_DESIGN_REFERENCE_IMAGE": ("settings", "anki_style_design_reference_image"),
@@ -273,12 +277,14 @@ class Config(IConfig):
     # timeout is the SERVICE-side budget; the HTTP read timeout adds +30s on top.
     CHATGPT_BROWSER_API_URL: str = os.getenv('CHATGPT_BROWSER_API_URL', '')
     WORKFLOW_CHATGPT_BROWSER_URL: str = CHATGPT_BROWSER_API_URL
+    WORKFLOW_CHATGPT_BROWSER_TOKEN: str = os.getenv('CHATGPT_BROWSER_API_TOKEN', '')
     ANKI_CHATGPT_BROWSER_TIMEOUT_SECONDS: int = _int_setting('anki_chatgpt_browser_timeout_seconds', 340)
     WORKFLOW_CHATGPT_BROWSER_TIMEOUT_SECONDS: int = ANKI_CHATGPT_BROWSER_TIMEOUT_SECONDS
-    # The service caches identical prompts; force-fresh appends a variation token so
-    # retries/regenerations produce a new image instead of replaying the cache.
-    ANKI_CHATGPT_BROWSER_FORCE_FRESH: bool = _bool_setting('anki_chatgpt_browser_force_fresh', True)
-    WORKFLOW_CHATGPT_BROWSER_FORCE_FRESH: bool = ANKI_CHATGPT_BROWSER_FORCE_FRESH
+    # Image calls choose an explicit provider conversation contract. Reuse preserves
+    # style/subject continuity; fresh starts a new provider conversation.
+    WORKFLOW_CHATGPT_BROWSER_CONVERSATION_MODE: str = str(
+        _setting('anki_chatgpt_browser_conversation_mode', 'reuse')
+    ).strip().lower()
     # Image generation may ride out the service's 15-min account-protection cooldown
     # (owner decision 2026-07-03: images are occasional; waiting beats failing — the
     # TG user is kept informed by the processor's progress ticker).

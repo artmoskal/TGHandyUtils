@@ -16,9 +16,8 @@ operational endpoint; the consumer contract is:
   chain, and the client's log records (the strings every downstream usage event and
   observation detail persist).
 
-RED tests are strict-XFAIL: they assert the TARGET contract and fail on the current
-unauthenticated clients; implementing B1 removes the markers only after each fails for
-its intended reason (verified with --runxfail) and turns green. The factory-path half
+These tests were captured RED before implementation and now permanently fence the
+authentication contract. The factory-path half
 of this battery (production construction through create_anki_text_llm /
 create_anki_chat_model with config/env token propagation) lives in
 tests/unit/test_llm_one_door.py next to the other factory contracts.
@@ -38,12 +37,6 @@ from ai_workflow_tools.chatgpt_browser import (
 )
 
 pytestmark = pytest.mark.unit
-
-_B1_RED = pytest.mark.xfail(
-    strict=True,
-    reason="B1 RED: clients do not carry Authorization: Bearer yet — secured-consumer "
-    "iteration phase 1 removes this marker",
-)
 
 
 class _RecordingPost:
@@ -82,7 +75,7 @@ class _ImageConfig:
     WORKFLOW_CHATGPT_BROWSER_TOKEN = "secret-token-3"
     WORKFLOW_CHATGPT_BROWSER_TIMEOUT_SECONDS = 5
     WORKFLOW_CHATGPT_BROWSER_RATE_WAIT_MAX_SECONDS = 1
-    WORKFLOW_CHATGPT_BROWSER_FORCE_FRESH = True
+    WORKFLOW_CHATGPT_BROWSER_CONVERSATION_MODE = "reuse"
     WORKFLOW_USAGE_TRACKING_ENABLED = False
 
 
@@ -90,14 +83,18 @@ def _image_request(tmp_path):
     from ai_workflow_tools.media.image_models import ImageGenerationRequest
 
     return ImageGenerationRequest(
-        prompt="a cat", model="chatgpt", output_dir=str(tmp_path), output_format="png"
+        prompt="a cat",
+        model="chatgpt",
+        output_dir=str(tmp_path),
+        output_format="png",
+        continuity_key="anki-auth-contract",
+        idempotency_key="auth-contract:image:0",
     )
 
 
 # --------------------------------------------------------------- RED: bearer on the wire
 
 
-@_B1_RED
 def test_async_text_client_sends_bearer_header():
     post = _RecordingPost()
     client = ChatGptBrowserLLMClient(
@@ -108,7 +105,6 @@ def test_async_text_client_sends_bearer_header():
     assert post.calls[0]["headers"].get("Authorization") == "Bearer secret-token-1"
 
 
-@_B1_RED
 def test_sync_chat_model_sends_bearer_header():
     post = _RecordingPost()
     model = ChatGptBrowserChatModel(
@@ -119,7 +115,6 @@ def test_sync_chat_model_sends_bearer_header():
     assert post.calls[0]["headers"].get("Authorization") == "Bearer secret-token-2"
 
 
-@_B1_RED
 def test_image_generator_sends_bearer_header(tmp_path):
     from ai_workflow_tools.media.image_generation import ChatGptBrowserImageGenerator
 
@@ -145,7 +140,6 @@ def test_image_generator_sends_bearer_header(tmp_path):
 # ------------------------------------- RED: missing token fails BEFORE HTTP (all three)
 
 
-@_B1_RED
 def test_async_text_client_non_loopback_without_token_fails_before_any_request():
     post = _RecordingPost()
     with pytest.raises(ChatGptBrowserError, match="token"):
@@ -153,7 +147,6 @@ def test_async_text_client_non_loopback_without_token_fails_before_any_request()
     assert not post.calls, "no unauthenticated request may leave the process"
 
 
-@_B1_RED
 def test_sync_chat_model_non_loopback_without_token_fails_before_any_request():
     post = _RecordingPost()
     with pytest.raises(ChatGptBrowserError, match="token"):
@@ -161,7 +154,6 @@ def test_sync_chat_model_non_loopback_without_token_fails_before_any_request():
     assert not post.calls
 
 
-@_B1_RED
 def test_image_generator_non_loopback_without_token_fails_before_any_request(tmp_path):
     from ai_workflow_tools.media.image_generation import (
         ChatGptBrowserImageGenerator,
@@ -230,7 +222,6 @@ def test_image_generator_401_is_loud_and_never_retried(tmp_path):
 # ----------------------- RED: the token stays off the ACTUAL failure surfaces
 
 
-@_B1_RED
 def test_token_never_reaches_exception_text_chain_or_logs(caplog):
     """The raised error string, its full cause chain, and the client module's log records
     are the strings downstream usage events and observation details persist — the token
@@ -255,3 +246,71 @@ def test_token_never_reaches_exception_text_chain_or_logs(caplog):
             "the credential leaked into client log records"
         )
     assert "secret-token-4" not in repr(client)
+
+
+@pytest.mark.parametrize("client_kind", ["async", "sync"])
+def test_transport_exception_redacts_token_and_provider_url(client_kind):
+    secret = "secret-token-transport"
+
+    def post(*_args, **_kwargs):
+        raise RuntimeError(
+            f"failed Authorization: Bearer {secret} at "
+            "https://provider.invalid/signed/private?sig=abc"
+        )
+
+    if client_kind == "async":
+        client = ChatGptBrowserLLMClient(
+            "https://browser.test:8010", bearer_token=secret, http_post=post
+        )
+        invoke = lambda: _ask(client)
+    else:
+        client = ChatGptBrowserChatModel(
+            "https://browser.test:8010", bearer_token=secret, http_post=post
+        )
+        invoke = lambda: client.invoke([("user", "hi")])
+
+    with pytest.raises(ChatGptBrowserError) as err:
+        invoke()
+    durable_error = str(err.value)
+    assert secret not in durable_error
+    assert "provider.invalid" not in durable_error
+    assert "[REDACTED]" in durable_error
+    assert "[REDACTED_URL]" in durable_error
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    ["ftp://browser.test:8010", "http://user:password@browser.test:8010", "not-a-url"],
+)
+def test_browser_base_url_rejects_non_http_and_embedded_credentials(base_url):
+    with pytest.raises(ChatGptBrowserError, match="HTTP|credentials"):
+        ChatGptBrowserLLMClient(base_url, bearer_token="token")
+
+
+@pytest.mark.parametrize("timeout", [0, -1, float("nan"), float("inf")])
+def test_text_clients_reject_non_positive_or_non_finite_timeouts_before_http(timeout):
+    post = _RecordingPost()
+    with pytest.raises(ChatGptBrowserError, match="finite and positive"):
+        ChatGptBrowserLLMClient(
+            "http://127.0.0.1:8010",
+            timeout_s=timeout,
+            http_post=post,
+        )
+    assert not post.calls
+
+
+@pytest.mark.parametrize("timeout", [0, -1, float("nan"), float("inf")])
+def test_image_client_rejects_non_positive_or_non_finite_timeouts_before_http(tmp_path, timeout):
+    from ai_workflow_tools.media.image_generation import (
+        ChatGptBrowserImageGenerator,
+        ImageGenerationError,
+    )
+
+    class _InvalidTimeoutConfig(_ImageConfig):
+        WORKFLOW_CHATGPT_BROWSER_TIMEOUT_SECONDS = timeout
+
+    post = _RecordingPost()
+    generator = ChatGptBrowserImageGenerator(_InvalidTimeoutConfig(), http_post=post)
+    with pytest.raises(ImageGenerationError, match="finite and positive"):
+        asyncio.run(generator.generate(_image_request(tmp_path)))
+    assert not post.calls

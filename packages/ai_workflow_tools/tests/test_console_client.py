@@ -371,7 +371,7 @@ def _browser_client(payload, status_code=200, **kwargs):
         calls.append((url, post_kwargs))
         return _FakeHttpResponse(payload, status_code=status_code)
 
-    client = ChatGptBrowserLLMClient("http://mini.test:8010/", http_post=http_post, **kwargs)
+    client = ChatGptBrowserLLMClient("http://127.0.0.1:8010/", http_post=http_post, **kwargs)
     return client, calls
 
 
@@ -385,21 +385,16 @@ async def test_chatgpt_browser_llm_returns_reply_with_notional_cost():
     assert response.cost_class == "subscription_notional"
     assert response.estimated_usd is None and response.notional_usd is None
     url, kwargs = calls[0]
-    assert url == "http://mini.test:8010/ask"
+    assert url == "http://127.0.0.1:8010/ask"
     question = kwargs["json"]["question"]
     assert question.startswith("system: You classify.")
-    # force_fresh default: variation token busts the service's identical-question cache
+    # Text cache busting is invariant: a rejected structured reply is never replayed.
     assert "(request " in question
 
 
-async def test_chatgpt_browser_llm_force_fresh_off_sends_verbatim_question():
-    client, calls = _browser_client(
-        {"status": "completed", "reply": "ok"}, force_fresh=False
-    )
-
-    await client(LLMRequest(user="Classify dog."))
-
-    assert calls[0][1]["json"]["question"] == "user: Classify dog."
+async def test_chatgpt_browser_llm_rejects_removed_force_fresh_kwarg():
+    with pytest.raises(TypeError, match="force_fresh"):
+        _browser_client({"status": "completed", "reply": "ok"}, force_fresh=False)
 
 
 async def test_chatgpt_browser_llm_rejects_images_loudly():
@@ -449,7 +444,7 @@ async def test_chatgpt_browser_chat_model_invokes_langchain_messages_sync():
         calls.append((url, kwargs))
         return _FakeHttpResponse({"status": "completed", "reply": '[{"type":"basic"}]'})
 
-    model = ChatGptBrowserChatModel("http://mini.test:8010", http_post=http_post, force_fresh=False)
+    model = ChatGptBrowserChatModel("http://127.0.0.1:8010", http_post=http_post)
     output = model.invoke(
         [
             SimpleNamespace(type="system", content="You render cards."),
@@ -459,7 +454,8 @@ async def test_chatgpt_browser_chat_model_invokes_langchain_messages_sync():
 
     assert output.content == '[{"type":"basic"}]'
     question = calls[0][1]["json"]["question"]
-    assert question == "system: You render cards.\n\nhuman: Make one card about bridges."
+    assert question.startswith("system: You render cards.\n\nhuman: Make one card about bridges.")
+    assert "(request " in question
 
 
 async def test_chatgpt_browser_chat_model_rejects_image_parts_loudly():
@@ -467,7 +463,7 @@ async def test_chatgpt_browser_chat_model_rejects_image_parts_loudly():
 
     from ai_workflow_tools.chatgpt_browser import ChatGptBrowserChatModel, ChatGptBrowserError
 
-    model = ChatGptBrowserChatModel("http://mini.test:8010", http_post=lambda *a, **k: None)
+    model = ChatGptBrowserChatModel("http://127.0.0.1:8010", http_post=lambda *a, **k: None)
     with pytest.raises(ChatGptBrowserError, match="text-only"):
         model.invoke(
             [
@@ -490,7 +486,7 @@ async def test_chatgpt_browser_chat_model_service_error_is_loud():
     def http_post(url, **kwargs):
         return _FakeHttpResponse({"detail": "task was not picked up"}, status_code=502)
 
-    model = ChatGptBrowserChatModel("http://mini.test:8010", http_post=http_post)
+    model = ChatGptBrowserChatModel("http://127.0.0.1:8010", http_post=http_post)
     with pytest.raises(ChatGptBrowserError, match="HTTP 502"):
         model.invoke([SimpleNamespace(type="human", content="hi")])
 
@@ -524,7 +520,7 @@ async def test_chatgpt_browser_llm_honours_429_retry_after_bounded():
         sleeps.append(delay)
 
     client = ChatGptBrowserLLMClient(
-        "http://mini.test:8010", http_post=post, sleeper=sleeper, force_fresh=False
+        "http://127.0.0.1:8010", http_post=post, sleeper=sleeper
     )
     response = await client(LLMRequest(user="hello"))
 
@@ -543,7 +539,7 @@ async def test_chatgpt_browser_llm_rate_limit_budget_exhaustion_is_loud():
         sleeps.append(delay)
 
     client = ChatGptBrowserLLMClient(
-        "http://mini.test:8010",
+        "http://127.0.0.1:8010",
         http_post=post,
         sleeper=sleeper,
         rate_limit_max_wait_s=60,
@@ -551,6 +547,17 @@ async def test_chatgpt_browser_llm_rate_limit_budget_exhaustion_is_loud():
     with pytest.raises(ChatGptBrowserError, match="rate-limited beyond"):
         await client(LLMRequest(user="hello"))
     assert sleeps == [50], "one wait fits the 60s budget; the second (100s total) must not"
+
+
+@pytest.mark.parametrize("budget", [-1, float("nan"), float("inf")])
+def test_chatgpt_browser_llm_rejects_unbounded_wait_budgets(budget):
+    from ai_workflow_tools.chatgpt_browser import ChatGptBrowserError, ChatGptBrowserLLMClient
+
+    with pytest.raises(ChatGptBrowserError, match="finite and non-negative"):
+        ChatGptBrowserLLMClient(
+            "http://127.0.0.1:8010",
+            rate_limit_max_wait_s=budget,
+        )
 
 
 async def test_chatgpt_browser_chat_model_honours_429():
@@ -561,7 +568,7 @@ async def test_chatgpt_browser_chat_model_honours_429():
     post = _RateLimitedThenOk({"status": "completed", "reply": "done"}, limited=1, retry_after=2)
     sleeps = []
     model = ChatGptBrowserChatModel(
-        "http://mini.test:8010", http_post=post, force_fresh=False
+        "http://127.0.0.1:8010", http_post=post
     )
     model._client._sleeper = sleeps.append
 

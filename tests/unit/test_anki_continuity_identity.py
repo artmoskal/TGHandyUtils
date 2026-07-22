@@ -10,11 +10,9 @@ operation idempotency (the adapter only maps fields to the browser API):
 - one image operation key: workflow run id + fixed operation slot — stable across a
   transport retry of the SAME operation, different for a new run or another slot.
 
-Target home: ``services/content/anki_continuity.py`` (``continuity_name``,
-``image_idempotency_key``). Strict-XFAIL while the helper does not exist; the
-graph-propagation half (the Anki graph populating ``ImageGenerationRequest`` with both
-keys) is asserted at implementation time via a capturing fake generator, per the
-canonical plan's graph-level test requirement.
+Target home: ``services/content/anki_media_contract.py`` (``continuity_name``,
+``image_idempotency_key``). These tests were captured RED before implementation; the
+graph-propagation half is fenced separately at the real graph boundary.
 """
 
 from __future__ import annotations
@@ -25,16 +23,8 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_RED = pytest.mark.xfail(
-    strict=True,
-    reason="B3 RED: services/content/anki_continuity.py does not exist yet — "
-    "secured-consumer iteration phase 1 removes this marker",
-)
-
-
-@_RED
 def test_continuity_name_is_bounded_derived_and_private():
-    from services.content.anki_continuity import continuity_name
+    from services.content.anki_media_contract import continuity_name
 
     name = continuity_name(user_id=123456789, style_version="ppla-split-v3")
     expected_input = "anki|v1|user:123456789|style:ppla-split-v3"
@@ -44,9 +34,8 @@ def test_continuity_name_is_bounded_derived_and_private():
     assert len(name) <= 40, "the wire name is bounded"
 
 
-@_RED
 def test_continuity_name_handles_absent_style_and_isolates_users_and_styles():
-    from services.content.anki_continuity import continuity_name
+    from services.content.anki_media_contract import continuity_name
 
     no_style = continuity_name(user_id=1, style_version=None)
     expected_input = "anki|v1|user:1|style:none"
@@ -58,9 +47,8 @@ def test_continuity_name_handles_absent_style_and_isolates_users_and_styles():
     assert continuity_name(user_id=1, style_version="v4") != base, "style isolation"
 
 
-@_RED
 def test_image_idempotency_key_is_stable_per_operation_and_new_per_run():
-    from services.content.anki_continuity import image_idempotency_key
+    from services.content.anki_media_contract import image_idempotency_key
 
     key = image_idempotency_key(workflow_id="run-77", operation_slot=0)
     assert key == image_idempotency_key(workflow_id="run-77", operation_slot=0), (

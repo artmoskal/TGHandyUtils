@@ -11,6 +11,7 @@ from models.anki_workflow import (
     ContentSource,
     ImageAssetPlan,
 )
+from ai_workflow_engine import WEAK_MODEL_CLEANER
 from ai_workflow_engine.engine import StructuredLLMNode, StructuredOutputError
 from ai_workflow_engine.prompt_loader import load_prompt_template
 from services.llm_factory import create_anki_text_llm
@@ -49,6 +50,7 @@ class AnkiCardSetPlanner:
             llm=llm,
             llm_factory=create_anki_text_llm,
             repair_prompt_template=self._REPAIR_PROMPT,
+            pre_parse=WEAK_MODEL_CLEANER,
         )
 
     @property
