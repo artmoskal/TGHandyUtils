@@ -316,6 +316,94 @@ async def test_live_two_generation_anki_consumer_gate(tmp_path):
     assert "source_url" not in persisted
 
 
+async def test_live_production_anki_processor_delivers_web_image_and_package():
+    """Real product composition: AnkiProcessor -> graph -> browser image -> Telegram doors.
+
+    This is deliberately separate from the provider/graph qualification above.  It catches
+    stale or incompatible product wiring that a successful ``graph.run()`` cannot see, such as
+    delivery-time model mismatches and missing runtime credentials.
+    """
+
+    import uuid
+    import zipfile
+    from pathlib import Path
+
+    from composition.container import container
+    from core.interfaces import ProcessingContext
+    from services.content import anki_buffer
+
+    class StatusMessage:
+        def __init__(self):
+            self.deleted = False
+            self.edits: list[str] = []
+
+        async def delete(self):
+            self.deleted = True
+
+        async def edit_text(self, text):
+            self.edits.append(text)
+
+    class TelegramMessage:
+        def __init__(self):
+            self.chat = type("Chat", (), {"id": 991122})()
+            self.message_id = 334455
+            self.status = StatusMessage()
+            self.replies: list[str] = []
+            self.photo_bytes: list[bytes] = []
+            self.document_bytes: list[bytes] = []
+
+        async def reply(self, text, **_kwargs):
+            self.replies.append(text)
+            return self.status
+
+        async def reply_photo(self, photo, **_kwargs):
+            payload = Path(photo.path).read_bytes()
+            assert payload.startswith(b"\x89PNG\r\n\x1a\n")
+            self.photo_bytes.append(payload)
+
+        async def reply_document(self, document, **_kwargs):
+            path = Path(document.path)
+            assert zipfile.is_zipfile(path)
+            self.document_bytes.append(path.read_bytes())
+
+        async def reply_audio(self, _audio, **_kwargs):
+            return None
+
+    user_id = int(uuid.uuid4().hex[:12], 16)
+    message = TelegramMessage()
+    processor = container.anki_processor()
+    anki_buffer.clear(user_id)
+    try:
+        result = await processor.process(
+            ProcessingContext(
+                message=message,
+                thread_content=[
+                    (
+                        "live-product-gate",
+                        "[i visual gen] Make one basic card explaining how lift changes when "
+                        "an aircraft doubles its airspeed while angle of attack stays fixed. "
+                        "Use a clean trainer-aircraft diagram.",
+                    )
+                ],
+                user_id=user_id,
+                owner_name="live-product-gate",
+            )
+        )
+
+        assert result.success is True, result.message
+        assert len(message.photo_bytes) == 1, "Telegram preview did not receive the generated image"
+        assert len(message.document_bytes) == 1, "Telegram delivery did not receive the .apkg"
+        assert message.status.deleted is True
+        assert not any("Could not generate flashcards" in reply for reply in message.replies)
+
+        rendered = processor.anki_graph.last_run_state["rendered"]
+        assert rendered.fallback_used is False
+        assert len(rendered.generated_media) == 1
+        assert rendered.generated_media[0].metadata["provider"] == "chatgpt_browser"
+    finally:
+        anki_buffer.clear(user_id)
+
+
 # --- Staged-vision sandbox: canary exfiltration attack (Q2, re-verified every live run) --
 
 
