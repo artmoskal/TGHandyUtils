@@ -66,6 +66,7 @@ def test_catalog_completeness_guard_every_public_tool_symbol_is_covered():
     import ai_workflow_tools.cli_agents as cli_agents
     import ai_workflow_tools.media as media
     import ai_workflow_tools.media.capabilities as media_capabilities
+    import ai_workflow_tools.providers.openai_compatible as openai_compatible
     import ai_workflow_tools.toolsets as toolsets
 
     public_symbols = (
@@ -73,6 +74,7 @@ def test_catalog_completeness_guard_every_public_tool_symbol_is_covered():
         | set(media.__all__)
         | set(media_capabilities.__all__)
         | set(chatgpt_browser.__all__)
+        | set(openai_compatible.__all__)
         | set(toolsets.__all__)
     )
     covered = set()

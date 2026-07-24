@@ -468,7 +468,14 @@ def run_installed_smoke(
             "-m",
             "pip",
             "install",
-            *[str(path.resolve(strict=True)) for path in wheels],
+            *[
+                (
+                    f"ai-workflow-tools[openai] @ {path.resolve(strict=True).as_uri()}"
+                    if inspect_wheel(path)["package"] == "ai-workflow-tools"
+                    else str(path.resolve(strict=True))
+                )
+                for path in wheels
+            ],
         ],
         check=True,
         cwd=str(work_dir),
@@ -497,6 +504,16 @@ from ai_workflow_engine import (
     load_bundle_meta_v2,
 )
 from ai_workflow_engine.models import CapabilityResult
+from ai_workflow_engine.llm_protocol import LLMRequest
+from ai_workflow_tools.providers.openai_compatible import (
+    NoAuth,
+    OpenAICompatibleLLMClient,
+    OpenAICompatibleProviderConfig,
+)
+from ai_workflow_tools.testing.openai_compatible import (
+    OpenAICompatibleTestServer,
+    ProviderTestResponse,
+)
 from ai_workflow_viewer import FileEventSource
 from pydantic import BaseModel
 import ai_workflow_tools
@@ -555,6 +572,61 @@ def durable_engine(coordinator, clock, *, workflow_id, two_gates=False):
     return builder.build(), calls
 
 async def main():
+    recorded_provider_requests = []
+
+    def provider_response(request):
+        recorded_provider_requests.append(request)
+        return ProviderTestResponse(
+            200,
+            {
+                "id": "provider-request-installed",
+                "model": "installed-model",
+                "choices": [
+                    {
+                        "message": {"content": "installed-provider-ok"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 5,
+                    "completion_tokens": 3,
+                    "total_tokens": 8,
+                    "prompt_tokens_details": {"cached_tokens": 2},
+                    "completion_tokens_details": {"reasoning_tokens": 1},
+                },
+            },
+            headers={"x-request-id": "provider-request-installed"},
+        )
+
+    with OpenAICompatibleTestServer(provider_response) as provider_server:
+        provider_client = OpenAICompatibleLLMClient(
+            OpenAICompatibleProviderConfig(
+                base_url=provider_server.base_url,
+                model="installed-model",
+                provider="installed-loopback",
+                auth=NoAuth(),
+                timeout_s=5,
+            )
+        )
+        try:
+            provider_result = await provider_client(
+                LLMRequest(
+                    user="installed provider smoke",
+                    invocation_id="installed-provider-invocation",
+                )
+            )
+        finally:
+            await provider_client.aclose()
+    assert provider_result.text == "installed-provider-ok"
+    assert provider_result.invocation_id == "installed-provider-invocation"
+    assert provider_result.metadata["provider_request_id"] == "provider-request-installed"
+    assert provider_result.normalized_usage.uncached_input_tokens == 3
+    assert provider_result.normalized_usage.cache_read_input_tokens == 2
+    assert provider_result.normalized_usage.non_reasoning_output_tokens == 2
+    assert provider_result.normalized_usage.reasoning_output_tokens == 1
+    assert len(recorded_provider_requests) == 1
+    assert "authorization" not in recorded_provider_requests[0].headers
+
     ordinary_root = root / "ordinary"
     ordinary_builder = WorkflowEngineBuilder().with_observation(
         ObservationConfig(enabled=True, bundle_dir=str(ordinary_root))

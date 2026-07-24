@@ -5,8 +5,9 @@ declare a workflow, register typed capabilities, and call one engine door. The e
 transitions, retries, fan-out, budgets, waits, trace, usage, and observation bundles; products own
 domain models, provider clients, storage adapters, clocks, and side-effect delivery.
 
-> **`engine-v0.11.8` is the current release.**
-> Install only from the immutable `engine-v0.11.8` tag and its verified release directory.
+> **`engine-v0.11.9` is the release candidate; do not re-pin until it is cut.**
+> `engine-v0.11.8` remains the current release. Install only from that immutable tag and its
+> verified release directory until the candidate release gates close.
 > The engine owner publishes wheels bound to
 > immutable tags; consumer
 > canaries still decide whether each product changes its deployed pin. Never depend on a live
@@ -22,6 +23,16 @@ domain models, provider clients, storage adapters, clocks, and side-effect deliv
 > `wait-v1` records under v0.11.5.
 > Adoption is fresh: new consumers start on the current contract; existing consumers re-adopt the
 > current surface rather than migrate state.
+>
+> **v0.11.9 candidate delta.** `ai-workflow-tools==0.6.0` adds one generic, optional
+> OpenAI-compatible HTTP provider pack outside engine core. An explicit endpoint can drive text,
+> images, structured tool turns, and the engine's existing agent loop against OpenAI, Ollama,
+> vLLM, LM Studio, or a compatible server. The adapter inherits the engine invocation window,
+> performs no hidden retry/fallback, preserves caller cancellation, normalizes cached/reasoning
+> token subsets once, and keeps missing/malformed usage visibly unknown. The reusable conformance
+> kit rejects five broken-adapter families. Real local Ollama qualification passed text, tools, a
+> complete engine-agent tool round trip, multimodal input, timeout, usage truth, and concurrent
+> invocation isolation. Engine runtime and viewer behavior are unchanged.
 >
 > **v0.11.8 release delta.** The optional browser-backed tools share one authenticated transport
 > contract, reject missing remote credentials before HTTP, use explicit `reuse|fresh` image modes,

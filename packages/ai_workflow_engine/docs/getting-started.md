@@ -9,6 +9,12 @@ Always install `ai-workflow-engine`. Add `ai-workflow-tools` only for reusable C
 `ai-workflow-viewer` only where bundles are rendered. Keeping optional packages out of simple runtime
 images preserves the complexity gradient.
 
+For OpenAI-compatible API or local-model endpoints, install
+`ai-workflow-tools[openai]` and construct the client through the product's one provider factory.
+The reusable adapter supports text, images, structured tools, usage truth, cancellation, and
+engine-window timeout narrowing without adding provider code to engine core. See the
+[tools provider guide](../../ai_workflow_tools/README.md#openai-compatible-provider).
+
 The current immutable release is `engine-v0.11.8`. Do not install packages from a branch. Consume
 the complete published directory, verify it with the tagged verifier as described in
 [operations](operations.md#release-artifacts-and-verification-v0118), then record the exact bytes

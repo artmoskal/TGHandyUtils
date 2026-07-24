@@ -229,8 +229,13 @@ def test_installed_smoke_uses_fresh_venv_and_installs_declared_dependencies(
     assert pip_call[1:4] == ["-m", "pip", "install"]
     assert "--no-deps" not in pip_call
     assert "--system-site-packages" not in calls[0]
-    assert pip_call[4:] == [str(path.resolve()) for path in wheels]
+    assert pip_call[4:] == [
+        str(wheels[0].resolve()),
+        f"ai-workflow-tools[openai] @ {wheels[1].resolve().as_uri()}",
+        str(wheels[2].resolve()),
+    ]
     assert calls[2][1:3] == ["-I", "-c"]
+    assert "OpenAICompatibleLLMClient" in calls[2][3]
 
 
 def _execute_evidence(

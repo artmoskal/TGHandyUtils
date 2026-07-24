@@ -1,16 +1,16 @@
 # MageQA Engine Adoption Guide
 
-Status: **`engine-v0.11.8` is the current immutable release.**
-This release closes MageQA's CLI economics request. Repin only the coherent current
-`0.11.8 / 0.5.3 / 0.3.2` matrix after verifying its complete release directory and passing the E0
-canary below.
+Status: **`engine-v0.11.9` is the release candidate; do not re-pin until it is cut.**
+`engine-v0.11.8` remains the current immutable release. The candidate adds the generic
+OpenAI-compatible provider MageQA requested. Repin only the coherent candidate
+`0.11.9 / 0.6.0 / 0.3.2` matrix after its immutable release directory exists and E0 passes.
 MageQA's two durable-registration race canaries fail on `engine-v0.11.5`. MageQA must stay on its
 existing pin and keep its fork until the v0.11.7 E0
 canaries pass against the immutable tag. The five historical E0 blockers (planned
 `partial` rewritten to `done`, unenforced `RuntimeLimits.timeout_s`, hidden retrace provenance,
 the CLI 600s default, and the reused tools wheel identity) are addressed and carried forward;
 v0.11 additionally hardens every persisted contract (strict versioned snapshot, bundle meta v2,
-wait records) with NO migration layer. To adopt, MageQA must pin tag `engine-v0.11.8`,
+wait records) with NO migration layer. Until the candidate is cut, MageQA must pin tag `engine-v0.11.8`,
 verify the complete published release directory, install the required wheels, and pass its E0 canaries before
 adopting; it stays on its existing pin until those canaries pass.
 Do not infer the actual MageQA pin from this document; the consumer repository's pin file is
@@ -50,13 +50,13 @@ a defect.
 
 | Package | MageQA use |
 |---|---|
-| `ai-workflow-engine==0.11.8` | Required orchestration/runtime |
-| `ai-workflow-tools==0.5.3` | CLI agents, `claude -p`/`codex exec`, tool catalog, media helpers |
+| `ai-workflow-engine==0.11.9` | Required orchestration/runtime |
+| `ai-workflow-tools==0.6.0` | Generic OpenAI-compatible clients, CLI agents, tool catalog, media helpers |
 | `ai-workflow-viewer==0.3.2` | Low-level engine run investigation and bundle rendering |
 
-> **Current matrix:** `engine-v0.11.8` + `ai-workflow-tools==0.5.3` +
-> `ai-workflow-viewer==0.3.2` (tools/viewer require
-> `ai-workflow-engine>=0.11.8,<0.12`).
+> **Candidate matrix:** `engine-v0.11.9` + `ai-workflow-tools==0.6.0` +
+> `ai-workflow-viewer==0.3.2`.
+> Do not install this matrix until `engine-v0.11.9` is cut.
 
 
 The MageQA Next.js dashboard remains product-owned. It may link/embed/project engine bundle data, but
@@ -85,6 +85,34 @@ it must not create a duplicate trace or workflow runtime.
 Create API/CLI/browser clients through one MageQA composition/factory surface and inject them into
 capabilities or `ai_workflow_tools` adapters. A direct client in a workflow module bypasses profile
 routing, usage, capture, timeout, and test substitution.
+
+For OpenAI, Ollama, vLLM, or LM Studio, use the tools package's generic adapter instead of a
+MageQA-specific executor:
+
+```python
+from ai_workflow_tools.providers.openai_compatible import (
+    NoAuth,
+    OpenAICompatibleLLMClient,
+    OpenAICompatibleProviderConfig,
+)
+
+client = OpenAICompatibleLLMClient(
+    OpenAICompatibleProviderConfig(
+        base_url=configured_base_url,
+        model=configured_model,
+        provider="ollama",
+        auth=NoAuth(),
+        timeout_s=120.0,
+    )
+)
+```
+
+Use `ApiKeyAuth(SecretStr(...))` for authenticated endpoints. Product configuration resolves the
+URL, key, model, and provider label; the adapter reads no environment variables. Register this
+client as an ordinary `LLMCallable` or give it to `build_llm_agent_capability`. The engine remains
+the owner of the tool loop, budgets, pricing, retries, trace, and usage. Run
+`run_openai_compatible_provider_conformance` against MageQA's composed client, then add a real
+Ollama text/tool/image/timeout canary. Missing endpoint usage is typed unknown, not free.
 
 Text-only `claude -p` completions are tool-free. Browser/vision episodes receive explicit/scoped
 tools and matching side-effect declarations. Never silently fall back from a failed browser episode
@@ -218,12 +246,13 @@ with a scenario and acceptance proof. Upgrade via [`operations.md`](operations.m
 
 ## v0.11 Release Contract
 
-`engine-v0.11.8` is the current immutable release for the **latest-only** line. The line uses strict versioned persisted
+`engine-v0.11.9` is the pending candidate for the **latest-only** line; `engine-v0.11.8` remains
+current until the new tag and release directory exist. The line uses strict versioned persisted
 contracts (snapshot `v0.11`, bundle meta v2, wait records `wait-v2`), one strict viewer loader, and
 NO migration layer — the sealed current-contract corpus shows 0 behavior deltas vs v0.10.1, but old
 persisted data is rejected loudly naming its historical tag. Adopt by re-pinning fresh
-(pin tag `engine-v0.11.8`, verify the published `release-manifest-v2` bundle, then install engine
-`0.11.8`, tools `0.5.3`, and viewer `0.3.2`) and
+(after release: pin tag `engine-v0.11.9`, verify the published `release-manifest-v2` bundle, then
+install engine `0.11.9`, tools `0.6.0`, and viewer `0.3.2`) and
 re-run your canaries before changing any deployed pin.
 `wait-v1` records written by v0.11.5 are non-current: settle or discard them under v0.11.5 and
 start a new coordinator namespace before v0.11.6 writes `wait-v2`.

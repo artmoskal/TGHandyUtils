@@ -1,4 +1,4 @@
-"""Media pack guard: imports work WITHOUT provider SDKs (lazy deps, moved from engine)."""
+"""Optional provider packs stay lazy and absent from the simple tools import path."""
 
 import os
 import subprocess
@@ -10,7 +10,7 @@ import pytest
 pytestmark = pytest.mark.unit
 
 
-def test_media_modules_import_without_optional_provider_sdks(tmp_path):
+def test_tools_and_media_import_without_optional_provider_sdks(tmp_path):
     package_root = Path(__file__).resolve().parents[1]
     engine_root = package_root.parent / "ai_workflow_engine"
     env = dict(os.environ)
@@ -22,7 +22,7 @@ def test_media_modules_import_without_optional_provider_sdks(tmp_path):
 import builtins
 
 real_import = builtins.__import__
-blocked = {"openai"}
+blocked = {"openai", "httpx"}
 
 def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
     if name.split(".")[0] in blocked:
@@ -30,6 +30,7 @@ def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
     return real_import(name, globals, locals, fromlist, level)
 
 builtins.__import__ = guarded_import
+import ai_workflow_tools
 import ai_workflow_tools.media
 import ai_workflow_tools.media.image_generation
 import ai_workflow_tools.media.voice_generation

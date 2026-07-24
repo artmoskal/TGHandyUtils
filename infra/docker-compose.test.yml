@@ -18,6 +18,12 @@ services:
       # single run without editing config. Empty = each suite's own default.
       - ANKI_GRAPH_TEST_MODEL=${ANKI_GRAPH_TEST_MODEL:-}
       - REMINDER_GRAPH_TEST_MODEL=${REMINDER_GRAPH_TEST_MODEL:-}
+      # Explicit no-spend local-provider qualification. The test file still requires its
+      # own RUN_OLLAMA_PROVIDER_QUALIFICATION=1 gate before touching the host service.
+      - RUN_OLLAMA_PROVIDER_QUALIFICATION=${RUN_OLLAMA_PROVIDER_QUALIFICATION:-}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-}
+      - OLLAMA_VISION_MODEL=${OLLAMA_VISION_MODEL:-}
       # CHATGPT_BROWSER_API_URL / _TOKEN deliberately have NO passthrough here: an
       # `environment:` entry always beats env_file, so `${VAR:-}` with an unset caller
       # shell would shadow the real values loaded from ../.env with EMPTY strings

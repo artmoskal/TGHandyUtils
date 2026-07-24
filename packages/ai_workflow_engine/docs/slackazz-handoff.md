@@ -1,9 +1,8 @@
 # SlackAzzCovered Engine Adoption Guide
 
-Status: **`engine-v0.11.8` is the current immutable release.**
-This release adds secured browser-consumer transport and media evidence without changing the
-v0.11.6 `wait-v2` coordinator protocol. Install the coherent current matrix below if SlackAzz
-enables CLI agents/viewer.
+Status: **`engine-v0.11.9` is the release candidate; do not re-pin until it is cut.**
+`engine-v0.11.8` remains the current immutable release. The candidate adds an optional generic
+OpenAI-compatible provider without changing the v0.11.6 `wait-v2` coordinator protocol.
 `engine-v0.11.5` has a confirmed registration-exposure race. Do not start or update the Redis
 adapter against v0.11.5. Implement the v0.11.6 protocol and pass its conformance kit plus product
 transaction tests before enabling live effects.
@@ -36,13 +35,13 @@ client event
 
 | Package | SlackAzzCovered use |
 |---|---|
-| `ai-workflow-engine==0.11.8` | Required workflow/wait runtime |
-| `ai-workflow-tools==0.5.3` | Add for CLI agents/tool catalog if the product uses them |
+| `ai-workflow-engine==0.11.9` | Required workflow/wait runtime |
+| `ai-workflow-tools==0.6.0` | Add for generic OpenAI-compatible clients, CLI agents, or tool catalog |
 | `ai-workflow-viewer==0.3.2` | Developer diagnostics or product-linked run inspection |
 
-> **Current matrix:** `engine-v0.11.8` + `ai-workflow-tools==0.5.3` +
-> `ai-workflow-viewer==0.3.2` (tools/viewer require
-> `ai-workflow-engine>=0.11.8,<0.12`).
+> **Candidate matrix:** `engine-v0.11.9` + `ai-workflow-tools==0.6.0` +
+> `ai-workflow-viewer==0.3.2`.
+> Do not install this matrix until `engine-v0.11.9` is cut.
 
 
 Verify the complete published directory for the immutable tag and record commit/hash. Never copy
@@ -278,11 +277,12 @@ Follow [`operations.md`](operations.md) for production recovery. File missing me
 
 ## v0.11 Release Contract
 
-`engine-v0.11.8` is the current immutable release for the **latest-only** line. The line uses strict versioned persisted
+`engine-v0.11.9` is the pending candidate for the **latest-only** line; `engine-v0.11.8` remains
+current until the new tag and release directory exist. The line uses strict versioned persisted
 contracts (snapshot `v0.11`, bundle meta v2, wait records `wait-v2`), one strict viewer loader, and
 NO migration layer — the sealed current-contract corpus shows 0 behavior deltas vs v0.10.1, but old
 persisted data is rejected loudly naming its historical tag. Adopt by re-pinning fresh
-(pin tag `engine-v0.11.8`, verify the published `release-manifest-v2` directory, then install the
+(after release: pin tag `engine-v0.11.9`, verify the published `release-manifest-v2` directory, then install the
 required package subset from that exact directory) and
 re-run your canaries before changing any deployed pin. The release makes node-context binding
 explicit for every node kind. v0.11.6 deliberately changes the latest-only wait contract:

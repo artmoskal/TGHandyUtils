@@ -62,6 +62,14 @@ def _build_chatgpt_browser_chat(**kwargs: Any) -> Any:
     return ChatGptBrowserChatModel(**kwargs)
 
 
+def _build_openai_compatible_llm(**kwargs: Any) -> Any:
+    from ai_workflow_tools.providers.openai_compatible import (
+        OpenAICompatibleLLMClient,
+    )
+
+    return OpenAICompatibleLLMClient(**kwargs)
+
+
 def _build_image_generation(**kwargs: Any) -> Any:
     from ai_workflow_tools.media.capabilities import build_image_generation_capability
 
@@ -144,6 +152,25 @@ TOOL_CATALOG: tuple[ToolEntry, ...] = (
         side_effects=("external_call",),
         builder=_build_chatgpt_browser_chat,
         covers=("ChatGptBrowserChatModel",),
+    ),
+    ToolEntry(
+        name="openai_compatible_llm",
+        kind="llm_client",
+        description=(
+            "Generic LLMCallable over an OpenAI-compatible /v1/chat/completions endpoint: "
+            "text, images, tool turns, typed usage truth, cancellation, and engine-window "
+            "timeout narrowing for OpenAI, Ollama, vLLM, LM Studio, or equivalent servers."
+        ),
+        side_effects=("external_call",),
+        builder=_build_openai_compatible_llm,
+        covers=(
+            "ApiKeyAuth",
+            "NoAuth",
+            "OpenAICompatibleLLMClient",
+            "OpenAICompatibleProviderConfig",
+            "OpenAICompatibleProviderError",
+        ),
+        extra="[openai]",
     ),
     ToolEntry(
         name="image_generation",

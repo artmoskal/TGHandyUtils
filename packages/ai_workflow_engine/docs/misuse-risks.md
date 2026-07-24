@@ -138,6 +138,12 @@ retention. Export redaction is a separate concern and must not silently alter th
 - Do not bypass the reviewed provider factory; direct clients lose model routing, observation, and
   cost attribution, and engine call/token/budget enforcement. A direct subscription CLI call may
   drain quota while the engine sees nothing.
+- Do not create one product-local Ollama/OpenAI executor per application. Configure the generic
+  `ai_workflow_tools.providers.openai_compatible` client at the product composition root and inject
+  it as an ordinary `LLMCallable`; product code still owns endpoint, secret, model, and rate policy.
+- Do not enable SDK/provider retries under that adapter. One adapter call is one engine-visible
+  provider attempt; `401`, `429`, timeout, malformed usage, and provider failure remain loud facts
+  for engine/product policy.
 - Notional pricing is explanatory API-equivalent plan value, not billed spend and not an account
   balance. Do not use it as the only runaway guard; keep call/token/worker/time limits finite.
 - Never reinterpret provider JSON or recalculate catalog prices in a product/dashboard/viewer.

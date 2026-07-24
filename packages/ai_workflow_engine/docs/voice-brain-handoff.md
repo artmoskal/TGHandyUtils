@@ -1,11 +1,11 @@
 # Voice Brain Engine Integration Guide
 
-Status: **`engine-v0.11.8` is the current immutable release.**
-This release adds secured browser-consumer transport and preserves usage truth for optional
-process-backed Claude/Codex clients.
+Status: **`engine-v0.11.9` is the release candidate; do not re-pin until it is cut.**
+`engine-v0.11.8` remains the current immutable release. The candidate adds an optional async
+OpenAI-compatible HTTP client and preserves usage truth for process-backed Claude/Codex clients.
 It does not turn subscription CLI workers into a suitable low-latency voice hot path. Adopt only as
 the coherent current matrix below.
-The product must pin tag `engine-v0.11.8` before running its own
+The product must keep pin tag `engine-v0.11.8` until the candidate is cut, then run its own
 latency/cancellation canary. This replaces
 the historical June request/reply transcript.
 
@@ -29,14 +29,15 @@ transcript + session context
 
 ## Package Choice
 
-- `ai-workflow-engine==0.11.8` for the runtime and custom `LLMCallable`.
-- `ai-workflow-tools==0.5.3` only when using `CliAgentCapability`/console tools. CLI subscription
+- `ai-workflow-engine==0.11.9` for the runtime and custom `LLMCallable`.
+- `ai-workflow-tools==0.6.0` for the generic async OpenAI-compatible client or when using
+  `CliAgentCapability`/console tools. CLI subscription
   workers are usually unsuitable for a low-latency conversational hot path.
 - `ai-workflow-viewer==0.3.2` in diagnostics, not the real-time audio path.
 
-> **Current matrix:** `engine-v0.11.8` + `ai-workflow-tools==0.5.3` +
-> `ai-workflow-viewer==0.3.2` (tools/viewer require
-> `ai-workflow-engine>=0.11.8,<0.12`).
+> **Candidate matrix:** `engine-v0.11.9` + `ai-workflow-tools==0.6.0` +
+> `ai-workflow-viewer==0.3.2`.
+> Do not install this matrix until `engine-v0.11.9` is cut.
 
 The release makes node-context binding explicit for every node kind and advances the optional
 tools wheel for native Codex image attachment. Persisted schemas and voice workflow behavior are

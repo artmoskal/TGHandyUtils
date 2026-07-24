@@ -202,8 +202,11 @@ External product-to-engine guards:
 
 - **One provider door:** provider clients are constructed only in named sanctioned modules. Today
   that means `services/llm_factory.py` for shared product LLM/raw OpenAI clients and
-  `packages/ai_workflow_tools/ai_workflow_tools/media/image_generation.py` for the reusable image
-  provider adapter. New construction sites require a reviewed allow-list entry.
+  `packages/ai_workflow_tools/ai_workflow_tools/providers/openai_compatible/` for generic
+  OpenAI-compatible text/image/tool calls, plus
+  `packages/ai_workflow_tools/ai_workflow_tools/media/image_generation.py` for reusable image
+  generation. Engine core owns no provider transport. New construction sites require a reviewed
+  allow-list entry.
 - **No product orchestration loop:** products declare workflows and register capabilities; they do
   not hand-roll `StateGraph`, retry/retrace, fan-out, scheduler, branch, or side-effect/budget loops
   around the engine.
