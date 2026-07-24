@@ -1,10 +1,11 @@
 # GoPro Engine Adoption Guide
 
-Status: **`engine-v0.11.9` is the release candidate; do not re-pin until it is cut.**
-`engine-v0.11.8` remains the current immutable release. The candidate adds an optional generic
+Status: **`engine-v0.11.9` is the current immutable release.**
+This release adds an optional generic
 OpenAI-compatible provider without changing GoPro's direct-VLM workflow contract. GoPro may
 continue consuming only the engine wheel.
-Until the candidate is cut, GoPro should pin tag `engine-v0.11.8`, record the source commit and wheel hash, and
+GoPro should pin tag `engine-v0.11.9`, verify the complete release directory, record the source
+commit and consumed wheel hash, and
 run its sidecar canary before changing the production image. Do not
 infer the actual GoPro pin from this document; the consumer repository's
 pin file is authoritative for deployed state.
@@ -44,9 +45,8 @@ and delivery. Inventory may reuse the same mechanics later without changing the 
 | `ai-workflow-tools==0.6.0` | Add for generic OpenAI-compatible clients, CLI agents, or media helpers |
 | `ai-workflow-viewer==0.3.2` | Developer/diagnostic service; not required in the detector image |
 
-> **Candidate matrix:** `engine-v0.11.9` + `ai-workflow-tools==0.6.0` +
+> **Current matrix:** `engine-v0.11.9` + `ai-workflow-tools==0.6.0` +
 > `ai-workflow-viewer==0.3.2`.
-> Do not install this matrix until `engine-v0.11.9` is cut.
 
 
 Vendoring only the engine wheel is the correct lightweight configuration for the current direct-VLM
@@ -175,12 +175,11 @@ second memory, retry, or observation runtime into the sidecar.
 
 ## v0.11 Release Contract
 
-`engine-v0.11.9` is the pending candidate for the **latest-only** line; `engine-v0.11.8` remains
-current until the new tag and release directory exist. The line uses strict versioned persisted
+`engine-v0.11.9` is the current immutable release for the **latest-only** line. The line uses strict versioned persisted
 contracts (snapshot `v0.11`, bundle meta v2, wait records `wait-v2`), one strict viewer loader, and
 NO migration layer — the sealed current-contract corpus shows 0 behavior deltas vs v0.10.1, but old
 persisted data is rejected loudly naming its historical tag. Adopt by re-pinning fresh
-(after release: pin tag `engine-v0.11.9`, verify the published `release-manifest-v2` directory, then
+(pin tag `engine-v0.11.9`, verify the published `release-manifest-v2` directory, then
 install only the engine `0.11.9` wheel for the current sidecar) and
 re-run your canaries before changing any deployed pin. The release makes node-context binding
 explicit for every node kind and adds native Codex image attachment in the optional tools wheel;

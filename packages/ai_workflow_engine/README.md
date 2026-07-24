@@ -5,9 +5,8 @@ declare a workflow, register typed capabilities, and call one engine door. The e
 transitions, retries, fan-out, budgets, waits, trace, usage, and observation bundles; products own
 domain models, provider clients, storage adapters, clocks, and side-effect delivery.
 
-> **`engine-v0.11.9` is the release candidate; do not re-pin until it is cut.**
-> `engine-v0.11.8` remains the current release. Install only from that immutable tag and its
-> verified release directory until the candidate release gates close.
+> **`engine-v0.11.9` is the current release.**
+> Install only from the immutable `engine-v0.11.9` tag and its verified release directory.
 > The engine owner publishes wheels bound to
 > immutable tags; consumer
 > canaries still decide whether each product changes its deployed pin. Never depend on a live
@@ -24,7 +23,7 @@ domain models, provider clients, storage adapters, clocks, and side-effect deliv
 > Adoption is fresh: new consumers start on the current contract; existing consumers re-adopt the
 > current surface rather than migrate state.
 >
-> **v0.11.9 candidate delta.** `ai-workflow-tools==0.6.0` adds one generic, optional
+> **v0.11.9 release delta.** `ai-workflow-tools==0.6.0` adds one generic, optional
 > OpenAI-compatible HTTP provider pack outside engine core. An explicit endpoint can drive text,
 > images, structured tool turns, and the engine's existing agent loop against OpenAI, Ollama,
 > vLLM, LM Studio, or a compatible server. The adapter inherits the engine invocation window,
@@ -123,16 +122,16 @@ Consumers download the complete published release directory, obtain the verifier
 the tag (or another already trusted pin), verify the bundle before installation, and install only
 the packages their product needs. Building from source is a producer operation, not consumer
 verification. The exact producer and consumer commands are in
-[`docs/operations.md`](docs/operations.md#release-artifacts-and-verification-v0118).
+[`docs/operations.md`](docs/operations.md#release-artifacts-and-verification-v0119).
 The required pre-install door is
-`python3 release_artifacts.py verify-bundle --dir /path/to/engine-v0.11.8`.
+`python3 release_artifacts.py verify-bundle --dir /path/to/engine-v0.11.9`.
 
 Current release matrix:
 
 | Package | Install when |
 |---|---|
-| `ai-workflow-engine==0.11.8` | Always. Core builder, executor, memory, waits, observation writer. |
-| `ai-workflow-tools==0.5.3` | The product uses CLI agents, the tool catalog, or media helpers. |
+| `ai-workflow-engine==0.11.9` | Always. Core builder, executor, memory, waits, observation writer. |
+| `ai-workflow-tools==0.6.0` | The product uses provider clients, CLI agents, the tool catalog, or media helpers. |
 | `ai-workflow-viewer==0.3.2` | A developer or product service renders observation bundles. |
 
 Record the engine tag, source commit, and wheel SHA-256 in the consumer repository. A tag already
@@ -199,7 +198,7 @@ minimal profile.
 
 `engine-v0.11.0` made the line **latest-only**: strict versioned persisted contracts,
 one strict viewer loader with typed status authority, a sealed current-contract oracle replacing
-old-wheel equality, and removal of every compatibility fallback. The current v0.11.8 release
+old-wheel equality, and removal of every compatibility fallback. The current v0.11.9 release
 keeps MachineSnapshot `schema_version="v0.11"` and observation bundle meta v2, and advances wait
 records to `record_schema_version="wait-v2"` with required persisted registration-attempt
 identity. Old persisted data fails loudly naming its historical tag. Earlier lines added, and
