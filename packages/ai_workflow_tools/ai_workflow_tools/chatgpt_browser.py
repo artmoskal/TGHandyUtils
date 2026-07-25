@@ -107,6 +107,7 @@ class ChatGptBrowserLLMClient:
         sleep = self._sleeper or asyncio.sleep
         waited = 0.0
         while True:
+            transport_error: ChatGptBrowserError | None = None
             try:
                 response = await asyncio.to_thread(
                     http_post,
@@ -116,10 +117,14 @@ class ChatGptBrowserLLMClient:
                     timeout=self.timeout_s + 30,
                 )
             except Exception as exc:
-                raise ChatGptBrowserError(
+                transport_error = ChatGptBrowserError(
                     "chatgpt browser transport failed: "
                     f"{sanitize_browser_error(exc, self._bearer_token)}"
-                ) from None
+                )
+            if transport_error is not None:
+                # Raise outside the provider exception handler so Python does not retain
+                # the secret-bearing transport exception as ``__context__``.
+                raise transport_error
             try:
                 data = response.json()
             except Exception as exc:
@@ -249,6 +254,7 @@ class ChatGptBrowserChatModel:
         budget = self._client.rate_limit_max_wait_s
         waited = 0.0
         while True:
+            transport_error: ChatGptBrowserError | None = None
             try:
                 response = http_post(
                     url,
@@ -257,10 +263,12 @@ class ChatGptBrowserChatModel:
                     timeout=self._client.timeout_s + 30,
                 )
             except Exception as exc:
-                raise ChatGptBrowserError(
+                transport_error = ChatGptBrowserError(
                     "chatgpt browser transport failed: "
                     f"{sanitize_browser_error(exc, self._client._bearer_token)}"
-                ) from None
+                )
+            if transport_error is not None:
+                raise transport_error
             try:
                 data = response.json()
             except Exception as exc:

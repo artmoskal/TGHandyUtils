@@ -472,6 +472,7 @@ class ChatGptBrowserImageGenerator:
         basename = request.output_basename or f"{uuid.uuid4().hex}.{request.output_format}"
         path = os.path.join(request.output_dir, basename)
         start = time.monotonic()
+        failure: Exception | None = None
         try:
             data = await self._post_json(
                 f"{call.base_url.rstrip('/')}/generate_image",
@@ -488,10 +489,14 @@ class ChatGptBrowserImageGenerator:
                 elapsed_ms=int((time.monotonic() - start) * 1000),
             )
         except Exception as exc:
+            failure = exc
+        if failure is not None:
+            # Build and raise the durable sanitized error after leaving the provider
+            # exception handler; otherwise the raw transport error remains in __context__.
             self._handle_failure(
                 request,
                 path=path,
-                error=exc,
+                error=failure,
                 elapsed_ms=int((time.monotonic() - start) * 1000),
             )
 

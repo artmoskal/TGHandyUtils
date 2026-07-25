@@ -592,6 +592,8 @@ class InMemoryWaitCoordinator:
                     kind="attempts_exhausted", record=failed.model_copy(deep=True)
                 )
                 self._records[wait_id] = failed
+                self._leases.pop(wait_id, None)
+                self._claims.pop(wait_id, None)
                 return result
             claimed = WaitRecord.model_validate(
                 {
@@ -678,6 +680,7 @@ class InMemoryWaitCoordinator:
             )
             self._records[wait_id] = cancelled
             self._leases.pop(wait_id, None)
+            self._claims.pop(wait_id, None)
             return WaitRegistrationAbortOutcome(
                 kind="cancelled", record=cancelled.model_copy(deep=True)
             )
@@ -741,6 +744,7 @@ class InMemoryWaitCoordinator:
             )
             self._records[wait_id] = terminal
             self._leases.pop(wait_id, None)
+            self._claims.pop(wait_id, None)
             return terminal.model_copy(deep=True)
 
     async def due(self, now: Any) -> list:
@@ -793,6 +797,7 @@ class InMemoryWaitCoordinator:
             )
             self._records[wait_id] = cancelled
             self._leases.pop(wait_id, None)
+            self._claims.pop(wait_id, None)
             return cancelled.model_copy(deep=True)
 
     async def health(self) -> WaitHealth:

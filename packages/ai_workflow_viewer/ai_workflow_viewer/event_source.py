@@ -11,7 +11,7 @@ from ai_workflow_engine import (
     WorkflowDefinition,
     WorkflowTraceEvent,
     WorkflowUsageEvent,
-    load_bundle_meta_v2,
+    load_bundle_meta_v3,
 )
 from ai_workflow_engine.observation_bundle import (
     ABANDON_MARKER_NAME as _ABANDON_MARKER,
@@ -47,9 +47,9 @@ class FileEventSource:
 
     def read(self, run_id: str | None = None) -> ObservationRunData:
         run_path = self._run_path(run_id)
-        # M10: ONE strict loader — pre-v2 or malformed meta fails here naming the
+        # ONE strict loader — pre-v3 or malformed meta fails here naming the
         # historical tag route; the viewer never renders a plausible page from guesses.
-        meta = load_bundle_meta_v2(run_path)
+        meta = load_bundle_meta_v3(run_path)
         if run_id is not None and meta.run_id != run_id:
             raise FileNotFoundError(
                 f"Observation bundle at {run_path} belongs to run {meta.run_id!r}, "
@@ -75,11 +75,7 @@ class FileEventSource:
         ]
         records.sort(key=_record_sort_key)
         _assert_sequence_sane(records)
-        validate_provider_invocation_links(
-            (item.record for item in records if item.type == "trace"),
-            (item.record for item in records if item.type == "detail"),
-            (item.record for item in records if item.type == "usage"),
-        )
+        _validate_provider_evidence(meta, records)
         return ObservationRunData(
             run_id=meta.run_id,
             definition=definition,
@@ -90,10 +86,14 @@ class FileEventSource:
     def list_runs(self) -> list[dict]:
         base = self.base_path
         if _is_run_bundle(base):
-            return [_run_entry(base)]
+            return [_run_entry_or_corrupt(base)]
         if not base.exists():
             return []
-        entries = [_run_entry(path) for path in base.iterdir() if path.is_dir() and _is_run_bundle(path)]
+        entries = [
+            _run_entry_or_corrupt(path)
+            for path in base.iterdir()
+            if path.is_dir() and _is_run_bundle(path)
+        ]
         entries.sort(key=lambda item: str(item.get("timestamp") or ""), reverse=True)
         return entries
 
@@ -114,7 +114,17 @@ class FileEventSource:
         for path in sorted(root.iterdir()) if root.exists() else []:
             if not (path.is_dir() and _is_run_bundle(path)):
                 continue
-            meta = load_bundle_meta_v2(path)
+            try:
+                meta = load_bundle_meta_v3(path)
+            except Exception as contract_error:
+                if path.is_symlink():
+                    raise
+                if _raw_logical_run_id(path) == logical_run_id:
+                    raise ValueError(
+                        f"Observation group {logical_run_id!r} contains corrupt segment "
+                        f"{path.name!r}: {contract_error}"
+                    ) from contract_error
+                continue
             if meta.run_id != logical_run_id:
                 continue
             data = FileEventSource(path).read()  # per-segment sequence sanity runs here
@@ -153,7 +163,7 @@ class FileEventSource:
         grouped: dict[str, list[dict]] = {}
         for path in root.iterdir():
             if path.is_dir() and _is_run_bundle(path):
-                entry = _run_entry(path)
+                entry = _run_entry_or_corrupt(path)
                 attempt = entry.get("attempt")
                 entry["_row"] = {
                     "id": entry["segment_id"],
@@ -260,12 +270,87 @@ def _contained_file(run_path: Path, name: str) -> Path:
 
 
 def _run_entry(path: Path) -> dict:
-    """Index-row dict built from the STRICT v2 meta (M10) — same key shape the writer
+    """Index-row dict built from the STRICT v3 meta — same key shape the writer
     persists, including absence-not-null for ``correlation_id``."""
 
-    meta = load_bundle_meta_v2(path)
+    meta = load_bundle_meta_v3(path)
     entry = json.loads(meta.model_dump_json())
     if entry.get("correlation_id") is None:
         entry.pop("correlation_id", None)
     entry["path"] = str(path)
     return entry
+
+
+def _run_entry_or_corrupt(path: Path) -> dict:
+    try:
+        return _run_entry(path)
+    except Exception as contract_error:
+        if path.is_symlink():
+            raise
+        raw = _raw_meta(path)
+        run_id = _safe_raw_identity(raw.get("run_id"), fallback=path.name)
+        segment_id = _safe_raw_identity(raw.get("segment_id"), fallback=path.name)
+        index = raw.get("segment_index")
+        if type(index) is not int or index < 0:
+            index = 0
+        attempt = raw.get("attempt")
+        if type(attempt) is not int or attempt < 1:
+            attempt = None
+        return {
+            "run_id": run_id,
+            "workflow_id": str(raw.get("workflow_id") or "<corrupt>")[:200],
+            "status": "corrupt",
+            "timestamp": str(raw.get("timestamp") or ""),
+            "segment_id": segment_id,
+            "segment_index": index,
+            "segment_kind": str(raw.get("segment_kind") or "initial"),
+            "attempt": attempt,
+            "corruption": str(contract_error)[:500],
+            "path": str(path),
+        }
+
+
+def _raw_meta(path: Path) -> dict:
+    try:
+        raw = json.loads((path / "meta.json").read_text(encoding="utf-8"))
+    except ValueError:
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _safe_raw_identity(value, *, fallback: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        return fallback
+    try:
+        return assert_plain_identity(value, what="corrupt bundle identity")
+    except ValueError:
+        return fallback
+
+
+def _raw_logical_run_id(path: Path) -> str | None:
+    raw = _raw_meta(path)
+    value = raw.get("run_id")
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return assert_plain_identity(value, what="corrupt bundle run id")
+    except ValueError:
+        return None
+
+
+def _validate_provider_evidence(meta, records: list[ObservationRecord]) -> None:
+    try:
+        validate_provider_invocation_links(
+            (item.record for item in records if item.type == "trace"),
+            (item.record for item in records if item.type == "detail"),
+            (item.record for item in records if item.type == "usage"),
+        )
+    except Exception:
+        if meta.provider_evidence.integrity != "incomplete":
+            raise
+    else:
+        if meta.provider_evidence.integrity != "complete":
+            raise ValueError(
+                f"Observation bundle {meta.segment_id!r} claims incomplete provider "
+                "evidence, but its persisted evidence graph validates completely"
+            )

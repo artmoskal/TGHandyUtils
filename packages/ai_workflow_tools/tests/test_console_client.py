@@ -968,6 +968,34 @@ async def test_console_error_envelope_raises_typed_failure_with_burn_data(
     assert "error_max_budget_usd" in str(error) and "0.1122" in str(error)
 
 
+async def test_console_zero_exit_error_envelope_is_still_a_typed_failure(
+    fake_cli_path, monkeypatch, tmp_path
+):
+    from ai_workflow_engine.llm_protocol import LLMRequest
+
+    envelope = json.dumps(
+        {
+            "type": "result",
+            "subtype": "error_during_execution",
+            "is_error": True,
+            "result": "",
+            "total_cost_usd": 0.031,
+            "usage": {"input_tokens": 12, "output_tokens": 3},
+        }
+    )
+    _configure_fake_cli(monkeypatch, tmp_path, mode="envelope")
+    monkeypatch.setenv("FAKE_CLI_STDOUT_OVERRIDE", envelope)
+    monkeypatch.setenv("FAKE_CLI_EXIT_CODE", "0")
+    client = ConsoleLLMClient(_fake_flavor(claude_p, fake_cli_path))
+
+    with pytest.raises(ConsoleCliError) as excinfo:
+        await client(LLMRequest(user="x"))
+
+    assert excinfo.value.cli_subtype == "error_during_execution"
+    assert excinfo.value.notional_usd == pytest.approx(0.031)
+    assert excinfo.value.returncode == 0
+
+
 # --------------------------------------------------------------------------------------
 # v0.10 Phase 5R (codex finding 1): the console LLM doors consume the ENGINE window.
 # Inside a bounded engine invocation, the ambient soft-remaining clamps the console

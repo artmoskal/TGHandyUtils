@@ -1413,6 +1413,70 @@
    "status": "spent",
    "reason": "v0.11.7 (P2.1): usage summaries preserve provider-attempt identity.",
    "manifest_row": "P2.1"
+  },
+  {
+   "path_prefix": "public.exports.ObservationBundleMetaV2",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.10: remove the obsolete bundle-v2 public model from the latest-only line.",
+   "manifest_row": "V3-1",
+   "consumed_by_seal": "2026-07-25 bundle-v3 latest-only corrective release"
+  },
+  {
+   "path_prefix": "public.exports.ObservationBundleMetaV3",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.10: publish the strict current bundle-v3 model.",
+   "manifest_row": "V3-2",
+   "consumed_by_seal": "2026-07-25 bundle-v3 latest-only corrective release"
+  },
+  {
+   "path_prefix": "public.exports.ProviderEvidenceIntegrity",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.10: publish the required provider-evidence integrity contract.",
+   "manifest_row": "V3-3",
+   "consumed_by_seal": "2026-07-25 bundle-v3 latest-only corrective release"
+  },
+  {
+   "path_prefix": "public.exports.load_bundle_meta_v2",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.10: remove the obsolete bundle-v2 loader from the latest-only line.",
+   "manifest_row": "V3-4",
+   "consumed_by_seal": "2026-07-25 bundle-v3 latest-only corrective release"
+  },
+  {
+   "path_prefix": "public.exports.load_bundle_meta_v3",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.10: publish the one strict current bundle loader.",
+   "manifest_row": "V3-5",
+   "consumed_by_seal": "2026-07-25 bundle-v3 latest-only corrective release"
+  },
+  {
+   "path_prefix": "public.schemas.ObservationBundleMetaV2",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.10: remove the obsolete bundle-v2 schema from the public seal.",
+   "manifest_row": "V3-6",
+   "consumed_by_seal": "2026-07-25 bundle-v3 latest-only corrective release"
+  },
+  {
+   "path_prefix": "public.schemas.ObservationBundleMetaV3",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.10: seal the complete strict bundle-v3 schema.",
+   "manifest_row": "V3-7",
+   "consumed_by_seal": "2026-07-25 bundle-v3 latest-only corrective release"
+  },
+  {
+   "path_prefix": "public.schemas.ProviderEvidenceIntegrity",
+   "match": "exact",
+   "status": "spent",
+   "reason": "v0.11.10: seal the provider-evidence integrity model.",
+   "manifest_row": "V3-8",
+   "consumed_by_seal": "2026-07-25 bundle-v3 latest-only corrective release"
   }
  ]
 }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Optional
 
 from ai_workflow_engine._runtime_state import CONTEXT, RUNNING_PAYLOAD, current_run_session
@@ -14,6 +15,8 @@ from ai_workflow_engine.run_session import WorkflowRunSession
 from ai_workflow_engine.snapshot import MachineSnapshot, SNAPSHOT_SCHEMA_VERSION
 from ai_workflow_engine.wait_contract import WaitHandle
 from ai_workflow_engine.workflow import WorkflowDefinition
+
+logger = logging.getLogger(__name__)
 
 
 class SuspensionCoordinator:
@@ -29,6 +32,19 @@ class SuspensionCoordinator:
 
     def set_wait_runtime(self, wait_runtime: Any) -> None:
         self._wait_runtime = wait_runtime
+
+    async def settle_unexposed_handle(self, handle: WaitHandle, *, reason: str) -> None:
+        """Make a registered wait inert when the enclosing result will not expose its handle.
+
+        The durable runtime owns the participant-aware, bounded settlement. A concurrent
+        exact retry may already have exposed the same registration; that case must fail
+        loudly instead of revoking the retry's valid handle.
+        """
+
+        if self._wait_runtime is None:
+            raise RuntimeError("cannot settle a durable wait without its runtime")
+        validated = WaitHandle.model_validate(handle.model_dump())
+        await self._wait_runtime.settle_unexposed_handle(validated, reason=reason)
 
     @staticmethod
     def suspension_occurrence(final_state: Dict[str, Any], suspended: str) -> int:
@@ -247,6 +263,13 @@ class SuspensionCoordinator:
         assert_byte_safe(snapshot.model_dump(), mode="persist", path="durable_wait.snapshot")
         run_id = str(context.run_context.workflow_id)
         occurrence = self.suspension_occurrence(final_state, suspended)
+        expected_wait_id = self._wait_runtime.wait_id_for(run_id, suspended, occurrence)
+        if snapshot.durable_wait_id != expected_wait_id:
+            raise RuntimeError(
+                "wait identity integrity failure before registration: snapshot sealed to "
+                f"{snapshot.durable_wait_id!r} but the deterministic registration identity "
+                f"is {expected_wait_id!r}"
+            )
         outcome = await self._wait_runtime.register_suspension(
             WaitRegistrationRequest(
                 run_id=run_id,
@@ -261,29 +284,35 @@ class SuspensionCoordinator:
                 correlation_id=context.run_context.correlation_id,
             )
         )
-        if snapshot.durable_wait_id != outcome.handle.wait_id:
-            raise RuntimeError(
-                "wait identity integrity failure: snapshot sealed to "
-                f"{snapshot.durable_wait_id!r} but registration produced "
-                f"{outcome.handle.wait_id!r}"
-            )
-        self._runtime.trace_sink.record(
-            WorkflowTraceEvent(
-                node=suspended,
-                decision="wait:registration_reused" if outcome.reused else "wait:registered",
-                run_id=run_id,
-                metadata={
-                    "wait_id": outcome.handle.wait_id,
-                    "deadline_at": outcome.deadline_at.isoformat(),
-                    **(
-                        {
-                            "adapter_id": outcome.adapter_id,
-                            "registration_id": outcome.registration_id,
-                        }
-                        if not outcome.reused
-                        else {}
+        try:
+            self._runtime.trace_sink.record(
+                WorkflowTraceEvent(
+                    node=suspended,
+                    decision=(
+                        "wait:registration_reused" if outcome.reused else "wait:registered"
                     ),
-                },
+                    run_id=run_id,
+                    metadata={
+                        "wait_id": outcome.handle.wait_id,
+                        "deadline_at": outcome.deadline_at.isoformat(),
+                        **(
+                            {
+                                "adapter_id": outcome.adapter_id,
+                                "registration_id": outcome.registration_id,
+                            }
+                            if not outcome.reused
+                            else {}
+                        ),
+                    },
+                )
             )
-        )
+        except Exception as trace_error:
+            # Registration is already committed and its handle is valid. Auxiliary
+            # observation cannot turn that fact into a clean failed result with a hidden,
+            # executable continuation.
+            logger.warning(
+                "durable wait %s registered but registration trace failed: %s",
+                outcome.handle.wait_id,
+                trace_error,
+            )
         return outcome.handle

@@ -188,7 +188,7 @@ def serve_viewer(
             related = (query.get("related_run_id") or [None])[0]
             if parsed.path.startswith("/events"):
                 # C2-3: the stream commits 200 only AFTER the strict read succeeds — a
-                # pre-v2/corrupt/missing run answers with the loud plain error, never a
+                # pre-v3/corrupt/missing run answers with the loud plain error, never a
                 # success status followed by a dropped connection.
                 try:
                     initial = viewer.event_records(run_id=run_id)
@@ -202,7 +202,7 @@ def serve_viewer(
                 return
             if parsed.path.startswith("/artifact/"):
                 # C2-3: artifact resolution shares the strict error door — absence is 404,
-                # contract violations (pre-v2, corrupt lineage, malformed meta) are the loud
+                # contract violations (pre-v3, corrupt lineage, malformed meta) are the loud
                 # 500 with the raising contract's message.
                 try:
                     resolved = _artifact_response(viewer, parsed.path)
@@ -239,7 +239,7 @@ def serve_viewer(
                 _write_plain_error(self, 404, exc)
                 return
             except ValueError as exc:
-                # M10 loud door: an unsupported (pre-v2) or malformed bundle, or corrupt
+                # M10 loud door: an unsupported (pre-v3) or malformed bundle, or corrupt
                 # group lineage, answers with the loader's message — which names the
                 # matching historical tag route — never a plausible partial page.
                 _write_plain_error(self, 500, exc)

@@ -158,6 +158,7 @@ class OpenAICompatibleProviderError(RuntimeError):
             "provider",
             "transport",
             "invalid_response",
+            "refusal",
         ],
         model: str,
         invocation_id: str,

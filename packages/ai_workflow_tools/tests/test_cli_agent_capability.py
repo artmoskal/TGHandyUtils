@@ -159,6 +159,54 @@ async def test_claude_metered_mode_books_provider_total_only_as_metered_cost(
     assert usage.notional_pricing is None
 
 
+async def test_claude_zero_exit_error_envelope_fails_capability_and_records_burn(
+    capability_context,
+    fake_cli_path,
+    monkeypatch,
+    tmp_path,
+):
+    workspace = tmp_path / "workspace-error-envelope"
+    _configure_fake_cli(monkeypatch, tmp_path, workspace, mode="envelope")
+    monkeypatch.setenv(
+        "FAKE_CLI_STDOUT_OVERRIDE",
+        json.dumps(
+            {
+                "type": "result",
+                "subtype": "error_during_execution",
+                "is_error": True,
+                "result": "",
+                "total_cost_usd": 0.044,
+                "usage": {"input_tokens": 15, "output_tokens": 4},
+            }
+        ),
+    )
+    monkeypatch.setenv("FAKE_CLI_EXIT_CODE", "0")
+    cap = CliAgentCapability(_fake_flavor(claude_p, fake_cli_path), name="agent")
+    summary = WorkflowUsageSummary()
+
+    with workflow_usage_scope(
+        WorkflowUsageContext(
+            capability_context.run_context,
+            summary,
+            WorkflowBudget(),
+        )
+    ):
+        result = await cap(
+            capability_context,
+            CliAgentRequest(
+                prompt="Inspect",
+                workspace_dir=str(workspace),
+                timeout_s=30,
+            ),
+        )
+
+    assert result.status == "failed"
+    assert result.output.status == "error"
+    assert "error_during_execution" in (result.error or "")
+    assert summary.events[0].success is False
+    assert summary.events[0].notional_usd == pytest.approx(0.044)
+
+
 async def test_mcp_startup_failure_is_a_loud_diagnosable_episode(
     capability_context,
     fake_cli_path,

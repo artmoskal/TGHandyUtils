@@ -351,7 +351,16 @@ class ConsoleLLMClient:
                 raise
             elapsed_ms = int((time.monotonic() - started) * 1000)
             output = external.output if isinstance(external.output, dict) else {}
-            if external.status != "accepted" or output.get("returncode") != 0:
+            parsed = (
+                parsed_cli_output_from_accumulator(output, usage_accumulator)
+                if usage_accumulator is not None
+                else parse_cli_process_output(self.flavor, output)
+            )
+            if (
+                external.status != "accepted"
+                or output.get("returncode") != 0
+                or parsed.provider_error
+            ):
                 # ONE typed failure path (Q-R2): the runner marks nonzero exits failed but
                 # still hands us stdout — claude's ERROR envelope there carries the consumed
                 # notional (e.g. error_max_budget_usd), which must survive as structured
@@ -364,12 +373,8 @@ class ConsoleLLMClient:
                     usage_accumulator=usage_accumulator,
                     invocation_id=invocation_id,
                     elapsed_ms=elapsed_ms,
+                    parsed=parsed,
                 )
-            parsed = (
-                parsed_cli_output_from_accumulator(output, usage_accumulator)
-                if usage_accumulator is not None
-                else parse_cli_process_output(self.flavor, output)
-            )
             logger.info(
                 "console_llm_call flavor=%s tokens_in=%s tokens_out=%s cost_usd=%s duration_ms=%s",
                 self.flavor.name,
@@ -603,6 +608,11 @@ class ConsoleChatModel:
                 ) from exc
             output = external.output if isinstance(external.output, dict) else {}
             elapsed_ms = int((time.monotonic() - started) * 1000)
+            parsed = (
+                parsed_cli_output_from_accumulator(output, usage_accumulator)
+                if usage_accumulator is not None
+                else parse_cli_process_output(self.flavor, output)
+            )
             if external.status == "partial":
                 raise _console_failure(
                     self.flavor,
@@ -612,8 +622,13 @@ class ConsoleChatModel:
                     usage_accumulator=usage_accumulator,
                     invocation_id=invocation_id,
                     elapsed_ms=elapsed_ms,
+                    parsed=parsed,
                 )
-            if external.status != "accepted" or output.get("returncode") != 0:
+            if (
+                external.status != "accepted"
+                or output.get("returncode") != 0
+                or parsed.provider_error
+            ):
                 raise _console_failure(
                     self.flavor,
                     external,
@@ -622,12 +637,8 @@ class ConsoleChatModel:
                     usage_accumulator=usage_accumulator,
                     invocation_id=invocation_id,
                     elapsed_ms=elapsed_ms,
+                    parsed=parsed,
                 )
-            parsed = (
-                parsed_cli_output_from_accumulator(output, usage_accumulator)
-                if usage_accumulator is not None
-                else parse_cli_process_output(self.flavor, output)
-            )
             logger.info(
                 "console_chat_call flavor=%s tokens_in=%s tokens_out=%s cost_usd=%s duration_ms=%s",
                 self.flavor.name,
@@ -789,22 +800,16 @@ def _console_failure(
     usage_accumulator: CliUsageAccumulator | None = None,
     invocation_id: str,
     elapsed_ms: int,
+    parsed: ParsedCliOutput | None = None,
 ) -> "ConsoleCliError":
     """Build the typed console failure from whatever the runner captured."""
 
-    aborted = (
+    aborted = parsed or (
         parsed_cli_output_from_accumulator(output, usage_accumulator)
         if usage_accumulator is not None
         else parse_cli_process_output(flavor, output)
     )
-    subtype = ""
-    try:
-        import json as _json
-
-        envelope = _json.loads(str(output.get("stdout") or ""))
-        subtype = str(envelope.get("subtype") or "") if isinstance(envelope, dict) else ""
-    except (ValueError, TypeError):
-        pass
+    subtype = aborted.provider_error_subtype or ""
     returncode = output.get("returncode")
     stderr = str(output.get("stderr") or "")
     consumed = (
@@ -812,7 +817,11 @@ def _console_failure(
         if aborted.provider_reported_notional_usd is not None
         else ""
     )
-    base = external.error or f"console CLI exited with status {external.status}"
+    base = external.error or (
+        "console CLI reported an error result"
+        if aborted.provider_error
+        else f"console CLI exited with status {external.status}"
+    )
     lowered = f"{base} {stderr}".lower()
     if subtype == "error_max_budget_usd":
         failure_kind = "cap"

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ai_workflow_engine import (
-    ObservationBundleMetaV2,
+    ObservationBundleMetaV3,
     ObservationDetail,
     WorkflowDefinition,
     WorkflowTraceEvent,
@@ -33,7 +33,7 @@ class ObservationRunData:
     run_id: str
     definition: WorkflowDefinition
     records: list[ObservationRecord]
-    meta: ObservationBundleMetaV2
+    meta: ObservationBundleMetaV3
 
     @property
     def trace_events(self) -> list[WorkflowTraceEvent]:

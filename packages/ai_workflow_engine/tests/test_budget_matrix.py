@@ -14,9 +14,14 @@ from ai_workflow_engine import (
     WorkflowEngineBuilder,
 )
 from ai_workflow_engine.config_loader import load_workflow_config
-from ai_workflow_engine.llm_protocol import record_callable_usage
+from ai_workflow_engine.llm_protocol import (
+    record_callable_failure_usage,
+    record_callable_usage,
+)
 from ai_workflow_engine.models import RuntimeLimits, WorkflowProfile, WorkflowRunContext, WorkflowUsageSummary
 from ai_workflow_engine.budget import WorkflowBudget, WorkflowBudgetExceeded, WorkflowUsageContext, budget_from_limits, check_budget_before_call, workflow_usage_scope
+from ai_workflow_engine.pricing import estimate_cost_usd
+from ai_workflow_engine.usage_contract import NormalizedTokenUsage
 from ai_workflow_engine.usage import invoke_metered_chat
 
 pytestmark = pytest.mark.unit
@@ -150,6 +155,139 @@ def test_subscription_notional_callable_usage_does_not_debit_metered_budget():
     assert event.notional_usd == 0.42
     assert event.notional_pricing is not None
     assert event.notional_pricing.source == "provider_reported"
+
+
+def test_metered_callable_pricing_uses_normalized_cache_counters():
+    usage_context = WorkflowUsageContext(
+        WorkflowRunContext(workflow_id="wf", workflow_type="budget"),
+        WorkflowUsageSummary(),
+        WorkflowBudget(),
+    )
+    normalized = NormalizedTokenUsage(
+        counter_schema="codex_inclusive",
+        uncached_input_tokens=800,
+        cache_read_input_tokens=200,
+        cache_creation_input_tokens=0,
+        non_reasoning_output_tokens=80,
+        reasoning_output_tokens=20,
+        raw_input_tokens=1000,
+        raw_output_tokens=100,
+        raw_total_tokens=1100,
+    )
+
+    with workflow_usage_scope(usage_context):
+        record_callable_usage(
+            LLMResponse(
+                model="gpt-5.4",
+                input_tokens=1000,
+                output_tokens=100,
+                total_tokens=1100,
+                normalized_usage=normalized,
+            ),
+            node="cached_worker",
+            attempt=1,
+        )
+
+    event = usage_context.summary.events[0]
+    assert event.input_token_details == {"cache_read": 200, "cache_creation": 0}
+    assert event.output_token_details == {"reasoning": 20}
+    assert event.estimated_usd == estimate_cost_usd(
+        "gpt-5.4",
+        "chat",
+        1000,
+        100,
+        input_details={"cache_read": 200, "cache_creation": 0},
+        output_details={"reasoning": 20},
+    )
+
+
+def test_metered_callable_pricing_uses_disjoint_cache_counters():
+    usage_context = WorkflowUsageContext(
+        WorkflowRunContext(workflow_id="wf", workflow_type="budget"),
+        WorkflowUsageSummary(),
+        WorkflowBudget(),
+    )
+    normalized = NormalizedTokenUsage(
+        counter_schema="claude_disjoint_cache",
+        uncached_input_tokens=800,
+        cache_read_input_tokens=200,
+        cache_creation_input_tokens=50,
+        non_reasoning_output_tokens=80,
+        reasoning_output_tokens=20,
+        raw_input_tokens=800,
+        raw_output_tokens=100,
+        raw_total_tokens=900,
+    )
+
+    with workflow_usage_scope(usage_context):
+        record_callable_usage(
+            LLMResponse(
+                model="gpt-5.4",
+                input_tokens=800,
+                output_tokens=100,
+                total_tokens=900,
+                normalized_usage=normalized,
+            ),
+            node="disjoint_cache_worker",
+            attempt=1,
+        )
+
+    event = usage_context.summary.events[0]
+    assert event.input_tokens == 800, "persist the provider's raw counter unchanged"
+    assert event.input_token_details == {"cache_read": 200, "cache_creation": 50}
+    assert event.estimated_usd == estimate_cost_usd(
+        "gpt-5.4",
+        "chat",
+        1050,
+        100,
+        input_details={"cache_read": 200, "cache_creation": 50},
+        output_details={"reasoning": 20},
+    )
+
+
+def test_failed_metered_callable_prices_retained_normalized_usage():
+    usage_context = WorkflowUsageContext(
+        WorkflowRunContext(workflow_id="wf", workflow_type="budget"),
+        WorkflowUsageSummary(),
+        WorkflowBudget(),
+    )
+    normalized = NormalizedTokenUsage(
+        counter_schema="codex_inclusive",
+        uncached_input_tokens=800,
+        cache_read_input_tokens=200,
+        cache_creation_input_tokens=0,
+        non_reasoning_output_tokens=80,
+        reasoning_output_tokens=20,
+        raw_input_tokens=1000,
+        raw_output_tokens=100,
+        raw_total_tokens=1100,
+    )
+
+    class RefusalError(RuntimeError):
+        normalized_usage = normalized
+
+    with workflow_usage_scope(usage_context):
+        record_callable_failure_usage(
+            RefusalError("provider refused the request"),
+            node="refused_worker",
+            attempt=1,
+            model="gpt-5.4",
+            provider="openai-compatible",
+            cost_class="metered",
+        )
+
+    event = usage_context.summary.events[0]
+    assert event.success is False
+    assert event.input_token_details == {"cache_read": 200, "cache_creation": 0}
+    assert event.output_token_details == {"reasoning": 20}
+    assert event.estimated_usd == estimate_cost_usd(
+        "gpt-5.4",
+        "chat",
+        1000,
+        100,
+        input_details={"cache_read": 200, "cache_creation": 0},
+        output_details={"reasoning": 20},
+    )
 
 
 def test_subscription_notional_metered_chat_does_not_debit_metered_budget():

@@ -1481,6 +1481,8 @@ async def test_signal_delivery_resumes_the_machine_and_terminalizes_the_wait():
     )
     stored = await coordinator.get(wait_id)
     assert stored.status == "completed" and stored.resolution_kind == "signal"
+    assert wait_id not in coordinator._leases
+    assert wait_id not in coordinator._claims
 
 
 async def test_timeout_delivery_takes_the_declared_transition_without_reentering_the_gate():
@@ -1630,6 +1632,8 @@ async def test_attempt_exhaustion_fails_the_wait():
     )
     assert exhausted.kind == "attempts_exhausted"
     assert (await coordinator.get(wait_id)).status == "failed"
+    assert wait_id not in coordinator._leases
+    assert wait_id not in coordinator._claims
 
 
 async def test_changed_machine_is_rejected_at_delivery():
@@ -4279,7 +4283,7 @@ async def test_delivery_claim_wins_atomic_race_with_compensation():
 async def test_resumed_second_wait_cancellation_compensates_only_that_wait():
     """C3 Scenario 4: delivery of the first wait reaches a second durable suspension.
     Cancellation after the second registration commits must settle that unexposed second
-    continuation without changing the first wait's accepted execution truth."""
+    continuation and fail the first wait rather than claiming successful completion."""
 
     import asyncio
 
@@ -4341,13 +4345,247 @@ async def test_resumed_second_wait_cancellation_compensates_only_that_wait():
 
     first_record = await coordinator.get(first_handle.wait_id)
     second_record = await coordinator.get(registrations[1])
-    assert first_record.status == "completed", (
-        "the accepted first event reached the next machine boundary and must not be "
-        "rewritten or left claim-stalled by second-registration cancellation"
+    assert first_record.status == "failed"
+    assert first_record.failure_kind == "resume_failed"
+    assert "cancelled while registering the next durable wait" in (
+        first_record.failure_detail or ""
+    ), (
+        "observed cancellation prevented the nested handle from being exposed, so the "
+        "outer delivery must never be reported as successful"
     )
     assert second_record.status == "cancelled"
     hidden = await _attempt_hidden_delivery(engine, second_record.wait_id)
     assert hidden.kind != "executed"
+    repeated = await coordinator.claim_event(
+        first_handle.wait_id,
+        WaitEvent(kind="signal", event_id="evt-first", payload="approved"),
+        registration_id=first_handle.registration_id,
+        lease_until=clock(),
+    )
+    assert repeated.kind == "duplicate"
+    assert repeated.record.status == "failed", (
+        "redelivery may report duplicate identity, but it must preserve terminal failure "
+        "rather than imply that the accepted work completed"
+    )
+
+
+async def test_terminal_status_override_settles_unexposed_durable_wait(tmp_path):
+    """R2: a product terminal override cannot return a failed envelope while leaving the
+    just-registered durable continuation executable and its bundle unfinalized."""
+
+    from ai_workflow_engine import InMemoryWaitCoordinator, open_observation_run_bundle
+    from ai_workflow_engine.observation_contract import load_bundle_meta_v3
+
+    coordinator = InMemoryWaitCoordinator(clock=_clock())
+    engine = _durable_engine(coordinator)
+    bundle = open_observation_run_bundle(tmp_path, "terminal-override-run")
+
+    result = await engine.run(
+        "durable_flow",
+        {},
+        observation_bundle=bundle,
+        terminal_status=lambda _envelope: "failed",
+    )
+
+    assert result.status == "failed"
+    assert result.snapshot is None and result.wait_handle is None
+    [stored] = list(coordinator._records.values())
+    assert stored.status == "cancelled"
+    assert "terminal_status" in (stored.failure_detail or "")
+    assert load_bundle_meta_v3(bundle.path).status == "failed"
+
+
+async def test_raising_terminal_status_settles_unexposed_durable_wait(tmp_path):
+    """R2 sibling: a raising hook still closes both lifecycle owners truthfully."""
+
+    from ai_workflow_engine import InMemoryWaitCoordinator, open_observation_run_bundle
+    from ai_workflow_engine.observation_contract import load_bundle_meta_v3
+
+    coordinator = InMemoryWaitCoordinator(clock=_clock())
+    engine = _durable_engine(coordinator)
+    bundle = open_observation_run_bundle(tmp_path, "terminal-hook-raise-run")
+
+    def explode(_envelope):
+        raise RuntimeError("terminal hook exploded")
+
+    with pytest.raises(RuntimeError, match="terminal hook exploded"):
+        await engine.run(
+            "durable_flow",
+            {},
+            observation_bundle=bundle,
+            terminal_status=explode,
+        )
+
+    [stored] = list(coordinator._records.values())
+    assert stored.status == "cancelled"
+    assert load_bundle_meta_v3(bundle.path).status == "failed"
+
+
+async def test_terminal_status_cannot_revoke_a_concurrently_exposed_retry_handle():
+    """R2 race: terminal projection is participant-aware like registration compensation."""
+
+    import asyncio
+
+    from ai_workflow_engine import (
+        InMemoryWaitCoordinator,
+        WaitRegistrationSettlementError,
+        WorkflowGoal,
+    )
+
+    creator_committed = asyncio.Event()
+    release_creator = asyncio.Event()
+    calls = {"register": 0}
+
+    class BlockCreatorAfterCommit(InMemoryWaitCoordinator):
+        async def register(self, record, snapshot_json, definition_json):
+            receipt = await super().register(record, snapshot_json, definition_json)
+            calls["register"] += 1
+            if calls["register"] == 1:
+                creator_committed.set()
+                await release_creator.wait()
+            return receipt
+
+    clock = _clock()
+    coordinator = BlockCreatorAfterCommit(clock=clock)
+    engine, _calls = _exposure_probe_engine(coordinator, clock)
+    goal = WorkflowGoal(
+        workflow_type="durable_flow",
+        objective="terminal projection race",
+        metadata={"run_id": "terminal-projection-race"},
+    )
+
+    creator = asyncio.create_task(
+        engine.run(
+            "durable_flow",
+            {},
+            goal=goal,
+            terminal_status=lambda _envelope: "failed",
+        )
+    )
+    await asyncio.wait_for(creator_committed.wait(), timeout=5)
+    retry = await engine.run("durable_flow", {}, goal=goal)
+    assert retry.wait_handle is not None
+    release_creator.set()
+
+    with pytest.raises(WaitRegistrationSettlementError, match="refused_reused"):
+        await creator
+    stored = await coordinator.get(retry.wait_handle.wait_id)
+    assert stored is not None and stored.status == "pending"
+    delivered = await engine.deliver_wait_event(
+        retry.wait_handle,
+        {"kind": "signal", "event_id": "evt-terminal-race", "payload": "yes"},
+    )
+    assert delivered.kind == "executed"
+    assert delivered.run_result.status == "completed"
+
+
+async def test_terminal_status_cleanup_survives_caller_cancellation():
+    """R2 cancellation: cleanup is shielded, bounded, and preserves caller cancellation."""
+
+    import asyncio
+
+    from ai_workflow_engine import InMemoryWaitCoordinator
+
+    settlement_started = asyncio.Event()
+    release_settlement = asyncio.Event()
+
+    class BlockingSettlement(InMemoryWaitCoordinator):
+        async def abort_registration(self, wait_id, **kwargs):
+            outcome = await super().abort_registration(wait_id, **kwargs)
+            settlement_started.set()
+            await release_settlement.wait()
+            return outcome
+
+    clock = _clock()
+    coordinator = BlockingSettlement(clock=clock)
+    engine, _calls = _exposure_probe_engine(coordinator, clock)
+    running = asyncio.create_task(
+        engine.run(
+            "durable_flow",
+            {},
+            terminal_status=lambda _envelope: "failed",
+        )
+    )
+    await asyncio.wait_for(settlement_started.wait(), timeout=5)
+    running.cancel("cancel terminal projection")
+    release_settlement.set()
+
+    with pytest.raises(asyncio.CancelledError) as cancelled:
+        await running
+    assert cancelled.value.args == ("cancel terminal projection",)
+    [stored] = list(coordinator._records.values())
+    assert stored.status == "cancelled"
+
+
+async def test_snapshot_wait_identity_is_checked_before_coordinator_registration(monkeypatch):
+    """R4: deterministic identity disagreement is a pre-commit error, never a live hidden
+    registration folded into a clean failed result."""
+
+    from ai_workflow_engine import InMemoryWaitCoordinator
+
+    class CountingCoordinator(InMemoryWaitCoordinator):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.register_calls = 0
+
+        async def register(self, record, snapshot_json, definition_json):
+            self.register_calls += 1
+            return await super().register(record, snapshot_json, definition_json)
+
+    coordinator = CountingCoordinator(clock=_clock())
+    engine = _durable_engine(coordinator)
+    suspension = engine.executor._suspension
+    original = suspension.build_snapshot
+
+    def forged_snapshot(*args, **kwargs):
+        return original(*args, **kwargs).model_copy(
+            update={"durable_wait_id": "wait-forged-identity"}
+        )
+
+    monkeypatch.setattr(suspension, "build_snapshot", forged_snapshot)
+    result = await engine.run("durable_flow", {})
+
+    assert result.status == "failed"
+    assert "wait identity integrity failure" in (result.error or "")
+    assert coordinator.register_calls == 0
+    assert coordinator._records == {}
+
+
+async def test_registration_trace_failure_does_not_hide_committed_wait():
+    """R4: after registration commits, an auxiliary trace sink cannot turn a valid pending
+    wait into a failed result with no handle."""
+
+    from ai_workflow_engine import InMemoryWaitCoordinator, WorkflowEngineBuilder
+
+    class FailingRegistrationTrace:
+        def record(self, event):
+            if event.decision == "wait:registered":
+                raise RuntimeError("trace backend unavailable")
+
+    coordinator = InMemoryWaitCoordinator(clock=_clock())
+    builder = WorkflowEngineBuilder().with_trace_sink(FailingRegistrationTrace())
+    builder.with_wait_coordinator(coordinator, clock=_clock())
+
+    from pydantic import BaseModel as _BM
+
+    class Gate(_BM):
+        status: str = "pending"
+
+    builder.register_capability("gate", lambda _context, _payload: Gate())
+    builder.register_capability("escalate", lambda _context, _payload: {"escalated": True})
+    builder.register_workflow(
+        WorkflowBuilder("durable_flow")
+        .human("gate", wait_policy=DurableWaitPolicy(timeout_s=60), timeout_to="escalate")
+        .step("escalate")
+        .build()
+    )
+
+    result = await builder.build().run("durable_flow", {})
+
+    assert result.status == "requires_user_input"
+    assert result.wait_handle is not None
+    stored = await coordinator.get(result.wait_handle.wait_id)
+    assert stored is not None and stored.status == "pending"
 
 
 # ============================== v0.11.6 C1: handle-bound delivery + registration identity

@@ -94,6 +94,18 @@ def summarize_observation_groups(
 
     groups: list[dict] = []
     for run_id, entries in grouped.items():
+        if any(item.get("status") == "corrupt" for item in entries):
+            groups.append(
+                {
+                    "run_id": run_id,
+                    "segment_count": len(entries),
+                    "non_canonical_count": 0,
+                    "status": "corrupt",
+                    "timestamp": max(str(item.get("timestamp") or "") for item in entries),
+                    "workflow_id": entries[0].get("workflow_id", "<corrupt>"),
+                }
+            )
+            continue
         try:
             canonical_rows, non_rows = _canonical_partition(
                 run_id, [item.pop("_row") for item in entries]

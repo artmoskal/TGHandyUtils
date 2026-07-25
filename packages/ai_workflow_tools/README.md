@@ -236,7 +236,11 @@ from ai_workflow_tools.testing import run_openai_compatible_provider_conformance
 await run_openai_compatible_provider_conformance(make_client)
 ```
 
-The v0.6.0 release was qualified against a local Ollama OpenAI endpoint with
+The v0.6.1 corrective release retains the v0.6.0 provider pack and additionally makes refusal and
+content-filter responses typed failures with retained usage, recognizes Claude semantic errors
+even when the CLI exits zero, and prevents browser-provider secrets or URLs from surviving in an
+exception cause/context chain. The v0.6.0 provider pack was qualified against a local Ollama
+OpenAI endpoint with
 `ministral-3:8b-instruct-2512-q4_K_M` for text/tools and `qwen2.5vl:3b` for images. Text, structured
 tools, a full engine-agent tool round trip, multimodal input, timeout, usage truth, and concurrent
 identity isolation passed. Ollama may retain multiple large models simultaneously; capacity tests

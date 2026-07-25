@@ -308,7 +308,7 @@ def _write_bundle(
         "\n".join(event.model_dump_json() for event in (usage_events or [])) + "\n",
         encoding="utf-8",
     )
-    # Full STRICT v2 meta (M10) — the loader rejects anything less; totals/counts are
+    # Full STRICT v3 meta — the loader rejects anything less; totals/counts are
     # derived from the actual inputs, ``meta_extra`` overrides (e.g. segment identity).
     usage = usage_events or []
     metered = [
@@ -320,7 +320,7 @@ def _write_bundle(
     (run_path / "meta.json").write_text(
         json.dumps(
             {
-                "bundle_schema_version": 2,
+                "bundle_schema_version": 3,
                 "run_id": run_id,
                 "workflow_id": definition.workflow_id,
                 "status": "completed",
@@ -345,6 +345,7 @@ def _write_bundle(
                 "segment_index": 0,
                 "segment_kind": "initial",
                 "attempt": None,
+                "provider_evidence": {"integrity": "complete", "diagnostic": None},
                 **(meta_extra or {}),
             }
         ),
@@ -793,12 +794,8 @@ def test_read_group_lineage_corruption_is_loud(tmp_path):
         FileEventSource(tmp_path).read_group("kind-run")
 
 
-def test_pre_v2_bundles_are_rejected_loudly_on_every_surface(tmp_path):
-    """M10 rejection lock (replaces the legacy/mixed-root tolerance test): the latest-only
-    viewer REFUSES pre-v2 bundles on read(), read_group(), list_groups(), the HTML door,
-    and the served HTTP page — naming the historical tag route — and a MIXED root (one old
-    bundle beside current segments) fails the scan instead of rendering half a story.
-    A v2 meta with an unknown key is a different contract, not extra info."""
+def test_pre_v3_bundle_is_loud_directly_but_isolated_from_healthy_groups(tmp_path):
+    """The latest-only viewer rejects v2 directly while keeping unrelated v3 history usable."""
 
     import json as _json
     import shutil as _shutil
@@ -813,38 +810,38 @@ def test_pre_v2_bundles_are_rejected_loudly_on_every_surface(tmp_path):
 
     definition = WorkflowBuilder("legacy").step("gate").build()
     _write_group(tmp_path)  # current-contract group beside the relic
-    # a pre-v2 relic: exactly the v0.10.x shape — identity + paths, NO schema version
+    # A v2 relic is a different closed wire contract, not a partially-readable v3 bundle.
     relic = tmp_path / "old-run"
-    relic.mkdir()
-    (relic / "definition.json").write_text(definition.model_dump_json(), encoding="utf-8")
-    (relic / "trace.jsonl").write_text(
-        WorkflowTraceEvent(
-            node="gate", node_status="completed", phase="node:result",
-            run_id="old-run", sequence=1, event_id="o-1",
-        ).model_dump_json() + "\n",
-        encoding="utf-8",
+    _write_bundle(
+        tmp_path,
+        "old-run",
+        definition,
+        trace_events=[
+            WorkflowTraceEvent(
+                node="gate",
+                node_status="completed",
+                phase="node:result",
+                run_id="old-run",
+                sequence=1,
+                event_id="o-1",
+            )
+        ],
     )
-    (relic / "meta.json").write_text(
-        _json.dumps(
-            {
-                "run_id": "old-run", "workflow_id": "legacy", "status": "completed",
-                "timestamp": "2026-06-21T20:00:00Z", "definition_path": "definition.json",
-                "trace_path": "trace.jsonl", "detail_path": "details.jsonl",
-                "usage_path": "usage.jsonl",
-            }
-        ),
-        encoding="utf-8",
-    )
+    old_meta = _json.loads((relic / "meta.json").read_text(encoding="utf-8"))
+    old_meta["bundle_schema_version"] = 2
+    old_meta.pop("provider_evidence")
+    (relic / "meta.json").write_text(_json.dumps(old_meta), encoding="utf-8")
 
     with _pytest.raises(ValueError, match="historical"):
         FileEventSource(relic).read()
     source = FileEventSource(tmp_path)
-    with _pytest.raises(ValueError, match="unsupported observation-bundle schema"):
-        source.read_group("logical-run")  # the relic poisons the SCAN, not just its own run
-    with _pytest.raises(ValueError, match="historical"):
-        source.list_groups()
-    with _pytest.raises(ValueError, match="historical"):
-        JsonlObservationViewer(source).html()
+    assert source.read_group("logical-run").status == "completed"
+    groups = {row["run_id"]: row for row in source.list_groups()}
+    assert groups["logical-run"]["status"] == "completed"
+    assert groups["old-run"]["status"] == "corrupt"
+    assert "corrupt" in JsonlObservationViewer(source).html()
+    with _pytest.raises(ValueError, match="corrupt segment.*unsupported"):
+        source.read_group("old-run")
 
     # the served door answers with the loud message — never a plausible page
     server = serve_viewer(JsonlObservationViewer(source), port=0)
@@ -855,7 +852,7 @@ def test_pre_v2_bundles_are_rejected_loudly_on_every_surface(tmp_path):
     try:
         root = f"http://127.0.0.1:{server.server_address[1]}"
         with _pytest.raises(urllib.error.HTTPError) as caught:
-            urllib.request.urlopen(f"{root}/", timeout=5)
+            urllib.request.urlopen(f"{root}/?run_id=old-run", timeout=5)
         assert caught.value.code == 500
         body = caught.value.read().decode("utf-8")
         assert "historical" in body and "<html" not in body.lower()
@@ -863,7 +860,7 @@ def test_pre_v2_bundles_are_rejected_loudly_on_every_surface(tmp_path):
         server.shutdown()
         thread.join(timeout=5)
 
-    # malformed v2: an unknown key is REJECTED (extra="forbid"), not carried along
+    # Malformed v3: an unknown key is rejected directly and listed as corruption.
     _shutil.rmtree(relic)
     meta_path = tmp_path / "logical-run" / "meta.json"
     meta = _json.loads(meta_path.read_text(encoding="utf-8"))
@@ -871,6 +868,9 @@ def test_pre_v2_bundles_are_rejected_loudly_on_every_surface(tmp_path):
     meta_path.write_text(_json.dumps(meta), encoding="utf-8")
     with _pytest.raises(ValueError, match="parent_segment_id"):
         source.read_group("logical-run")
+    assert {
+        row["run_id"]: row["status"] for row in source.list_groups()
+    }["logical-run"] == "corrupt"
 
 
 def test_group_html_renders_one_truthful_lifecycle(tmp_path):
@@ -1780,6 +1780,51 @@ def test_execution_window_timeout_and_retrace_project_from_persisted_truth(tmp_p
     assert "window: not recorded" in page
 
 
+def test_malformed_runtime_metrics_degrade_without_crashing_or_inventing_values():
+    from ai_workflow_engine import WorkflowBuilder
+    from ai_workflow_viewer.observability import (
+        _observation_view_data,
+        build_observation_graph,
+        observation_graph_to_html,
+    )
+
+    definition = WorkflowBuilder("malformed-runtime").step("worker").build()
+    event = WorkflowTraceEvent(
+        run_id="r",
+        node="worker",
+        phase="tool:result",
+        decision="partial",
+        sequence=1,
+        event_id="1",
+        metadata={
+            "execution_window": {
+                "soft_timeout_s": None,
+                "hard_timeout_s": 10.0,
+                "clamps": ["run_remaining", {"untrusted": "shape"}],
+                "enforcement": "process",
+            },
+            "process_execution_bound": {
+                "work_timeout_s": "not-a-number",
+                "kill_grace_s": 1.5,
+                "settle_reserve_s": float("nan"),
+                "cleanup_headroom_s": float("inf"),
+            },
+        },
+    )
+
+    graph = build_observation_graph(definition, [event], [], [])
+    metrics = _observation_view_data(definition, graph)["nodes"][0]["metrics"]
+    page = observation_graph_to_html(definition, graph)
+    rendered_metrics = " ".join(metrics).lower()
+
+    assert "window: hard 10s (clamped: run_remaining) [process]" in metrics
+    assert "process: cleanup 1.5s" in metrics
+    assert "not-a-number" not in rendered_metrics
+    assert "nan" not in rendered_metrics
+    assert "inf" not in rendered_metrics
+    assert "malformed-runtime" in page
+
+
 def test_process_io_settlement_truth_is_summarized_not_dumped(tmp_path):
     """v0.10.1: the viewer projects a CONCISE process-I/O settlement summary (byte totals,
     truncation, result-file rejection) from persisted trace truth — it must never copy the
@@ -2046,7 +2091,7 @@ def test_boundary_attacks_are_refused_on_every_viewer_surface(tmp_path):
 
 def test_symlinked_child_bundles_are_refused_on_every_viewer_surface(tmp_path):
     """C2GR-1 attack (2)+(4): a child symlink named like a valid run id and pointing to an
-    OUTSIDE valid v2 bundle never lists, reads, groups, or serves — loudly, not silently
+    OUTSIDE valid v3 bundle never lists, reads, groups, or serves — loudly, not silently
     skipped; a deliberately symlinked CONFIGURED base stays functional (base trusted,
     children not)."""
 

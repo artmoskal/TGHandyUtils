@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Callable, Dict, List, Optional
 
@@ -103,3 +104,58 @@ class RunResultAssembler:
             error=error,
             trace=[event],
         )
+
+    async def project_terminal_status(
+        self,
+        session: WorkflowRunSession,
+        envelope: Any,
+        terminal_status: Callable[[Any], Optional[str]],
+    ) -> Any:
+        """Apply a product projection without hiding a durable continuation."""
+
+        settlement_attempted = False
+        try:
+            override = terminal_status(envelope)
+            if not override:
+                return envelope
+            valid = {"completed", "partial", "failed", "requires_user_input"}
+            if override not in valid:
+                raise ValueError(
+                    f"terminal_status hook returned invalid status {override!r} "
+                    f"(allowed: {sorted(valid)})"
+                )
+            if (
+                override == "requires_user_input"
+                and envelope.snapshot is None
+                and envelope.wait_handle is None
+            ):
+                raise ValueError(
+                    "terminal_status hook returned 'requires_user_input' but the run has no "
+                    "machine snapshot or durable handle — suspension must come from the "
+                    "workflow itself"
+                )
+            updates: Dict[str, Any] = {"status": override}
+            if override != "requires_user_input":
+                if envelope.wait_handle is not None:
+                    settlement_attempted = True
+                    await self._suspension.settle_unexposed_handle(
+                        envelope.wait_handle,
+                        reason=f"terminal_status projected the run as {override}",
+                    )
+                updates.update({"snapshot": None, "wait_handle": None})
+            return envelope.model_copy(update=updates)
+        except (Exception, asyncio.CancelledError) as projection_error:
+            if envelope.wait_handle is not None and not settlement_attempted:
+                try:
+                    await self._suspension.settle_unexposed_handle(
+                        envelope.wait_handle,
+                        reason=(
+                            "terminal_status projection failed before the durable handle "
+                            "could be exposed"
+                        ),
+                    )
+                except Exception as settlement_error:
+                    session.close("failed")
+                    raise settlement_error from projection_error
+            session.close("failed")
+            raise

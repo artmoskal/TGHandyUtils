@@ -16,7 +16,7 @@ COMMIT_MARKER_NAME = "commit.json"
 ABANDON_MARKER_NAME = "abandoned.json"
 ARTIFACT_DIR_NAME = "artifacts"
 ARTIFACT_MANIFEST_NAME = "artifacts.json"
-BUNDLE_SCHEMA_VERSION = 2
+BUNDLE_SCHEMA_VERSION = 3
 
 BundleStatus = Literal[
     "accepted",
@@ -108,18 +108,36 @@ class ObservationSegment:
             )
 
 
-class ObservationBundleMetaV2(BaseModel):
-    """The CLOSED, versioned meta contract of one observation segment (v0.11, manifest row M9).
+class ProviderEvidenceIntegrity(BaseModel):
+    """Persisted truth about cross-record provider evidence in one finalized segment."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    integrity: Literal["complete", "incomplete"]
+    diagnostic: Optional[str] = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def _coherent_integrity(self) -> "ProviderEvidenceIntegrity":
+        if self.integrity == "complete" and self.diagnostic is not None:
+            raise ValueError("complete provider evidence must not carry a diagnostic")
+        if self.integrity == "incomplete" and not str(self.diagnostic or "").strip():
+            raise ValueError("incomplete provider evidence requires a bounded diagnostic")
+        return self
+
+
+class ObservationBundleMetaV3(BaseModel):
+    """The CLOSED, versioned meta contract of one observation segment.
 
     Every engine-written bundle is a segment of a logical run and carries its full identity,
-    file layout, counts, cost truth, and the definition digest. Unknown or missing fields fail;
-    pre-v2 metas are rejected by :func:`load_bundle_meta_v2` with the historical-tag route (the
-    current line has no importer). The v1 duplicate ``workflow`` alias key is gone.
+    file layout, counts, cost truth, definition digest, and provider-evidence integrity.
+    Unknown or missing fields fail; pre-v3 metas are rejected by
+    :func:`load_bundle_meta_v3` with the historical-tag route. The current line has no
+    importer or compatibility reader.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    bundle_schema_version: Literal[2]
+    bundle_schema_version: Literal[3]
     run_id: str
     workflow_id: str
     status: BundleStatus
@@ -145,9 +163,10 @@ class ObservationBundleMetaV2(BaseModel):
     segment_kind: Literal["initial", "resume", "wait_terminal"]
     attempt: Optional[int] = Field(default=None, ge=1)
     correlation_id: Optional[str] = None
+    provider_evidence: ProviderEvidenceIntegrity
 
     @model_validator(mode="after")
-    def _coherent_segment_identity(self) -> "ObservationBundleMetaV2":
+    def _coherent_segment_identity(self) -> "ObservationBundleMetaV3":
         problems: list[str] = []
         for name in ("run_id", "workflow_id", "segment_id", "timestamp", "definition_digest"):
             if not str(getattr(self, name) or "").strip():
@@ -172,12 +191,14 @@ class ObservationBundleMetaV2(BaseModel):
             )
         if self.segment_kind in ("resume", "wait_terminal") and self.segment_index < 1:
             problems.append(f"{self.segment_kind} segment needs segment_index >= 1")
+        if self.status == "completed" and self.provider_evidence.integrity != "complete":
+            problems.append("completed bundle requires complete provider evidence")
         if problems:
             raise ValueError("invalid observation-bundle meta: " + "; ".join(problems))
         return self
 
 
-def load_bundle_meta_v2(bundle_dir: Path) -> ObservationBundleMetaV2:
+def load_bundle_meta_v3(bundle_dir: Path) -> ObservationBundleMetaV3:
     """Read one strict current-schema bundle meta without following child symlinks."""
 
     if Path(bundle_dir).is_symlink():
@@ -197,10 +218,10 @@ def load_bundle_meta_v2(bundle_dir: Path) -> ObservationBundleMetaV2:
     if version != BUNDLE_SCHEMA_VERSION:
         raise ValueError(
             f"unsupported observation-bundle schema in {Path(bundle_dir).name!r}: expected "
-            f"{BUNDLE_SCHEMA_VERSION}, got {version!r} — read pre-v2 bundles with their "
+            f"{BUNDLE_SCHEMA_VERSION}, got {version!r} — read pre-v3 bundles with their "
             "matching historical engine/viewer tag (the current line has no importer)"
         )
-    return ObservationBundleMetaV2.model_validate(raw)
+    return ObservationBundleMetaV3.model_validate(raw)
 
 
 __all__ = [
@@ -211,9 +232,10 @@ __all__ = [
     "BundleStatus",
     "COMMIT_MARKER_NAME",
     "DEFAULT_ARTIFACT_MAX_BYTES",
-    "ObservationBundleMetaV2",
+    "ObservationBundleMetaV3",
     "ObservationSegment",
+    "ProviderEvidenceIntegrity",
     "assert_plain_identity",
-    "load_bundle_meta_v2",
+    "load_bundle_meta_v3",
     "resolve_child_dir",
 ]

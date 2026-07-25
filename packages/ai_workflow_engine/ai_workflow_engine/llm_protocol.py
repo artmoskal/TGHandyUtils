@@ -236,15 +236,35 @@ def record_callable_usage(
 ) -> None:
     """Meter one plain-callable LLM call with honest cost attribution (RC2)."""
 
+    input_details = (
+        {
+            "cache_read": response.normalized_usage.cache_read_input_tokens,
+            "cache_creation": response.normalized_usage.cache_creation_input_tokens,
+        }
+        if response.normalized_usage is not None
+        else {}
+    )
+    output_details = (
+        {"reasoning": response.normalized_usage.reasoning_output_tokens}
+        if response.normalized_usage is not None
+        else {}
+    )
     estimated = response.estimated_usd if cost_class == "metered" else None
     if cost_class == "metered" and estimated is None:
         has_tokens = bool(response.total_tokens or response.input_tokens or response.output_tokens)
         if response.model and has_tokens:
+            pricing_input_tokens = (
+                response.normalized_usage.billable_input_tokens
+                if response.normalized_usage is not None
+                else response.input_tokens
+            )
             estimated = estimate_cost_usd(
                 response.model,
                 "chat",
-                response.input_tokens,
+                pricing_input_tokens,
                 response.output_tokens,
+                input_details=input_details,
+                output_details=output_details,
             )
     provider_reported = response.provider_reported_notional_usd
     if provider_reported is None:
@@ -270,19 +290,8 @@ def record_callable_usage(
             input_tokens=response.input_tokens,
             output_tokens=response.output_tokens,
             total_tokens=response.total_tokens or (response.input_tokens + response.output_tokens),
-            input_token_details=(
-                {
-                    "cache_read": response.normalized_usage.cache_read_input_tokens,
-                    "cache_creation": response.normalized_usage.cache_creation_input_tokens,
-                }
-                if response.normalized_usage is not None
-                else {}
-            ),
-            output_token_details=(
-                {"reasoning": response.normalized_usage.reasoning_output_tokens}
-                if response.normalized_usage is not None
-                else {}
-            ),
+            input_token_details=input_details,
+            output_token_details=output_details,
             estimated_usd=estimated,
             normalized_usage=response.normalized_usage,
             usage_error=response.usage_error,
@@ -329,6 +338,34 @@ def record_callable_failure_usage(
     usage_error = getattr(exc, "usage_error", None)
     if normalized_usage is None and usage_error is None:
         usage_error = "usage_event_missing"
+    input_details = (
+        {
+            "cache_read": normalized_usage.cache_read_input_tokens,
+            "cache_creation": normalized_usage.cache_creation_input_tokens,
+        }
+        if normalized_usage is not None
+        else {}
+    )
+    output_details = (
+        {"reasoning": normalized_usage.reasoning_output_tokens}
+        if normalized_usage is not None
+        else {}
+    )
+    estimated_usd = consumed_usd if cost_class == "metered" else None
+    if (
+        cost_class == "metered"
+        and estimated_usd is None
+        and normalized_usage is not None
+        and model
+    ):
+        estimated_usd = estimate_cost_usd(
+            model,
+            "chat",
+            normalized_usage.billable_input_tokens,
+            normalized_usage.raw_output_tokens,
+            input_details=input_details,
+            output_details=output_details,
+        )
     error = str(exc) or exc.__class__.__name__
     record_usage_event(
         WorkflowUsageEvent(
@@ -357,26 +394,15 @@ def record_callable_failure_usage(
                 if normalized_usage is not None
                 else 0
             ),
-            input_token_details=(
-                {
-                    "cache_read": normalized_usage.cache_read_input_tokens,
-                    "cache_creation": normalized_usage.cache_creation_input_tokens,
-                }
-                if normalized_usage is not None
-                else {}
-            ),
-            output_token_details=(
-                {"reasoning": normalized_usage.reasoning_output_tokens}
-                if normalized_usage is not None
-                else {}
-            ),
+            input_token_details=input_details,
+            output_token_details=output_details,
             normalized_usage=normalized_usage,
             usage_error=usage_error,
             usage_diagnostic=getattr(exc, "usage_diagnostic", None),
             provider_reported_notional_usd=(
                 consumed_usd if cost_class == "subscription_notional" else None
             ),
-            estimated_usd=consumed_usd if cost_class == "metered" else None,
+            estimated_usd=estimated_usd,
             elapsed_ms=(
                 elapsed_ms
                 if elapsed_ms is not None

@@ -365,6 +365,69 @@ async def test_malformed_usage_preserves_model_result_as_typed_unknown(usage):
     assert response.output_tokens == 0
 
 
+async def test_blank_response_model_falls_back_to_configured_model():
+    with OpenAICompatibleTestServer(
+        lambda _request: ProviderTestResponse(
+            200,
+            {
+                "model": "   ",
+                "choices": [{"message": {"content": "usable"}, "finish_reason": "stop"}],
+            },
+        )
+    ) as server:
+        async with _client(server.base_url) as client:
+            response = await client(LLMRequest(user="model identity"))
+
+    assert response.model == "test-model"
+
+
+@pytest.mark.parametrize(
+    "choice",
+    [
+        {
+            "message": {"content": None, "refusal": "policy blocked the request"},
+            "finish_reason": "stop",
+        },
+        {
+            "message": {"content": None},
+            "finish_reason": "content_filter",
+        },
+    ],
+)
+async def test_provider_refusal_is_typed_and_preserves_usage(choice):
+    with OpenAICompatibleTestServer(
+        lambda _request: ProviderTestResponse(
+            200,
+            {
+                "model": "local",
+                "choices": [choice],
+                "usage": {
+                    "prompt_tokens": 7,
+                    "completion_tokens": 1,
+                    "total_tokens": 8,
+                },
+            },
+        )
+    ) as server:
+        async with _client(server.base_url) as client:
+            with pytest.raises(OpenAICompatibleProviderError) as raised:
+                await client(LLMRequest(user="refusal truth"))
+
+    error = raised.value
+    assert error.failure_kind == "refusal"
+    assert error.normalized_usage is not None
+    assert error.normalized_usage.raw_total_tokens == 8
+    assert error.usage_error is None
+    assert error.model == "local"
+    expected_fact = (
+        "policy blocked the request"
+        if choice["message"].get("refusal")
+        else "content_filter"
+    )
+    assert expected_fact in str(error)
+    assert len(str(error)) <= 500
+
+
 async def test_engine_invocation_window_narrows_transport_timeout():
     with OpenAICompatibleTestServer(
         lambda _request: ProviderTestResponse(

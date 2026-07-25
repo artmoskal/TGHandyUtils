@@ -27,6 +27,8 @@ class ParsedCliOutput:
     normalized_usage: NormalizedTokenUsage | None = None
     usage_error: UsageError | None = None
     usage_diagnostic: str | None = None
+    provider_error: bool = False
+    provider_error_subtype: str | None = None
 
 
 class CliUsageAccumulator(Protocol):
@@ -269,6 +271,19 @@ def _parse_claude_envelope_value(envelope: dict[str, Any]) -> ParsedCliOutput:
             "claude", {"received_type": type(raw_usage).__name__}
         )
     provider_cost = _strict_optional_float(envelope.get("total_cost_usd"))
+    raw_subtype = envelope.get("subtype")
+    subtype = (
+        raw_subtype.strip()[:128]
+        if isinstance(raw_subtype, str) and raw_subtype.strip()
+        else None
+    )
+    provider_error = envelope.get("is_error") is True or (
+        subtype is not None
+        and (
+            subtype.startswith("error")
+            or subtype in {"failed", "failure", "provider_error"}
+        )
+    )
     return ParsedCliOutput(
         text=_stringify_text(envelope.get("result")),
         input_tokens=usage.raw_input_tokens if usage else 0,
@@ -282,6 +297,8 @@ def _parse_claude_envelope_value(envelope: dict[str, Any]) -> ParsedCliOutput:
         normalized_usage=usage,
         usage_error=usage_error,
         usage_diagnostic=usage_diagnostic,
+        provider_error=provider_error,
+        provider_error_subtype=subtype if provider_error else None,
     )
 
 

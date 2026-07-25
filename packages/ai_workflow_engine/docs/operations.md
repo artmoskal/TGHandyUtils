@@ -158,9 +158,12 @@ including abandoned attempts.
 state or results.
 
 **Bundle schema is versioned.** Each bundle's `meta.json` carries `bundle_schema_version` (currently
-`2` — the value of `ai_workflow_engine.observation_bundle.BUNDLE_SCHEMA_VERSION`). A dashboard that
+`3` — the value of `ai_workflow_engine.observation_bundle.BUNDLE_SCHEMA_VERSION`) and a required
+provider-evidence integrity fact. A dashboard that
 reads bundle files directly must check it and **fail loudly on an unknown version** rather than
-mis-parse a future layout; prefer the engine's `load_bundle_meta_v2`, which is that check. Resolve a run's disposition through the group reader
+mis-parse a future layout; prefer the engine's `load_bundle_meta_v3`, which is that check. The
+current reader rejects v2; use `engine-v0.11.9` only if historical v2 evidence must be inspected.
+Resolve a run's disposition through the group reader
 (`read_group(...).status`) rather than re-deriving it from raw events, and project result/segment
 status into product state through an exhaustive closed mapping (partial vs failed vs rejected vs
 requires_user_input vs completed) so a new status can never fall through silently.
@@ -284,8 +287,8 @@ An engine release is ready only when:
 - a human inspects the observation UI when the release changes user-visible viewer behavior;
 - permanent docs describe tagged truth and consumer handoffs identify re-adoption risk (the line is latest-only — no migration layer exists);
 - **latest-only cutover procedure** (moving a deployment to a new line): stop writers; archive the
-  old observation bundle root and START A NEW EMPTY bundle root (mixed roots fail scans by design —
-  one pre-v0.11 bundle beside current segments poisons listing and finalize-time retention);
+  old observation bundle root and START A NEW EMPTY bundle root (mixed roots expose historical
+  bundles as corrupt by design; the current reader never interprets a pre-v3 layout);
   use a NEW wait-coordinator namespace, and explicitly settle or discard pending waits/snapshots
   under the OLD tag first (the current engine rejects them); keep the historical viewer/tag around
   only for reading historical data;
@@ -294,7 +297,7 @@ An engine release is ready only when:
 Framework requests and post-adoption feedback close through
 [`extension-lifecycle.md`](extension-lifecycle.md).
 
-## Release Artifacts And Verification (v0.11.9)
+## Release Artifacts And Verification (v0.11.10)
 
 Two roles, two identities. A consumer NEVER rebuilds as verification: the **annotated tag identifies
 source**, while the **published release directory identifies artifact bytes**. Tags do not contain
@@ -310,7 +313,7 @@ clean checkouts for wheel reproducibility and a third checkout for test/smoke ev
 outputs outside those checkouts.
 
 ```bash
-TAG=engine-v0.11.9
+TAG=engine-v0.11.10
 BUILD_A=/tmp/engine-build-a
 BUILD_B=/tmp/engine-build-b
 GATE=/tmp/engine-gate
@@ -331,21 +334,21 @@ python3 "$TOOL" run-gate --name smoke --record "$OUT/smoke.json" \
   --log "$OUT/smoke.log" --cwd "$GATE" --timeout-s 900 -- \
   python3 "$TOOL" smoke-installed --venv-dir "$OUT/smoke-venv" \
   --work-dir "$OUT/smoke-work" \
-  --wheel "$OUT/wheels-a/ai_workflow_engine-0.11.9-py3-none-any.whl" \
-  --wheel "$OUT/wheels-a/ai_workflow_tools-0.6.0-py3-none-any.whl" \
-  --wheel "$OUT/wheels-a/ai_workflow_viewer-0.3.2-py3-none-any.whl"
+  --wheel "$OUT/wheels-a/ai_workflow_engine-0.11.10-py3-none-any.whl" \
+  --wheel "$OUT/wheels-a/ai_workflow_tools-0.6.1-py3-none-any.whl" \
+  --wheel "$OUT/wheels-a/ai_workflow_viewer-0.3.3-py3-none-any.whl"
 
 python3 "$TOOL" assemble --repo "$BUILD_A" --tag "$TAG" \
   --bundle-dir "$OUT/bundle" --uri-base "file:///approved-cache/$TAG/" \
   --build-evidence "$OUT/build.json" --second-build-evidence "$OUT/build-b.json" \
   --test-evidence "$OUT/test.json" \
   --smoke-evidence "$OUT/smoke.json" \
-  --wheel "$OUT/wheels-a/ai_workflow_engine-0.11.9-py3-none-any.whl" \
-  --wheel "$OUT/wheels-a/ai_workflow_tools-0.6.0-py3-none-any.whl" \
-  --wheel "$OUT/wheels-a/ai_workflow_viewer-0.3.2-py3-none-any.whl" \
-  --second-wheel "$OUT/wheels-b/ai_workflow_engine-0.11.9-py3-none-any.whl" \
-  --second-wheel "$OUT/wheels-b/ai_workflow_tools-0.6.0-py3-none-any.whl" \
-  --second-wheel "$OUT/wheels-b/ai_workflow_viewer-0.3.2-py3-none-any.whl"
+  --wheel "$OUT/wheels-a/ai_workflow_engine-0.11.10-py3-none-any.whl" \
+  --wheel "$OUT/wheels-a/ai_workflow_tools-0.6.1-py3-none-any.whl" \
+  --wheel "$OUT/wheels-a/ai_workflow_viewer-0.3.3-py3-none-any.whl" \
+  --second-wheel "$OUT/wheels-b/ai_workflow_engine-0.11.10-py3-none-any.whl" \
+  --second-wheel "$OUT/wheels-b/ai_workflow_tools-0.6.1-py3-none-any.whl" \
+  --second-wheel "$OUT/wheels-b/ai_workflow_viewer-0.3.3-py3-none-any.whl"
 python3 "$TOOL" verify-bundle --dir "$OUT/bundle"
 ```
 
@@ -366,10 +369,10 @@ Download the complete release directory. Obtain `release_artifacts.py` and
 source, place them together, and use that trusted verifier before invoking `pip`:
 
 ```bash
-BUNDLE=/path/to/downloaded/engine-v0.11.9
-TRUSTED=/path/to/trusted/engine-v0.11.9-verifier
+BUNDLE=/path/to/downloaded/engine-v0.11.10
+TRUSTED=/path/to/trusted/engine-v0.11.10-verifier
 python3 "$TRUSTED/release_artifacts.py" verify-bundle --dir "$BUNDLE"
-python -m pip install "$BUNDLE/ai_workflow_engine-0.11.9-py3-none-any.whl"
+python -m pip install "$BUNDLE/ai_workflow_engine-0.11.10-py3-none-any.whl"
 ```
 
 The verifier requires the exact manifest inventory, safely refuses traversal/symlink/FIFO/device

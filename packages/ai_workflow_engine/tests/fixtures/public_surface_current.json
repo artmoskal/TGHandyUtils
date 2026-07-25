@@ -84,7 +84,7 @@
     "NotionalPricingPolicy": "export",
     "NotionalPricingResult": "export",
     "NotionalRate": "export",
-    "ObservationBundleMetaV2": "export",
+    "ObservationBundleMetaV3": "export",
     "ObservationConfig": "export",
     "ObservationDetail": "export",
     "ObservationRunBundle": "export",
@@ -100,6 +100,7 @@
     "PromptRenderService": "export",
     "PromptRenderer": "export",
     "PromptTemplateLoader": "export",
+    "ProviderEvidenceIntegrity": "export",
     "Replan": "export",
     "Retrace": "export",
     "Retry": "export",
@@ -187,7 +188,7 @@
     "format_trace_events": "export",
     "gather_capabilities": "export",
     "is_plain_llm_callable": "export",
-    "load_bundle_meta_v2": "export",
+    "load_bundle_meta_v3": "export",
     "load_prompt_template": "export",
     "load_workflow_config": "export",
     "model_profile_scope": "export",
@@ -6729,9 +6730,43 @@
       "title": "NotionalRate",
       "type": "object"
     },
-    "ObservationBundleMetaV2": {
+    "ObservationBundleMetaV3": {
+      "$defs": {
+        "ProviderEvidenceIntegrity": {
+          "additionalProperties": false,
+          "description": "Persisted truth about cross-record provider evidence in one finalized segment.",
+          "properties": {
+            "diagnostic": {
+              "anyOf": [
+                {
+                  "maxLength": 500,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Diagnostic"
+            },
+            "integrity": {
+              "enum": [
+                "complete",
+                "incomplete"
+              ],
+              "title": "Integrity",
+              "type": "string"
+            }
+          },
+          "required": [
+            "integrity"
+          ],
+          "title": "ProviderEvidenceIntegrity",
+          "type": "object"
+        }
+      },
       "additionalProperties": false,
-      "description": "The CLOSED, versioned meta contract of one observation segment (v0.11, manifest row M9).\n\nEvery engine-written bundle is a segment of a logical run and carries its full identity,\nfile layout, counts, cost truth, and the definition digest. Unknown or missing fields fail;\npre-v2 metas are rejected by :func:`load_bundle_meta_v2` with the historical-tag route (the\ncurrent line has no importer). The v1 duplicate ``workflow`` alias key is gone.",
+      "description": "The CLOSED, versioned meta contract of one observation segment.\n\nEvery engine-written bundle is a segment of a logical run and carries its full identity,\nfile layout, counts, cost truth, definition digest, and provider-evidence integrity.\nUnknown or missing fields fail; pre-v3 metas are rejected by\n:func:`load_bundle_meta_v3` with the historical-tag route. The current line has no\nimporter or compatibility reader.",
       "properties": {
         "artifact_count": {
           "minimum": 0,
@@ -6767,7 +6802,7 @@
           "title": "Attempt"
         },
         "bundle_schema_version": {
-          "const": 2,
+          "const": 3,
           "title": "Bundle Schema Version",
           "type": "integer"
         },
@@ -6825,6 +6860,9 @@
           ],
           "default": null,
           "title": "Notional Usd"
+        },
+        "provider_evidence": {
+          "$ref": "#/$defs/ProviderEvidenceIntegrity"
         },
         "run_id": {
           "title": "Run Id",
@@ -6928,9 +6966,10 @@
         "total_tokens",
         "segment_id",
         "segment_index",
-        "segment_kind"
+        "segment_kind",
+        "provider_evidence"
       ],
-      "title": "ObservationBundleMetaV2",
+      "title": "ObservationBundleMetaV3",
       "type": "object"
     },
     "ObservationConfig": {
@@ -7606,6 +7645,38 @@
         "renderer"
       ],
       "title": "PromptRenderResult",
+      "type": "object"
+    },
+    "ProviderEvidenceIntegrity": {
+      "additionalProperties": false,
+      "description": "Persisted truth about cross-record provider evidence in one finalized segment.",
+      "properties": {
+        "diagnostic": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Diagnostic"
+        },
+        "integrity": {
+          "enum": [
+            "complete",
+            "incomplete"
+          ],
+          "title": "Integrity",
+          "type": "string"
+        }
+      },
+      "required": [
+        "integrity"
+      ],
+      "title": "ProviderEvidenceIntegrity",
       "type": "object"
     },
     "Replan": {

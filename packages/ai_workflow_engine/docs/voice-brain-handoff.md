@@ -1,11 +1,12 @@
 # Voice Brain Engine Integration Guide
 
-Status: **`engine-v0.11.9` is the current immutable release.**
-This release adds an optional async
-OpenAI-compatible HTTP client and preserves usage truth for process-backed Claude/Codex clients.
+Status: **`engine-v0.11.10` is the current immutable release.**
+This corrective release hardens provider/CLI failure truth, cache-aware pricing, and observation
+bundle integrity. It retains the optional async OpenAI-compatible HTTP client and process-backed
+Claude/Codex usage accounting.
 It does not turn subscription CLI workers into a suitable low-latency voice hot path. Adopt only as
 the coherent current matrix below.
-The product must pin tag `engine-v0.11.9`, verify the complete release directory, then run its own
+The product must pin tag `engine-v0.11.10`, verify the complete release directory, then run its own
 latency/cancellation canary. This replaces
 the historical June request/reply transcript.
 
@@ -29,15 +30,15 @@ transcript + session context
 
 ## Package Choice
 
-- `ai-workflow-engine==0.11.9` for the runtime and custom `LLMCallable`.
-- `ai-workflow-tools==0.6.0` for bounded non-streaming OpenAI-compatible calls or when using
+- `ai-workflow-engine==0.11.10` for the runtime and custom `LLMCallable`.
+- `ai-workflow-tools==0.6.1` for bounded non-streaming OpenAI-compatible calls or when using
   `CliAgentCapability`/console tools. Voice delta streaming still requires a product-injected
   streaming `LLMCallable`; CLI subscription
   workers are usually unsuitable for a low-latency conversational hot path.
-- `ai-workflow-viewer==0.3.2` in diagnostics, not the real-time audio path.
+- `ai-workflow-viewer==0.3.3` in diagnostics, not the real-time audio path.
 
-> **Current matrix:** `engine-v0.11.9` + `ai-workflow-tools==0.6.0` +
-> `ai-workflow-viewer==0.3.2`.
+> **Current matrix:** `engine-v0.11.10` + `ai-workflow-tools==0.6.1` +
+> `ai-workflow-viewer==0.3.3`.
 
 The release makes node-context binding explicit for every node kind and advances the optional
 tools wheel for native Codex image attachment. Persisted schemas and voice workflow behavior are

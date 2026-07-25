@@ -86,7 +86,7 @@ def test_engine_imports_no_product_code():
 def test_release_version_matches_current_pin():
     """Release guard: a pinned tag must not build a wheel that reports the previous version."""
 
-    expected = "0.11.9"
+    expected = "0.11.10"
     pyproject = tomllib.loads((PACKAGE_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert pyproject["project"]["version"] == expected
     assert ai_workflow_engine.__version__ == expected
@@ -217,6 +217,7 @@ def test_executor_contains_no_compiler_implementation_twins():
         "_nested_suspension_error",
         "_model_profile_error",
         "_required_capabilities",
+        "_project_terminal_status",
     }
     present = {
         node.name

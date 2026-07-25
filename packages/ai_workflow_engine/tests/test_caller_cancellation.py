@@ -21,7 +21,7 @@ from ai_workflow_engine import (
     WorkflowEngineBuilder,
     WorkflowGoal,
     WorkflowProfile,
-    load_bundle_meta_v2,
+    load_bundle_meta_v3,
 )
 from ai_workflow_engine.engine.external import (
     ExternalProcessCapability,
@@ -171,7 +171,7 @@ async def test_caller_cancellation_finalizes_bundle_and_preserves_completed_arti
         await task
 
     bundle = bundle_root / "cancel-canary-run"
-    meta = load_bundle_meta_v2(bundle)
+    meta = load_bundle_meta_v3(bundle)
     assert meta.status == "cancelled"
     assert meta.artifact_count == 1
     assert meta.trace_count > 0
@@ -228,7 +228,7 @@ async def test_failed_finalization_uses_the_same_completed_artifact_journal(
         )
 
     bundle = bundle_root / "failed-journal-run"
-    assert load_bundle_meta_v2(bundle).status == "failed"
+    assert load_bundle_meta_v3(bundle).status == "failed"
     [entry] = _manifest(bundle)
     assert entry["artifact_id"] == "before-terminal-failure"
     assert entry["copied"] is True
@@ -270,7 +270,7 @@ async def test_cancellation_before_first_capability_result_finalizes_empty_bundl
     assert caught.value.args == ("operator-stop",)
 
     bundle = root / "cancel-empty-run"
-    assert load_bundle_meta_v2(bundle).status == "cancelled"
+    assert load_bundle_meta_v3(bundle).status == "cancelled"
     assert _manifest(bundle) == []
     trace = (bundle / "trace.jsonl").read_text(encoding="utf-8")
     assert '"decision":"cancelled"' in trace.replace(" ", "")
@@ -425,7 +425,7 @@ async def test_fanout_retains_completed_siblings_before_aggregate_commit(
         await task
 
     bundle = root / "cancel-fanout-run"
-    assert load_bundle_meta_v2(bundle).status == "cancelled"
+    assert load_bundle_meta_v3(bundle).status == "cancelled"
     assert [entry["artifact_id"] for entry in _manifest(bundle)] == ["fan-0", "fan-1"]
 
 
@@ -619,12 +619,12 @@ async def test_resumed_cancellation_preserves_snapshot_and_new_artifacts(
     for path in root.iterdir():
         if not (path / "meta.json").exists():
             continue
-        meta = load_bundle_meta_v2(path)
+        meta = load_bundle_meta_v3(path)
         if meta.run_id == "cancel-resume-run" and meta.segment_index == 1:
             resume_segments.append(path)
     assert len(resume_segments) == 1
     resume_bundle = resume_segments[0]
-    assert load_bundle_meta_v2(resume_bundle).status == "cancelled"
+    assert load_bundle_meta_v3(resume_bundle).status == "cancelled"
     assert [entry["artifact_id"] for entry in _manifest(resume_bundle)] == [
         "before-wait",
         "after-wait",
@@ -890,7 +890,7 @@ async def test_engine_cancellation_keeps_artifact_and_reaps_external_process(
         os.kill(pid, signal.SIGKILL)
         raise AssertionError("cancelled engine run left its external process alive")
 
-    assert load_bundle_meta_v2(root / "cancel-process-run").status == "cancelled"
+    assert load_bundle_meta_v3(root / "cancel-process-run").status == "cancelled"
     assert [row["artifact_id"] for row in _manifest(root / "cancel-process-run")] == [
         "before-process"
     ]

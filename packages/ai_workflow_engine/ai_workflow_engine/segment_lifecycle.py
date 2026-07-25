@@ -242,11 +242,11 @@ async def ensure_terminal_evidence(observation: Any, runtime: Any, wait_id: str)
         meta_path = segment_path / "meta.json"
         if meta_path.exists():
             # at-least-once redelivery after the evidence write: validate, never append.
-            # v0.11 (M9): the meta is read through the STRICT v2 loader — a pre-v2 or
+            # v0.11 (M9): the meta is read through the STRICT current loader — a pre-v3 or
             # malformed terminal meta fails loudly instead of being half-compared.
-            from ai_workflow_engine.observation_bundle import load_bundle_meta_v2
+            from ai_workflow_engine.observation_bundle import load_bundle_meta_v3
 
-            meta = load_bundle_meta_v2(segment_path)
+            meta = load_bundle_meta_v3(segment_path)
             existing_definition = WorkflowDefinition.model_validate_json(
                 (segment_path / "definition.json").read_text(encoding="utf-8")
             )

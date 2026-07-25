@@ -7,7 +7,7 @@
 from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
-__version__ = "0.11.9"
+__version__ = "0.11.10"
 
 
 # F-C1 (typed public surface): the SAME export map, statically visible. Type checkers
@@ -174,7 +174,11 @@ if TYPE_CHECKING:
         WorkflowUsageSummary,
     )
     from ai_workflow_engine.node_services import NodeExecutionServices, NodeSchedulingServices
-    from ai_workflow_engine.observation_bundle import ObservationBundleMetaV2, load_bundle_meta_v2
+    from ai_workflow_engine.observation_bundle import (
+        ObservationBundleMetaV3,
+        ProviderEvidenceIntegrity,
+        load_bundle_meta_v3,
+    )
     from ai_workflow_engine.observation_bundle import (
         ObservationRunBundle,
         ObservationSegment,
@@ -332,7 +336,11 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "NodeSchedulingServices": ("ai_workflow_engine.node_services", "NodeSchedulingServices"),
     "ObservationConfig": ("ai_workflow_engine.config_loader", "ObservationConfig"),
     "ObservationDetail": ("ai_workflow_engine.models", "ObservationDetail"),
-    "ObservationBundleMetaV2": ("ai_workflow_engine.observation_bundle", "ObservationBundleMetaV2"),
+    "ObservationBundleMetaV3": ("ai_workflow_engine.observation_bundle", "ObservationBundleMetaV3"),
+    "ProviderEvidenceIntegrity": (
+        "ai_workflow_engine.observation_bundle",
+        "ProviderEvidenceIntegrity",
+    ),
     "ObservationRunBundle": ("ai_workflow_engine.observation_bundle", "ObservationRunBundle"),
     "ObservationSegment": ("ai_workflow_engine.observation_bundle", "ObservationSegment"),
     "ObservationSequence": ("ai_workflow_engine.observation_bundle", "ObservationSequence"),
@@ -456,7 +464,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "load_prompt_template": ("ai_workflow_engine.prompt_loader", "load_prompt_template"),
     "load_workflow_config": ("ai_workflow_engine.config_loader", "load_workflow_config"),
     "model_profile_scope": ("ai_workflow_engine.model_binding", "model_profile_scope"),
-    "load_bundle_meta_v2": ("ai_workflow_engine.observation_bundle", "load_bundle_meta_v2"),
+    "load_bundle_meta_v3": ("ai_workflow_engine.observation_bundle", "load_bundle_meta_v3"),
     "open_observation_run_bundle": ("ai_workflow_engine.observation_bundle", "open_observation_run_bundle"),
     "prune_observation_bundles": ("ai_workflow_engine.observation_bundle", "prune_observation_bundles"),
     "render_capability_catalog": ("ai_workflow_engine.flow_authoring", "render_capability_catalog"),
@@ -561,7 +569,8 @@ __all__ = [
     "NotionalRate",
     "ObservationConfig",
     "ObservationDetail",
-    "ObservationBundleMetaV2",
+    "ObservationBundleMetaV3",
+    "ProviderEvidenceIntegrity",
     "ObservationRunBundle",
     "ObservationSegment",
     "ObservationSequence",
@@ -658,7 +667,7 @@ __all__ = [
     "SequencedUsageSink",
     "AsyncQueueUsageSink",
     "TeeUsageSink",
-    "load_bundle_meta_v2",
+    "load_bundle_meta_v3",
     "open_observation_run_bundle",
     "prune_observation_bundles",
     "BranchFlowNode",

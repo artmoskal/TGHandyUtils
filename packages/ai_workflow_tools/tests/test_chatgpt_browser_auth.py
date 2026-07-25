@@ -249,8 +249,8 @@ def test_token_never_reaches_exception_text_chain_or_logs(caplog):
     assert "secret-token-4" not in repr(client)
 
 
-@pytest.mark.parametrize("client_kind", ["async", "sync"])
-def test_transport_exception_redacts_token_and_provider_url(client_kind):
+@pytest.mark.parametrize("client_kind", ["async", "sync", "image"])
+def test_transport_exception_redacts_token_and_provider_url(client_kind, tmp_path):
     secret = "secret-token-transport"
 
     def post(*_args, **_kwargs):
@@ -265,18 +265,34 @@ def test_transport_exception_redacts_token_and_provider_url(client_kind):
         )
         invoke = lambda: _ask(client)
     else:
-        client = ChatGptBrowserChatModel(
-            "https://browser.test:8010", bearer_token=secret, http_post=post
-        )
-        invoke = lambda: client.invoke([("user", "hi")])
+        if client_kind == "sync":
+            client = ChatGptBrowserChatModel(
+                "https://browser.test:8010", bearer_token=secret, http_post=post
+            )
+            invoke = lambda: client.invoke([("user", "hi")])
+        else:
+            from ai_workflow_tools.media.image_generation import (
+                ChatGptBrowserImageGenerator,
+            )
 
-    with pytest.raises(ChatGptBrowserError) as err:
+            class _TransportFailureConfig(_ImageConfig):
+                WORKFLOW_CHATGPT_BROWSER_TOKEN = secret
+
+            client = ChatGptBrowserImageGenerator(
+                _TransportFailureConfig(), http_post=post
+            )
+            invoke = lambda: asyncio.run(client.generate(_image_request(tmp_path)))
+
+    with pytest.raises(Exception) as err:
         invoke()
-    durable_error = str(err.value)
-    assert secret not in durable_error
-    assert "provider.invalid" not in durable_error
-    assert "[REDACTED]" in durable_error
-    assert "[REDACTED_URL]" in durable_error
+    current: BaseException | None = err.value
+    while current is not None:
+        durable_error = f"{current!r}{current}"
+        assert secret not in durable_error
+        assert "provider.invalid" not in durable_error
+        current = current.__cause__ or current.__context__
+    assert "[REDACTED]" in str(err.value)
+    assert "[REDACTED_URL]" in str(err.value)
 
 
 @pytest.mark.parametrize(

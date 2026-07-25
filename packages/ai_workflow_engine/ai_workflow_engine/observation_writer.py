@@ -7,9 +7,11 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import logging
+import os
 from pathlib import Path
 import re
 from typing import Any, Iterable, Literal, Optional
+import uuid
 
 from ai_workflow_engine.engine.capabilities import (
     DetailSink,
@@ -30,8 +32,9 @@ from ai_workflow_engine.observation_contract import (
     ARTIFACT_MANIFEST_NAME,
     BUNDLE_SCHEMA_VERSION,
     DEFAULT_ARTIFACT_MAX_BYTES,
-    ObservationBundleMetaV2,
+    ObservationBundleMetaV3,
     ObservationSegment,
+    ProviderEvidenceIntegrity,
     assert_plain_identity,
     resolve_child_dir,
 )
@@ -179,14 +182,18 @@ class ObservationRunBundle:
     ) -> None:
         if self.segment is None:
             raise RuntimeError(
-                "engine-owned observation lifecycle emits ONLY segmented v2 bundles "
-                "(v0.11, manifest row M9) — open the bundle with an ObservationSegment "
+                "engine-owned observation lifecycle emits ONLY segmented v3 bundles — "
+                "open the bundle with an ObservationSegment "
                 "(open_observation_run_bundle supplies the initial segment automatically)"
             )
-        validate_provider_invocation_links(
-            _load_jsonl_models(self.trace_path, WorkflowTraceEvent),
-            _load_jsonl_models(self.detail_path, ObservationDetail),
-            _load_jsonl_models(self.usage_path, WorkflowUsageEvent),
+        traces = _load_jsonl_models(self.trace_path, WorkflowTraceEvent)
+        details = _load_jsonl_models(self.detail_path, ObservationDetail)
+        persisted_usage = _load_jsonl_models(self.usage_path, WorkflowUsageEvent)
+        provider_evidence = _provider_evidence_integrity(
+            status=status,
+            traces=traces,
+            details=details,
+            usage_events=persisted_usage,
         )
         definition_json = definition.model_dump_json()
         (self.path / "definition.json").write_text(definition_json, encoding="utf-8")
@@ -196,7 +203,7 @@ class ObservationRunBundle:
             json.dumps(manifest, sort_keys=True, indent=2),
             encoding="utf-8",
         )
-        meta_model = ObservationBundleMetaV2(
+        meta_model = ObservationBundleMetaV3(
             bundle_schema_version=BUNDLE_SCHEMA_VERSION,
             run_id=str(self.run_id),
             workflow_id=definition.workflow_id,
@@ -227,14 +234,12 @@ class ObservationRunBundle:
             segment_kind=self.segment.kind,
             attempt=self.segment.attempt,
             correlation_id=self.correlation_id or None,
+            provider_evidence=provider_evidence,
         )
         meta = json.loads(meta_model.model_dump_json())
         if meta.get("correlation_id") is None:
             meta.pop("correlation_id", None)
-        (self.path / "meta.json").write_text(
-            json.dumps(meta, sort_keys=True, indent=2),
-            encoding="utf-8",
-        )
+        _write_json_atomic(self.path / "meta.json", meta)
         if self.retention_limit is not None:
             prune_observation_bundles(
                 self.base_dir,
@@ -354,7 +359,7 @@ def write_minimal_abandoned_meta(
 
     definition_json = definition.model_dump_json()
     (path / "definition.json").write_text(definition_json, encoding="utf-8")
-    meta_model = ObservationBundleMetaV2(
+    meta_model = ObservationBundleMetaV3(
         bundle_schema_version=BUNDLE_SCHEMA_VERSION,
         run_id=run_id,
         workflow_id=definition.workflow_id,
@@ -381,14 +386,12 @@ def write_minimal_abandoned_meta(
         segment_kind="resume",
         attempt=attempt,
         correlation_id=correlation_id or None,
+        provider_evidence=ProviderEvidenceIntegrity(integrity="complete"),
     )
     meta = json.loads(meta_model.model_dump_json())
     if meta.get("correlation_id") is None:
         meta.pop("correlation_id", None)
-    (path / "meta.json").write_text(
-        json.dumps(meta, sort_keys=True, indent=2),
-        encoding="utf-8",
-    )
+    _write_json_atomic(path / "meta.json", meta)
 
 
 def _usage_events(
@@ -420,6 +423,45 @@ def _load_jsonl_models(path: Path, model: type[Any]) -> list[Any]:
 def _sum_cost(values: Iterable[float | None]) -> float | None:
     costs = [float(value) for value in values if value is not None]
     return round(sum(costs), 6) if costs else None
+
+
+def _provider_evidence_integrity(
+    *,
+    status: str,
+    traces: list[WorkflowTraceEvent],
+    details: list[ObservationDetail],
+    usage_events: list[WorkflowUsageEvent],
+) -> ProviderEvidenceIntegrity:
+    try:
+        validate_provider_invocation_links(traces, details, usage_events)
+    except ValueError as integrity_error:
+        if status == "completed":
+            raise
+        diagnostic = str(integrity_error).strip()[:500] or "provider evidence is incomplete"
+        return ProviderEvidenceIntegrity(
+            integrity="incomplete",
+            diagnostic=diagnostic,
+        )
+    return ProviderEvidenceIntegrity(integrity="complete")
+
+
+def _write_json_atomic(path: Path, payload: Any) -> None:
+    """Commit one JSON file with an fsynced sibling temp and atomic replace."""
+
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("x", encoding="utf-8") as stream:
+            stream.write(json.dumps(payload, sort_keys=True, indent=2))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _artifact_filename(artifact_id: str, source: Path, used: set[str]) -> str:

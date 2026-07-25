@@ -385,30 +385,11 @@ class WorkflowExecutor:
                 update={"snapshot": None, "wait_handle": durable_handle}
             )
         if terminal_status is not None:
-            # B-post2: the hook must never desynchronize the durable record from the returned
-            # result, and a raising hook must never leave the bundle unfinalized.
-            try:
-                override = terminal_status(envelope)
-            except Exception:
-                session.close("failed")
-                raise
-            if override:
-                valid = {"completed", "partial", "failed", "requires_user_input"}
-                if override not in valid:
-                    session.close("failed")
-                    raise ValueError(
-                        f"terminal_status hook returned invalid status {override!r} "
-                        f"(allowed: {sorted(valid)})"
-                    )
-                if override == "requires_user_input" and envelope.snapshot is None:
-                    # A result that asks the caller to resume MUST carry a resumable snapshot;
-                    # a hook cannot conjure a suspension out of a completed machine.
-                    session.close("failed")
-                    raise ValueError(
-                        "terminal_status hook returned 'requires_user_input' but the run has no "
-                        "machine snapshot — suspension must come from the workflow itself"
-                    )
-                envelope = envelope.model_copy(update={"status": override})
+            envelope = await self._results.project_terminal_status(
+                session,
+                envelope,
+                terminal_status,
+            )
         return self._finalize_result(session, envelope)
 
     async def _run_inner(

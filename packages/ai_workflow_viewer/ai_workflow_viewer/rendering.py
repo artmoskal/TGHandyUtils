@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 from pathlib import Path
 import json
+import math
 from urllib.parse import quote
 import re
 from typing import Any, Mapping, Optional
@@ -746,31 +747,50 @@ def _runtime_bound_metrics(events: list[ObservationTimelineEntry]) -> list[str]:
             retrace = (metadata.get("retrace"), metadata["retrace_target"])
 
     metrics: list[str] = []
-    if window is not None and window.get("hard_timeout_s") is not None:
-        soft = window.get("soft_timeout_s")
-        hard = window.get("hard_timeout_s")
-        label = f"window: soft {float(soft):g}s / hard {float(hard):g}s"
-        clamps = window.get("clamps") or []
-        if clamps:
+    if window is not None:
+        soft = _nonnegative_finite_number(window.get("soft_timeout_s"))
+        hard = _nonnegative_finite_number(window.get("hard_timeout_s"))
+        parts = [
+            *(["soft " + f"{soft:g}s"] if soft is not None else []),
+            *(["hard " + f"{hard:g}s"] if hard is not None else []),
+        ]
+        label = f"window: {' / '.join(parts)}" if parts else ""
+        clamps = window.get("clamps")
+        clamps = (
+            [item for item in clamps if isinstance(item, str) and item.strip()]
+            if isinstance(clamps, list)
+            else []
+        )
+        if label and clamps:
             label += f" (clamped: {', '.join(str(c) for c in clamps)})"
         enforcement = window.get("enforcement")
-        if enforcement:
+        if label and isinstance(enforcement, str) and enforcement.strip():
             label += f" [{enforcement}]"
-        metrics.append(label)
-    if process_bound is not None and process_bound.get("work_timeout_s") is not None:
-        work = float(process_bound["work_timeout_s"])
-        grace = float(process_bound.get("kill_grace_s") or 0.0)
-        label = f"process: work {work:g}s / cleanup {grace:g}s"
-        settle = float(process_bound.get("settle_reserve_s") or 0.0)
-        if settle:
-            label += f" / settle {settle:g}s"
-        headroom = float(process_bound.get("cleanup_headroom_s") or 0.0)
-        if headroom:
+        if label:
+            metrics.append(label)
+    if process_bound is not None:
+        process_parts: list[str] = []
+        for key, name in (
+            ("work_timeout_s", "work"),
+            ("kill_grace_s", "cleanup"),
+            ("settle_reserve_s", "settle"),
+        ):
+            value = _nonnegative_finite_number(process_bound.get(key))
+            if value is not None:
+                process_parts.append(f"{name} {value:g}s")
+        label = f"process: {' / '.join(process_parts)}" if process_parts else ""
+        headroom = _nonnegative_finite_number(
+            process_bound.get("cleanup_headroom_s")
+        )
+        if label and headroom is not None and headroom > 0:
             label += f" (reserved: {headroom:g}s)"
+        elif headroom is not None and headroom > 0:
+            label = f"process: reserved {headroom:g}s"
         source = process_bound.get("source")
-        if source:
+        if label and isinstance(source, str) and source.strip():
             label += f" [{source}]"
-        metrics.append(label)
+        if label:
+            metrics.append(label)
     if process_io is not None:
         # v0.10.1: a CONCISE settlement summary — byte totals, truncation, and result-file
         # state — so operators diagnose without the viewer copying the flood into the page.
@@ -786,6 +806,13 @@ def _runtime_bound_metrics(events: list[ObservationTimelineEntry]) -> list[str]:
         prefix = f"retrace round {round_no}" if round_no is not None else "retrace"
         metrics.append(f"{prefix} → {target}")
     return metrics
+
+
+def _nonnegative_finite_number(value: Any) -> float | None:
+    if type(value) not in (int, float):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) and number >= 0 else None
 
 
 def _format_bytes(value: Any) -> str:

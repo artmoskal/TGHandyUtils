@@ -10,8 +10,8 @@ from typing import Optional
 from ai_workflow_engine.observation_contract import (
     ABANDON_MARKER_NAME,
     COMMIT_MARKER_NAME,
-    ObservationBundleMetaV2,
-    load_bundle_meta_v2,
+    ObservationBundleMetaV3,
+    load_bundle_meta_v3,
 )
 
 
@@ -32,13 +32,21 @@ def prune_observation_bundles(
     if not base.exists():
         return
     keep = max(1, int(retention_limit))
-    groups: dict[str, list[Path]] = {}
+    groups: dict[str, list[tuple[Path, ObservationBundleMetaV3]]] = {}
     for path in base.iterdir():
-        if path.is_dir() and _is_finalized_bundle(path):
-            groups.setdefault(_bundle_logical_run_id(path), []).append(path)
+        if not (path.is_dir() and _is_finalized_bundle(path)):
+            continue
+        try:
+            meta = _bundle_meta(path)
+        except Exception:
+            # A corrupt or foreign-version directory is evidence for an operator, not a
+            # retention candidate. Preserve it and continue pruning healthy groups.
+            continue
+        groups.setdefault(meta.run_id, []).append((path, meta))
     prunable: list[tuple[tuple[str, float], list[Path]]] = []
-    for paths in groups.values():
-        entries = [(_bundle_meta(path), path) for path in paths]
+    for stored in groups.values():
+        entries = [(meta, path) for path, meta in stored]
+        paths = [path for path, _meta in stored]
         canonical = [
             (meta, path)
             for meta, path in entries
@@ -85,12 +93,8 @@ def _is_finalized_bundle(path: Path) -> bool:
     return (path / "meta.json").exists()
 
 
-def _bundle_meta(path: Path) -> ObservationBundleMetaV2:
-    return load_bundle_meta_v2(path)
-
-
-def _bundle_logical_run_id(path: Path) -> str:
-    return _bundle_meta(path).run_id
+def _bundle_meta(path: Path) -> ObservationBundleMetaV3:
+    return load_bundle_meta_v3(path)
 
 
 __all__ = ["prune_observation_bundles"]

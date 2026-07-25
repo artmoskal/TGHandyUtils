@@ -270,9 +270,14 @@ class CliAgentCapability:
                 ],
             },
         )
-        result_status, capability_status = self._status_from_external(external, output)
+        result_status, capability_status = self._status_from_external(
+            external, output, parsed_output
+        )
         stderr = str(output.get("stderr") or "")
         error = external.error if capability_status != "accepted" else None
+        if parsed_output.provider_error:
+            subtype = parsed_output.provider_error_subtype or "provider_error"
+            error = f"CLI provider reported an error result ({subtype})"
         result = CliAgentResult(
             status=result_status,
             invocation_id=str(effective_request.invocation_id),
@@ -566,11 +571,19 @@ class CliAgentCapability:
         return sorted(paths)
 
     @staticmethod
-    def _status_from_external(external: CapabilityResult, output: dict[str, Any]) -> tuple[str, str]:
+    def _status_from_external(
+        external: CapabilityResult,
+        output: dict[str, Any],
+        parsed: ParsedCliOutput,
+    ) -> tuple[str, str]:
         if external.status == "partial":
             return "truncated", "partial"
         returncode = _safe_int_or_none(output.get("returncode"))
-        if external.status == "accepted" and returncode == 0:
+        if (
+            external.status == "accepted"
+            and returncode == 0
+            and not parsed.provider_error
+        ):
             return "completed", "accepted"
         return "error", "failed"
 

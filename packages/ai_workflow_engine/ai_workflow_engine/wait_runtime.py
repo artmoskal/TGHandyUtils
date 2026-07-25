@@ -150,6 +150,102 @@ class DurableWaitRuntime:
     def now(self) -> datetime:
         return self._clock() if self._clock is not None else datetime.now(timezone.utc)
 
+    async def settle_unexposed_handle(
+        self,
+        handle: WaitHandle,
+        *,
+        reason: str,
+    ) -> None:
+        """Boundedly settle one handle that the enclosing result will not expose.
+
+        This uses registration compensation rather than operator cancellation. The adapter
+        therefore refuses settlement if an exact retry joined the registration and may
+        already have exposed the same handle.
+        """
+
+        validated = WaitHandle.model_validate(handle.model_dump())
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + REGISTRATION_SETTLEMENT_TIMEOUT_S
+        interrupted_by: asyncio.CancelledError | None = None
+        settle = asyncio.ensure_future(
+            self._abort_unexposed_handle(validated, reason=str(reason)[:500])
+        )
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                settle.cancel()
+                settle.add_done_callback(_observe_task_result)
+                raise WaitRegistrationSettlementError(
+                    f"wait {validated.wait_id!r}: unexposed-handle settlement did not "
+                    f"finish within {REGISTRATION_SETTLEMENT_TIMEOUT_S}s"
+                ) from interrupted_by
+            try:
+                await asyncio.wait_for(asyncio.shield(settle), timeout=remaining)
+            except asyncio.CancelledError as cancellation:
+                if interrupted_by is None:
+                    interrupted_by = cancellation
+                if settle.done() and not settle.cancelled() and settle.exception() is None:
+                    raise interrupted_by
+                continue
+            except asyncio.TimeoutError:
+                continue
+            except WaitRegistrationSettlementError:
+                raise
+            except Exception as settlement_error:
+                raise WaitRegistrationSettlementError(
+                    f"wait {validated.wait_id!r}: unexposed-handle settlement failed: "
+                    f"{settlement_error}"
+                ) from (interrupted_by or settlement_error)
+            else:
+                if interrupted_by is not None:
+                    raise interrupted_by
+                return
+
+    async def _abort_unexposed_handle(
+        self,
+        handle: WaitHandle,
+        *,
+        reason: str,
+    ) -> None:
+        record = await self.coordinator.get(handle.wait_id)
+        if record is None:
+            return
+        receipt = await self.coordinator.load_receipt(handle.wait_id)
+        if (
+            receipt is None
+            or receipt.wait_id != handle.wait_id
+            or receipt.registration_id != handle.registration_id
+        ):
+            raise WaitRegistrationSettlementError(
+                f"wait {handle.wait_id!r}: stored registration identity does not match "
+                "the unexposed handle"
+            )
+        raw = await self.coordinator.abort_registration(
+            handle.wait_id,
+            expected_registration_id=handle.registration_id,
+            expected_registration_attempt_id=record.registration_attempt_id,
+            expected_definition_digest=record.definition_digest,
+            reason=reason,
+        )
+        outcome = (
+            raw
+            if isinstance(raw, WaitRegistrationAbortOutcome)
+            else WaitRegistrationAbortOutcome.model_validate(raw)
+        )
+        if outcome.kind in ("absent", "cancelled"):
+            return
+        if (
+            outcome.kind in ("not_creator", "already_terminal")
+            and outcome.record is not None
+            and outcome.record.status == "cancelled"
+        ):
+            return
+        status = outcome.record.status if outcome.record is not None else "unknown"
+        raise WaitRegistrationSettlementError(
+            f"wait {handle.wait_id!r}: unexposed-handle settlement returned "
+            f"{outcome.kind!r} with stored status {status!r}"
+        )
+
     def holds_claim(self, wait_id: str, token: Optional[str]) -> bool:
         """W3R.1: True only while deliver() is executing THIS wait under THIS token."""
 
@@ -270,8 +366,8 @@ class DurableWaitRuntime:
                 )
             except asyncio.CancelledError as cancellation:
                 if nested_settlements:
-                    await self._complete_after_nested_registration(
-                        wait_id, claim, event.kind, cancellation
+                    await self._fail_after_nested_registration(
+                        wait_id, claim, cancellation
                     )
                 raise
         finally:
@@ -624,25 +720,28 @@ class DurableWaitRuntime:
                     raise interrupted_by
                 return
 
-    async def _complete_after_nested_registration(
+    async def _fail_after_nested_registration(
         self,
         wait_id: str,
         claim: Any,
-        resolution_kind: str,
         cancellation: asyncio.CancelledError,
     ) -> None:
-        """Terminalize the accepted event when its resumed machine reached the next wait.
+        """Fail the accepted event when cancellation prevents the next handle's exposure.
 
-        The next registration has already been settled before this runs. Keeping the first
-        wait claimed would strand an accepted event even though it reached a durable machine
-        boundary. Repeated caller cancellation cannot abandon this terminal write; failure
-        stays loud and chained instead of rewriting execution truth as clean cancellation.
+        The nested registration has already been compensated and is inert. Reporting the
+        outer wait completed would claim successful resumability even though no caller
+        received the next handle, so the outer lifecycle ends as a loud resume failure.
         """
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + REGISTRATION_SETTLEMENT_TIMEOUT_S
         terminalize = asyncio.ensure_future(
-            self.coordinator.complete(wait_id, claim, resolution_kind=resolution_kind)
+            self.coordinator.fail(
+                wait_id,
+                claim,
+                error="cancelled while registering the next durable wait; run is not resumable",
+                failure_kind="resume_failed",
+            )
         )
         while True:
             remaining = deadline - loop.time()
@@ -650,8 +749,8 @@ class DurableWaitRuntime:
                 terminalize.cancel()
                 terminalize.add_done_callback(_observe_task_result)
                 raise WaitRegistrationSettlementError(
-                    f"wait {wait_id!r}: the resumed machine reached and settled its next "
-                    "durable wait, but the accepted event could not be terminalized within "
+                    f"wait {wait_id!r}: the resumed machine's nested registration was "
+                    "cancelled, but the accepted event could not be failed within "
                     f"{REGISTRATION_SETTLEMENT_TIMEOUT_S}s"
                 ) from cancellation
             try:
@@ -662,16 +761,16 @@ class DurableWaitRuntime:
                     if error is None:
                         return
                     raise WaitRegistrationSettlementError(
-                        f"wait {wait_id!r}: terminalizing the accepted event after nested "
-                        f"registration settlement failed: {error}"
+                        f"wait {wait_id!r}: failing the accepted event after nested "
+                        f"registration cancellation failed: {error}"
                     ) from cancellation
                 continue
             except asyncio.TimeoutError:
                 continue
             except Exception as terminal_error:
                 raise WaitRegistrationSettlementError(
-                    f"wait {wait_id!r}: terminalizing the accepted event after nested "
-                    f"registration settlement failed: {terminal_error}"
+                    f"wait {wait_id!r}: failing the accepted event after nested "
+                    f"registration cancellation failed: {terminal_error}"
                 ) from cancellation
             else:
                 return

@@ -254,6 +254,43 @@ def test_claude_envelope_accumulator_preserves_usage_and_provider_cost_across_ch
     assert parsed.normalized_usage.cache_creation_input_tokens == 5
 
 
+@pytest.mark.parametrize(
+    ("is_error", "subtype"),
+    [
+        (True, "error_during_execution"),
+        (False, "error_max_budget_usd"),
+    ],
+)
+def test_claude_error_envelope_is_typed_even_when_process_exit_is_zero(
+    is_error, subtype
+):
+    parsed = parse_cli_process_output(
+        CliFlavor(
+            name="claude",
+            prompt_delivery="stdin",
+            result_source="stdout_json_envelope",
+            base_argv=["claude", "-p"],
+        ),
+        {
+            "stdout": json.dumps(
+                {
+                    "type": "result",
+                    "is_error": is_error,
+                    "subtype": subtype,
+                    "result": "",
+                    "total_cost_usd": 0.25,
+                    "usage": {"input_tokens": 10, "output_tokens": 2},
+                }
+            )
+        },
+    )
+
+    assert parsed.provider_error is True
+    assert parsed.provider_error_subtype == subtype
+    assert parsed.provider_reported_notional_usd == 0.25
+    assert parsed.normalized_usage is not None
+
+
 def test_claude_invalid_usage_diagnostic_is_bounded_and_excludes_unrelated_envelope():
     payload = json.dumps(
         {

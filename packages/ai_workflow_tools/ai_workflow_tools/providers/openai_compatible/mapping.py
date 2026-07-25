@@ -15,6 +15,8 @@ from ai_workflow_engine.usage_contract import NormalizedTokenUsage, UsageError
 from ai_workflow_tools.providers.openai_compatible.models import (
     OpenAICompatibleProviderConfig,
     OpenAICompatibleProviderError,
+    sanitize_provider_text,
+    secret_values,
 )
 
 
@@ -87,6 +89,31 @@ def response_from_payload(
             provider_request_id,
             elapsed_ms,
         )
+    usage, usage_error, usage_diagnostic = _normalized_usage(payload.get("usage"))
+    model = _bounded_label(payload.get("model"), config.model, limit=256)
+    stop_reason = _bounded_label(choice.get("finish_reason"), "", limit=128) or None
+    refusal = _bounded_label(message.get("refusal"), "", limit=128) or None
+    if refusal is not None or stop_reason == "content_filter":
+        refusal_fact = (
+            sanitize_provider_text(
+                refusal,
+                secrets=secret_values(config),
+                limit=128,
+            )
+            if refusal is not None
+            else "content_filter"
+        )
+        raise OpenAICompatibleProviderError(
+            f"provider refused the request ({refusal_fact})",
+            failure_kind="refusal",
+            model=model,
+            invocation_id=invocation_id,
+            provider_request_id=provider_request_id,
+            elapsed_ms=elapsed_ms,
+            normalized_usage=usage,
+            usage_error=usage_error,
+            usage_diagnostic=usage_diagnostic,
+        )
     text = _response_text(
         message.get("content"),
         config,
@@ -109,7 +136,6 @@ def response_from_payload(
             provider_request_id,
             elapsed_ms,
         )
-    usage, usage_error, usage_diagnostic = _normalized_usage(payload.get("usage"))
     input_tokens = usage.raw_input_tokens if usage is not None else 0
     output_tokens = usage.raw_output_tokens if usage is not None else 0
     total_tokens = (
@@ -117,8 +143,6 @@ def response_from_payload(
         if usage is not None and usage.raw_total_tokens is not None
         else input_tokens + output_tokens
     )
-    model = _bounded_label(payload.get("model"), config.model, limit=256)
-    stop_reason = _bounded_label(choice.get("finish_reason"), "", limit=128) or None
     return LLMResponse(
         text=text,
         tool_calls=tool_calls,
@@ -461,10 +485,10 @@ def _strict_counter(
 
 
 def _bounded_label(value: Any, fallback: str, *, limit: int) -> str:
-    text = str(value if value is not None else fallback)
-    if not text.isprintable():
-        text = fallback
-    return text.strip()[:limit]
+    text = str(value if value is not None else "").strip()
+    if not text or not text.isprintable():
+        text = str(fallback).strip()
+    return text[:limit]
 
 
 def _invalid_response(

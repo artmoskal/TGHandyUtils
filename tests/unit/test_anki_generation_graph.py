@@ -312,7 +312,7 @@ async def test_graph_nodes_run_through_generic_capability_runtime(tmp_path):
     ):
         assert (bundle_dir / name).exists(), f"missing observation bundle file: {name}"
     meta = json.loads((bundle_dir / "meta.json").read_text(encoding="utf-8"))
-    assert meta["bundle_schema_version"] == 2  # v0.11 bundle v2 (M9)
+    assert meta["bundle_schema_version"] == 3  # v0.11.10 latest-only bundle contract
     assert meta["status"] == "completed"
     assert meta["trace_count"] == len((bundle_dir / "trace.jsonl").read_text().splitlines())
     assert meta["detail_count"] == len((bundle_dir / "details.jsonl").read_text().splitlines())
