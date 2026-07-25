@@ -140,7 +140,7 @@ Consumers download the complete published release directory, obtain the verifier
 the tag (or another already trusted pin), verify the bundle before installation, and install only
 the packages their product needs. Building from source is a producer operation, not consumer
 verification. The exact producer and consumer commands are in
-[`docs/operations.md`](docs/operations.md#release-artifacts-and-verification-v01110).
+[`docs/operations.md`](docs/operations.md#release-artifacts-and-verification-v01111).
 The required pre-install door is
 `python3 release_artifacts.py verify-bundle --dir /path/to/engine-v0.11.11`.
 

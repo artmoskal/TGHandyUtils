@@ -155,8 +155,32 @@ if [ -n "$PYTEST_ARGS" ]; then
 fi
 echo ""
 
+# Resolve the test environment file before entering infra. Compose v2.20 treats env_file as
+# required, while clean tagged checkouts intentionally have no gitignored .env. Keep the checkout
+# clean: use the real file when present, otherwise pass a temporary empty file and remove it on exit.
+REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
+TEMP_TEST_ENV_FILE=""
+
+cleanup_test_env_file() {
+    if [ -n "$TEMP_TEST_ENV_FILE" ]; then
+        rm -f "$TEMP_TEST_ENV_FILE"
+    fi
+}
+
+trap cleanup_test_env_file EXIT
+
+if [ -f "$REPO_ROOT/.env" ]; then
+    TG_TEST_ENV_FILE="$REPO_ROOT/.env"
+else
+    TEMP_TEST_ENV_FILE="$(mktemp "${TMPDIR:-/tmp}/tghandy-test-env.XXXXXX")"
+    TG_TEST_ENV_FILE="$TEMP_TEST_ENV_FILE"
+    echo -e "${YELLOW}⚠️  No .env found; using a temporary empty test environment.${NC}"
+    echo "   Hermetic tiers need no secrets; credentialed suites skip or fail by their own gate."
+fi
+export TG_TEST_ENV_FILE
+
 # Change to infra directory
-cd "$(dirname "$0")/infra"
+cd "$REPO_ROOT/infra"
 
 # Clean up any existing test containers
 echo "🧹 Cleaning up previous test runs..."

@@ -5,7 +5,7 @@ services:
     build:
       context: ../
       dockerfile: infra/Dockerfile
-    env_file: ../.env
+    env_file: "${TG_TEST_ENV_FILE:-../.env}"
     environment:
       # Python path for imports
       - PYTHONPATH=/app:/app/packages/ai_workflow_engine:/app/packages/ai_workflow_tools:/app/packages/ai_workflow_viewer

@@ -240,6 +240,81 @@ def test_test_wrapper_preserves_pytest_args_as_array():
     subprocess.run(["bash", "-n", str(script)], check=True)
 
 
+def _run_copied_test_wrapper(tmp_path: Path, *, dotenv: str | None) -> tuple[Path, str]:
+    repo_root = tmp_path / "repo"
+    infra = repo_root / "infra"
+    bin_dir = tmp_path / "bin"
+    trace = tmp_path / "compose-env-paths.txt"
+    infra.mkdir(parents=True)
+    bin_dir.mkdir()
+    source_root = Path(__file__).resolve().parents[2]
+    (repo_root / "test.sh").write_bytes((source_root / "test.sh").read_bytes())
+    (infra / "docker-compose.test.yml").write_bytes(
+        (source_root / "infra" / "docker-compose.test.yml").read_bytes()
+    )
+    if dotenv is not None:
+        (repo_root / ".env").write_text(dotenv, encoding="utf-8")
+
+    fake_compose = bin_dir / "docker-compose"
+    fake_compose.write_text(
+        "\n".join(
+            [
+                "#!/bin/bash",
+                'test -f "$TG_TEST_ENV_FILE"',
+                'printf "%s\\n" "$TG_TEST_ENV_FILE" >> "$TEST_ENV_TRACE"',
+                "exit 0",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    fake_compose.chmod(0o755)
+    environment = {
+        **os.environ,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "TEST_ENV_TRACE": str(trace),
+    }
+    completed = subprocess.run(
+        ["bash", str(repo_root / "test.sh"), "unit"],
+        cwd=repo_root,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    paths = {Path(value) for value in trace.read_text(encoding="utf-8").splitlines()}
+    assert len(paths) == 1
+    return paths.pop(), completed.stdout
+
+
+def test_test_wrapper_uses_and_removes_temporary_env_outside_clean_checkout(tmp_path: Path):
+    selected, stdout = _run_copied_test_wrapper(tmp_path, dotenv=None)
+    copied_repo = tmp_path / "repo"
+    repo_root = Path(__file__).resolve().parents[2]
+    operations = (
+        repo_root / "packages" / "ai_workflow_engine" / "docs" / "operations.md"
+    ).read_text(encoding="utf-8")
+
+    assert selected.is_absolute()
+    assert copied_repo not in selected.parents
+    assert not selected.exists()
+    assert not (copied_repo / ".env").exists()
+    assert "temporary empty test environment" in stdout
+    assert "creates a permission-restricted" in operations
+    assert "no operator-created `.env`" in operations
+
+
+def test_test_wrapper_preserves_real_dotenv_without_deleting_it(tmp_path: Path):
+    dotenv = "CHATGPT_BROWSER_API_TOKEN=not-a-real-secret\n"
+    selected, stdout = _run_copied_test_wrapper(tmp_path, dotenv=dotenv)
+    expected = tmp_path / "repo" / ".env"
+
+    assert selected == expected
+    assert expected.read_text(encoding="utf-8") == dotenv
+    assert "temporary empty test environment" not in stdout
+
+
 @pytest.mark.unit
 def test_engine_runtime_limits_is_the_one_app_budget_boundary():
     """R1: the application normalizes its ceilings ONCE into typed RuntimeLimits.

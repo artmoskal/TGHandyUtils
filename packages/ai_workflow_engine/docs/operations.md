@@ -320,6 +320,14 @@ artifact gate requires a new fix-forward version; never move the tag. Use two in
 clean checkouts for wheel reproducibility and a third checkout for test/smoke evidence. Keep all
 outputs outside those checkouts.
 
+The root `./test.sh` wrapper is clean-checkout-safe on Docker Compose v2.20 and newer. It passes the
+repository `.env` to Compose when that file exists; otherwise it creates a permission-restricted,
+empty file under the system temporary directory, reports that choice, and removes the file on exit.
+Hermetic tiers therefore need no operator-created `.env`, no secrets, and no source-tree mutation.
+Credentialed/live suites retain their own explicit enablement and skip or fail by name when their
+required deployment configuration is absent. Do not create an empty `.env` inside a release
+checkout and do not raise the Compose version floor merely to make `env_file` optional.
+
 ```bash
 TAG=engine-v0.11.11
 BUILD_A=/tmp/engine-build-a

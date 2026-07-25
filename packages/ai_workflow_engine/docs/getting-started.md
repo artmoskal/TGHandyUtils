@@ -17,7 +17,7 @@ engine-window timeout narrowing without adding provider code to engine core. See
 
 The current immutable release is `engine-v0.11.11`. Do not install packages from a branch. Consume
 the complete published directory, verify it with the tagged verifier as described in
-[operations](operations.md#release-artifacts-and-verification-v0119), then record the exact bytes
+[operations](operations.md#release-artifacts-and-verification-v01111), then record the exact bytes
 installed:
 
 ```text

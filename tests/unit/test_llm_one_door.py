@@ -489,7 +489,11 @@ def test_compose_env_precedence_cannot_shadow_dotenv_browser_credentials():
         assert not re.search(rf"^\s*-\s*{key}=", compose, re.MULTILINE), (
             f"{key} in environment would outrank env_file even when interpolated empty"
         )
-    assert re.search(r"env_file:\s*\.\./\.env|env_file:\s*\n\s*-\s*\.\./\.env", compose)
+    assert 'env_file: "${TG_TEST_ENV_FILE:-../.env}"' in compose
+    test_wrapper = (REPO_ROOT / "test.sh").read_text(encoding="utf-8")
+    assert 'TG_TEST_ENV_FILE="$REPO_ROOT/.env"' in test_wrapper
+    assert 'mktemp "${TMPDIR:-/tmp}/tghandy-test-env.XXXXXX"' in test_wrapper
+    assert ': > ../.env' not in test_wrapper and "touch ../.env" not in test_wrapper
 
     declared = dotenv_values(REPO_ROOT / ".env") if (REPO_ROOT / ".env").exists() else {}
     if os.getenv("RUNNING_IN_DOCKER") == "1":
