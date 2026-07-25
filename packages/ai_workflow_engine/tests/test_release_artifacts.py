@@ -137,6 +137,7 @@ def _scratch_tag_repo(
     annotated: bool = True,
     versions: dict[str, str] | None = None,
     inspect_tag: bool = True,
+    annotation: str | None = None,
 ) -> tuple[Path, dict]:
     versions = versions or {
         "ai-workflow-engine": "0.11.5",
@@ -186,8 +187,19 @@ def _scratch_tag_repo(
         env=commit_env,
     )
     if annotated:
+        source_commit = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        message = (
+            annotation
+            if annotation is not None
+            else contract.release_tag_annotation(tag, source_commit, versions)
+        )
         subprocess.run(
-            ["git", *git_identity, "-C", str(repo), "tag", "-a", tag, "-m", tag],
+            ["git", *git_identity, "-C", str(repo), "tag", "-a", tag, "-m", message],
             check=True,
             env=commit_env,
         )
@@ -509,6 +521,28 @@ def test_tagged_source_requires_annotated_exact_three_package_matrix(
         wrong_repo,
         "engine-v0.11.5",
         fragment="tag suffix",
+    )
+
+
+def test_tagged_source_rejects_copied_release_evidence_in_annotation(
+    tmp_path: Path,
+) -> None:
+    repo, _ = _scratch_tag_repo(
+        tmp_path,
+        inspect_tag=False,
+        annotation=(
+            "engine-v0.11.5\n\n"
+            "Source: 0000000000000000000000000000000000000000\n\n"
+            "Gate: 100 passed / 2 skipped\n\n"
+            "Wheel SHA-256: invented"
+        ),
+    )
+
+    _expect_rejection(
+        contract.tagged_source,
+        repo,
+        "engine-v0.11.5",
+        fragment="source identity only",
     )
 
 

@@ -21,7 +21,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from email.parser import Parser
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 from urllib.parse import quote, urlsplit
 
 MANIFEST_SCHEMA_VERSION = "release-manifest-v2"
@@ -411,6 +411,42 @@ def _git_bytes(repo: Path, *args: str) -> bytes:
         raise ReleaseError(f"git {' '.join(args)} failed: {detail}") from exc
 
 
+def release_tag_annotation(
+    tag: str,
+    source_commit: str,
+    matrix: Mapping[str, str],
+) -> str:
+    """Return the one source-only annotation accepted for a release tag."""
+
+    tag = _strict_string(tag, "tag")
+    source_commit = _strict_string(source_commit, "source_commit")
+    if _TAG_RE.fullmatch(tag) is None:
+        raise ReleaseError("tag must have exact engine-vX.Y.Z form")
+    if _GIT_ID_RE.fullmatch(source_commit) is None:
+        raise ReleaseError("source_commit must be a full Git object id")
+    if set(matrix) != set(EXPECTED_PACKAGES):
+        raise ReleaseError("tag annotation matrix must name exactly the release packages")
+    versions = {
+        package: _strict_version(matrix[package], f"matrix.{package}")
+        for package in EXPECTED_PACKAGES
+    }
+    return "\n\n".join(
+        (
+            tag,
+            f"Source: {source_commit}",
+            (
+                f"Matrix: ai-workflow-engine {versions['ai-workflow-engine']} / "
+                f"ai-workflow-tools {versions['ai-workflow-tools']} / "
+                f"ai-workflow-viewer {versions['ai-workflow-viewer']}"
+            ),
+            (
+                "Artifact bytes and gate evidence are identified only by the "
+                "verified release directory."
+            ),
+        )
+    )
+
+
 def tagged_source(repo: Path, tag: str) -> dict[str, Any]:
     import tomllib
 
@@ -446,6 +482,19 @@ def tagged_source(repo: Path, tag: str) -> dict[str, Any]:
         raise ReleaseError("tag suffix does not match tagged engine package version")
     if len(backends) != 1:
         raise ReleaseError(f"release packages use incoherent build backends: {sorted(backends)}")
+    annotation = _git(
+        repo,
+        "for-each-ref",
+        "--format=%(contents)",
+        f"refs/tags/{tag}",
+    )
+    expected_annotation = release_tag_annotation(tag, source_commit, matrix)
+    if annotation != expected_annotation:
+        raise ReleaseError(
+            f"{tag}: annotation must contain source identity only and exactly match "
+            "the tagged package matrix; build, test, smoke, and wheel evidence belong "
+            "only in the verified release directory"
+        )
     epoch_text = _git(repo, "log", "-1", "--format=%ct", source_commit)
     if re.fullmatch(r"[0-9]+", epoch_text) is None:
         raise ReleaseError("tagged source commit has an invalid timestamp")

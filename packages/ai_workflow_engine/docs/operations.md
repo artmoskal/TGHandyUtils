@@ -297,7 +297,7 @@ An engine release is ready only when:
 Framework requests and post-adoption feedback close through
 [`extension-lifecycle.md`](extension-lifecycle.md).
 
-## Release Artifacts And Verification (v0.11.12)
+## Release Artifacts And Verification (v0.11.13)
 
 Two roles, two identities. A consumer NEVER rebuilds as verification: the **annotated tag identifies
 source**, while the **published release directory identifies artifact bytes**. A release tag
@@ -329,8 +329,21 @@ their own explicit enablement and skip or fail by name when their required deplo
 configuration is absent. Do not create an empty `.env` inside a release checkout and do not raise
 the Compose version floor merely to make `env_file` optional.
 
+Create the annotated tag with the exact source-only format enforced by `tagged_source()`. Do not
+copy test counts, smoke results, wheel hashes, or other dynamic evidence into the annotation:
+
 ```bash
-TAG=engine-v0.11.12
+TAG=engine-v0.11.13
+SOURCE="$(git rev-parse HEAD)"
+git tag -a "$TAG" \
+  -m "$TAG" \
+  -m "Source: $SOURCE" \
+  -m "Matrix: ai-workflow-engine 0.11.13 / ai-workflow-tools 0.6.4 / ai-workflow-viewer 0.3.6" \
+  -m "Artifact bytes and gate evidence are identified only by the verified release directory."
+```
+
+```bash
+TAG=engine-v0.11.13
 BUILD_A=/tmp/engine-build-a
 BUILD_B=/tmp/engine-build-b
 GATE=/tmp/engine-gate
@@ -351,21 +364,21 @@ python3 "$TOOL" run-gate --name smoke --record "$OUT/smoke.json" \
   --log "$OUT/smoke.log" --cwd "$GATE" --timeout-s 900 -- \
   python3 "$TOOL" smoke-installed --venv-dir "$OUT/smoke-venv" \
   --work-dir "$OUT/smoke-work" \
-  --wheel "$OUT/wheels-a/ai_workflow_engine-0.11.12-py3-none-any.whl" \
-  --wheel "$OUT/wheels-a/ai_workflow_tools-0.6.3-py3-none-any.whl" \
-  --wheel "$OUT/wheels-a/ai_workflow_viewer-0.3.5-py3-none-any.whl"
+  --wheel "$OUT/wheels-a/ai_workflow_engine-0.11.13-py3-none-any.whl" \
+  --wheel "$OUT/wheels-a/ai_workflow_tools-0.6.4-py3-none-any.whl" \
+  --wheel "$OUT/wheels-a/ai_workflow_viewer-0.3.6-py3-none-any.whl"
 
 python3 "$TOOL" assemble --repo "$BUILD_A" --tag "$TAG" \
   --bundle-dir "$OUT/bundle" --uri-base "file:///approved-cache/$TAG/" \
   --build-evidence "$OUT/build.json" --second-build-evidence "$OUT/build-b.json" \
   --test-evidence "$OUT/test.json" \
   --smoke-evidence "$OUT/smoke.json" \
-  --wheel "$OUT/wheels-a/ai_workflow_engine-0.11.12-py3-none-any.whl" \
-  --wheel "$OUT/wheels-a/ai_workflow_tools-0.6.3-py3-none-any.whl" \
-  --wheel "$OUT/wheels-a/ai_workflow_viewer-0.3.5-py3-none-any.whl" \
-  --second-wheel "$OUT/wheels-b/ai_workflow_engine-0.11.12-py3-none-any.whl" \
-  --second-wheel "$OUT/wheels-b/ai_workflow_tools-0.6.3-py3-none-any.whl" \
-  --second-wheel "$OUT/wheels-b/ai_workflow_viewer-0.3.5-py3-none-any.whl"
+  --wheel "$OUT/wheels-a/ai_workflow_engine-0.11.13-py3-none-any.whl" \
+  --wheel "$OUT/wheels-a/ai_workflow_tools-0.6.4-py3-none-any.whl" \
+  --wheel "$OUT/wheels-a/ai_workflow_viewer-0.3.6-py3-none-any.whl" \
+  --second-wheel "$OUT/wheels-b/ai_workflow_engine-0.11.13-py3-none-any.whl" \
+  --second-wheel "$OUT/wheels-b/ai_workflow_tools-0.6.4-py3-none-any.whl" \
+  --second-wheel "$OUT/wheels-b/ai_workflow_viewer-0.3.6-py3-none-any.whl"
 python3 "$TOOL" verify-bundle --dir "$OUT/bundle"
 ```
 
@@ -386,10 +399,10 @@ Download the complete release directory. Obtain `release_artifacts.py` and
 source, place them together, and use that trusted verifier before invoking `pip`:
 
 ```bash
-BUNDLE=/path/to/downloaded/engine-v0.11.12
-TRUSTED=/path/to/trusted/engine-v0.11.12-verifier
+BUNDLE=/path/to/downloaded/engine-v0.11.13
+TRUSTED=/path/to/trusted/engine-v0.11.13-verifier
 python3 "$TRUSTED/release_artifacts.py" verify-bundle --dir "$BUNDLE"
-python -m pip install "$BUNDLE/ai_workflow_engine-0.11.12-py3-none-any.whl"
+python -m pip install "$BUNDLE/ai_workflow_engine-0.11.13-py3-none-any.whl"
 ```
 
 The verifier requires the exact manifest inventory, safely refuses traversal/symlink/FIFO/device
