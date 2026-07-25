@@ -735,9 +735,10 @@ def _validate_smoke_command(
     )
     if len(argv) < 3:
         raise ReleaseError(invocation_error)
-    python_name = Path(argv[0]).name
-    if re.fullmatch(r"python3(?:\.[0-9]+)*", python_name) is None:
-        raise ReleaseError(invocation_error)
+    # argv[0] is deliberately unconstrained. A basename such as `python3` is not proof of
+    # interpreter identity — any executable may carry that name — while real published records
+    # (v0.11.12, v0.11.13) ran under a conda prefix named `python`. Proof lives in the script,
+    # the subcommand, the closed option grammar, and producer-side wheel byte inspection.
     if Path(argv[1]).name != "release_artifacts.py" or argv[2] != "smoke-installed":
         raise ReleaseError(invocation_error)
 

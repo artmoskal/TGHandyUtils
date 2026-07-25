@@ -245,8 +245,10 @@ def _run_copied_test_wrapper(tmp_path: Path, *, dotenv: str | None) -> tuple[Pat
     infra = repo_root / "infra"
     bin_dir = tmp_path / "bin"
     trace = tmp_path / "compose-env-paths.txt"
-    infra.mkdir(parents=True)
-    bin_dir.mkdir()
+    # Idempotent so one checkout can be exercised more than once: project-name STABILITY across
+    # repeated runs is what keeps a run's startup cleanup addressing its own containers.
+    infra.mkdir(parents=True, exist_ok=True)
+    bin_dir.mkdir(exist_ok=True)
     source_root = Path(__file__).resolve().parents[2]
     (repo_root / "test.sh").write_bytes((source_root / "test.sh").read_bytes())
     (infra / "docker-compose.test.yml").write_bytes(
@@ -270,6 +272,7 @@ def _run_copied_test_wrapper(tmp_path: Path, *, dotenv: str | None) -> tuple[Pat
         encoding="utf-8",
     )
     fake_compose.chmod(0o755)
+    trace.write_text("", encoding="utf-8")  # each call observes only its own compose invocations
     environment = {
         **os.environ,
         "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
@@ -320,12 +323,18 @@ def test_test_wrapper_preserves_real_dotenv_without_deleting_it(tmp_path: Path):
 
 
 def test_test_wrapper_uses_stable_checkout_unique_compose_projects(tmp_path: Path):
-    _env_a, project_a, _stdout_a = _run_copied_test_wrapper(tmp_path / "checkout-a", dotenv=None)
+    checkout_a = tmp_path / "checkout-a"
+    _env_a1, project_a1, _stdout_a1 = _run_copied_test_wrapper(checkout_a, dotenv=None)
+    _env_a2, project_a2, _stdout_a2 = _run_copied_test_wrapper(checkout_a, dotenv=None)
     _env_b, project_b, _stdout_b = _run_copied_test_wrapper(tmp_path / "checkout-b", dotenv=None)
 
-    assert project_a.startswith("tghandy-test-")
+    assert project_a1.startswith("tghandy-test-")
     assert project_b.startswith("tghandy-test-")
-    assert project_a != project_b
+    # STABLE within one checkout: the second run's startup teardown must still address the
+    # containers the first run left behind, so the name cannot vary per invocation.
+    assert project_a1 == project_a2
+    # UNIQUE across checkouts: overlapping release-gate runs must not tear each other down.
+    assert project_a1 != project_b
 
 
 @pytest.mark.unit

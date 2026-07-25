@@ -25,6 +25,13 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 if str(_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_DIR))
 
+# This script ships INSIDE the closed release directory it validates, so importing its sibling
+# must not write __pycache__ there and make the bundle reject its own inventory. Scoped to
+# standalone execution and set before the sibling import: importing this module from tests or
+# tooling must not mutate the caller's process-global bytecode policy.
+if __name__ == "__main__":
+    sys.dont_write_bytecode = True
+
 from release_contract import (  # noqa: E402
     EXPECTED_PACKAGES,
     ReleaseError,

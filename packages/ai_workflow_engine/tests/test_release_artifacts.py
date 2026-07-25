@@ -615,6 +615,87 @@ def test_manifest_binds_test_and_smoke_to_canonical_release_commands(tmp_path: P
     _expect_rejection(contract.parse_manifest, duplicate_wheel, fragment="artifact filenames")
 
 
+def test_smoke_command_binding_is_interpreter_neutral(tmp_path: Path) -> None:
+    """The published v0.11.12 and v0.11.13 smoke records ran under an executable named
+    `python` (a conda prefix), not `python3`. Binding on the interpreter BASENAME rejected
+    that real evidence while proving nothing: a fake executable can just as easily be named
+    `python3`. The facts that carry meaning already have owners — the release script, the
+    subcommand, the closed option grammar, and the exact wheel identities."""
+
+    _bundle, manifest = _assemble(tmp_path)
+
+    for interpreter in (
+        "/Users/someone/miniconda3/bin/python",  # the exact published v0.11.13 shape
+        "/opt/conda/bin/python",
+        "python",
+        "/usr/bin/python3.11",
+        "python3",
+        "/usr/local/bin/python3.12",
+    ):
+        accepted = copy.deepcopy(manifest)
+        accepted["smoke_evidence"]["command_argv"][0] = interpreter
+        parsed = contract.parse_manifest(accepted)
+        assert parsed["smoke_evidence"]["command_argv"][0] == interpreter
+
+    # Dropping the basename rule must not loosen the structure that does carry proof.
+    wrong_script = copy.deepcopy(manifest)
+    argv = wrong_script["smoke_evidence"]["command_argv"]
+    argv[1] = str(Path(argv[1]).with_name("other_tool.py"))
+    _expect_rejection(contract.parse_manifest, wrong_script, fragment="smoke-installed")
+
+    wrong_subcommand = copy.deepcopy(manifest)
+    wrong_subcommand["smoke_evidence"]["command_argv"][2] = "verify-bundle"
+    _expect_rejection(contract.parse_manifest, wrong_subcommand, fragment="smoke-installed")
+
+    stray_option = copy.deepcopy(manifest)
+    stray_option["smoke_evidence"]["command_argv"].extend(["--allow-network", "1"])
+    _expect_rejection(contract.parse_manifest, stray_option, fragment="smoke-installed")
+
+    truncated = copy.deepcopy(manifest)
+    truncated["smoke_evidence"]["command_argv"] = truncated["smoke_evidence"]["command_argv"][:2]
+    _expect_rejection(contract.parse_manifest, truncated, fragment="smoke-installed")
+
+
+def test_embedded_verifier_runs_in_place_without_mutating_the_bundle(tmp_path: Path) -> None:
+    """A release directory is a closed inventory, and the verifier ships inside it. Running
+    that shipped copy in place imported its sibling and wrote `__pycache__` into the very
+    directory under validation, so the bundle rejected itself with `extra=['__pycache__']` —
+    indistinguishable, to an operator, from real corruption. Verification must never mutate
+    its subject."""
+
+    bundle, _manifest = _assemble(tmp_path)
+    before = sorted(entry.name for entry in bundle.iterdir())
+
+    environment = dict(os.environ)
+    # A consumer will not have this set; the guarantee must not depend on their environment.
+    environment.pop("PYTHONDONTWRITEBYTECODE", None)
+
+    for attempt in (1, 2):
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(bundle / "release_artifacts.py"),
+                "verify-bundle",
+                "--dir",
+                str(bundle),
+            ],
+            cwd=str(tmp_path),
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert completed.returncode == 0, (
+            f"attempt {attempt} failed: {completed.stdout}\n{completed.stderr}"
+        )
+        assert not (bundle / "__pycache__").exists(), (
+            f"attempt {attempt} wrote __pycache__ into the closed release directory"
+        )
+        assert sorted(entry.name for entry in bundle.iterdir()) == before, (
+            f"attempt {attempt} changed the release directory inventory"
+        )
+
+
 def test_manifest_assembly_binds_smoke_to_released_wheel_bytes(tmp_path: Path) -> None:
     inputs = _release_inputs(tmp_path)
     alien = _real_wheel(
