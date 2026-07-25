@@ -943,6 +943,26 @@ def parse_manifest(value: Any) -> dict[str, Any]:
         raise ReleaseError("test evidence source commit disagrees with manifest")
     if smoke["source_commit"] != source_commit:
         raise ReleaseError("smoke evidence source commit disagrees with manifest")
+    # v0.11.11: reproducibility is only meaningful ACROSS checkouts. Reusing one checkout
+    # proves the same working tree builds twice, never that the tagged source rebuilds
+    # independently — and the operator discipline in operations.md ("two independent
+    # detached, clean checkouts ... and a third checkout for test/smoke evidence") was
+    # previously unenforced, so a single-checkout run produced a passing but false proof.
+    # The gate checkout may serve both test and smoke; the two builds may share nothing.
+    build_directory = build["working_directory"]
+    second_directory = second_build["working_directory"]
+    if build_directory == second_directory:
+        raise ReleaseError(
+            "wheel reproducibility must come from two independent checkouts: both build "
+            f"records ran in {build_directory!r}"
+        )
+    for label, record in (("test", test), ("smoke", smoke)):
+        gate_directory = record["working_directory"]
+        if gate_directory in {build_directory, second_directory}:
+            raise ReleaseError(
+                f"{label} evidence must come from a checkout separate from both build "
+                f"checkouts: it ran in {gate_directory!r}"
+            )
     return {
         "manifest_schema_version": MANIFEST_SCHEMA_VERSION,
         "tag": tag,

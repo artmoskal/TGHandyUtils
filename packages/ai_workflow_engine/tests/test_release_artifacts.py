@@ -238,6 +238,32 @@ def test_installed_smoke_uses_fresh_venv_and_installs_declared_dependencies(
     assert "OpenAICompatibleLLMClient" in calls[2][3]
 
 
+def _sibling_checkout(repo: Path, destination: Path) -> Path:
+    """A second clean detached checkout of the same commit.
+
+    The release contract requires wheel reproducibility from two INDEPENDENT checkouts and
+    test/smoke evidence from a third, so the fixture must model that shape rather than
+    reusing one working tree."""
+
+    subprocess.run(
+        ["git", "clone", "--no-hardlinks", "--quiet", str(repo), str(destination)],
+        check=True,
+        capture_output=True,
+    )
+    head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "-C", str(destination), "checkout", "--quiet", "--detach", head],
+        check=True,
+        capture_output=True,
+    )
+    return destination
+
+
 def _execute_evidence(
     tmp_path: Path,
     repo: Path,
@@ -246,6 +272,8 @@ def _execute_evidence(
 ) -> tuple[Path, Path, Path, Path]:
     evidence_root = tmp_path / "evidence"
     evidence_root.mkdir()
+    second_repo = _sibling_checkout(repo, tmp_path / "checkout-b")
+    gate_repo = _sibling_checkout(repo, tmp_path / "checkout-gate")
     inspected = [contract.inspect_wheel(path) for path in wheels]
     build_record = evidence_root / "build-evidence.json"
     cli.execute_gate(
@@ -282,7 +310,7 @@ def _execute_evidence(
     cli.execute_gate(
         name="build",
         command=[sys.executable, "-c", "print('second build gate')"],
-        cwd=repo,
+        cwd=second_repo,
         record_path=second_build_record,
         log_path=evidence_root / "build-b.log",
         timeout_s=10,
@@ -315,7 +343,7 @@ def _execute_evidence(
         cli.execute_gate(
             name=name,
             command=[sys.executable, "-c", f"print('{name} gate')"],
-            cwd=repo,
+            cwd=gate_repo,
             record_path=record,
             log_path=evidence_root / f"{name}.log",
             timeout_s=10,
@@ -931,3 +959,63 @@ assert callable(surface["verify_bundle"])
         text=True,
     )
     assert completed.returncode == 0, completed.stderr
+
+
+def test_bundle_rejects_reused_build_and_gate_checkouts(tmp_path: Path) -> None:
+    """v0.11.11: wheel reproducibility is only meaningful ACROSS checkouts.
+
+    A v0.11.10 closeout ran both builds plus test/smoke from ONE checkout and still passed
+    verification, producing a true-looking but false independence proof. The verifier now
+    compares recorded working directories: the two builds may share nothing, and gate
+    evidence must come from a checkout separate from both. The gate checkout itself may
+    legitimately serve BOTH test and smoke (that is the documented runbook shape), so the
+    fixture's shared gate directory must keep verifying cleanly.
+    """
+
+    shapes = {
+        "builds": ("reproducibility", "two independent checkouts"),
+        "test": ("test_evidence", "separate from both build checkouts"),
+        "smoke": ("smoke_evidence", "separate from both build checkouts"),
+    }
+    for shape, (_section, fragment) in shapes.items():
+        case = tmp_path / shape
+        case.mkdir()
+        bundle, manifest = _assemble(case)
+        manifest_path = bundle / "release-manifest.json"
+        value = json.loads(manifest_path.read_text(encoding="utf-8"))
+        build_directory = value["build"]["working_directory"]
+        second_directory = value["reproducibility"]["second_build"]["working_directory"]
+        assert build_directory != second_directory, (
+            "fixture must model two independent build checkouts"
+        )
+        if shape == "builds":
+            value["reproducibility"]["second_build"]["working_directory"] = build_directory
+        elif shape == "test":
+            value["test_evidence"]["working_directory"] = build_directory
+        else:
+            value["smoke_evidence"]["working_directory"] = second_directory
+        manifest_path.write_text(json.dumps(value), encoding="utf-8")
+        _rewrite_sums(bundle)
+        _expect_rejection(
+            contract.verify_bundle,
+            bundle,
+            "release-manifest.json",
+            "SHA256SUMS",
+            fragment=fragment,
+        )
+
+
+def test_bundle_accepts_one_gate_checkout_serving_test_and_smoke(tmp_path: Path) -> None:
+    """The documented runbook uses ONE third checkout for both test and smoke evidence;
+    the new distinctness rule must not forbid that."""
+
+    bundle, manifest = _assemble(tmp_path)
+    assert (
+        manifest["test_evidence"]["working_directory"]
+        == manifest["smoke_evidence"]["working_directory"]
+    ), "fixture models a single shared gate checkout"
+    assert manifest["test_evidence"]["working_directory"] not in {
+        manifest["build"]["working_directory"],
+        manifest["reproducibility"]["second_build"]["working_directory"],
+    }
+    contract.verify_bundle(bundle, "release-manifest.json", "SHA256SUMS")

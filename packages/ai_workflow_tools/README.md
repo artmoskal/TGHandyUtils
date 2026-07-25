@@ -236,6 +236,9 @@ from ai_workflow_tools.testing import run_openai_compatible_provider_conformance
 await run_openai_compatible_provider_conformance(make_client)
 ```
 
+The v0.6.2 release carries the v0.6.1 behavior unchanged and only re-pins the engine floor to
+`ai-workflow-engine>=0.11.11,<0.12`, because `engine-v0.11.10` was never published.
+
 The v0.6.1 corrective release retains the v0.6.0 provider pack and additionally makes refusal and
 content-filter responses typed failures with retained usage, recognizes Claude semantic errors
 even when the CLI exits zero, and prevents browser-provider secrets or URLs from surviving in an

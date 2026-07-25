@@ -1,17 +1,17 @@
 # MageQA Engine Adoption Guide
 
-Status: **`engine-v0.11.10` is the current immutable release.**
+Status: **`engine-v0.11.11` is the current immutable release.**
 This corrective release closes durable-wait registration exposure races, makes observation
 provider-evidence integrity explicit in bundle schema v3, and hardens provider/CLI failure
 accounting. It retains the generic OpenAI-compatible provider MageQA requested. Repin only the coherent
-`0.11.10 / 0.6.1 / 0.3.3` matrix after verifying its immutable release directory and passing E0.
+`0.11.11 / 0.6.2 / 0.3.4` matrix after verifying its immutable release directory and passing E0.
 MageQA's two durable-registration race canaries fail on `engine-v0.11.5`. MageQA must stay on its
 existing pin and keep its fork until its E0
 canaries pass against the current immutable tag. The five historical E0 blockers (planned
 `partial` rewritten to `done`, unenforced `RuntimeLimits.timeout_s`, hidden retrace provenance,
 the CLI 600s default, and the reused tools wheel identity) are addressed and carried forward;
 v0.11 additionally hardens every persisted contract (strict versioned snapshot, bundle meta v3,
-wait records) with NO migration layer. MageQA must pin tag `engine-v0.11.10`,
+wait records) with NO migration layer. MageQA must pin tag `engine-v0.11.11`,
 verify the complete published release directory, install the required wheels, and pass its E0 canaries before
 adopting; it stays on its existing pin until those canaries pass.
 Do not infer the actual MageQA pin from this document; the consumer repository's pin file is
@@ -23,7 +23,7 @@ Read first: [getting started](getting-started.md), [framework concepts](concepts
 The line is **latest-only** — no migration guides exist. Adopt the current contract fresh; data
 written under older tags is rejected loudly and stays inspectable with its matching historical tag.
 In particular, the current viewer reads bundle v3 only; inspect v2 evidence with
-`engine-v0.11.9` and start a new empty observation root for v0.11.10.
+`engine-v0.11.9` and start a new empty observation root for v0.11.11.
 
 ## Product Outcome
 
@@ -53,12 +53,12 @@ a defect.
 
 | Package | MageQA use |
 |---|---|
-| `ai-workflow-engine==0.11.10` | Required orchestration/runtime |
-| `ai-workflow-tools==0.6.1` | Generic OpenAI-compatible clients, CLI agents, tool catalog, media helpers |
-| `ai-workflow-viewer==0.3.3` | Low-level engine run investigation and bundle rendering |
+| `ai-workflow-engine==0.11.11` | Required orchestration/runtime |
+| `ai-workflow-tools==0.6.2` | Generic OpenAI-compatible clients, CLI agents, tool catalog, media helpers |
+| `ai-workflow-viewer==0.3.4` | Low-level engine run investigation and bundle rendering |
 
-> **Current matrix:** `engine-v0.11.10` + `ai-workflow-tools==0.6.1` +
-> `ai-workflow-viewer==0.3.3`.
+> **Current matrix:** `engine-v0.11.11` + `ai-workflow-tools==0.6.2` +
+> `ai-workflow-viewer==0.3.4`.
 
 
 The MageQA Next.js dashboard remains product-owned. It may link/embed/project engine bundle data, but
@@ -248,12 +248,12 @@ with a scenario and acceptance proof. Upgrade via [`operations.md`](operations.m
 
 ## v0.11 Release Contract
 
-`engine-v0.11.10` is the current immutable release for the **latest-only** line. The line uses strict versioned persisted
+`engine-v0.11.11` is the current immutable release for the **latest-only** line. The line uses strict versioned persisted
 contracts (snapshot `v0.11`, bundle meta v3, wait records `wait-v2`), one strict viewer loader, and
 NO migration layer — the sealed current-contract corpus shows 0 behavior deltas vs v0.10.1, but old
 persisted data is rejected loudly naming its historical tag. Adopt by re-pinning fresh
-(pin tag `engine-v0.11.10`, verify the published `release-manifest-v2` bundle, then
-install engine `0.11.10`, tools `0.6.1`, and viewer `0.3.3`) and
+(pin tag `engine-v0.11.11`, verify the published `release-manifest-v2` bundle, then
+install engine `0.11.11`, tools `0.6.2`, and viewer `0.3.4`) and
 re-run your canaries before changing any deployed pin.
 `wait-v1` records written by v0.11.5 are non-current: settle or discard them under v0.11.5 and
 start a new coordinator namespace before v0.11.6 writes `wait-v2`.

@@ -31,7 +31,7 @@ from ai_workflow_tools.toolsets import (
     bash_in_tools,
 )
 
-__version__ = "0.6.1"
+__version__ = "0.6.2"
 
 __all__ = [
     "TOOL_CATALOG",

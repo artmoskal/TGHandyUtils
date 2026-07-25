@@ -297,13 +297,21 @@ An engine release is ready only when:
 Framework requests and post-adoption feedback close through
 [`extension-lifecycle.md`](extension-lifecycle.md).
 
-## Release Artifacts And Verification (v0.11.10)
+## Release Artifacts And Verification (v0.11.11)
 
 Two roles, two identities. A consumer NEVER rebuilds as verification: the **annotated tag identifies
-source**, while the **published release directory identifies artifact bytes**. Tags do not contain
-wheel hashes. The bundle verifier detects incomplete, malformed, unsafe, or byte-drifted deliveries;
-channel authenticity still comes from the approved private cache or an independently pinned
-manifest/wheel hash.
+source**, while the **published release directory identifies artifact bytes**. A tag annotation may
+repeat the wheel hashes for convenience, but that copy is only a cross-check — the release directory
+and its `SHA256SUMS` remain the sole byte authority, and a consumer must never treat the annotation
+as the delivery. The bundle verifier detects incomplete, malformed, unsafe, or byte-drifted
+deliveries; channel authenticity still comes from the approved private cache or an independently
+pinned manifest/wheel hash.
+
+`release-manifest.json` marks each artifact `published: true` to mean **declared for the published
+channel**, not "already uploaded". A freshly assembled bundle is therefore **staged**: its `uri`
+points at the approved-cache location it is destined for, which does not exist until the upload
+step runs. Confirm the artifact is actually retrievable from that URI before repinning any consumer;
+a staged bundle that verifies locally is not yet a delivery.
 
 ### Producer
 
@@ -313,7 +321,7 @@ clean checkouts for wheel reproducibility and a third checkout for test/smoke ev
 outputs outside those checkouts.
 
 ```bash
-TAG=engine-v0.11.10
+TAG=engine-v0.11.11
 BUILD_A=/tmp/engine-build-a
 BUILD_B=/tmp/engine-build-b
 GATE=/tmp/engine-gate
@@ -334,21 +342,21 @@ python3 "$TOOL" run-gate --name smoke --record "$OUT/smoke.json" \
   --log "$OUT/smoke.log" --cwd "$GATE" --timeout-s 900 -- \
   python3 "$TOOL" smoke-installed --venv-dir "$OUT/smoke-venv" \
   --work-dir "$OUT/smoke-work" \
-  --wheel "$OUT/wheels-a/ai_workflow_engine-0.11.10-py3-none-any.whl" \
-  --wheel "$OUT/wheels-a/ai_workflow_tools-0.6.1-py3-none-any.whl" \
-  --wheel "$OUT/wheels-a/ai_workflow_viewer-0.3.3-py3-none-any.whl"
+  --wheel "$OUT/wheels-a/ai_workflow_engine-0.11.11-py3-none-any.whl" \
+  --wheel "$OUT/wheels-a/ai_workflow_tools-0.6.2-py3-none-any.whl" \
+  --wheel "$OUT/wheels-a/ai_workflow_viewer-0.3.4-py3-none-any.whl"
 
 python3 "$TOOL" assemble --repo "$BUILD_A" --tag "$TAG" \
   --bundle-dir "$OUT/bundle" --uri-base "file:///approved-cache/$TAG/" \
   --build-evidence "$OUT/build.json" --second-build-evidence "$OUT/build-b.json" \
   --test-evidence "$OUT/test.json" \
   --smoke-evidence "$OUT/smoke.json" \
-  --wheel "$OUT/wheels-a/ai_workflow_engine-0.11.10-py3-none-any.whl" \
-  --wheel "$OUT/wheels-a/ai_workflow_tools-0.6.1-py3-none-any.whl" \
-  --wheel "$OUT/wheels-a/ai_workflow_viewer-0.3.3-py3-none-any.whl" \
-  --second-wheel "$OUT/wheels-b/ai_workflow_engine-0.11.10-py3-none-any.whl" \
-  --second-wheel "$OUT/wheels-b/ai_workflow_tools-0.6.1-py3-none-any.whl" \
-  --second-wheel "$OUT/wheels-b/ai_workflow_viewer-0.3.3-py3-none-any.whl"
+  --wheel "$OUT/wheels-a/ai_workflow_engine-0.11.11-py3-none-any.whl" \
+  --wheel "$OUT/wheels-a/ai_workflow_tools-0.6.2-py3-none-any.whl" \
+  --wheel "$OUT/wheels-a/ai_workflow_viewer-0.3.4-py3-none-any.whl" \
+  --second-wheel "$OUT/wheels-b/ai_workflow_engine-0.11.11-py3-none-any.whl" \
+  --second-wheel "$OUT/wheels-b/ai_workflow_tools-0.6.2-py3-none-any.whl" \
+  --second-wheel "$OUT/wheels-b/ai_workflow_viewer-0.3.4-py3-none-any.whl"
 python3 "$TOOL" verify-bundle --dir "$OUT/bundle"
 ```
 
@@ -369,10 +377,10 @@ Download the complete release directory. Obtain `release_artifacts.py` and
 source, place them together, and use that trusted verifier before invoking `pip`:
 
 ```bash
-BUNDLE=/path/to/downloaded/engine-v0.11.10
-TRUSTED=/path/to/trusted/engine-v0.11.10-verifier
+BUNDLE=/path/to/downloaded/engine-v0.11.11
+TRUSTED=/path/to/trusted/engine-v0.11.11-verifier
 python3 "$TRUSTED/release_artifacts.py" verify-bundle --dir "$BUNDLE"
-python -m pip install "$BUNDLE/ai_workflow_engine-0.11.10-py3-none-any.whl"
+python -m pip install "$BUNDLE/ai_workflow_engine-0.11.11-py3-none-any.whl"
 ```
 
 The verifier requires the exact manifest inventory, safely refuses traversal/symlink/FIFO/device
