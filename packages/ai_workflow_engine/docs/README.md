@@ -1,6 +1,6 @@
 # AI Workflow Engine Documentation
 
-This directory describes the current immutable `engine-v0.11.11` release. The guides are written for both
+This directory describes the current immutable `engine-v0.11.12` release. The guides are written for both
 engineers and coding agents: each file has one responsibility, links to the next action, and avoids
 embedding release history in current instructions.
 

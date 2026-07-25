@@ -297,7 +297,7 @@ An engine release is ready only when:
 Framework requests and post-adoption feedback close through
 [`extension-lifecycle.md`](extension-lifecycle.md).
 
-## Release Artifacts And Verification (v0.11.11)
+## Release Artifacts And Verification (v0.11.12)
 
 Two roles, two identities. A consumer NEVER rebuilds as verification: the **annotated tag identifies
 source**, while the **published release directory identifies artifact bytes**. A tag annotation may
@@ -320,16 +320,17 @@ artifact gate requires a new fix-forward version; never move the tag. Use two in
 clean checkouts for wheel reproducibility and a third checkout for test/smoke evidence. Keep all
 outputs outside those checkouts.
 
-The root `./test.sh` wrapper is clean-checkout-safe on Docker Compose v2.20 and newer. It passes the
-repository `.env` to Compose when that file exists; otherwise it creates a permission-restricted,
-empty file under the system temporary directory, reports that choice, and removes the file on exit.
-Hermetic tiers therefore need no operator-created `.env`, no secrets, and no source-tree mutation.
-Credentialed/live suites retain their own explicit enablement and skip or fail by name when their
-required deployment configuration is absent. Do not create an empty `.env` inside a release
-checkout and do not raise the Compose version floor merely to make `env_file` optional.
+The root `./test.sh` wrapper is clean-checkout-safe under the repository's existing Docker Compose
+v2 contract (verified on v2.20.2). It passes the repository `.env` to Compose when that file exists;
+otherwise it creates a permission-restricted, empty file under the system temporary directory,
+reports that choice, and removes the file on exit. Hermetic tiers therefore need no
+operator-created `.env`, no secrets, and no source-tree mutation. Credentialed/live suites retain
+their own explicit enablement and skip or fail by name when their required deployment
+configuration is absent. Do not create an empty `.env` inside a release checkout and do not raise
+the Compose version floor merely to make `env_file` optional.
 
 ```bash
-TAG=engine-v0.11.11
+TAG=engine-v0.11.12
 BUILD_A=/tmp/engine-build-a
 BUILD_B=/tmp/engine-build-b
 GATE=/tmp/engine-gate
@@ -350,21 +351,21 @@ python3 "$TOOL" run-gate --name smoke --record "$OUT/smoke.json" \
   --log "$OUT/smoke.log" --cwd "$GATE" --timeout-s 900 -- \
   python3 "$TOOL" smoke-installed --venv-dir "$OUT/smoke-venv" \
   --work-dir "$OUT/smoke-work" \
-  --wheel "$OUT/wheels-a/ai_workflow_engine-0.11.11-py3-none-any.whl" \
-  --wheel "$OUT/wheels-a/ai_workflow_tools-0.6.2-py3-none-any.whl" \
-  --wheel "$OUT/wheels-a/ai_workflow_viewer-0.3.4-py3-none-any.whl"
+  --wheel "$OUT/wheels-a/ai_workflow_engine-0.11.12-py3-none-any.whl" \
+  --wheel "$OUT/wheels-a/ai_workflow_tools-0.6.3-py3-none-any.whl" \
+  --wheel "$OUT/wheels-a/ai_workflow_viewer-0.3.5-py3-none-any.whl"
 
 python3 "$TOOL" assemble --repo "$BUILD_A" --tag "$TAG" \
   --bundle-dir "$OUT/bundle" --uri-base "file:///approved-cache/$TAG/" \
   --build-evidence "$OUT/build.json" --second-build-evidence "$OUT/build-b.json" \
   --test-evidence "$OUT/test.json" \
   --smoke-evidence "$OUT/smoke.json" \
-  --wheel "$OUT/wheels-a/ai_workflow_engine-0.11.11-py3-none-any.whl" \
-  --wheel "$OUT/wheels-a/ai_workflow_tools-0.6.2-py3-none-any.whl" \
-  --wheel "$OUT/wheels-a/ai_workflow_viewer-0.3.4-py3-none-any.whl" \
-  --second-wheel "$OUT/wheels-b/ai_workflow_engine-0.11.11-py3-none-any.whl" \
-  --second-wheel "$OUT/wheels-b/ai_workflow_tools-0.6.2-py3-none-any.whl" \
-  --second-wheel "$OUT/wheels-b/ai_workflow_viewer-0.3.4-py3-none-any.whl"
+  --wheel "$OUT/wheels-a/ai_workflow_engine-0.11.12-py3-none-any.whl" \
+  --wheel "$OUT/wheels-a/ai_workflow_tools-0.6.3-py3-none-any.whl" \
+  --wheel "$OUT/wheels-a/ai_workflow_viewer-0.3.5-py3-none-any.whl" \
+  --second-wheel "$OUT/wheels-b/ai_workflow_engine-0.11.12-py3-none-any.whl" \
+  --second-wheel "$OUT/wheels-b/ai_workflow_tools-0.6.3-py3-none-any.whl" \
+  --second-wheel "$OUT/wheels-b/ai_workflow_viewer-0.3.5-py3-none-any.whl"
 python3 "$TOOL" verify-bundle --dir "$OUT/bundle"
 ```
 
@@ -385,10 +386,10 @@ Download the complete release directory. Obtain `release_artifacts.py` and
 source, place them together, and use that trusted verifier before invoking `pip`:
 
 ```bash
-BUNDLE=/path/to/downloaded/engine-v0.11.11
-TRUSTED=/path/to/trusted/engine-v0.11.11-verifier
+BUNDLE=/path/to/downloaded/engine-v0.11.12
+TRUSTED=/path/to/trusted/engine-v0.11.12-verifier
 python3 "$TRUSTED/release_artifacts.py" verify-bundle --dir "$BUNDLE"
-python -m pip install "$BUNDLE/ai_workflow_engine-0.11.11-py3-none-any.whl"
+python -m pip install "$BUNDLE/ai_workflow_engine-0.11.12-py3-none-any.whl"
 ```
 
 The verifier requires the exact manifest inventory, safely refuses traversal/symlink/FIFO/device

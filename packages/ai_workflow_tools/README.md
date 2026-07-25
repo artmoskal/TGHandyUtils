@@ -236,7 +236,10 @@ from ai_workflow_tools.testing import run_openai_compatible_provider_conformance
 await run_openai_compatible_provider_conformance(make_client)
 ```
 
-The v0.6.2 release carries the v0.6.1 behavior unchanged and only re-pins the engine floor to
+The v0.6.3 release carries the v0.6.2 behavior unchanged and gives the clean-checkout operational
+release a unique wheel identity. It targets `ai-workflow-engine>=0.11.12,<0.12`.
+
+The v0.6.2 release carried the v0.6.1 behavior unchanged and only re-pinned the engine floor to
 `ai-workflow-engine>=0.11.11,<0.12`, because `engine-v0.11.10` was never published.
 
 The v0.6.1 corrective release retains the v0.6.0 provider pack and additionally makes refusal and

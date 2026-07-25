@@ -5,8 +5,8 @@ declare a workflow, register typed capabilities, and call one engine door. The e
 transitions, retries, fan-out, budgets, waits, trace, usage, and observation bundles; products own
 domain models, provider clients, storage adapters, clocks, and side-effect delivery.
 
-> **`engine-v0.11.11` is the current release.**
-> Install only from the immutable `engine-v0.11.11` tag and its verified release directory.
+> **`engine-v0.11.12` is the current release.**
+> Install only from the immutable `engine-v0.11.12` tag and its verified release directory.
 > The engine owner publishes wheels bound to
 > immutable tags; consumer
 > canaries still decide whether each product changes its deployed pin. Never depend on a live
@@ -22,6 +22,13 @@ domain models, provider clients, storage adapters, clocks, and side-effect deliv
 > `wait-v1` records under v0.11.5.
 > Adoption is fresh: new consumers start on the current contract; existing consumers re-adopt the
 > current surface rather than migrate state.
+>
+> **v0.11.12 release delta.** The repository test gate now runs from a clean tagged checkout
+> without an operator-created `.env` and without raising the Docker Compose v2 floor. `test.sh`
+> uses the real repository `.env` when present; otherwise it passes Compose a temporary empty
+> file outside the checkout and removes it on exit. Engine/runtime behavior is unchanged.
+> Tools `0.6.3` and viewer `0.3.5` are metadata-only companion releases with unique wheel
+> identities for the coherent release bundle.
 >
 > **v0.11.11 release delta.** Durable-wait registration is now exposure-safe: deterministic
 > identity is checked before coordinator commit, observation failures cannot hide an accepted
@@ -140,17 +147,17 @@ Consumers download the complete published release directory, obtain the verifier
 the tag (or another already trusted pin), verify the bundle before installation, and install only
 the packages their product needs. Building from source is a producer operation, not consumer
 verification. The exact producer and consumer commands are in
-[`docs/operations.md`](docs/operations.md#release-artifacts-and-verification-v01111).
+[`docs/operations.md`](docs/operations.md#release-artifacts-and-verification-v01112).
 The required pre-install door is
-`python3 release_artifacts.py verify-bundle --dir /path/to/engine-v0.11.11`.
+`python3 release_artifacts.py verify-bundle --dir /path/to/engine-v0.11.12`.
 
 Current release matrix:
 
 | Package | Install when |
 |---|---|
-| `ai-workflow-engine==0.11.11` | Always. Core builder, executor, memory, waits, observation writer. |
-| `ai-workflow-tools==0.6.2` | The product uses provider clients, CLI agents, the tool catalog, or media helpers. |
-| `ai-workflow-viewer==0.3.4` | A developer or product service renders observation bundles. |
+| `ai-workflow-engine==0.11.12` | Always. Core builder, executor, memory, waits, observation writer. |
+| `ai-workflow-tools==0.6.3` | The product uses provider clients, CLI agents, the tool catalog, or media helpers. |
+| `ai-workflow-viewer==0.3.5` | A developer or product service renders observation bundles. |
 
 Record the engine tag, source commit, and wheel SHA-256 in the consumer repository. A tag already
 consumed by another repository is frozen; fixes require a new tag.
@@ -216,7 +223,7 @@ minimal profile.
 
 `engine-v0.11.0` made the line **latest-only**: strict versioned persisted contracts,
 one strict viewer loader with typed status authority, a sealed current-contract oracle replacing
-old-wheel equality, and removal of every compatibility fallback. The current v0.11.11 release
+old-wheel equality, and removal of every compatibility fallback. The current v0.11.12 release
 keeps MachineSnapshot `schema_version="v0.11"`, advances observation bundle meta to v3, and keeps wait
 records to `record_schema_version="wait-v2"` with required persisted registration-attempt
 identity. Old persisted data fails loudly naming its historical tag. Earlier lines added, and

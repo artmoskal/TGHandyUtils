@@ -885,12 +885,13 @@ def test_tools_wheel_identity_advanced_for_changed_code():
     again, advancing the identity to 0.5.0; native Codex image attachment advances the
     next distinguishable tools wheel to 0.5.1; structured CLI usage advanced it to 0.5.2;
     secured browser consumers advanced it to 0.5.3; the reusable OpenAI-compatible
-    provider pack remains available on the corrective 0.6.1 tools surface; 0.6.2 re-pins the
-    engine floor to 0.11.11 because engine-v0.11.10 was never published."""
+    provider pack remains available on the corrective 0.6.1 tools surface; 0.6.2 re-pinned the
+    engine floor to 0.11.11 because engine-v0.11.10 was never published; 0.6.3 gives the
+    clean-checkout release a unique wheel identity and requires engine 0.11.12."""
 
     import ai_workflow_tools
 
-    assert ai_workflow_tools.__version__ == "0.6.2", (
+    assert ai_workflow_tools.__version__ == "0.6.3", (
         "tools code changed since the last released wheel identity; the version must "
         f"advance (found {ai_workflow_tools.__version__})"
     )

@@ -302,7 +302,7 @@ def test_test_wrapper_uses_and_removes_temporary_env_outside_clean_checkout(tmp_
     assert not (copied_repo / ".env").exists()
     assert "temporary empty test environment" in stdout
     assert "creates a permission-restricted" in operations
-    assert "no operator-created `.env`" in operations
+    assert "no operator-created `.env`" in " ".join(operations.split())
 
 
 def test_test_wrapper_preserves_real_dotenv_without_deleting_it(tmp_path: Path):
