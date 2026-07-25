@@ -596,6 +596,42 @@ def test_read_group_merges_segments_ordered_with_per_segment_sequences(tmp_path)
     assert single.run_id == "logical-run" and len(single.records) == 3
 
 
+def test_damaged_group_segment_never_falls_back_to_a_partial_page(tmp_path):
+    import threading
+    import urllib.error
+    import urllib.request
+
+    import pytest as _pytest
+
+    from ai_workflow_viewer import FileEventSource, JsonlObservationViewer, serve_viewer
+
+    _write_group(tmp_path)
+    (tmp_path / "logical-run--s001" / "definition.json").unlink()
+    viewer = JsonlObservationViewer(FileEventSource(tmp_path))
+
+    with _pytest.raises(ValueError, match="corrupt segment.*missing workflow definition"):
+        viewer.html("logical-run")
+
+    server = serve_viewer(viewer, port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        root = f"http://127.0.0.1:{server.server_address[1]}"
+        with _pytest.raises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(f"{root}/?run_id=logical-run", timeout=5)
+        assert caught.value.code == 500
+        body = caught.value.read().decode("utf-8")
+        assert "corrupt segment" in body and "missing workflow definition" in body
+        assert "<html" not in body.lower()
+
+        with _pytest.raises(urllib.error.HTTPError) as missing:
+            urllib.request.urlopen(f"{root}/?run_id=unknown-run", timeout=5)
+        assert missing.value.code == 404
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
 def test_read_group_aggregates_usage_once_and_labels_cumulative(tmp_path):
     """W4.4: group spend = segment-local events counted ONCE (7 + 5 tokens), while the
     engine's cumulative-at-finalize meta (12 on the resumed segment) is reported under its
@@ -2056,7 +2092,7 @@ def test_boundary_attacks_are_refused_on_every_viewer_surface(tmp_path):
     (damaged / "meta.json").write_text(_json.dumps(base_meta), encoding="utf-8")
     rows = {row["run_id"] for row in source.list_groups()}
     assert "damaged-run" in rows, "a damaged segment must stay visible, never disappear"
-    with _pytest.raises(FileNotFoundError, match="missing workflow definition"):
+    with _pytest.raises(ValueError, match="corrupt segment.*missing workflow definition"):
         source.read_group("damaged-run")
 
     # (e) served doors: query traversal, missing run, and contract violations are plain

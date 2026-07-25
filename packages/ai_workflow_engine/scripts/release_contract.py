@@ -713,6 +713,91 @@ def _validate_tool(value: Any, path: str) -> dict[str, str]:
     }
 
 
+def _validate_release_gate_commands(
+    test: Mapping[str, Any],
+    smoke: Mapping[str, Any],
+    artifacts: Iterable[Mapping[str, Any]],
+) -> None:
+    if test["command_argv"] != ["./test.sh", "unit"]:
+        raise ReleaseError("test evidence command must be exactly ./test.sh unit")
+    _validate_smoke_command(smoke, artifacts)
+
+
+def _validate_smoke_command(
+    smoke: Mapping[str, Any],
+    artifacts: Iterable[Mapping[str, Any]],
+) -> list[str]:
+
+    argv = smoke["command_argv"]
+    invocation_error = (
+        "smoke evidence must invoke release_artifacts.py smoke-installed with only "
+        "--venv-dir, --work-dir, and --wheel arguments"
+    )
+    if len(argv) < 3:
+        raise ReleaseError(invocation_error)
+    python_name = Path(argv[0]).name
+    if re.fullmatch(r"python3(?:\.[0-9]+)*", python_name) is None:
+        raise ReleaseError(invocation_error)
+    if Path(argv[1]).name != "release_artifacts.py" or argv[2] != "smoke-installed":
+        raise ReleaseError(invocation_error)
+
+    singleton_options: dict[str, str] = {}
+    wheel_paths: list[str] = []
+    index = 3
+    while index < len(argv):
+        option = argv[index]
+        if option not in {"--venv-dir", "--work-dir", "--wheel"} or index + 1 >= len(argv):
+            raise ReleaseError(invocation_error)
+        value = argv[index + 1]
+        if option == "--wheel":
+            wheel_paths.append(value)
+        elif option in singleton_options:
+            raise ReleaseError(invocation_error)
+        else:
+            singleton_options[option] = value
+        index += 2
+    if set(singleton_options) != {"--venv-dir", "--work-dir"}:
+        raise ReleaseError(invocation_error)
+
+    expected_filenames = {str(item["filename"]) for item in artifacts}
+    actual_filenames = [Path(path).name for path in wheel_paths]
+    if len(actual_filenames) != len(expected_filenames) or set(actual_filenames) != expected_filenames:
+        raise ReleaseError(
+            "smoke evidence --wheel basenames must equal the manifest artifact filenames"
+        )
+    return wheel_paths
+
+
+def _validate_smoked_wheel_bytes(
+    smoke: Mapping[str, Any],
+    artifacts: Iterable[Mapping[str, Any]],
+) -> None:
+    material = list(artifacts)
+    recorded_paths = _validate_smoke_command(smoke, material)
+    cwd = Path(str(smoke["working_directory"]))
+    inspected: list[dict[str, Any]] = []
+    try:
+        for value in recorded_paths:
+            path = Path(value)
+            if not path.is_absolute():
+                path = cwd / path
+            inspected.append(inspect_wheel(path.resolve(strict=True)))
+    except (OSError, ReleaseError) as exc:
+        raise ReleaseError(f"smoke evidence wheel path is unavailable or invalid: {exc}") from exc
+
+    expected = {str(item["package"]): item for item in material}
+    actual = {str(item["package"]): item for item in inspected}
+    if set(actual) != set(expected) or len(actual) != len(inspected):
+        raise ReleaseError("smoke evidence wheel bytes disagree with release artifacts")
+    for package, artifact in expected.items():
+        for field in ("package", "version", "filename", "size_bytes", "sha256"):
+            if actual[package][field] != artifact[field]:
+                raise ReleaseError(
+                    f"smoke evidence wheel bytes disagree with release artifacts for "
+                    f"{package}.{field}"
+                )
+
+
 def validate_gate_record(
     value: Any,
     *,
@@ -941,6 +1026,7 @@ def parse_manifest(value: Any) -> dict[str, Any]:
     for package, version in parsed_matrix.items():
         if by_package[package]["version"] != version:
             raise ReleaseError(f"manifest artifact version disagrees with matrix for {package}")
+    _validate_release_gate_commands(test, smoke, artifacts)
     built_by_package = {item["package"]: item for item in build["built_artifacts"]}
     second_built_by_package = {
         item["package"]: item for item in second_build["built_artifacts"]
@@ -1135,6 +1221,7 @@ def assemble_manifest(
         }
         for item in sorted(inspected, key=lambda item: item["package"])
     ]
+    _validate_smoked_wheel_bytes(smoke, artifacts)
     verifier_records = []
     for path in verifier_paths:
         if path.name not in VERIFIER_FILENAMES:

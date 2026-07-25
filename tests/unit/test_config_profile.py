@@ -240,7 +240,7 @@ def test_test_wrapper_preserves_pytest_args_as_array():
     subprocess.run(["bash", "-n", str(script)], check=True)
 
 
-def _run_copied_test_wrapper(tmp_path: Path, *, dotenv: str | None) -> tuple[Path, str]:
+def _run_copied_test_wrapper(tmp_path: Path, *, dotenv: str | None) -> tuple[Path, str, str]:
     repo_root = tmp_path / "repo"
     infra = repo_root / "infra"
     bin_dir = tmp_path / "bin"
@@ -261,7 +261,8 @@ def _run_copied_test_wrapper(tmp_path: Path, *, dotenv: str | None) -> tuple[Pat
             [
                 "#!/bin/bash",
                 'test -f "$TG_TEST_ENV_FILE"',
-                'printf "%s\\n" "$TG_TEST_ENV_FILE" >> "$TEST_ENV_TRACE"',
+                'test -n "$COMPOSE_PROJECT_NAME"',
+                'printf "%s\\t%s\\n" "$TG_TEST_ENV_FILE" "$COMPOSE_PROJECT_NAME" >> "$TEST_ENV_TRACE"',
                 "exit 0",
                 "",
             ]
@@ -283,13 +284,16 @@ def _run_copied_test_wrapper(tmp_path: Path, *, dotenv: str | None) -> tuple[Pat
         check=False,
     )
     assert completed.returncode == 0, completed.stderr
-    paths = {Path(value) for value in trace.read_text(encoding="utf-8").splitlines()}
+    rows = [line.split("\t", 1) for line in trace.read_text(encoding="utf-8").splitlines()]
+    paths = {Path(path) for path, _project in rows}
+    projects = {project for _path, project in rows}
     assert len(paths) == 1
-    return paths.pop(), completed.stdout
+    assert len(projects) == 1
+    return paths.pop(), projects.pop(), completed.stdout
 
 
 def test_test_wrapper_uses_and_removes_temporary_env_outside_clean_checkout(tmp_path: Path):
-    selected, stdout = _run_copied_test_wrapper(tmp_path, dotenv=None)
+    selected, _project, stdout = _run_copied_test_wrapper(tmp_path, dotenv=None)
     copied_repo = tmp_path / "repo"
     repo_root = Path(__file__).resolve().parents[2]
     operations = (
@@ -307,12 +311,21 @@ def test_test_wrapper_uses_and_removes_temporary_env_outside_clean_checkout(tmp_
 
 def test_test_wrapper_preserves_real_dotenv_without_deleting_it(tmp_path: Path):
     dotenv = "CHATGPT_BROWSER_API_TOKEN=not-a-real-secret\n"
-    selected, stdout = _run_copied_test_wrapper(tmp_path, dotenv=dotenv)
+    selected, _project, stdout = _run_copied_test_wrapper(tmp_path, dotenv=dotenv)
     expected = tmp_path / "repo" / ".env"
 
     assert selected == expected
     assert expected.read_text(encoding="utf-8") == dotenv
     assert "temporary empty test environment" not in stdout
+
+
+def test_test_wrapper_uses_stable_checkout_unique_compose_projects(tmp_path: Path):
+    _env_a, project_a, _stdout_a = _run_copied_test_wrapper(tmp_path / "checkout-a", dotenv=None)
+    _env_b, project_b, _stdout_b = _run_copied_test_wrapper(tmp_path / "checkout-b", dotenv=None)
+
+    assert project_a.startswith("tghandy-test-")
+    assert project_b.startswith("tghandy-test-")
+    assert project_a != project_b
 
 
 @pytest.mark.unit

@@ -168,6 +168,9 @@ def _scratch_tag_repo(
     verifier_dir.mkdir(parents=True)
     for name in contract.VERIFIER_FILENAMES:
         (verifier_dir / name).write_bytes((_SCRIPTS / name).read_bytes())
+    test_script = repo / "test.sh"
+    test_script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    test_script.chmod(0o755)
     (repo / ".gitignore").write_text(
         "__pycache__/\n*.egg-info/\nbuild/\n",
         encoding="utf-8",
@@ -286,6 +289,11 @@ def _execute_evidence(
     evidence_root.mkdir()
     second_repo = _sibling_checkout(repo, tmp_path / "checkout-b")
     gate_repo = _sibling_checkout(repo, tmp_path / "checkout-gate")
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    fake_python = fake_bin / "python3"
+    fake_python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_python.chmod(0o755)
     inspected = [contract.inspect_wheel(path) for path in wheels]
     build_record = evidence_root / "build-evidence.json"
     cli.execute_gate(
@@ -349,19 +357,36 @@ def _execute_evidence(
             ]
         },
     )
-    records = [build_record, second_build_record]
-    for name in ("test", "smoke"):
-        record = evidence_root / f"{name}-evidence.json"
-        cli.execute_gate(
-            name=name,
-            command=[sys.executable, "-c", f"print('{name} gate')"],
-            cwd=gate_repo,
-            record_path=record,
-            log_path=evidence_root / f"{name}.log",
-            timeout_s=10,
-        )
-        records.append(record)
-    return tuple(records)
+    test_record = evidence_root / "test-evidence.json"
+    cli.execute_gate(
+        name="test",
+        command=["./test.sh", "unit"],
+        cwd=gate_repo,
+        record_path=test_record,
+        log_path=evidence_root / "test.log",
+        timeout_s=10,
+    )
+    smoke_record = evidence_root / "smoke-evidence.json"
+    smoke_command = [
+        str(fake_python),
+        str(repo / "packages/ai_workflow_engine/scripts/release_artifacts.py"),
+        "smoke-installed",
+        "--venv-dir",
+        str(tmp_path / "smoke-venv"),
+        "--work-dir",
+        str(tmp_path / "smoke-work"),
+    ]
+    for wheel in wheels:
+        smoke_command.extend(["--wheel", str(wheel)])
+    cli.execute_gate(
+        name="smoke",
+        command=smoke_command,
+        cwd=gate_repo,
+        record_path=smoke_record,
+        log_path=evidence_root / "smoke.log",
+        timeout_s=10,
+    )
+    return build_record, second_build_record, test_record, smoke_record
 
 
 def _release_inputs(tmp_path: Path) -> dict:
@@ -527,15 +552,33 @@ def test_tagged_source_requires_annotated_exact_three_package_matrix(
 def test_tagged_source_rejects_copied_release_evidence_in_annotation(
     tmp_path: Path,
 ) -> None:
-    repo, _ = _scratch_tag_repo(
-        tmp_path,
-        inspect_tag=False,
-        annotation=(
-            "engine-v0.11.5\n\n"
-            "Source: 0000000000000000000000000000000000000000\n\n"
-            "Gate: 100 passed / 2 skipped\n\n"
-            "Wheel SHA-256: invented"
-        ),
+    repo, source = _scratch_tag_repo(tmp_path)
+    subprocess.run(
+        ["git", "-C", str(repo), "tag", "-d", "engine-v0.11.5"],
+        check=True,
+        capture_output=True,
+    )
+    annotation = contract.release_tag_annotation(
+        "engine-v0.11.5",
+        source["source_commit"],
+        source["matrix"],
+    ) + "\n\nGate: 100 passed / 2 skipped\n\nWheel SHA-256: invented"
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.email=release@test",
+            "-c",
+            "user.name=release-test",
+            "-C",
+            str(repo),
+            "tag",
+            "-a",
+            "engine-v0.11.5",
+            "-m",
+            annotation,
+        ],
+        check=True,
     )
 
     _expect_rejection(
@@ -543,6 +586,66 @@ def test_tagged_source_rejects_copied_release_evidence_in_annotation(
         repo,
         "engine-v0.11.5",
         fragment="source identity only",
+    )
+
+
+def test_manifest_binds_test_and_smoke_to_canonical_release_commands(tmp_path: Path) -> None:
+    _bundle, manifest = _assemble(tmp_path)
+
+    focused = copy.deepcopy(manifest)
+    focused["test_evidence"]["command_argv"].extend(
+        ["--", "packages/ai_workflow_engine/tests/test_release_artifacts.py"]
+    )
+    _expect_rejection(contract.parse_manifest, focused, fragment="exactly ./test.sh unit")
+
+    source_smoke = copy.deepcopy(manifest)
+    source_smoke["smoke_evidence"]["command_argv"] = ["./test.sh", "unit"]
+    _expect_rejection(contract.parse_manifest, source_smoke, fragment="smoke-installed")
+
+    foreign_wheel = copy.deepcopy(manifest)
+    smoke_argv = foreign_wheel["smoke_evidence"]["command_argv"]
+    wheel_index = smoke_argv.index("--wheel") + 1
+    smoke_argv[wheel_index] = str(Path(smoke_argv[wheel_index]).with_name("foreign.whl"))
+    _expect_rejection(contract.parse_manifest, foreign_wheel, fragment="artifact filenames")
+
+    duplicate_wheel = copy.deepcopy(manifest)
+    duplicate_argv = duplicate_wheel["smoke_evidence"]["command_argv"]
+    first_wheel = duplicate_argv[duplicate_argv.index("--wheel") + 1]
+    duplicate_argv.extend(["--wheel", first_wheel])
+    _expect_rejection(contract.parse_manifest, duplicate_wheel, fragment="artifact filenames")
+
+
+def test_manifest_assembly_binds_smoke_to_released_wheel_bytes(tmp_path: Path) -> None:
+    inputs = _release_inputs(tmp_path)
+    alien = _real_wheel(
+        tmp_path / "alien-smoke",
+        package="ai_workflow_engine",
+        version="0.11.5",
+        extra_members={"ai_workflow_engine/alien.txt": b"different-valid-wheel"},
+    )
+    smoke_record = json.loads(inputs["smoke"].read_text(encoding="utf-8"))
+    argv = smoke_record["command_argv"]
+    for index, token in enumerate(argv[:-1]):
+        if token == "--wheel" and Path(argv[index + 1]).name == alien.name:
+            argv[index + 1] = str(alien)
+            break
+    else:
+        raise AssertionError("engine wheel missing from smoke fixture")
+    inputs["smoke"].write_text(json.dumps(smoke_record), encoding="utf-8")
+
+    _expect_rejection(
+        contract.assemble_manifest,
+        repo=inputs["repo"],
+        tag="engine-v0.11.5",
+        wheels=inputs["wheels"],
+        build_evidence_path=inputs["build"],
+        second_wheels=inputs["second_wheels"],
+        second_build_evidence_path=inputs["second_build"],
+        test_evidence_path=inputs["test"],
+        smoke_evidence_path=inputs["smoke"],
+        uri_base="file:///cache/engine-v0.11.5/",
+        verifier_paths=inputs["verifiers"],
+        fragment="wheel bytes disagree",
     )
 
 

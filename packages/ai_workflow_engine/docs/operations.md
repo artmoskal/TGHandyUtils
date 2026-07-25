@@ -329,6 +329,12 @@ their own explicit enablement and skip or fail by name when their required deplo
 configuration is absent. Do not create an empty `.env` inside a release checkout and do not raise
 the Compose version floor merely to make `env_file` optional.
 
+The wrapper also assigns a deterministic Compose project name from the canonical checkout root.
+Repeated runs in one checkout therefore clean up their own containers, while independent build or
+gate checkouts cannot tear each other down when runs overlap. Release evidence continues to bind to
+the recorded checkout path; the Compose project name is local execution state and is never manifest
+identity.
+
 Create the annotated tag with the exact source-only format enforced by `tagged_source()`. Do not
 copy test counts, smoke results, wheel hashes, or other dynamic evidence into the annotation:
 
@@ -381,6 +387,19 @@ python3 "$TOOL" assemble --repo "$BUILD_A" --tag "$TAG" \
   --second-wheel "$OUT/wheels-b/ai_workflow_viewer-0.3.6-py3-none-any.whl"
 python3 "$TOOL" verify-bundle --dir "$OUT/bundle"
 ```
+
+The manifest validator binds these gates, not merely their zero exit codes. Test evidence must
+record exactly `./test.sh unit`; focused paths, batching, and extra pytest arguments cannot certify
+a release. Smoke evidence must invoke `release_artifacts.py smoke-installed`, declare one work
+directory and one venv directory, and name exactly the three wheel artifacts carried by the
+manifest. Producer assembly and consumer verification enforce the same rule.
+
+Live-provider evidence follows the changed implementation. A release that changes provider code
+must record a fresh live qualification for the affected provider in its immutable release
+directory. A metadata-only release may inherit the last live qualification only when the provider
+subtree is byte-identical and the exact new wheel passes installed transport smoke; record that
+inheritance explicitly instead of silently deselecting the live suite. Prewarm local models before
+the bounded qualification request so model startup time is not misclassified as adapter failure.
 
 `run-build` derives `SOURCE_DATE_EPOCH` from the tagged commit, fixes the build umask, refuses a
 dirty/wrong checkout, executes the build itself, and records the exact three wheel identities.

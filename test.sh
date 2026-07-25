@@ -158,8 +158,16 @@ echo ""
 # Resolve the test environment file before entering infra. Compose v2.20 treats env_file as
 # required, while clean tagged checkouts intentionally have no gitignored .env. Keep the checkout
 # clean: use the real file when present, otherwise pass a temporary empty file and remove it on exit.
-REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$(dirname "$0")" && pwd -P)"
 TEMP_TEST_ENV_FILE=""
+
+# Compose otherwise derives the project name from the shared `infra` basename, so test runs from
+# independent release checkouts can tear down each other's containers. Keep cleanup stable within
+# one checkout while isolating every distinct canonical root.
+CHECKOUT_BASENAME="$(printf '%s' "${REPO_ROOT##*/}" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_-' '-' | cut -c1-24)"
+CHECKOUT_FINGERPRINT="$(printf '%s' "$REPO_ROOT" | cksum | awk '{print $1}')"
+COMPOSE_PROJECT_NAME="tghandy-test-${CHECKOUT_BASENAME:-repo}-${CHECKOUT_FINGERPRINT}"
+export COMPOSE_PROJECT_NAME
 
 cleanup_test_env_file() {
     if [ -n "$TEMP_TEST_ENV_FILE" ]; then

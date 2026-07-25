@@ -127,7 +127,13 @@ class FileEventSource:
                 continue
             if meta.run_id != logical_run_id:
                 continue
-            data = FileEventSource(path).read()  # per-segment sequence sanity runs here
+            try:
+                data = FileEventSource(path).read()  # per-segment sequence sanity runs here
+            except Exception as contract_error:
+                raise ValueError(
+                    f"Observation group {logical_run_id!r} contains corrupt segment "
+                    f"{path.name!r}: {contract_error}"
+                ) from contract_error
             if meta.status == "abandoned" or (path / _ABANDON_MARKER).exists():
                 abandoned_segment_ids.add(meta.segment_id)
             entries.append(
