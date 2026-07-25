@@ -300,12 +300,12 @@ Framework requests and post-adoption feedback close through
 ## Release Artifacts And Verification (v0.11.12)
 
 Two roles, two identities. A consumer NEVER rebuilds as verification: the **annotated tag identifies
-source**, while the **published release directory identifies artifact bytes**. A tag annotation may
-repeat the wheel hashes for convenience, but that copy is only a cross-check — the release directory
-and its `SHA256SUMS` remain the sole byte authority, and a consumer must never treat the annotation
-as the delivery. The bundle verifier detects incomplete, malformed, unsafe, or byte-drifted
-deliveries; channel authenticity still comes from the approved private cache or an independently
-pinned manifest/wheel hash.
+source**, while the **published release directory identifies artifact bytes**. A release tag
+annotation records source identity only and must not repeat wheel hashes; the published release
+directory and its `SHA256SUMS` are the sole byte authority. Consumers pin artifact bytes from the
+manifest and must never treat the annotation as the delivery. The bundle verifier detects
+incomplete, malformed, unsafe, or byte-drifted deliveries; channel authenticity still comes from
+the approved private cache or an independently pinned manifest/wheel hash.
 
 `release-manifest.json` marks each artifact `published: true` to mean **declared for the published
 channel**, not "already uploaded". A freshly assembled bundle is therefore **staged**: its `uri`
