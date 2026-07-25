@@ -696,6 +696,55 @@ def test_embedded_verifier_runs_in_place_without_mutating_the_bundle(tmp_path: P
         )
 
 
+def test_importing_release_artifacts_never_changes_global_bytecode_policy(tmp_path: Path) -> None:
+    """The bytecode guard must stay scoped to standalone execution. Suppressing bytecode is right
+    for the CLI shipped inside a closed release directory, but a plain `import release_artifacts`
+    from tests or tooling must not reach out and change process-global import behaviour for its
+    caller. Without this fence the `__name__ == "__main__"` qualifier can be dropped — turning the
+    fix into a global side effect — while every other release test stays green, because they all
+    exercise standalone execution only, where correct and incorrect behave identically.
+
+    The probe runs in a subprocess: this test module already imported the script at collection, so
+    an in-process check would observe a cached module and prove nothing.
+    """
+
+    probe = tmp_path / "import_probe.py"
+    probe.write_text(
+        "\n".join(
+            [
+                "import sys",
+                f"sys.path.insert(0, {str(_SCRIPTS)!r})",
+                "prior = sys.argv[1] == 'True'",
+                "sys.dont_write_bytecode = prior",
+                "import release_artifacts  # normal module import, never __main__",
+                "print('UNCHANGED' if sys.dont_write_bytecode == prior else 'CHANGED')",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    environment = dict(os.environ)
+    # The guarantee must hold on its own, not because the caller happened to export this.
+    environment.pop("PYTHONDONTWRITEBYTECODE", None)
+    # Keep any bytecode the correct implementation legitimately writes out of the source tree.
+    environment["PYTHONPYCACHEPREFIX"] = str(tmp_path / "pycache")
+
+    for prior in ("False", "True"):
+        completed = subprocess.run(
+            [sys.executable, str(probe), prior],
+            cwd=str(tmp_path),
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert completed.returncode == 0, f"probe failed: {completed.stdout}\n{completed.stderr}"
+        assert completed.stdout.strip() == "UNCHANGED", (
+            f"importing release_artifacts mutated sys.dont_write_bytecode for a caller that had "
+            f"set it to {prior}"
+        )
+
+
 def test_manifest_assembly_binds_smoke_to_released_wheel_bytes(tmp_path: Path) -> None:
     inputs = _release_inputs(tmp_path)
     alien = _real_wheel(
