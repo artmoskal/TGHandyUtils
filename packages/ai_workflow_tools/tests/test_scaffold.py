@@ -10,7 +10,7 @@ def test_release_version_matches_current_pin():
     import tomllib
     from pathlib import Path
 
-    expected = "0.6.4"
+    expected = "0.6.5"
     pyproject = tomllib.loads(
         (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8")
     )

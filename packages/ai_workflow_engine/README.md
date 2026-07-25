@@ -5,8 +5,8 @@ declare a workflow, register typed capabilities, and call one engine door. The e
 transitions, retries, fan-out, budgets, waits, trace, usage, and observation bundles; products own
 domain models, provider clients, storage adapters, clocks, and side-effect delivery.
 
-> **`engine-v0.11.13` is the current release.**
-> Install only from the immutable `engine-v0.11.13` tag and its verified release directory.
+> **`engine-v0.11.14` is the current release.**
+> Install only from the immutable `engine-v0.11.14` tag and its verified release directory.
 > The engine owner publishes wheels bound to
 > immutable tags; consumer
 > canaries still decide whether each product changes its deployed pin. Never depend on a live
@@ -23,12 +23,25 @@ domain models, provider clients, storage adapters, clocks, and side-effect deliv
 > Adoption is fresh: new consumers start on the current contract; existing consumers re-adopt the
 > current surface rather than migrate state.
 >
+> **v0.11.14 release delta.** A grouped observation run whose sibling segment is damaged now fails
+> loudly on every viewer door instead of silently falling back to a plausible single-segment page:
+> a per-segment read failure is classified at the grouped-data owner, so known-incomplete evidence
+> can no longer render as a complete-looking incident. The absence of a run still falls back and
+> answers 404 exactly as before. Release evidence also binds harder: the manifest requires the test
+> gate to be exactly `./test.sh unit`, requires smoke to invoke `smoke-installed` with a closed
+> option grammar naming the three manifest wheels, and compares the smoked wheel bytes against the
+> released artifacts. Smoke binding is interpreter-neutral, because an executable's basename never
+> proved interpreter identity and rejected real published evidence. The verifier shipped inside a
+> release directory no longer writes `__pycache__` into the closed inventory it validates, and
+> `./test.sh` assigns a per-checkout Compose project so concurrent runs from independent checkouts
+> cannot tear down each other's containers. Viewer `0.3.7` carries the corruption-honesty fix;
+> tools `0.6.5` is a metadata-only companion with a unique wheel identity.
+>
 > **v0.11.13 release delta.** Release tags now have one machine-enforced source-only annotation
 > derived from the tagged commit and coherent package matrix. Dynamic test, smoke, build, and wheel
 > evidence exists only in the verified release directory, preventing the contradictory duplicate
 > gate counts that made v0.11.12 unsuitable for adoption. Engine/runtime, provider, and viewer
-> behavior is unchanged. Tools `0.6.4` and viewer `0.3.6` are metadata-only companions with unique
-> wheel identities for the corrected release.
+> behavior is unchanged.
 >
 > **v0.11.12 release delta.** The repository test gate now runs from a clean tagged checkout
 > without an operator-created `.env` and without raising the Docker Compose v2 floor. `test.sh`
@@ -156,15 +169,15 @@ the packages their product needs. Building from source is a producer operation, 
 verification. The exact producer and consumer commands are in
 [`docs/operations.md`](docs/operations.md#release-artifacts-and-verification-v01113).
 The required pre-install door is
-`python3 release_artifacts.py verify-bundle --dir /path/to/engine-v0.11.13`.
+`python3 release_artifacts.py verify-bundle --dir /path/to/engine-v0.11.14`.
 
 Current release matrix:
 
 | Package | Install when |
 |---|---|
-| `ai-workflow-engine==0.11.13` | Always. Core builder, executor, memory, waits, observation writer. |
-| `ai-workflow-tools==0.6.4` | The product uses provider clients, CLI agents, the tool catalog, or media helpers. |
-| `ai-workflow-viewer==0.3.6` | A developer or product service renders observation bundles. |
+| `ai-workflow-engine==0.11.14` | Always. Core builder, executor, memory, waits, observation writer. |
+| `ai-workflow-tools==0.6.5` | The product uses provider clients, CLI agents, the tool catalog, or media helpers. |
+| `ai-workflow-viewer==0.3.7` | A developer or product service renders observation bundles. |
 
 Record the engine tag, source commit, and wheel SHA-256 in the consumer repository. A tag already
 consumed by another repository is frozen; fixes require a new tag.
@@ -230,7 +243,7 @@ minimal profile.
 
 `engine-v0.11.0` made the line **latest-only**: strict versioned persisted contracts,
 one strict viewer loader with typed status authority, a sealed current-contract oracle replacing
-old-wheel equality, and removal of every compatibility fallback. The current v0.11.13 release
+old-wheel equality, and removal of every compatibility fallback. The current v0.11.14 release
 keeps MachineSnapshot `schema_version="v0.11"`, advances observation bundle meta to v3, and keeps wait
 records to `record_schema_version="wait-v2"` with required persisted registration-attempt
 identity. Old persisted data fails loudly naming its historical tag. Earlier lines added, and
