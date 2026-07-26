@@ -15,14 +15,14 @@ The reusable adapter supports text, images, structured tools, usage truth, cance
 engine-window timeout narrowing without adding provider code to engine core. See the
 [tools provider guide](../../ai_workflow_tools/README.md#openai-compatible-provider).
 
-The current immutable release is `engine-v0.11.16`. Do not install packages from a branch. Consume
+The current immutable release is `engine-v0.11.17`. Do not install packages from a branch. Consume
 the complete published directory, verify it with the tagged verifier as described in
 [operations](operations.md#release-artifacts-and-verification-v01113), then record the exact bytes
 installed:
 
 ```text
-engine_tag=engine-v0.11.16
-engine_source_commit=<git rev-parse engine-v0.11.16^{}>
+engine_tag=engine-v0.11.17
+engine_source_commit=<git rev-parse engine-v0.11.17^{}>
 engine_wheel_sha256=<sha256 of vendored wheel>
 release_manifest_sha256=<sha256 of verified release-manifest.json>
 ```
