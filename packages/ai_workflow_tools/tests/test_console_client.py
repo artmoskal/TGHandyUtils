@@ -1201,12 +1201,19 @@ async def test_console_chat_model_inherits_a_real_engine_window():
 _SENTINEL = "CONSOLE-SENTINEL-7d4e2a10"
 
 
+_TAIL_SENTINEL = "CONSOLE-TAIL-9f0b6c22"
+
+
 def _large_console_prompt() -> str:
-    """Deterministic prompt beyond Linux's per-argument limit (MAX_ARG_STRLEN, 128 KiB)."""
+    """Deterministic prompt beyond Linux's per-argument limit (MAX_ARG_STRLEN, 128 KiB).
+
+    Carries a marker at BOTH ends so a truncating transport cannot pass: a leading-sentinel
+    check alone survives ``stdin_data[:1024]``.
+    """
 
     body = "structured review row that is long enough to be representative\n" * 4000
     assert len(body) > 200 * 1024
-    return f"{_SENTINEL} {body}"
+    return f"{_SENTINEL} {body} {_TAIL_SENTINEL}"
 
 
 async def test_console_llm_client_sends_large_codex_prompt_through_stdin(
@@ -1221,7 +1228,8 @@ async def test_console_llm_client_sends_large_codex_prompt_through_stdin(
         monkeypatch, tmp_path, mode="result_file", result='{"label": "codex"}'
     )
     client = ConsoleLLMClient(_fake_flavor(codex_exec, fake_cli_path), model="gpt-5.4-codex")
-    node = _node(client, prompt_template=_large_console_prompt() + "\n\nitem: {item}")
+    template = _large_console_prompt() + "\n\nitem: {item}"
+    node = _node(client, prompt_template=template)
     summary = WorkflowUsageSummary()
 
     with workflow_usage_scope(
@@ -1235,7 +1243,13 @@ async def test_console_llm_client_sends_large_codex_prompt_through_stdin(
 
     assert result.label == "codex"
     record = json.loads(record_path.read_text(encoding="utf-8"))
-    assert _SENTINEL in record["stdin"], "prompt must arrive on stdin"
+    # COMPLETE delivery. The two console doors prepend different role labels (`user:` vs
+    # `human:`), so anchor on the rendered body instead: an exact suffix match plus length is
+    # equality-grade for the prompt itself and cannot survive truncation such as stdin[:1024].
+    rendered = template.replace("{item}", "mug")
+    assert record["stdin"].endswith(rendered), "prompt arrived truncated or altered"
+    assert len(record["stdin"]) >= len(rendered)
+    assert _TAIL_SENTINEL in record["stdin"], "prompt tail missing"
     assert not any(_SENTINEL in item for item in record["argv"]), "prompt must not appear in argv"
     assert record["os_cmdline"] is not None and _SENTINEL not in record["os_cmdline"]
 
@@ -1256,11 +1270,8 @@ async def test_console_chat_model_sends_large_codex_prompt_through_stdin(
     model = ConsoleChatModel(
         _fake_flavor(codex_exec, fake_cli_path), model="gpt-5.4-codex", timeout_s=60
     )
-    node = _node(
-        model,
-        prompt_template=_large_console_prompt() + "\n\nitem: {item}",
-        default_model="gpt-5.4-codex",
-    )
+    template = _large_console_prompt() + "\n\nitem: {item}"
+    node = _node(model, prompt_template=template, default_model="gpt-5.4-codex")
     summary = WorkflowUsageSummary()
 
     with workflow_usage_scope(
@@ -1274,6 +1285,9 @@ async def test_console_chat_model_sends_large_codex_prompt_through_stdin(
 
     assert result.label == "codex"
     record = json.loads(record_path.read_text(encoding="utf-8"))
-    assert _SENTINEL in record["stdin"]
+    rendered = template.replace("{item}", "mug")
+    assert record["stdin"].endswith(rendered), "prompt arrived truncated or altered"
+    assert len(record["stdin"]) >= len(rendered)
+    assert _TAIL_SENTINEL in record["stdin"], "prompt tail missing"
     assert not any(_SENTINEL in item for item in record["argv"])
     assert record["os_cmdline"] is not None and _SENTINEL not in record["os_cmdline"]

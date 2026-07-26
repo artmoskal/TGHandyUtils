@@ -8,6 +8,7 @@ from ai_workflow_engine.models import EvidenceRef
 from ai_workflow_tools.cli_agents import (
     CliAgentRequest,
     CliAgentResult,
+    CliFlavor,
     McpServerConfig,
     build_cli_agent_invocation,
     claude_p,
@@ -290,7 +291,9 @@ def test_cli_budget_is_positive_only_and_codex_rejects_it(tmp_path):
 
 
 def test_codex_exec_argv_unchanged_when_budget_unset(tmp_path):
-    """Q0.1 AC: codex behavior is unchanged — same argv as before the field existed."""
+    """Q0.1 AC: an unset budget adds no argv. v0.11.15 intentionally changed one thing — the
+    prompt moved from the final positional to stdin (`-`) — so this asserts the CONTROL argv is
+    unaffected by the budget field, not that argv is byte-identical to older releases."""
 
     invocation = build_cli_agent_invocation(
         codex_exec,
@@ -314,3 +317,33 @@ def test_cli_budget_rejects_non_finite_values_at_every_entry(tmp_path):
             CliAgentRequest(prompt="x", workspace_dir=str(tmp_path), cli_max_budget_usd=bad)
         with pytest.raises(ValueError, match="finite"):
             claude_control_argv(None, bad, [])
+
+
+def test_flavor_rejects_argv_prompt_delivery():
+    """v0.11.15 sealed the transport: stdin is the ONLY accepted prompt delivery.
+
+    Narrowing the Literal is what makes the removal real rather than cosmetic — without this
+    fence, widening it back to `Literal["stdin", "argv_last"]` would silently re-open the argv
+    route that produced `[Errno 7] Argument list too long` and leaked prompts through
+    /proc/<pid>/cmdline. Latest-only: there is no alias, threshold, or deprecation window.
+    """
+
+    import pydantic
+    import pytest as _pytest
+
+    with _pytest.raises(pydantic.ValidationError) as caught:
+        CliFlavor(
+            name="codex_legacy",
+            prompt_delivery="argv_last",
+            result_source="result_file",
+            base_argv=["codex", "exec"],
+        )
+    assert "prompt_delivery" in str(caught.value)
+
+    # The one accepted value still constructs, so the fence is not merely rejecting everything.
+    assert CliFlavor(
+        name="codex_ok",
+        prompt_delivery="stdin",
+        result_source="result_file",
+        base_argv=["codex", "exec"],
+    ).prompt_delivery == "stdin"
