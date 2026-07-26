@@ -1243,9 +1243,6 @@ async def test_console_llm_client_sends_large_codex_prompt_through_stdin(
 
     assert result.label == "codex"
     record = json.loads(record_path.read_text(encoding="utf-8"))
-    # COMPLETE delivery. The two console doors prepend different role labels (`user:` vs
-    # `human:`), so anchor on the rendered body instead: an exact suffix match plus length is
-    # equality-grade for the prompt itself and cannot survive truncation such as stdin[:1024].
     # EXACT-ONCE delivery. A suffix match is not equality-grade: `stdin_data + stdin_data`
     # still ends with the rendered prompt. `_flatten_request` flattens its single turn with the
     # deterministic `user: ` label, so full equality is assertable and duplication cannot pass.

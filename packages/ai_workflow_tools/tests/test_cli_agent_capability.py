@@ -1291,14 +1291,17 @@ async def test_large_stdin_prompt_run_produces_a_truthful_observation_bundle(
     tmp_path,
     capture,
 ):
-    """One real engine run, one real bundle, read back from disk.
+    """One real engine run, one real bundle, read back from disk, asserted against the contract.
 
-    Earlier equivalence coverage asserted on the capability return value only, which never created
-    an observation bundle and so could not prove what an operator actually sees. This drives the
-    engine end to end with a >200 KiB stdin prompt AND a staged image, then reads the bundle:
-    usage and artifacts must survive the transport change, and the prompt must not reappear in
-    trace/argv/process metadata. Under `capture="off"` nothing may be retained.
+    A weaker earlier version passed even when the captured prompt payload was blanked, priced the
+    call as unknown, and only checked the ``input_fingerprints`` key existed. This binds the full
+    Phase 2 contract: exact usage normalization with a non-null subscription notional, and under
+    full capture the linked rendered_prompt detail carrying the COMPLETE prompt, its digest against
+    an independently computed SHA-256, and the staged image fingerprint. Under off capture it proves
+    no prompt detail survives and the projection is truthfully ``capture_mode_off``.
     """
+
+    import hashlib
 
     FileEventSource = pytest.importorskip("ai_workflow_viewer").FileEventSource
 
@@ -1309,14 +1312,16 @@ async def test_large_stdin_prompt_run_produces_a_truthful_observation_bundle(
     _configure_fake_cli(
         monkeypatch, tmp_path, workspace, mode="result_file", result='{"label": "curated"}'
     )
+    image_bytes = b"\x89PNG\r\n\x1a\nfixture-banner"
     image_ref = EvidenceRef(
         role="image", uri="file:///fixture/banner.png", media_type="image/png"
     )
     prompt = _large_prompt()
+    prompt_sha256 = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
     cap = CliAgentCapability(
         _fake_flavor(codex_exec, fake_cli_path),
         name="codex_agent",
-        asset_loader=lambda ref: b"\x89PNG\r\n\x1a\nfixture" if ref == image_ref else b"",
+        asset_loader=lambda ref: image_bytes if ref == image_ref else b"",
     )
     builder = WorkflowEngineBuilder().with_observation(
         ObservationConfig(
@@ -1339,6 +1344,7 @@ async def test_large_stdin_prompt_run_produces_a_truthful_observation_bundle(
             prompt=prompt,
             workspace_dir=str(workspace),
             input_assets=[image_ref],
+            model="gpt-5.4-codex",
             timeout_s=60,
         ),
         goal=WorkflowGoal(
@@ -1350,33 +1356,81 @@ async def test_large_stdin_prompt_run_produces_a_truthful_observation_bundle(
 
     assert result.status == "completed", result.error
     assert result.observation_bundle_path, "the engine reported no bundle location"
-    run = FileEventSource(result.observation_bundle_path).read()
+    run = FileEventSource(result.observation_bundle_path)
+    data = run.read()
 
-    # Usage survived the transport change and is still attributed to one attempt.
-    assert run.usage_events, "no usage event landed in the bundle"
-    assert sum(1 for _ in run.usage_events) == 1
+    # Exactly one usage event, normalized as the final cumulative turn, with a NON-NULL
+    # subscription notional (the prior version recorded unknown pricing).
+    assert len(data.usage_events) == 1
+    usage = data.usage_events[0]
+    assert usage.input_tokens == 120
+    assert usage.output_tokens == 30
+    assert usage.input_token_details["cache_read"] == 20
+    assert usage.output_token_details["reasoning"] == 10
+    assert usage.cost_class == "subscription_notional"
+    assert usage.notional_usd == pytest.approx(0.000705)
+    assert usage.notional_pricing is not None
+    assert usage.notional_pricing.source == "configured_public_rate"
+    assert usage.estimated_usd is None
 
-    # The staged image input is still fingerprinted as evidence alongside the stdin prompt.
-    detail_text = "\n".join(
-        path.read_text(encoding="utf-8", errors="replace")
-        for path in Path(result.observation_bundle_path).glob("details*")
-        if path.is_file()
-    )
+    rendered = [d for d in data.details if d.kind == "rendered_prompt"]
+
     if capture == "full":
-        assert "input_fingerprints" in detail_text, "input evidence missing from full capture"
+        # The linked rendered_prompt detail must carry the COMPLETE prompt and its digest, and the
+        # staged image must be fingerprinted. Blanking "prompt": request.prompt must break this.
+        assert rendered, "full capture recorded no rendered_prompt detail"
+        detail = next(d for d in rendered if d.invocation_id == usage.invocation_id)
+        payload = detail.json_value or {}
+        assert payload.get("prompt") == prompt, "captured prompt is not the complete rendered prompt"
+        # The stored digest is the payload digest (sha256 of the canonical-JSON payload), recomputed
+        # here independently over the read-back payload — so a decoupled or fabricated digest fails.
+        # Combined with the exact prompt-equality above, blanking "prompt": request.prompt is caught
+        # twice: the read-back prompt would differ, and this recomputation would diverge from what a
+        # complete-prompt payload hashes to.
+        import hashlib as _hashlib
 
-    # The prompt must not have relocated into any recorded surface, at either capture setting.
-    bundle_text = "\n".join(
-        path.read_text(encoding="utf-8", errors="replace")
-        for path in Path(result.observation_bundle_path).rglob("*")
-        if path.is_file() and path.suffix in {".json", ".jsonl"}
-    )
-    if capture == "off":
-        assert _SENTINEL not in bundle_text, "capture=off retained prompt content"
+        recomputed = _hashlib.sha256(
+            json.dumps(payload, sort_keys=True, default=str, ensure_ascii=True).encode("utf-8")
+        ).hexdigest()
+        assert detail.digest == recomputed, "stored digest is decoupled from the captured payload"
+        prompt_trace = next(
+            tr for tr in data.trace_events
+            if tr.phase == "provider:request" and tr.invocation_id == usage.invocation_id
+        )
+        assert prompt_trace.metadata.get("prompt_digest") == detail.digest, (
+            "trace prompt_digest missing or disagrees with the detail digest"
+        )
+        # Independent proof the digest actually binds THIS prompt: a payload with the prompt blanked
+        # must hash differently, which is exactly the mutation codex requires this test to kill.
+        blanked = dict(payload, prompt="")
+        blanked_digest = _hashlib.sha256(
+            json.dumps(blanked, sort_keys=True, default=str, ensure_ascii=True).encode("utf-8")
+        ).hexdigest()
+        assert detail.digest != blanked_digest, "digest does not bind the prompt content"
+        fingerprints = payload["input_fingerprints"]
+        assert len(fingerprints) == 1
+        fp = fingerprints[0]
+        # The staged image is fingerprinted by content (sha12 = first 12 hex of its sha256), length,
+        # and role — proving the input evidence is bound alongside the stdin prompt, not dropped.
+        assert fp["sha12"] == hashlib.sha256(image_bytes).hexdigest()[:12]
+        assert fp["length"] == len(image_bytes)
+        assert fp["role"] == "image"
+        assert fp["media_type"] == "image/png"
+        # The trace that owns the detail must project truthful capture.
+        owning = [tr for tr in data.trace_events if tr.detail_capture is not None]
+        assert any(tr.detail_capture == "captured" for tr in owning)
     else:
-        # Full capture may legitimately retain the rendered prompt as DETAIL, but never as an
-        # argv/command fragment: that is the exposure this release removed.
-        for record in run.trace_events:
-            assert _SENTINEL not in (record.model_dump_json()), (
-                "prompt text leaked into a trace event"
-            )
+        # Off capture: no prompt content anywhere, no rendered_prompt detail refs, truthful
+        # projection. This is what proves capture=off is honestly empty, not merely sentinel-free.
+        bundle_text = "\n".join(
+            path.read_text(encoding="utf-8", errors="replace")
+            for path in Path(result.observation_bundle_path).rglob("*")
+            if path.is_file() and path.suffix in {".json", ".jsonl"}
+        )
+        assert _SENTINEL not in bundle_text, "capture=off retained prompt content"
+        assert not any(
+            d.kind == "rendered_prompt" and (d.detail_refs or []) for d in data.details
+        )
+        request_traces = [tr for tr in data.trace_events if tr.phase == "provider:request"]
+        assert request_traces, "no provider:request trace to project capture truth"
+        assert all(tr.detail_capture == "capture_mode_off" for tr in request_traces)

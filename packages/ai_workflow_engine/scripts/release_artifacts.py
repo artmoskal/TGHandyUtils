@@ -866,6 +866,26 @@ async def main():
     assert health.failed == 0 and health.integrity_errors == 0
 
 asyncio.run(main())
+
+# v0.11.15 wheel-transport proof: the Codex prompt transport must hold in the INSTALLED package,
+# not just in the source tree. Executed here so the release smoke is the tracked, reproducible
+# evidence that a large prompt travels on stdin and never in argv.
+from ai_workflow_tools.cli_agents.assembly import CODEX_STDIN_MARKER, codex_prompt_transport
+from ai_workflow_tools.cli_agents.flavors import codex_exec
+from ai_workflow_tools.cli_agents.models import CliFlavor as _CliFlavor
+import pathlib as _pathlib
+import pydantic as _pydantic
+
+assert "site-packages" in ai_workflow_tools.__file__, ai_workflow_tools.__file__
+assert codex_exec.prompt_delivery == "stdin"
+_argv, _stdin = codex_prompt_transport("X" * (256 * 1024))
+assert _argv == [CODEX_STDIN_MARKER] and len(_stdin) == 256 * 1024
+try:
+    _CliFlavor(name="legacy", prompt_delivery="argv_last", result_source="result_file", base_argv=["codex"])
+    raise AssertionError("argv_last must be rejected by the installed model")
+except _pydantic.ValidationError:
+    pass
+print("codex stdin transport verified from", _pathlib.Path(ai_workflow_tools.__file__).parent)
 '''
     subprocess.run(
         [
