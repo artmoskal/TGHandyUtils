@@ -287,7 +287,7 @@ async def test_codex_flavor_reads_result_file_and_records_final_structured_usage
     assert usage.notional_usd == pytest.approx(0.000705)
 
     record = json.loads(record_path.read_text(encoding="utf-8"))
-    # v0.11.15: the prompt travels as stdin bytes; argv carries only the stdin marker.
+    # v0.11.16: the prompt travels as stdin bytes; argv carries only the stdin marker.
     assert record["stdin"] == "Inspect"
     assert record["argv"][-1] == "-"
     assert "Inspect" not in record["argv"]
@@ -1008,7 +1008,7 @@ async def test_cli_agent_bounds_a_stdout_flood_and_surfaces_process_io_truth(
     assert cap_result.output.status == "truncated"
 
 
-# --- v0.11.15 stdin prompt transport (RED before repair) -------------------------------------
+# --- v0.11.16 stdin prompt transport (RED before repair) -------------------------------------
 
 _SENTINEL = "PROMPT-SENTINEL-b3f1a9c7"
 

@@ -5,8 +5,8 @@ declare a workflow, register typed capabilities, and call one engine door. The e
 transitions, retries, fan-out, budgets, waits, trace, usage, and observation bundles; products own
 domain models, provider clients, storage adapters, clocks, and side-effect delivery.
 
-> **`engine-v0.11.15` is the current release.**
-> Install only from the immutable `engine-v0.11.15` tag and its verified release directory.
+> **`engine-v0.11.16` is the current release.**
+> Install only from the immutable `engine-v0.11.16` tag and its verified release directory.
 > The engine owner publishes wheels bound to
 > immutable tags; consumer
 > canaries still decide whether each product changes its deployed pin. Never depend on a live
@@ -23,14 +23,18 @@ domain models, provider clients, storage adapters, clocks, and side-effect deliv
 > Adoption is fresh: new consumers start on the current contract; existing consumers re-adopt the
 > current surface rather than migrate state.
 >
-> **v0.11.15 release delta.** Codex CLI prompts are delivered exactly once through stdin using the
+> **v0.11.16 release delta.** Codex CLI prompts are delivered exactly once through stdin using the
 > CLI's `-` prompt marker, never as command-line arguments. This removes Linux `MAX_ARG_STRLEN`
 > failures for legitimate large prompts without product-side files, wrappers, size branches, or
 > truncation. The same assembly owner serves the agent capability and both console clients; image
-> arguments remain ordered on argv, process timeout/cancellation/reaping behavior is unchanged,
-> and observation capture records the complete rendered prompt only when policy is `full`.
-> Tools `0.6.6` carries the runtime change; engine `0.11.15` and viewer `0.3.8` provide unique
-> coherent release identities.
+> arguments remain ordered on argv and observation capture records the complete rendered prompt
+> only when policy is `full`. If a child exits before consuming a large stdin payload, the shared
+> process owner now preserves its return code and bounded stderr instead of replacing that truth
+> with a late `BrokenPipeError` from writer settlement. The repository-owned, opt-in qualification
+> command verifies protected prompt length/hash and emits sanitized exact-wheel evidence; it is
+> fake-CLI tested in the normal tier. Engine `0.11.16` carries the process repair, tools `0.6.7`
+> carries the stdin transport and qualification command, and viewer `0.3.9` provides the coherent
+> release identity.
 >
 > **v0.11.14 release delta.** A grouped observation run whose sibling segment is damaged now fails
 > loudly on every viewer door instead of silently falling back to a plausible single-segment page:
@@ -178,15 +182,15 @@ the packages their product needs. Building from source is a producer operation, 
 verification. The exact producer and consumer commands are in
 [`docs/operations.md`](docs/operations.md#release-artifacts-and-verification-v01113).
 The required pre-install door is
-`python3 release_artifacts.py verify-bundle --dir /path/to/engine-v0.11.15`.
+`python3 release_artifacts.py verify-bundle --dir /path/to/engine-v0.11.16`.
 
 Current release matrix:
 
 | Package | Install when |
 |---|---|
-| `ai-workflow-engine==0.11.15` | Always. Core builder, executor, memory, waits, observation writer. |
-| `ai-workflow-tools==0.6.6` | The product uses provider clients, CLI agents, the tool catalog, or media helpers. |
-| `ai-workflow-viewer==0.3.8` | A developer or product service renders observation bundles. |
+| `ai-workflow-engine==0.11.16` | Always. Core builder, executor, memory, waits, observation writer. |
+| `ai-workflow-tools==0.6.7` | The product uses provider clients, CLI agents, the tool catalog, or media helpers. |
+| `ai-workflow-viewer==0.3.9` | A developer or product service renders observation bundles. |
 
 Record the engine tag, source commit, and wheel SHA-256 in the consumer repository. A tag already
 consumed by another repository is frozen; fixes require a new tag.
@@ -252,7 +256,7 @@ minimal profile.
 
 `engine-v0.11.0` made the line **latest-only**: strict versioned persisted contracts,
 one strict viewer loader with typed status authority, a sealed current-contract oracle replacing
-old-wheel equality, and removal of every compatibility fallback. The current v0.11.15 release
+old-wheel equality, and removal of every compatibility fallback. The current v0.11.16 release
 keeps MachineSnapshot `schema_version="v0.11"`, advances observation bundle meta to v3, and keeps wait
 records to `record_schema_version="wait-v2"` with required persisted registration-attempt
 identity. Old persisted data fails loudly naming its historical tag. Earlier lines added, and

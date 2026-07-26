@@ -297,7 +297,7 @@ An engine release is ready only when:
 Framework requests and post-adoption feedback close through
 [`extension-lifecycle.md`](extension-lifecycle.md).
 
-## Release Artifacts And Verification (v0.11.15)
+## Release Artifacts And Verification (v0.11.16)
 
 Two roles, two identities. A consumer NEVER rebuilds as verification: the **annotated tag identifies
 source**, while the **published release directory identifies artifact bytes**. A release tag
@@ -339,17 +339,17 @@ Create the annotated tag with the exact source-only format enforced by `tagged_s
 copy test counts, smoke results, wheel hashes, or other dynamic evidence into the annotation:
 
 ```bash
-TAG=engine-v0.11.15
+TAG=engine-v0.11.16
 SOURCE="$(git rev-parse HEAD)"
 git tag -a "$TAG" \
   -m "$TAG" \
   -m "Source: $SOURCE" \
-  -m "Matrix: ai-workflow-engine 0.11.15 / ai-workflow-tools 0.6.6 / ai-workflow-viewer 0.3.8" \
+  -m "Matrix: ai-workflow-engine 0.11.16 / ai-workflow-tools 0.6.7 / ai-workflow-viewer 0.3.9" \
   -m "Artifact bytes and gate evidence are identified only by the verified release directory."
 ```
 
 ```bash
-TAG=engine-v0.11.15
+TAG=engine-v0.11.16
 BUILD_A=/tmp/engine-build-a
 BUILD_B=/tmp/engine-build-b
 GATE=/tmp/engine-gate
@@ -370,23 +370,57 @@ python3 "$TOOL" run-gate --name smoke --record "$OUT/smoke.json" \
   --log "$OUT/smoke.log" --cwd "$GATE" --timeout-s 900 -- \
   python3 "$TOOL" smoke-installed --venv-dir "$OUT/smoke-venv" \
   --work-dir "$OUT/smoke-work" \
-  --wheel "$OUT/wheels-a/ai_workflow_engine-0.11.15-py3-none-any.whl" \
-  --wheel "$OUT/wheels-a/ai_workflow_tools-0.6.6-py3-none-any.whl" \
-  --wheel "$OUT/wheels-a/ai_workflow_viewer-0.3.8-py3-none-any.whl"
+  --wheel "$OUT/wheels-a/ai_workflow_engine-0.11.16-py3-none-any.whl" \
+  --wheel "$OUT/wheels-a/ai_workflow_tools-0.6.7-py3-none-any.whl" \
+  --wheel "$OUT/wheels-a/ai_workflow_viewer-0.3.9-py3-none-any.whl"
 
 python3 "$TOOL" assemble --repo "$BUILD_A" --tag "$TAG" \
   --bundle-dir "$OUT/bundle" --uri-base "file:///approved-cache/$TAG/" \
   --build-evidence "$OUT/build.json" --second-build-evidence "$OUT/build-b.json" \
   --test-evidence "$OUT/test.json" \
   --smoke-evidence "$OUT/smoke.json" \
-  --wheel "$OUT/wheels-a/ai_workflow_engine-0.11.15-py3-none-any.whl" \
-  --wheel "$OUT/wheels-a/ai_workflow_tools-0.6.6-py3-none-any.whl" \
-  --wheel "$OUT/wheels-a/ai_workflow_viewer-0.3.8-py3-none-any.whl" \
-  --second-wheel "$OUT/wheels-b/ai_workflow_engine-0.11.15-py3-none-any.whl" \
-  --second-wheel "$OUT/wheels-b/ai_workflow_tools-0.6.6-py3-none-any.whl" \
-  --second-wheel "$OUT/wheels-b/ai_workflow_viewer-0.3.8-py3-none-any.whl"
+  --wheel "$OUT/wheels-a/ai_workflow_engine-0.11.16-py3-none-any.whl" \
+  --wheel "$OUT/wheels-a/ai_workflow_tools-0.6.7-py3-none-any.whl" \
+  --wheel "$OUT/wheels-a/ai_workflow_viewer-0.3.9-py3-none-any.whl" \
+  --second-wheel "$OUT/wheels-b/ai_workflow_engine-0.11.16-py3-none-any.whl" \
+  --second-wheel "$OUT/wheels-b/ai_workflow_tools-0.6.7-py3-none-any.whl" \
+  --second-wheel "$OUT/wheels-b/ai_workflow_viewer-0.3.9-py3-none-any.whl"
 python3 "$TOOL" verify-bundle --dir "$OUT/bundle"
 ```
+
+For a release that changes Codex prompt transport, run the repository-owned qualification from the
+same detached source tag with the exact installed-wheel smoke interpreter. The protected file is
+only how the release operator supplies retained evidence to this harness; the tools runtime reads
+it once and sends the verified text through stdin. It is not a product transport, fallback, or
+size-dependent branch:
+
+```bash
+QUALIFIER="$BUILD_A/packages/ai_workflow_tools/scripts/qualify_codex_stdin.py"
+PROMPT=/path/to/protected/retained-prompt.txt
+PROMPT_LENGTH=<recorded-character-count>
+PROMPT_SHA256=<recorded-sha256>
+QUAL_WORK="$OUT/codex-qualification-work"
+QUAL_BUNDLES="$OUT/codex-qualification-bundles"
+QUAL_RECORD="$OUT/codex-qualification.json"
+
+# QUAL_WORK must be a disposable Git repository so the qualification does not weaken the real
+# Codex argv with --skip-git-repo-check.
+"$OUT/smoke-venv/bin/python" -I "$QUALIFIER" \
+  --prompt-file "$PROMPT" \
+  --expected-length "$PROMPT_LENGTH" \
+  --expected-sha256 "$PROMPT_SHA256" \
+  --workspace-dir "$QUAL_WORK" \
+  --bundle-dir "$QUAL_BUNDLES" \
+  --record "$QUAL_RECORD" \
+  --model gpt-5.4-codex \
+  --timeout-s 180
+```
+
+The command fails unless engine/tools import from `site-packages`, assembled stdin equals the
+length/hash-verified prompt, exactly one successful `codex_exec` usage event is recorded with
+non-null notional pricing, capture-off retains no prompt, and the expected response marker is
+present. The resulting JSON is sanitized evidence; it carries origins, CLI/model identity,
+prompt length/hash, usage facts, and bundle location, never prompt content.
 
 The manifest validator binds these gates, not merely their zero exit codes. Test evidence must
 record exactly `./test.sh unit`; focused paths, batching, and extra pytest arguments cannot certify
@@ -418,10 +452,10 @@ Download the complete release directory. Obtain `release_artifacts.py` and
 source, place them together, and use that trusted verifier before invoking `pip`:
 
 ```bash
-BUNDLE=/path/to/downloaded/engine-v0.11.15
-TRUSTED=/path/to/trusted/engine-v0.11.15-verifier
+BUNDLE=/path/to/downloaded/engine-v0.11.16
+TRUSTED=/path/to/trusted/engine-v0.11.16-verifier
 python3 "$TRUSTED/release_artifacts.py" verify-bundle --dir "$BUNDLE"
-python -m pip install "$BUNDLE/ai_workflow_engine-0.11.15-py3-none-any.whl"
+python -m pip install "$BUNDLE/ai_workflow_engine-0.11.16-py3-none-any.whl"
 ```
 
 The verifier requires the exact manifest inventory, safely refuses traversal/symlink/FIFO/device

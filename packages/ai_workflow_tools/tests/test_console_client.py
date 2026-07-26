@@ -148,7 +148,7 @@ async def test_console_codex_reads_result_file_and_records_final_structured_usag
     assert usage.output_token_details["reasoning"] == 10
 
     record = json.loads(record_path.read_text(encoding="utf-8"))
-    # v0.11.15: the prompt travels as stdin bytes; argv carries only the stdin marker.
+    # v0.11.16: the prompt travels as stdin bytes; argv carries only the stdin marker.
     assert record["stdin"] == "user: Classify mug."
     assert "--output-last-message" in record["argv"]
     assert "--config" not in record["argv"]
@@ -345,7 +345,7 @@ async def test_console_repair_round_spawns_twice_and_delivers_repair_prompt_per_
     assert result.label == "repaired"
     records = json.loads(record_path.read_text(encoding="utf-8"))
     assert len(records) == 2
-    # v0.11.15: EVERY shipped flavor delivers the prompt on stdin, so there is no longer a
+    # v0.11.16: EVERY shipped flavor delivers the prompt on stdin, so there is no longer a
     # per-flavor prompt location. The parameter is kept to assert that equivalence explicitly.
     assert prompt_location == "stdin", "no shipped flavor may deliver a prompt through argv"
     first_prompt = records[0]["stdin"]
@@ -756,7 +756,7 @@ async def test_console_codex_attaches_staged_images_after_prompt(
     record = json.loads(record_path.read_text(encoding="utf-8"))
     assert "inputs/img-1.png" in record["cwd_files"]
     assert "inputs/img-2.jpg" in record["cwd_files"]
-    # v0.11.15: the prompt positional is now the stdin marker, so image ordering is anchored on
+    # v0.11.16: the prompt positional is now the stdin marker, so image ordering is anchored on
     # `-`. codex-cli 0.145.0 was probed directly to confirm `-` is accepted as the PROMPT
     # positional and that the variadic `--image` still parses when it follows.
     marker_index = record["argv"].index("-")
@@ -1196,7 +1196,7 @@ async def test_console_chat_model_inherits_a_real_engine_window():
     assert llm_events[-1].metadata["process_execution_bound"]["engine_hard_s"] <= 5.0
 
 
-# --- v0.11.15 stdin prompt transport (RED before repair) -------------------------------------
+# --- v0.11.16 stdin prompt transport (RED before repair) -------------------------------------
 
 _SENTINEL = "CONSOLE-SENTINEL-7d4e2a10"
 

@@ -125,7 +125,7 @@ def test_codex_exec_assembly_puts_mcp_env_in_config_entries_and_prompt_on_stdin(
         "--full-auto",
         "-",
     ]
-    # v0.11.15: the prompt is stdin bytes and argv ends with the stdin marker only.
+    # v0.11.16: the prompt is stdin bytes and argv ends with the stdin marker only.
     assert invocation.stdin_data == "Inspect the app"
     assert "Inspect the app" not in invocation.argv
     assert invocation.result_file == str(tmp_path / "codex-last-message.txt")
@@ -291,7 +291,7 @@ def test_cli_budget_is_positive_only_and_codex_rejects_it(tmp_path):
 
 
 def test_codex_exec_argv_unchanged_when_budget_unset(tmp_path):
-    """Q0.1 AC: an unset budget adds no argv. v0.11.15 intentionally changed one thing — the
+    """Q0.1 AC: an unset budget adds no argv. v0.11.16 intentionally changed one thing — the
     prompt moved from the final positional to stdin (`-`) — so this asserts the CONTROL argv is
     unaffected by the budget field, not that argv is byte-identical to older releases."""
 
@@ -320,7 +320,7 @@ def test_cli_budget_rejects_non_finite_values_at_every_entry(tmp_path):
 
 
 def test_flavor_rejects_argv_prompt_delivery():
-    """v0.11.15 sealed the transport: stdin is the ONLY accepted prompt delivery.
+    """v0.11.16 sealed the transport: stdin is the ONLY accepted prompt delivery.
 
     Narrowing the Literal is what makes the removal real rather than cosmetic — without this
     fence, widening it back to `Literal["stdin", "argv_last"]` would silently re-open the argv

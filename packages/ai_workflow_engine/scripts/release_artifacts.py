@@ -867,7 +867,7 @@ async def main():
 
 asyncio.run(main())
 
-# v0.11.15 wheel-transport proof: the Codex prompt transport must hold in the INSTALLED package,
+# v0.11.16 wheel-transport proof: the Codex prompt transport must hold in the INSTALLED package,
 # not just in the source tree. Executed here so the release smoke is the tracked, reproducible
 # evidence that a large prompt travels on stdin and never in argv.
 from ai_workflow_tools.cli_agents.assembly import CODEX_STDIN_MARKER, codex_prompt_transport
