@@ -50,6 +50,16 @@ Do not call `subprocess.run`/`Popen` behind a capability and label it process-en
 process owner is what bounds stdin, records cleanup, and stops spawned descendants. A private
 subprocess side door can outlive the run while its trace falsely claims containment.
 
+Do not pass a prompt to a CLI provider as a command-line argument, and do not work around the
+resulting failure in product code. Prompt text in `argv` fails at process creation once it
+approaches the Linux per-argument limit — a legitimate 125,799-character prompt surfaced as
+`[Errno 7] Argument list too long` before the provider was called — and `argv` is readable by any
+process through `/proc/<pid>/cmdline`. The shipped CLI flavors therefore deliver prompts only on
+stdin, and `prompt_delivery` accepts no other value. A prompt temporary file, a wrapper script, a
+size threshold, or prompt truncation are all misuse: they move the payload off the one bounded
+transport that already owns backpressure, timeout, cancellation, and process-tree cleanup. A prompt
+larger than the model context is a provider response, not something the transport should pre-empt.
+
 When a capability object publishes `handler.spec`, that spec owns schemas, effects, metering, and
 timeout enforcement. Configure it at construction; duplicate registration kwargs are rejected so a
 safety policy cannot disappear silently.

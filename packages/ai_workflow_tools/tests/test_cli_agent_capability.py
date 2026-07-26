@@ -1139,3 +1139,108 @@ async def test_codex_large_stdin_prompt_to_a_child_that_never_reads_times_out_an
     record = json.loads(record_path.read_text(encoding="utf-8"))
     assert not any(_SENTINEL in item for item in record["argv"])
     assert record["os_cmdline"] is None or _SENTINEL not in record["os_cmdline"]
+
+
+async def test_codex_caller_cancellation_mid_stdin_drain_reaps_and_reraises(
+    capability_context,
+    fake_cli_path,
+    monkeypatch,
+    tmp_path,
+):
+    """Cancellation while the prompt is still being written.
+
+    Argv delivery had no such window: the payload was handed to execve atomically. With a 2 MiB
+    stdin payload and a child that never drains it, the write is still in flight when the caller
+    cancels, so the engine must terminate and reap the process tree AND re-raise the original
+    `CancelledError` rather than converting an interrupted write into a provider error.
+    """
+
+    workspace = tmp_path / "workspace-cancel-drain"
+    ready = tmp_path / "drain-ready.pid"
+    _configure_fake_cli(
+        monkeypatch, tmp_path, workspace, mode="ignore_stdin_then_sleep", sleep_s="60"
+    )
+    monkeypatch.setenv("FAKE_CLI_READY_FILE", str(ready))
+    prompt = _SENTINEL + ("y" * (2 * 1024 * 1024))
+    cap = CliAgentCapability(_fake_flavor(codex_exec, fake_cli_path), name="codex_agent")
+    request = CliAgentRequest(prompt=prompt, workspace_dir=str(workspace), timeout_s=60)
+    summary = WorkflowUsageSummary()
+
+    with workflow_usage_scope(
+        WorkflowUsageContext(capability_context.run_context, summary, WorkflowBudget())
+    ):
+        task = asyncio.create_task(cap(capability_context, request))
+        for _ in range(500):
+            if ready.exists():
+                break
+            await asyncio.sleep(0.01)
+        assert ready.exists(), "fake Codex process never started; the test would prove nothing"
+        pid = int(ready.read_text(encoding="utf-8"))
+        task.cancel()
+        # The ORIGINAL cancellation identity must survive the stdin-write cleanup path.
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)  # no orphan left holding the unread pipe
+
+
+async def test_codex_stdin_prompt_never_leaks_into_result_usage_or_observation_metadata(
+    capability_context,
+    fake_cli_path,
+    monkeypatch,
+    tmp_path,
+):
+    """Equivalence + privacy: moving the prompt to stdin must preserve every contract consumers
+    read, and must not relocate the prompt into some other observable surface. The prompt is the
+    one thing that moved, so it must appear in NONE of the result, usage event, capability
+    metadata, or error text — while result parsing, usage normalization, and artifact accounting
+    stay exactly as before."""
+
+    workspace = tmp_path / "workspace-leak"
+    _configure_fake_cli(
+        monkeypatch, tmp_path, workspace, mode="result_file", result='Done: {"ok": true}'
+    )
+    prompt = f"{_SENTINEL} confidential audited-site content"
+    cap = CliAgentCapability(_fake_flavor(codex_exec, fake_cli_path), name="codex_agent")
+    request = CliAgentRequest(
+        prompt=prompt, workspace_dir=str(workspace), model="gpt-5.4-codex", timeout_s=30
+    )
+    summary = WorkflowUsageSummary()
+
+    with workflow_usage_scope(
+        WorkflowUsageContext(capability_context.run_context, summary, WorkflowBudget())
+    ):
+        cap_result = await cap(capability_context, request)
+
+    # Contracts preserved, field by field, exactly as the pre-stdin happy path asserted.
+    assert cap_result.status == "accepted"
+    result = cap_result.output
+    assert result.status == "completed"
+    assert result.text == 'Done: {"ok": true}'
+    assert result.parsed == {"ok": True}
+    assert result.input_tokens == 120
+    assert result.output_tokens == 30
+    assert result.cache_read_tokens == 20
+    assert result.notional_cost_usd == pytest.approx(0.000705)
+    usage = summary.events[0]
+    assert len(summary.events) == 1, "one provider attempt must still record exactly one event"
+    assert usage.input_tokens == 120
+    assert usage.output_tokens == 30
+    assert usage.invocation_id == result.invocation_id
+    assert usage.input_token_details["cache_read"] == 20
+    assert usage.output_token_details["reasoning"] == 10
+
+    # The prompt moved to stdin; it must not have reappeared anywhere observable.
+    surfaces = {
+        "capability metadata": json.dumps(cap_result.metadata, default=str),
+        "capability error": str(cap_result.error),
+        "agent result": result.model_dump_json(),
+        "usage event": usage.model_dump_json(),
+    }
+    for name, payload in surfaces.items():
+        assert _SENTINEL not in payload, f"prompt text leaked into {name}"
+
+    # Process accounting still describes the real invocation.
+    assert cap_result.metadata["flavor"] == "codex_exec"
+    assert cap_result.metadata["process_io"]["result_file"]["status"] != "missing"
