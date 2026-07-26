@@ -355,7 +355,7 @@ class ExternalProcessCapability:
             process.stdin.write(data.encode("utf-8"))
             await process.stdin.drain()
         except (BrokenPipeError, ConnectionResetError):
-            pass
+            return
         finally:
             process.stdin.close()
             # Some event loops surface the peer's early exit only while settling the writer,
