@@ -3,7 +3,9 @@
 Status: **`engine-v0.11.17` is the current immutable release.**
 This corrective release closes durable-wait registration exposure races, makes observation
 provider-evidence integrity explicit in bundle schema v3, and hardens provider/CLI failure
-accounting. It retains the generic OpenAI-compatible provider MageQA requested. Repin only the coherent
+accounting. It also sends every rendered Codex CLI prompt exactly once through bounded stdin, so
+large curation prompts no longer enter process argv or hit the operating system's argument-size
+limit. It retains the generic OpenAI-compatible provider MageQA requested. Repin only the coherent
 `0.11.17 / 0.6.8 / 0.3.10` matrix after verifying its immutable release directory and passing E0.
 MageQA's two durable-registration race canaries fail on `engine-v0.11.5`. MageQA must stay on its
 existing pin and keep its fork until its E0
@@ -59,6 +61,29 @@ a defect.
 
 > **Current matrix:** `engine-v0.11.17` + `ai-workflow-tools==0.6.8` +
 > `ai-workflow-viewer==0.3.10`.
+
+### Immutable release evidence
+
+- Source commit: `a9bd8af5d895bd9d4964a12b899adbfaf7b7142a`
+- Annotated tag object: `fa516c3e17f1c0a769065ed48fffe2a9b462bad0`
+- Artifact prefix: `s3://artmoskal-artifact-cache/ai-workflow-engine/engine-v0.11.17/`
+- Release manifest SHA-256:
+  `4b4dd6151aa439aa874b511c3b662cb7166662b66af053b065d406c93d9bdf77`
+- `SHA256SUMS` SHA-256:
+  `d2bce496cc58a17a92e2b1ebf45cd236f8ff7f94501e04dd2d84dd732408017a`
+- Engine wheel SHA-256:
+  `5dc6d6a915f15bdeaa8c5bf6dcc37da991ba5a0efd9bf1cabe8e4ecd24ec5f89`
+- Tools wheel SHA-256:
+  `99a347dc602201dd95ba30144c172125b416f6c84d08553e39a99d756cfbac6c`
+- Viewer wheel SHA-256:
+  `17b7ecf0a618595f9ad64d7ab4d99be4a66c58b5987ac3805b0b9a0ecd0838f6`
+
+The producer release tier passed `1804` tests with `3` skips, `153` deselections, and zero failures.
+The published 15-file directory was downloaded through read-only credentials, byte-compared with
+staging, checksum-verified, and accepted by both tag-derived and embedded verifiers. The producer's
+live Codex call was blocked before session creation by its nested managed Codex sandbox and is not
+claimed as a passing live canary. MageQA must therefore run the retained-prompt replay below in its
+own non-nested environment before changing its pin.
 
 
 The MageQA Next.js dashboard remains product-owned. It may link/embed/project engine bundle data, but
