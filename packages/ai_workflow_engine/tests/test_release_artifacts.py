@@ -250,7 +250,15 @@ def test_installed_smoke_uses_fresh_venv_and_installs_declared_dependencies(
         str(wheels[2].resolve()),
     ]
     assert calls[2][1:3] == ["-I", "-c"]
-    assert "OpenAICompatibleLLMClient" in calls[2][3]
+    smoke_program = calls[2][3]
+    assert "OpenAICompatibleLLMClient" in smoke_program
+    assert "codex_prompt_transport" in smoke_program
+    assert 'assert "site-packages" in ai_workflow_tools.__file__' in smoke_program
+    assert 'assert codex_exec.prompt_delivery == "stdin"' in smoke_program
+    assert "_argv == [CODEX_STDIN_MARKER]" in smoke_program
+    assert "len(_stdin) == 256 * 1024" in smoke_program
+    assert 'prompt_delivery="argv_last"' in smoke_program
+    assert "argv_last must be rejected by the installed model" in smoke_program
 
 
 def _sibling_checkout(repo: Path, destination: Path) -> Path:
