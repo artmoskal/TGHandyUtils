@@ -227,6 +227,14 @@ MageQA adoption is complete when its repository proves:
     notional event. Missing/malformed usage or an unmatched model remains typed unknown. The
     notional is API-equivalent plan value, never billed spend or a substitute for call/token/time
     caps.
+17. **Large-prompt CLI transport:** the curation prompt that previously failed as
+    `[Errno 7] Argument list too long` before Codex started is replayed through the exact consumed
+    wheels and completes. MageQA proves the prompt travels on stdin, not `argv`: no prompt text or
+    unique prompt fragment appears in the recorded process command line, and the retained
+    prompt's length and SHA-256 are bound into its evidence registry rather than its content being
+    copied into the repository. MageQA adds no prompt file, wrapper script, size threshold, or
+    truncation of its own — those are engine-side misuse, not product workarounds, and a prompt
+    beyond model context must surface as a provider response rather than a transport precheck.
 
 Engine-side examples: `ai_workflow_engine.examples.run_toy_site_audit_pilot` and the paid
 qualification's MageQA authored-flow scenario.

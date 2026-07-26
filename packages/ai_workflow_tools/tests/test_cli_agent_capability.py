@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -1163,10 +1164,16 @@ async def test_codex_caller_cancellation_mid_stdin_drain_reaps_and_reraises(
 
     workspace = tmp_path / "workspace-cancel-drain"
     ready = tmp_path / "drain-ready.pid"
+    descendant = tmp_path / "drain-descendant.pid"
     _configure_fake_cli(
-        monkeypatch, tmp_path, workspace, mode="ignore_stdin_then_sleep", sleep_s="60"
+        monkeypatch,
+        tmp_path,
+        workspace,
+        mode="ignore_stdin_spawn_descendant_then_sleep",
+        sleep_s="60",
     )
     monkeypatch.setenv("FAKE_CLI_READY_FILE", str(ready))
+    monkeypatch.setenv("FAKE_CLI_DESCENDANT_FILE", str(descendant))
     prompt = _SENTINEL + ("y" * (2 * 1024 * 1024))
     cap = CliAgentCapability(_fake_flavor(codex_exec, fake_cli_path), name="codex_agent")
     request = CliAgentRequest(prompt=prompt, workspace_dir=str(workspace), timeout_s=60)
@@ -1182,13 +1189,38 @@ async def test_codex_caller_cancellation_mid_stdin_drain_reaps_and_reraises(
             await asyncio.sleep(0.01)
         assert ready.exists(), "fake Codex process never started; the test would prove nothing"
         pid = int(ready.read_text(encoding="utf-8"))
-        task.cancel()
-        # The ORIGINAL cancellation identity must survive the stdin-write cleanup path.
-        with pytest.raises(asyncio.CancelledError):
-            await task
+        for _ in range(500):
+            if descendant.exists():
+                break
+            await asyncio.sleep(0.01)
+        assert descendant.exists(), "fake CLI never spawned its descendant"
+        descendant_pid = int(descendant.read_text(encoding="utf-8"))
+        assert descendant_pid != pid
 
+        task.cancel("stdin-drain cancellation reason")
+        # Bounded wait, not a bare await: if the engine signals only the direct child, the
+        # descendant keeps the process group alive and the cleanup path never settles. Without this
+        # bound that regression manifests as a hung run instead of a named failure.
+        done, _pending = await asyncio.wait({task}, timeout=30)
+        assert task in done, (
+            "cancellation did not settle within 30s — the engine is waiting on a descendant it "
+            "failed to terminate (process-tree cleanup regressed to direct-child-only)"
+        )
+        # The ORIGINAL cancellation identity AND its message must survive the cleanup path.
+        with pytest.raises(asyncio.CancelledError) as caught:
+            task.result()
+        assert caught.value.args == ("stdin-drain cancellation reason",), (
+            f"cancellation message not preserved: {caught.value.args!r}"
+        )
+
+    # The whole process GROUP must be gone, not just the direct child. The engine spawns with
+    # start_new_session, so the child is its own group leader and the grandchild joins that group;
+    # a group id outlives its leader while any member is alive. Probing the group is therefore the
+    # assertion that distinguishes real tree cleanup from killing only the direct child.
     with pytest.raises(ProcessLookupError):
-        os.kill(pid, 0)  # no orphan left holding the unread pipe
+        os.killpg(pid, 0)
+    with pytest.raises(ProcessLookupError):
+        os.kill(descendant_pid, 0)
 
 
 async def test_codex_stdin_prompt_never_leaks_into_result_usage_or_observation_metadata(
@@ -1250,3 +1282,101 @@ async def test_codex_stdin_prompt_never_leaks_into_result_usage_or_observation_m
     # Process accounting still describes the real invocation.
     assert cap_result.metadata["flavor"] == "codex_exec"
     assert cap_result.metadata["process_io"]["result_file"]["status"] != "missing"
+
+
+@pytest.mark.parametrize("capture", ["full", "off"])
+async def test_large_stdin_prompt_run_produces_a_truthful_observation_bundle(
+    fake_cli_path,
+    monkeypatch,
+    tmp_path,
+    capture,
+):
+    """One real engine run, one real bundle, read back from disk.
+
+    Earlier equivalence coverage asserted on the capability return value only, which never created
+    an observation bundle and so could not prove what an operator actually sees. This drives the
+    engine end to end with a >200 KiB stdin prompt AND a staged image, then reads the bundle:
+    usage and artifacts must survive the transport change, and the prompt must not reappear in
+    trace/argv/process metadata. Under `capture="off"` nothing may be retained.
+    """
+
+    FileEventSource = pytest.importorskip("ai_workflow_viewer").FileEventSource
+
+    from ai_workflow_tools.toolsets import BASH_SIDE_EFFECTS
+
+    workspace = tmp_path / f"workspace-bundle-{capture}"
+    bundle_root = tmp_path / f"bundles-{capture}"
+    _configure_fake_cli(
+        monkeypatch, tmp_path, workspace, mode="result_file", result='{"label": "curated"}'
+    )
+    image_ref = EvidenceRef(
+        role="image", uri="file:///fixture/banner.png", media_type="image/png"
+    )
+    prompt = _large_prompt()
+    cap = CliAgentCapability(
+        _fake_flavor(codex_exec, fake_cli_path),
+        name="codex_agent",
+        asset_loader=lambda ref: b"\x89PNG\r\n\x1a\nfixture" if ref == image_ref else b"",
+    )
+    builder = WorkflowEngineBuilder().with_observation(
+        ObservationConfig(
+            enabled=True, bundle_dir=str(bundle_root), capture=capture, artifacts="copy"
+        )
+    )
+    builder.register_capability_spec(cap.spec, cap)
+    builder.register_workflow(
+        WorkflowBuilder("codex_bundle").step("codex_agent").build(),
+        profile=WorkflowProfile(
+            workflow_type="codex_bundle",
+            safety=SafetyPolicy(allowed_side_effects=list(BASH_SIDE_EFFECTS)),
+        ),
+    )
+    engine = builder.build()
+
+    result = await engine.run(
+        "codex_bundle",
+        CliAgentRequest(
+            prompt=prompt,
+            workspace_dir=str(workspace),
+            input_assets=[image_ref],
+            timeout_s=60,
+        ),
+        goal=WorkflowGoal(
+            workflow_type="codex_bundle",
+            objective="Prove a large stdin prompt still yields truthful observation.",
+            metadata={"run_id": f"codex-bundle-{capture}"},
+        ),
+    )
+
+    assert result.status == "completed", result.error
+    assert result.observation_bundle_path, "the engine reported no bundle location"
+    run = FileEventSource(result.observation_bundle_path).read()
+
+    # Usage survived the transport change and is still attributed to one attempt.
+    assert run.usage_events, "no usage event landed in the bundle"
+    assert sum(1 for _ in run.usage_events) == 1
+
+    # The staged image input is still fingerprinted as evidence alongside the stdin prompt.
+    detail_text = "\n".join(
+        path.read_text(encoding="utf-8", errors="replace")
+        for path in Path(result.observation_bundle_path).glob("details*")
+        if path.is_file()
+    )
+    if capture == "full":
+        assert "input_fingerprints" in detail_text, "input evidence missing from full capture"
+
+    # The prompt must not have relocated into any recorded surface, at either capture setting.
+    bundle_text = "\n".join(
+        path.read_text(encoding="utf-8", errors="replace")
+        for path in Path(result.observation_bundle_path).rglob("*")
+        if path.is_file() and path.suffix in {".json", ".jsonl"}
+    )
+    if capture == "off":
+        assert _SENTINEL not in bundle_text, "capture=off retained prompt content"
+    else:
+        # Full capture may legitimately retain the rendered prompt as DETAIL, but never as an
+        # argv/command fragment: that is the exposure this release removed.
+        for record in run.trace_events:
+            assert _SENTINEL not in (record.model_dump_json()), (
+                "prompt text leaked into a trace event"
+            )

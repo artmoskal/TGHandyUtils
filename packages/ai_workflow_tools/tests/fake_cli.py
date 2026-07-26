@@ -26,6 +26,28 @@ PNG_BYTES = b"\x89PNG\r\n\x1a\nfake-png\n"
 def main() -> int:
     argv = sys.argv
     mode = os.environ.get("FAKE_CLI_MODE", "envelope")
+    if mode == "ignore_stdin_spawn_descendant_then_sleep":
+        # Descendant cleanup attack: a CLI that ignores stdin AND leaves a grandchild behind.
+        # Killing only the direct child would leave this descendant holding the unread pipe, so
+        # both pids are published and both must be gone after cancellation/timeout.
+        import subprocess
+
+        # The descendant must outlive every cleanup wait in the engine, otherwise it self-exits
+        # before the test asserts and the assertion can never fail — which made an earlier version
+        # of this fixture unfalsifiable against a direct-child-only kill.
+        descendant_sleep = os.environ.get("FAKE_CLI_DESCENDANT_SLEEP_S", "600")
+        child = subprocess.Popen(  # noqa: S603 - fixture spawning its own descendant on purpose
+            [sys.executable, "-c", f"import time; time.sleep({descendant_sleep})"]
+        )
+        descendant_file = os.environ.get("FAKE_CLI_DESCENDANT_FILE")
+        if descendant_file:
+            Path(descendant_file).write_text(str(child.pid), encoding="utf-8")
+        ready = os.environ.get("FAKE_CLI_READY_FILE")
+        if ready:
+            Path(ready).write_text(str(os.getpid()), encoding="utf-8")
+        _record_invocation(argv, "")
+        time.sleep(float(os.environ.get("FAKE_CLI_SLEEP_S", "60")))
+        return 0
     if mode == "ignore_stdin_then_sleep":
         # Backpressure attack: a child that NEVER reads stdin. Now that prompts are delivered as
         # stdin bytes, a large prompt fills the pipe buffer; if the engine wrote synchronously it
