@@ -1246,9 +1246,11 @@ async def test_console_llm_client_sends_large_codex_prompt_through_stdin(
     # COMPLETE delivery. The two console doors prepend different role labels (`user:` vs
     # `human:`), so anchor on the rendered body instead: an exact suffix match plus length is
     # equality-grade for the prompt itself and cannot survive truncation such as stdin[:1024].
+    # EXACT-ONCE delivery. A suffix match is not equality-grade: `stdin_data + stdin_data`
+    # still ends with the rendered prompt. `_flatten_request` flattens its single turn with the
+    # deterministic `user: ` label, so full equality is assertable and duplication cannot pass.
     rendered = template.replace("{item}", "mug")
-    assert record["stdin"].endswith(rendered), "prompt arrived truncated or altered"
-    assert len(record["stdin"]) >= len(rendered)
+    assert record["stdin"] == f"user: {rendered}"
     assert _TAIL_SENTINEL in record["stdin"], "prompt tail missing"
     assert not any(_SENTINEL in item for item in record["argv"]), "prompt must not appear in argv"
     assert record["os_cmdline"] is not None and _SENTINEL not in record["os_cmdline"]
@@ -1285,9 +1287,11 @@ async def test_console_chat_model_sends_large_codex_prompt_through_stdin(
 
     assert result.label == "codex"
     record = json.loads(record_path.read_text(encoding="utf-8"))
+    # EXACT-ONCE delivery. A suffix match is not equality-grade: `stdin_data + stdin_data`
+    # still ends with the rendered prompt. `_flatten_langchain_messages` (LangChain `.type`) flattens its single turn with the
+    # deterministic `human: ` label, so full equality is assertable and duplication cannot pass.
     rendered = template.replace("{item}", "mug")
-    assert record["stdin"].endswith(rendered), "prompt arrived truncated or altered"
-    assert len(record["stdin"]) >= len(rendered)
+    assert record["stdin"] == f"human: {rendered}"
     assert _TAIL_SENTINEL in record["stdin"], "prompt tail missing"
     assert not any(_SENTINEL in item for item in record["argv"])
     assert record["os_cmdline"] is not None and _SENTINEL not in record["os_cmdline"]
