@@ -1253,7 +1253,9 @@ async def test_console_llm_client_sends_large_codex_prompt_through_stdin(
     assert record["stdin"] == f"user: {rendered}"
     assert _TAIL_SENTINEL in record["stdin"], "prompt tail missing"
     assert not any(_SENTINEL in item for item in record["argv"]), "prompt must not appear in argv"
-    assert record["os_cmdline"] is not None and _SENTINEL not in record["os_cmdline"]
+    # argv absence holds everywhere; the kernel command line only exists on Linux (/proc).
+    if record["os_cmdline"] is not None:
+        assert _SENTINEL not in record["os_cmdline"]
 
 
 async def test_console_chat_model_sends_large_codex_prompt_through_stdin(
@@ -1294,4 +1296,6 @@ async def test_console_chat_model_sends_large_codex_prompt_through_stdin(
     assert record["stdin"] == f"human: {rendered}"
     assert _TAIL_SENTINEL in record["stdin"], "prompt tail missing"
     assert not any(_SENTINEL in item for item in record["argv"])
-    assert record["os_cmdline"] is not None and _SENTINEL not in record["os_cmdline"]
+    # argv absence holds everywhere; the kernel command line only exists on Linux (/proc).
+    if record["os_cmdline"] is not None:
+        assert _SENTINEL not in record["os_cmdline"]
