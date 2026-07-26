@@ -1026,6 +1026,84 @@ def _large_prompt(marker: str = _SENTINEL) -> str:
     return f"{marker}\n{body}"
 
 
+async def test_repository_owned_codex_qualification_runs_the_real_engine_contract(
+    fake_cli_path,
+    monkeypatch,
+    tmp_path,
+):
+    """The paid release gate is opt-in, but its harness is permanent and fake-CLI testable."""
+
+    import hashlib
+    import importlib
+
+    scripts_dir = Path(__file__).parents[1] / "scripts"
+    monkeypatch.syspath_prepend(str(scripts_dir))
+    qualification = importlib.import_module("qualify_codex_stdin")
+
+    prompt = _large_prompt("QUALIFICATION_HARNESS_SENTINEL")
+    prompt_file = tmp_path / "protected-prompt.txt"
+    prompt_file.write_text(prompt, encoding="utf-8")
+    workspace = tmp_path / "qualification-workspace"
+    (workspace / ".git").mkdir(parents=True)
+    _configure_fake_cli(
+        monkeypatch,
+        tmp_path,
+        workspace,
+        mode="result_file",
+        result="stdin transport qualified",
+    )
+
+    evidence = await qualification.run_qualification(
+        qualification.QualificationConfig(
+            prompt_file=prompt_file,
+            expected_length=len(prompt),
+            expected_sha256=hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+            workspace_dir=workspace,
+            bundle_dir=tmp_path / "qualification-bundles",
+            model="gpt-5.4-codex",
+            timeout_s=60,
+            expected_output="stdin transport qualified",
+            require_installed=False,
+        ),
+        flavor=_fake_flavor(codex_exec, fake_cli_path),
+    )
+
+    assert evidence["status"] == "completed"
+    assert evidence["provider"] == "codex_exec"
+    assert evidence["provider_attempts"] == 1
+    assert evidence["prompt_length"] == len(prompt)
+    assert evidence["prompt_sha256"] == hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+    assert evidence["notional_usd"] == pytest.approx(0.000705)
+    assert Path(evidence["bundle"]).is_dir()
+
+
+def test_repository_owned_codex_qualification_rejects_prompt_identity_drift(
+    monkeypatch,
+    tmp_path,
+):
+    import importlib
+
+    scripts_dir = Path(__file__).parents[1] / "scripts"
+    monkeypatch.syspath_prepend(str(scripts_dir))
+    qualification = importlib.import_module("qualify_codex_stdin")
+    prompt_file = tmp_path / "protected-prompt.txt"
+    prompt_file.write_text("actual prompt", encoding="utf-8")
+    config = qualification.QualificationConfig(
+        prompt_file=prompt_file,
+        expected_length=len("actual prompt"),
+        expected_sha256="0" * 64,
+        workspace_dir=tmp_path / "workspace",
+        bundle_dir=tmp_path / "bundles",
+        model="gpt-5.4-codex",
+        timeout_s=60,
+        expected_output="qualified",
+        require_installed=False,
+    )
+
+    with pytest.raises(ValueError, match="prompt SHA-256 mismatch"):
+        qualification._read_verified_prompt(config)
+
+
 async def test_codex_agent_sends_large_prompt_through_stdin_not_argv(
     capability_context,
     fake_cli_path,

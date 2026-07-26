@@ -355,9 +355,14 @@ class ExternalProcessCapability:
             process.stdin.write(data.encode("utf-8"))
             await process.stdin.drain()
         except (BrokenPipeError, ConnectionResetError):
-            return
-        process.stdin.close()
-        await process.stdin.wait_closed()
+            pass
+        finally:
+            process.stdin.close()
+            # Some event loops surface the peer's early exit only while settling the writer,
+            # after ``drain`` already returned. The process return code and captured stderr are
+            # the authoritative outcome; a late pipe-close error must not replace them.
+            with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+                await process.stdin.wait_closed()
 
     @classmethod
     async def _terminate_with_grace(

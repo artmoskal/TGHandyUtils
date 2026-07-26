@@ -1303,6 +1303,64 @@ async def test_external_process_timeout_also_bounds_stdin_delivery():
     assert "timed out" in result.error
 
 
+async def test_external_process_early_exit_during_large_stdin_preserves_child_settlement():
+    """A child may reject its request before consuming a pipe-sized stdin payload.
+
+    Closing the writer can then raise ``BrokenPipeError`` from ``wait_closed()`` even when
+    ``drain()`` was already guarded. That transport detail must not replace the process's real
+    exit status and bounded stderr diagnostics.
+    """
+
+    script = (
+        "import sys; "
+        "sys.stderr.write('request rejected before stdin\\n'); "
+        "sys.stderr.flush(); "
+        "raise SystemExit(2)"
+    )
+    result = await ExternalProcessCapability()(
+        capability_context_for_goal(
+            WorkflowGoal(workflow_type="external", objective="preserve early exit truth")
+        ),
+        ExternalProcessRequest(
+            command=[sys.executable, "-c", script],
+            stdin_data="x" * 2_000_000,
+            timeout_s=5,
+        ),
+    )
+
+    assert result.status == "failed"
+    assert result.error == "external process exited 2"
+    assert result.output["returncode"] == 2
+    assert result.output["stderr"] == "request rejected before stdin\n"
+
+
+async def test_external_process_stdin_close_suppresses_a_late_broken_pipe():
+    """macOS may raise from wait_closed after drain already succeeded; Linux often does not."""
+
+    class BrokenOnClose:
+        def __init__(self) -> None:
+            self.payload = b""
+            self.closed = False
+
+        def write(self, payload: bytes) -> None:
+            self.payload = payload
+
+        async def drain(self) -> None:
+            return None
+
+        def close(self) -> None:
+            self.closed = True
+
+        async def wait_closed(self) -> None:
+            raise BrokenPipeError("child exited before stdin settlement")
+
+    stdin = BrokenOnClose()
+    await ExternalProcessCapability._write_stdin(SimpleNamespace(stdin=stdin), "payload")
+
+    assert stdin.payload == b"payload"
+    assert stdin.closed is True
+
+
 async def test_external_process_capability_handles_long_single_line_stdout_and_stderr():
     # Regression (G-0.1): readline() raised LimitOverrunError -> ValueError on any single
     # line beyond asyncio's 64KiB stream limit — CLI workers emit huge one-line JSON.
