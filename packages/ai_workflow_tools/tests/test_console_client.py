@@ -38,7 +38,7 @@ def _node(client: ConsoleLLMClient, **kwargs) -> StructuredLLMNode:
         name="console_node",
         config=object(),
         output_model=Verdict,
-        prompt_template="Classify {item}.",
+        prompt_template=kwargs.pop("prompt_template", "Classify {item}."),
         input_variables=["item"],
         llm=client,
         **kwargs,
@@ -148,11 +148,13 @@ async def test_console_codex_reads_result_file_and_records_final_structured_usag
     assert usage.output_token_details["reasoning"] == 10
 
     record = json.loads(record_path.read_text(encoding="utf-8"))
-    assert record["stdin"] == ""
+    # v0.11.15: the prompt travels as stdin bytes; argv carries only the stdin marker.
+    assert record["stdin"] == "user: Classify mug."
     assert "--output-last-message" in record["argv"]
     assert "--config" not in record["argv"]
     assert record["argv"][record["argv"].index("--model") + 1] == "gpt-5.4-codex"
-    assert record["argv"][-1] == "user: Classify mug."
+    assert record["argv"][-1] == "-"
+    assert "user: Classify mug." not in record["argv"]
     assert record["argv"].count("--json") == 1
 
 
@@ -317,7 +319,7 @@ async def test_console_refuses_images_and_tools_before_spawn(fake_cli_path, monk
     ("flavor_factory", "mode", "prompt_location"),
     [
         (lambda path: _fake_flavor(claude_p, path), "envelope", "stdin"),
-        (lambda path: _fake_flavor(codex_exec, path), "result_file", "argv"),
+        (lambda path: _fake_flavor(codex_exec, path), "result_file", "stdin"),
     ],
 )
 async def test_console_repair_round_spawns_twice_and_delivers_repair_prompt_per_flavor(
@@ -343,8 +345,12 @@ async def test_console_repair_round_spawns_twice_and_delivers_repair_prompt_per_
     assert result.label == "repaired"
     records = json.loads(record_path.read_text(encoding="utf-8"))
     assert len(records) == 2
-    first_prompt = records[0]["stdin"] if prompt_location == "stdin" else records[0]["argv"][-1]
-    second_prompt = records[1]["stdin"] if prompt_location == "stdin" else records[1]["argv"][-1]
+    # v0.11.15: EVERY shipped flavor delivers the prompt on stdin, so there is no longer a
+    # per-flavor prompt location. The parameter is kept to assert that equivalence explicitly.
+    assert prompt_location == "stdin", "no shipped flavor may deliver a prompt through argv"
+    first_prompt = records[0]["stdin"]
+    second_prompt = records[1]["stdin"]
+    assert records[0]["argv"] != records[1]["argv"] or first_prompt != second_prompt
     assert first_prompt == "user: Classify mug."
     assert "previous structured-output response was invalid" in second_prompt
 
@@ -750,18 +756,23 @@ async def test_console_codex_attaches_staged_images_after_prompt(
     record = json.loads(record_path.read_text(encoding="utf-8"))
     assert "inputs/img-1.png" in record["cwd_files"]
     assert "inputs/img-2.jpg" in record["cwd_files"]
-    prompt_index = next(
-        index
-        for index, value in enumerate(record["argv"])
-        if value.startswith("First read and inspect these image file(s)")
-    )
-    assert record["argv"][prompt_index + 1 :] == [
+    # v0.11.15: the prompt positional is now the stdin marker, so image ordering is anchored on
+    # `-`. codex-cli 0.145.0 was probed directly to confirm `-` is accepted as the PROMPT
+    # positional and that the variadic `--image` still parses when it follows.
+    marker_index = record["argv"].index("-")
+    assert record["argv"][marker_index + 1 :] == [
         "--image",
         "inputs/img-1.png",
         "inputs/img-2.jpg",
     ]
     assert record["argv"].count("--image") == 1
-    assert record["stdin"] == ""
+    assert record["argv"].count("-") == 1, "exactly one stdin marker"
+    # The image instruction rides in the prompt, which is now stdin — not argv.
+    assert record["stdin"].startswith("First read and inspect these image file(s)")
+    assert not any(
+        value.startswith("First read and inspect these image file(s)")
+        for value in record["argv"]
+    )
 
 
 async def test_console_stages_path_source_images_by_copy(fake_cli_path, monkeypatch, tmp_path):
@@ -1183,3 +1194,86 @@ async def test_console_chat_model_inherits_a_real_engine_window():
         if event.node == "bounded_console_chat" and event.phase == "llm:response"
     ]
     assert llm_events[-1].metadata["process_execution_bound"]["engine_hard_s"] <= 5.0
+
+
+# --- v0.11.15 stdin prompt transport (RED before repair) -------------------------------------
+
+_SENTINEL = "CONSOLE-SENTINEL-7d4e2a10"
+
+
+def _large_console_prompt() -> str:
+    """Deterministic prompt beyond Linux's per-argument limit (MAX_ARG_STRLEN, 128 KiB)."""
+
+    body = "structured review row that is long enough to be representative\n" * 4000
+    assert len(body) > 200 * 1024
+    return f"{_SENTINEL} {body}"
+
+
+async def test_console_llm_client_sends_large_codex_prompt_through_stdin(
+    fake_cli_path,
+    monkeypatch,
+    tmp_path,
+):
+    """`ConsoleLLMClient` is a separate public door from `CliAgentCapability`. It must survive the
+    same 200 KiB+ prompt that broke MageQA's curation, and must not leak prompt text into argv."""
+
+    record_path = _configure_fake_cli(
+        monkeypatch, tmp_path, mode="result_file", result='{"label": "codex"}'
+    )
+    client = ConsoleLLMClient(_fake_flavor(codex_exec, fake_cli_path), model="gpt-5.4-codex")
+    node = _node(client, prompt_template=_large_console_prompt() + "\n\nitem: {item}")
+    summary = WorkflowUsageSummary()
+
+    with workflow_usage_scope(
+        WorkflowUsageContext(
+            WorkflowRunContext(workflow_id="wf-console-big", workflow_type="console"),
+            summary,
+            WorkflowBudget(),
+        )
+    ):
+        result = await node.run({"item": "mug"})
+
+    assert result.label == "codex"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert _SENTINEL in record["stdin"], "prompt must arrive on stdin"
+    assert not any(_SENTINEL in item for item in record["argv"]), "prompt must not appear in argv"
+    assert record["os_cmdline"] is not None and _SENTINEL not in record["os_cmdline"]
+
+
+async def test_console_chat_model_sends_large_codex_prompt_through_stdin(
+    fake_cli_path,
+    monkeypatch,
+    tmp_path,
+):
+    """`ConsoleChatModel` is checked independently rather than inferred from `ConsoleLLMClient`:
+    they are distinct public classes and a shared-helper assertion would not prove both are wired."""
+
+    from ai_workflow_tools.cli_agents import ConsoleChatModel
+
+    record_path = _configure_fake_cli(
+        monkeypatch, tmp_path, mode="result_file", result='{"label": "codex"}'
+    )
+    model = ConsoleChatModel(
+        _fake_flavor(codex_exec, fake_cli_path), model="gpt-5.4-codex", timeout_s=60
+    )
+    node = _node(
+        model,
+        prompt_template=_large_console_prompt() + "\n\nitem: {item}",
+        default_model="gpt-5.4-codex",
+    )
+    summary = WorkflowUsageSummary()
+
+    with workflow_usage_scope(
+        WorkflowUsageContext(
+            WorkflowRunContext(workflow_id="wf-console-chat-big", workflow_type="console"),
+            summary,
+            WorkflowBudget(),
+        )
+    ):
+        result = await node.run({"item": "mug"})
+
+    assert result.label == "codex"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert _SENTINEL in record["stdin"]
+    assert not any(_SENTINEL in item for item in record["argv"])
+    assert record["os_cmdline"] is not None and _SENTINEL not in record["os_cmdline"]

@@ -14,7 +14,7 @@ claude_p = CliFlavor(
 
 codex_exec = CliFlavor(
     name="codex_exec",
-    prompt_delivery="argv_last",
+    prompt_delivery="stdin",
     result_source="result_file",
     base_argv=["codex", "exec"],
 )

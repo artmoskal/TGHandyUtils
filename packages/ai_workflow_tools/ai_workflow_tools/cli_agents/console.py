@@ -34,7 +34,12 @@ from .usage import (
     usage_accumulator_for,
 )
 from .flavors import claude_p, codex_exec
-from .assembly import claude_control_argv, codex_model_argv, codex_structured_output_argv
+from .assembly import (
+    claude_control_argv,
+    codex_model_argv,
+    codex_prompt_transport,
+    codex_structured_output_argv,
+)
 from .models import CliAgentInvocation, CliFlavor
 
 logger = logging.getLogger(__name__)
@@ -749,6 +754,9 @@ def _build_console_invocation(
         return CliAgentInvocation(argv=argv, stdin_data=prompt)
     if flavor.name == codex_exec.name:
         result_file = workspace / "codex-last-message.txt"
+        # Same single transport owner as the agent capability: the stdin marker keeps the
+        # prompt's argv position, so the variadic --image below still parses as before.
+        prompt_argv, stdin_data = codex_prompt_transport(prompt)
         return CliAgentInvocation(
             argv=[
                 *flavor.base_argv,
@@ -760,9 +768,10 @@ def _build_console_invocation(
                 str(result_file),
                 *codex_structured_output_argv(extra_argv),
                 *extra_argv,
-                prompt,
+                *prompt_argv,
                 *(["--image", *image_paths] if image_paths else []),
             ],
+            stdin_data=stdin_data,
             result_file=str(result_file),
         )
     raise ValueError(f"unsupported console CLI flavor: {flavor.name}")

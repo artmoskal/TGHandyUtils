@@ -11,6 +11,15 @@ engine core so wire protocols, provider SDKs, and CLI flag drift do not force co
 are provider- or CLI-specific:
 
 - `claude -p` / `codex exec` argv and result-envelope details live here, not in core.
+- **Prompts are always delivered on stdin, never in argv.** Every shipped flavor declares
+  `prompt_delivery="stdin"`, and that is the only accepted value — there is no size threshold and no
+  argv fallback. Prompt text in a command-line argument fails at process creation once it approaches
+  the Linux per-argument limit (a legitimate 125,799-character prompt surfaced as
+  `[Errno 7] Argument list too long` before the provider was ever called), and argv is readable by
+  any process through `/proc/<pid>/cmdline`. For Codex the prompt positional is the documented `-`
+  stdin marker; large prompts therefore need no prompt file, wrapper, or truncation at the product
+  layer. Backpressure, timeout, cancellation, and process-tree cleanup stay with the engine's
+  bounded process owner.
 - CLI-agent episodes are still typed engine capabilities with side-effect gates, budgets, traces,
   timeouts, and usage events.
 - Console LLM calls use the same `LLMCallable` socket as API clients, so structured nodes keep

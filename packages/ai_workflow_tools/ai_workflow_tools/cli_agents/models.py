@@ -17,7 +17,11 @@ class CliFlavor(BaseModel):
     """How to talk to one CLI agent runtime."""
 
     name: str
-    prompt_delivery: Literal["stdin", "argv_last"]
+    # v0.11.15: stdin is the ONLY prompt transport. Prompt text in argv broke real work
+    # (a 125,799-char prompt hit Linux MAX_ARG_STRLEN as [Errno 7] before the provider was
+    # reached) and exposed prompt content through /proc/<pid>/cmdline. Latest-only line: no
+    # threshold, no fallback, and an old ``argv_last`` flavor now fails validation loudly.
+    prompt_delivery: Literal["stdin"]
     result_source: Literal["stdout_json_envelope", "result_file", "stdout_text"]
     base_argv: List[str]
 

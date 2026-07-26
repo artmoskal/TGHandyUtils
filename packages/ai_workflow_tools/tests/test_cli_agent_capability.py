@@ -292,8 +292,10 @@ async def test_codex_flavor_reads_result_file_and_records_final_structured_usage
     assert usage.notional_usd == pytest.approx(0.000705)
 
     record = json.loads(record_path.read_text(encoding="utf-8"))
-    assert record["stdin"] == ""
-    assert record["argv"][-1] == "Inspect"
+    # v0.11.15: the prompt travels as stdin bytes; argv carries only the stdin marker.
+    assert record["stdin"] == "Inspect"
+    assert record["argv"][-1] == "-"
+    assert "Inspect" not in record["argv"]
     assert "--output-last-message" in record["argv"]
     assert record["argv"].count("--json") == 1
 
@@ -1000,3 +1002,140 @@ async def test_cli_agent_bounds_a_stdout_flood_and_surfaces_process_io_truth(
     assert len(cap_result.output.text) <= 2 * 1024 * 1024, "retained text must be bounded"
     assert cap_result.status == "partial"
     assert cap_result.output.status == "truncated"
+
+
+# --- v0.11.15 stdin prompt transport (RED before repair) -------------------------------------
+
+_SENTINEL = "PROMPT-SENTINEL-b3f1a9c7"
+
+
+def _large_prompt(marker: str = _SENTINEL) -> str:
+    """A deterministic prompt larger than Linux's per-argument limit (MAX_ARG_STRLEN, 128 KiB).
+
+    MageQA's real failure was a 125,799-character prompt; >200 KiB keeps the reproducer
+    unambiguously over the boundary on every supported host without depending on that private
+    payload, which is not retained anywhere on disk.
+    """
+
+    body = "curated finding line with enough text to be representative\n" * 4000
+    assert len(body) > 200 * 1024, "reproducer must exceed the per-argument limit"
+    return f"{marker}\n{body}"
+
+
+async def test_codex_agent_sends_large_prompt_through_stdin_not_argv(
+    capability_context,
+    fake_cli_path,
+    monkeypatch,
+    tmp_path,
+):
+    """MageQA: `[Errno 7] Argument list too long: 'codex'` before Codex started, on a legitimate
+    125,799-character curation prompt. Process creation — not the provider — rejected it, because
+    `codex_exec` put the whole prompt in argv. The prompt must travel as stdin bytes instead."""
+
+    workspace = tmp_path / "workspace"
+    record_path = _configure_fake_cli(
+        monkeypatch, tmp_path, workspace, mode="result_file", result="curated"
+    )
+    prompt = _large_prompt()
+    cap = CliAgentCapability(_fake_flavor(codex_exec, fake_cli_path), name="codex_agent")
+    request = CliAgentRequest(prompt=prompt, workspace_dir=str(workspace), timeout_s=60)
+    summary = WorkflowUsageSummary()
+
+    with workflow_usage_scope(
+        WorkflowUsageContext(capability_context.run_context, summary, WorkflowBudget())
+    ):
+        cap_result = await cap(capability_context, request)
+
+    assert cap_result.status == "accepted", f"large prompt must reach the CLI: {cap_result.error}"
+    assert cap_result.output.status == "completed"
+
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert record["stdin"] == prompt, "the CLI must receive the exact prompt bytes on stdin"
+    assert record["argv"].count(prompt) == 0, "the prompt must not appear in argv"
+    assert not any(_SENTINEL in item for item in record["argv"]), (
+        "no prompt fragment may appear in argv"
+    )
+    assert record["argv"][-1] != prompt
+
+
+async def test_codex_agent_prompt_is_absent_from_kernel_process_command_line(
+    capability_context,
+    fake_cli_path,
+    monkeypatch,
+    tmp_path,
+):
+    """Even a small prompt in argv is readable by any process on the host through
+    /proc/<pid>/cmdline. Asserting on the Python argv list would not prove that; this reads the
+    command line as the kernel reports it for the live CLI process."""
+
+    workspace = tmp_path / "workspace"
+    record_path = _configure_fake_cli(
+        monkeypatch, tmp_path, workspace, mode="result_file", result="ok"
+    )
+    prompt = f"{_SENTINEL} small confidential instruction"
+    cap = CliAgentCapability(_fake_flavor(codex_exec, fake_cli_path), name="codex_agent")
+    request = CliAgentRequest(prompt=prompt, workspace_dir=str(workspace), timeout_s=30)
+    summary = WorkflowUsageSummary()
+
+    with workflow_usage_scope(
+        WorkflowUsageContext(capability_context.run_context, summary, WorkflowBudget())
+    ):
+        cap_result = await cap(capability_context, request)
+
+    assert cap_result.status == "accepted"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    os_cmdline = record["os_cmdline"]
+    assert os_cmdline is not None, "kernel command line unavailable; the tier must run on Linux"
+    assert _SENTINEL not in os_cmdline, (
+        "prompt text is exposed through process command-line inspection"
+    )
+    assert record["stdin"] == prompt
+
+
+async def test_codex_large_stdin_prompt_to_a_child_that_never_reads_times_out_and_is_reaped(
+    capability_context,
+    fake_cli_path,
+    monkeypatch,
+    tmp_path,
+):
+    """Delivering the prompt as stdin creates a backpressure surface argv never had: a child that
+    ignores stdin lets the pipe buffer fill (~64 KiB), so a naive synchronous write would deadlock
+    past the execution window. The engine's bounded process owner must instead honour the window,
+    terminate the process tree, and reap it — with the original prompt bytes never reaching argv."""
+
+    workspace = tmp_path / "workspace"
+    ready = tmp_path / "backpressure-ready.pid"
+    record_path = _configure_fake_cli(
+        monkeypatch, tmp_path, workspace, mode="ignore_stdin_then_sleep", sleep_s="60"
+    )
+    monkeypatch.setenv("FAKE_CLI_READY_FILE", str(ready))
+    # Well past a single pipe buffer, so the write cannot complete before the child is killed.
+    prompt = _SENTINEL + ("x" * (2 * 1024 * 1024))
+    cap = CliAgentCapability(_fake_flavor(codex_exec, fake_cli_path), name="codex_agent")
+    request = CliAgentRequest(prompt=prompt, workspace_dir=str(workspace), timeout_s=3)
+    summary = WorkflowUsageSummary()
+
+    started = asyncio.get_running_loop().time()
+    with workflow_usage_scope(
+        WorkflowUsageContext(capability_context.run_context, summary, WorkflowBudget())
+    ):
+        cap_result = await cap(capability_context, request)
+    elapsed = asyncio.get_running_loop().time() - started
+
+    # Bounded by the declared window, not by the child's 60s sleep.
+    assert elapsed < 30, f"blocked on stdin backpressure for {elapsed:.1f}s"
+    # Established convention for a window-terminated process (same as the bounded-output tests):
+    # capability `partial` + agent `truncated`, with the timeout named and SIGTERM recorded.
+    assert cap_result.status == "partial"
+    assert cap_result.output.status == "truncated"
+    assert "timed out after 3.0s" in (cap_result.error or "")
+    assert cap_result.output.returncode == -15, "process tree must be signalled, not left running"
+    assert ready.exists(), "the fake CLI never started; the test would prove nothing"
+
+    pid = int(ready.read_text(encoding="utf-8"))
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)  # terminated and reaped, no orphan holding the pipe
+
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert not any(_SENTINEL in item for item in record["argv"])
+    assert record["os_cmdline"] is None or _SENTINEL not in record["os_cmdline"]

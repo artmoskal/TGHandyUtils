@@ -85,6 +85,32 @@ def codex_structured_output_argv(existing_argv: "list[str] | tuple[str, ...]") -
     return ["--json"]
 
 
+CODEX_STDIN_MARKER = "-"
+
+
+def codex_prompt_transport(prompt: str) -> "tuple[list[str], str]":
+    """Return the prompt-positional argv and the stdin bytes for one Codex invocation.
+
+    One owner for both Codex builders (agent capability and the console classes), so the
+    transport rule cannot drift between public doors.
+
+    Codex must never carry prompt text in argv:
+
+    * Linux rejects a single argument near ``MAX_ARG_STRLEN``. A legitimate 125,799-character
+      curation prompt surfaced as ``[Errno 7] Argument list too long`` at process creation,
+      before any provider call.
+    * argv is world-readable through ``/proc/<pid>/cmdline``, so even a small prompt leaked.
+
+    ``codex-cli 0.145.0`` documents the positional as: "If not provided as an argument (or if
+    ``-`` is used), instructions are read from stdin." The marker replaces the prompt in the same
+    position rather than joining it — supplying both makes Codex append stdin as a separate
+    ``<stdin>`` block, which would duplicate the prompt. Keeping the position also preserves the
+    proven argv order for the variadic ``--image`` that may follow.
+    """
+
+    return [CODEX_STDIN_MARKER], prompt
+
+
 def codex_model_argv(
     model: "str | None", existing_argv: "list[str] | tuple[str, ...]"
 ) -> list[str]:
@@ -148,14 +174,17 @@ def _build_codex_exec_invocation(flavor: CliFlavor, request: CliAgentRequest) ->
         argv.extend(["--model", request.model])
     if request.reasoning_effort:
         argv.extend(["--config", f"model_reasoning_effort={json.dumps(request.reasoning_effort)}"])
+    prompt_argv, stdin_data = codex_prompt_transport(request.prompt)
     argv.extend(
         [
             *codex_structured_output_argv(request.extra_argv),
             *request.extra_argv,
-            request.prompt,
+            *prompt_argv,
         ]
     )
-    return CliAgentInvocation(argv=argv, result_file=str(result_file))
+    return CliAgentInvocation(
+        argv=argv, stdin_data=stdin_data, result_file=str(result_file)
+    )
 
 
 def _ensure_workspace(workspace_dir: str) -> Path:

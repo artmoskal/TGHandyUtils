@@ -182,7 +182,7 @@ def test_codex_usage_accumulator_missing_completion_is_explicit_unknown():
 def test_codex_usage_protocol_never_reads_stderr_diagnostics():
     flavor = CliFlavor(
         name="codex",
-        prompt_delivery="argv_last",
+        prompt_delivery="stdin",
         result_source="result_file",
         base_argv=["codex", "exec"],
     )

@@ -80,7 +80,7 @@ def test_claude_p_assembly_writes_mcp_config_with_env_and_stdin_prompt(tmp_path)
     }
 
 
-def test_codex_exec_assembly_puts_mcp_env_in_config_entries_and_prompt_last(tmp_path):
+def test_codex_exec_assembly_puts_mcp_env_in_config_entries_and_prompt_on_stdin(tmp_path):
     request = CliAgentRequest(
         prompt="Inspect the app",
         workspace_dir=str(tmp_path),
@@ -122,9 +122,11 @@ def test_codex_exec_assembly_puts_mcp_env_in_config_entries_and_prompt_last(tmp_
         'model_reasoning_effort="high"',
         "--json",
         "--full-auto",
-        "Inspect the app",
+        "-",
     ]
-    assert invocation.stdin_data is None
+    # v0.11.15: the prompt is stdin bytes and argv ends with the stdin marker only.
+    assert invocation.stdin_data == "Inspect the app"
+    assert "Inspect the app" not in invocation.argv
     assert invocation.result_file == str(tmp_path / "codex-last-message.txt")
     assert invocation.mcp_config_path is None
 

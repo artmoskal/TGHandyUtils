@@ -25,8 +25,18 @@ PNG_BYTES = b"\x89PNG\r\n\x1a\nfake-png\n"
 
 def main() -> int:
     argv = sys.argv
-    stdin_text = sys.stdin.read()
     mode = os.environ.get("FAKE_CLI_MODE", "envelope")
+    if mode == "ignore_stdin_then_sleep":
+        # Backpressure attack: a child that NEVER reads stdin. Now that prompts are delivered as
+        # stdin bytes, a large prompt fills the pipe buffer; if the engine wrote synchronously it
+        # would deadlock instead of honouring its execution window. Never read stdin here.
+        ready = os.environ.get("FAKE_CLI_READY_FILE")
+        if ready:
+            Path(ready).write_text(str(os.getpid()), encoding="utf-8")
+        _record_invocation(argv, "")
+        time.sleep(float(os.environ.get("FAKE_CLI_SLEEP_S", "30")))
+        return 0
+    stdin_text = sys.stdin.read()
     result_text = _result_text()
     workspace = Path(os.environ.get("FAKE_CLI_WORKSPACE", os.getcwd()))
     workspace.mkdir(parents=True, exist_ok=True)
@@ -97,7 +107,21 @@ def _record_invocation(argv: list[str], stdin_text: str) -> None:
         return
     cwd = Path(os.getcwd())
     cwd_files = sorted(str(f.relative_to(cwd)) for f in cwd.rglob("*") if f.is_file())
-    payload = {"argv": argv, "stdin": stdin_text, "cwd_files": cwd_files, "pid": os.getpid()}
+    # Privacy proof: record the command line as the KERNEL reports it, not Python's argv list.
+    # /proc/self/cmdline is the same bytes any other process reads from /proc/<pid>/cmdline, so a
+    # prompt sentinel absent here is genuinely absent from process inspection. Read from inside the
+    # live process to avoid racing its exit; absent on non-Linux, where the tier does not run.
+    try:
+        os_cmdline = Path("/proc/self/cmdline").read_bytes().decode("utf-8", "replace")
+    except OSError:
+        os_cmdline = None
+    payload = {
+        "argv": argv,
+        "stdin": stdin_text,
+        "cwd_files": cwd_files,
+        "pid": os.getpid(),
+        "os_cmdline": os_cmdline,
+    }
     path = Path(record_path)
     if os.environ.get("FAKE_CLI_RECORD_APPEND") == "1":
         records = []
