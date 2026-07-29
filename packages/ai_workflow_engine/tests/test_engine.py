@@ -3642,6 +3642,7 @@ async def test_fanout_partial_isolation_preserves_the_completed_sibling_artifact
 
     from ai_workflow_engine import ObservationConfig
 
+    _EVIDENCE_ARTIFACT_ID = "sibling-evidence-artifact-1"
     evidence = tmp_path / "sibling-evidence.png"
     evidence.write_bytes(b"\x89PNG\r\n\x1a\nsibling")
     bundle_root = tmp_path / "bundles"
@@ -3662,7 +3663,15 @@ async def test_fanout_partial_isolation_preserves_the_completed_sibling_artifact
             return {"never": "reached"}
         return artifact_result(
             {"k": payload.get("k")},
-            [WorkflowArtifact(path=str(evidence), kind="media", source="unit", owner_node="work")],
+            [
+                WorkflowArtifact(
+                    artifact_id=_EVIDENCE_ARTIFACT_ID,
+                    path=str(evidence),
+                    kind="media",
+                    source="unit",
+                    owner_node="work",
+                )
+            ],
         )
 
     child = WorkflowBuilder("evidence_child").step("work").with_limits(
@@ -3707,14 +3716,18 @@ async def test_fanout_partial_isolation_preserves_the_completed_sibling_artifact
     assert result.status == "partial", f"one child timed out; expected partial, got {result.status}"
     assert arrivals["n"] == 2, "the two children did not both start; overlap was not forced"
 
-    # The completed sibling's artifact survives BY IDENTITY in the run result...
-    assert [a.path for a in result.artifacts] == [str(evidence)], (
-        f"the completed sibling's artifact was lost: {[a.path for a in result.artifacts]}"
+    # The completed sibling's artifact survives BY EXACT IDENTITY in the run result...
+    assert [a.artifact_id for a in result.artifacts] == [_EVIDENCE_ARTIFACT_ID], (
+        f"the completed sibling's artifact was lost or substituted: "
+        f"{[(a.artifact_id, a.path) for a in result.artifacts]}"
     )
-    # ...and in the finalized on-disk bundle, actually copied.
+    assert [a.path for a in result.artifacts] == [str(evidence)]
+    # ...and THAT SAME id is the copied row in the finalized on-disk bundle (a substituted or
+    # deduplicated row cannot satisfy this).
     manifest = json.loads((Path(result.observation_bundle_path) / "artifacts.json").read_text())
-    assert manifest, "the completed sibling's artifact is missing from the bundle manifest"
-    assert any(entry.get("copied") for entry in manifest), f"artifact not copied: {manifest}"
+    rows = [entry for entry in manifest if entry.get("artifact_id") == _EVIDENCE_ARTIFACT_ID]
+    assert len(rows) == 1, f"expected exactly one manifest row for the artifact id: {manifest}"
+    assert rows[0].get("copied") is True, f"artifact not copied: {rows[0]}"
 
 
 async def test_child_window_refuses_synchronous_uninterruptible_work_before_it_runs():
@@ -3814,11 +3827,14 @@ async def test_stubborn_child_that_ignores_cancellation_is_loud_containment_fail
     assert events and events[-1].decision == "child_window:failed"
     assert events[-1].severity == "error"
     assert events[-1].metadata["graph_failsafe_containment_failed"] is True
-    # Settle the detached handler explicitly so the test owns its own cleanup.
-    for _ in range(100):
+    # The detached handler must actually finish; a silent poll timeout would hide a leak.
+    for _ in range(200):
         if finished["value"]:
             break
         await asyncio.sleep(0.02)
+    assert finished["value"] is True, (
+        "the detached stubborn handler never settled; it leaked past the test"
+    )
 
 
 async def test_child_window_spans_retries_and_is_not_reset_per_attempt():
@@ -3872,9 +3888,26 @@ async def test_child_window_spans_retries_and_is_not_reset_per_attempt():
     # `child_window:completed` event with elapsed ~= the work budget). That is the shared-deadline
     # contract; a per-attempt RESET would instead allow ~20 x 0.12s of work.
     assert result.status == "partial", f"the shared window must stop this run, got {result.status}"
+    # TWO-LAYER observation truth, locked exactly:
+    #  (inner) the nested capability records the real timeout as a PARTIAL node outcome, because
+    #          the published window shrinks with each attempt;
+    #  (outer) the child graph then settles INSIDE its own breaker, so the owner records
+    #          child_window:completed — forcing the owner to "partial" would misstate which timer
+    #          fired.
+    inner = [e for e in result.trace if e.node == "flaky" and e.node_status]
+    assert inner, "no nested attempt outcome was recorded"
+    assert inner[-1].node_status == "partial", (
+        f"the nested attempt must record the real timeout as partial, got {inner[-1].node_status}"
+    )
     events = _child_window_events(result)
     assert events, "the child window did not own this run"
     owner_event = events[-1]
+    assert owner_event.decision == "child_window:completed", (
+        "expected the child graph to settle inside its own breaker while nested work recorded the "
+        f"timeout; got {owner_event.decision}. (Observed once under heavy instrumentation load as "
+        "child_window:partial — if this fails on loaded CI it means the outer timer won the race, "
+        "not that the shared-window contract broke.)"
+    )
     assert owner_event.metadata["limiting_source"] == ["capability_limit"]
     assert owner_event.metadata["elapsed_s"] <= owner_event.metadata["effective_hard_s"] + 0.25, (
         f"child ran past its own window: {owner_event.metadata}"
@@ -3994,10 +4027,10 @@ async def test_child_window_preserves_per_child_usage_attribution_in_concurrent_
         arrivals["n"] += 1
         if arrivals["n"] >= 2:
             both_started.set()
-        try:
-            await asyncio.wait_for(both_started.wait(), timeout=1.0)
-        except asyncio.TimeoutError:
-            pass
+        # LOUD barrier: if the engine serialises this fanout, the wait raises and the test fails
+        # by name. Swallowing the timeout here would make the "forced overlap" claim vacuous —
+        # a serialisation mutation would still pass.
+        await asyncio.wait_for(both_started.wait(), timeout=2.0)
         # Real usage door, one event per ATTEMPT, carrying consumer scenario correlation.
         record_usage_event(
             WorkflowUsageEvent(
@@ -4046,6 +4079,7 @@ async def test_child_window_preserves_per_child_usage_attribution_in_concurrent_
     result = await engine.run("fan_parent", {})
 
     assert result.status == "completed", result.error
+    # Overlap is proven by the loud barrier above (serialised execution never reaches this line).
     assert arrivals["n"] >= 2, "the children did not overlap; concurrency was not forced"
     assert attempts["flaky"] == 2, f"the flaky child did not really retry: {attempts}"
 
