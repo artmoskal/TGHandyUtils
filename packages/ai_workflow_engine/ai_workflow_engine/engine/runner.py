@@ -32,6 +32,11 @@ def derive_workflow_result_status(state: Dict[str, Any]) -> WorkflowResultStatus
     # A graph-level failure has no node whose later successful retry can supersede it.
     if explicit == "failed" and state.get("graph_failsafe") is not None:
         return "failed"
+    # v0.11.18: a child-workflow execution window that expired cleanly (cooperative cancellation
+    # acknowledged) is honest PARTIAL, not failed — the child boundary owner sets this explicit
+    # status alongside the graph_failsafe marker. Containment failures still set "failed" above.
+    if explicit == "partial" and state.get("graph_failsafe") is not None:
+        return "partial"
     if explicit == "requires_user_input" or "requires_user_input" in current:
         return "requires_user_input"
     if "failed" in current:

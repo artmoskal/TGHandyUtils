@@ -30,6 +30,7 @@ _AUTHORED_PROVENANCE: ContextVar[Optional[Dict[str, Any]]] = ContextVar(
     "ai_workflow_engine_authored_provenance", default=None
 )
 from ai_workflow_engine.engine.runner import WorkflowRunner
+from ai_workflow_engine.child_window import ChildWorkflowWindow
 from ai_workflow_engine.machine_compiler import WorkflowMachineCompiler
 from ai_workflow_engine.node_services import (
     ExecutorNodeServices,
@@ -219,6 +220,7 @@ class WorkflowExecutor:
             scheduling=self._node_scheduling,
         )
         self._suspension = SuspensionCoordinator(runtime)
+        self._child_window = ChildWorkflowWindow(runtime.trace_sink)
         self._results = RunResultAssembler(
             runtime=runtime,
             result_factory=WorkflowRunResult,
@@ -433,8 +435,17 @@ class WorkflowExecutor:
                     # every run.
                     child_state["usage_summary"] = session.usage_summary
                     child_state["workflow_context"] = session.run_context
+                child_window = self._child_window.resolve(definition, session)
                 with child_trace_slice() as child_events:
-                    final_state = await compiled.ainvoke(child_state, config=graph_config)
+                    if child_window is None:
+                        final_state = await compiled.ainvoke(child_state, config=graph_config)
+                    else:
+                        final_state = await self._child_window.run_bounded(
+                            definition,
+                            compiled.ainvoke(child_state, config=graph_config),
+                            child_state,
+                            child_window,
+                        )
             return self._results.envelope(definition, final_state, child_trace=child_events)
 
     async def resume(

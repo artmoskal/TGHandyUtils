@@ -3493,3 +3493,160 @@ def test_workflow_node_rejects_zero_or_negative_structural_bounds():
     node = WorkflowNode(id="fan", kind="fanout", max_parallel=1, max_items=1)
     assert node.max_parallel == 1 and node.max_items == 1
     assert WorkflowNode(id="fan2", kind="fanout").max_parallel is None
+
+
+# --- v0.11.18 child-workflow execution windows (RED before the _run_inner boundary owner) -----
+#
+# Contract (docs/_discussion/2026-07-29-engine-response-child-workflow-coarse-windows.md):
+#   effective child timeout = min(child configured timeout, parent remaining, run remaining)
+# applied ONCE around the complete child invocation at WorkflowExecutor._run_inner, for BOTH
+# child doors (register_workflow_capability and declarative .subworkflow). A child's own
+# RuntimeLimits.timeout_s is unenforced in 0.11.17: _run_inner calls compiled.ainvoke directly,
+# bypassing the runner's graph fail-safe.
+
+async def _slow_child_node(context, payload):
+    # Cooperatively cancellable long work: without a child window this runs to completion and
+    # the parent only returns after the full sleep. Deterministic capabilities return their
+    # output directly.
+    await asyncio.sleep(payload.get("sleep_s", 2.0) if isinstance(payload, dict) else 2.0)
+    return {"child": "finished"}
+
+
+def _child_window_engine(*, door: str, child_timeout_s, parent_timeout_s=None, sleep_s=2.0):
+    """Build an engine whose child workflow carries a short configured timeout while the parent
+    run is large or unbounded, so only the CHILD limit can stop the slow child.
+
+    door="capability": child reached via register_workflow_capability + a parent step.
+    door="subworkflow": child reached via a declarative .subworkflow node.
+    """
+
+    child_builder = WorkflowBuilder("slow_child").step("slow_node")
+    if child_timeout_s is not None:
+        child_builder = child_builder.with_limits(RuntimeLimits(timeout_s=child_timeout_s))
+    child = child_builder.build()
+
+    engine = (
+        WorkflowEngineBuilder()
+        .register_capability("slow_node", _slow_child_node, kind="deterministic")
+        .register_workflow(child)
+        .build()
+    )
+
+    parent_profile = WorkflowProfile(
+        workflow_type="parent",
+        safety=SafetyPolicy(allowed_side_effects=[]),
+        limits=RuntimeLimits(timeout_s=parent_timeout_s) if parent_timeout_s else RuntimeLimits(),
+    )
+
+    # register_workflow_capability / register_workflow live on the built WorkflowEngine.
+    if door == "capability":
+        engine.register_workflow_capability("run_child", "slow_child")
+        parent = WorkflowBuilder("parent").step("run_child").build()
+    elif door == "subworkflow":
+        parent = WorkflowBuilder("parent").subworkflow("run_child", workflow=child).build()
+    else:  # pragma: no cover - test wiring guard
+        raise ValueError(door)
+
+    engine.register_workflow(parent, profile=parent_profile)
+    return engine
+
+
+@pytest.mark.parametrize("door", ["capability", "subworkflow"])
+async def test_child_workflow_configured_timeout_bounds_the_child(door):
+    """A child with a short configured timeout must be stopped well before an unbounded parent.
+    In 0.11.17 the child runs to completion because _run_inner applies no child window."""
+
+    engine = _child_window_engine(door=door, child_timeout_s=0.3, parent_timeout_s=None, sleep_s=3.0)
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    result = await engine.run("parent", {"sleep_s": 3.0})
+    elapsed = loop.time() - start
+
+    assert elapsed < 1.5, f"[{door}] child ran ~{elapsed:.2f}s; its 0.3s limit was not enforced"
+    assert result.status in ("partial", "failed"), (
+        f"[{door}] child overran its window but the run reported {result.status}"
+    )
+
+
+async def test_child_no_limit_inherits_parent_run_ceiling():
+    """A child with NO configured timeout stays bounded by the parent/run window (canary #4)."""
+    engine = _child_window_engine(door="capability", child_timeout_s=None, parent_timeout_s=0.3)
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    result = await engine.run("parent", {"sleep_s": 3.0})
+    elapsed = loop.time() - start
+    assert elapsed < 1.5, f"no-limit child ran ~{elapsed:.2f}s; parent 0.3s ceiling not inherited"
+    assert result.status in ("partial", "failed")
+
+
+async def test_tighter_parent_window_wins_over_larger_child_timeout():
+    """A large child timeout can never widen a tighter parent/run remainder (canary #4)."""
+    engine = _child_window_engine(door="capability", child_timeout_s=10.0, parent_timeout_s=0.3)
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    result = await engine.run("parent", {"sleep_s": 3.0})
+    elapsed = loop.time() - start
+    assert elapsed < 1.5, f"child ran ~{elapsed:.2f}s; a 10s child limit widened the 0.3s parent"
+    assert result.status in ("partial", "failed")
+
+
+@pytest.mark.parametrize("door", ["capability", "subworkflow"])
+async def test_normal_child_below_breaker_completes_unchanged(door):
+    """No regression: a child that finishes well under a generous window completes normally with
+    its real output (canary #5). Proves the boundary window does not disturb the healthy path."""
+    engine = _child_window_engine(door=door, child_timeout_s=5.0, parent_timeout_s=None, sleep_s=0.02)
+    result = await engine.run("parent", {"sleep_s": 0.02})
+    assert result.status == "completed", result.error
+    # The child's real terminal output survives (no fabricated timeout envelope).
+    assert result.output == {"child": "finished"}
+
+
+async def test_child_timeout_clean_expiry_is_partial_not_failed():
+    """A cooperatively cancelled child timeout is honest PARTIAL, not failed (contract)."""
+    engine = _child_window_engine(door="capability", child_timeout_s=0.3, parent_timeout_s=None, sleep_s=3.0)
+    result = await engine.run("parent", {"sleep_s": 3.0})
+    # capability maps child partial -> capability partial -> parent partial.
+    assert result.status == "partial", f"clean child timeout should be partial, got {result.status}"
+
+
+async def test_fanout_partial_isolation_when_one_child_times_out():
+    """Concurrent fanout over the child capability: one stuck child times out (partial) while a
+    fast sibling completes and its output survives (canary #6)."""
+    child = WorkflowBuilder("slow_child").step("slow_node").with_limits(
+        RuntimeLimits(timeout_s=0.3)
+    ).build()
+    engine = (
+        WorkflowEngineBuilder()
+        .register_capability("slow_node", _slow_child_node, kind="deterministic")
+        .register_workflow(child)
+        .build()
+    )
+    engine.register_workflow_capability("run_child", "slow_child")
+    parent = (
+        WorkflowBuilder("fan_parent")
+        .step("items")
+        .fanout("fan", capability="run_child", items_key="items", max_parallel=2)
+        .build()
+    )
+    # The items node returns the list DIRECTLY (mirrors the working fanout pattern); items_key
+    # names that node's output.
+    engine.register_capability(
+        "items",
+        lambda ctx, p: [{"sleep_s": 0.02}, {"sleep_s": 3.0}],
+        kind="deterministic",
+    )
+    engine.register_workflow(
+        parent,
+        profile=WorkflowProfile(
+            workflow_type="fan_parent", safety=SafetyPolicy(allowed_side_effects=[])
+        ),
+    )
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    result = await engine.run("fan_parent", {})
+    elapsed = loop.time() - start
+    assert elapsed < 1.5, f"fanout ran ~{elapsed:.2f}s; the stuck child was not bounded"
+    assert result.status == "partial", f"one child timed out; fanout should be partial, got {result.status}"
+    fan = result.node("fan").output
+    finished = [r for r in fan if isinstance(r, dict) and r.get("child") == "finished"]
+    assert finished, "the fast sibling's completed output did not survive the partial fanout"
