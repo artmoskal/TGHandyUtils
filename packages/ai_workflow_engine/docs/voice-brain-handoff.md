@@ -10,6 +10,11 @@ The product must pin tag `engine-v0.11.17`, verify the complete release director
 latency/cancellation canary. This replaces
 the historical June request/reply transcript.
 
+`engine-v0.11.18` is the pending candidate. It adds a coarse breaker around complete child
+workflows without changing the voice streaming boundary; a voice product only benefits when it
+delegates bounded non-streaming work to a child workflow. Do not install the candidate matrix until
+the tag and verified release directory exist.
+
 Read first: [getting started](getting-started.md), [framework concepts](concepts.md), and
 [operations](operations.md).
 
@@ -30,15 +35,15 @@ transcript + session context
 
 ## Package Choice
 
-- `ai-workflow-engine==0.11.17` for the runtime and custom `LLMCallable`.
-- `ai-workflow-tools==0.6.8` for bounded non-streaming OpenAI-compatible calls or when using
+- `ai-workflow-engine==0.11.18` for the candidate runtime and custom `LLMCallable`.
+- `ai-workflow-tools==0.6.9` for candidate bounded non-streaming OpenAI-compatible calls or when using
   `CliAgentCapability`/console tools. Voice delta streaming still requires a product-injected
   streaming `LLMCallable`; CLI subscription
   workers are usually unsuitable for a low-latency conversational hot path.
-- `ai-workflow-viewer==0.3.10` in diagnostics, not the real-time audio path.
+- `ai-workflow-viewer==0.3.11` in diagnostics, not the real-time audio path.
 
-> **Current matrix:** `engine-v0.11.17` + `ai-workflow-tools==0.6.8` +
-> `ai-workflow-viewer==0.3.10`.
+> **Candidate matrix:** `engine-v0.11.18` + `ai-workflow-tools==0.6.9` +
+> `ai-workflow-viewer==0.3.11`. Do not install this matrix until `engine-v0.11.18` is cut.
 
 The release makes node-context binding explicit for every node kind and advances the optional
 tools wheel for native Codex image attachment. Persisted schemas and voice workflow behavior are

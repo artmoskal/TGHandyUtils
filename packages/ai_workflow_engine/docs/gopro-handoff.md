@@ -10,6 +10,11 @@ run its sidecar canary before changing the production image. Do not
 infer the actual GoPro pin from this document; the consumer repository's
 pin file is authoritative for deployed state.
 
+`engine-v0.11.18` is the pending candidate. It adds one complete-child execution breaker shared by
+registered workflow capabilities and declared subworkflows; this is useful for bounded VLM or
+investigation subflows but does not require GoPro to adopt the optional tools/viewer packages.
+Do not install the candidate matrix until the tag and verified release directory exist.
+
 Read first: [getting started](getting-started.md), [framework concepts](concepts.md), and
 [misuse risks](misuse-risks.md). This file contains only GoPro-specific mapping.
 
@@ -43,12 +48,12 @@ and delivery. Inventory may reuse the same mechanics later without changing the 
 
 | Package | GoPro use |
 |---|---|
-| `ai-workflow-engine==0.11.17` | Required in the detection/sidecar runtime |
-| `ai-workflow-tools==0.6.8` | Add for generic OpenAI-compatible clients, CLI agents, or media helpers |
-| `ai-workflow-viewer==0.3.10` | Developer/diagnostic service; not required in the detector image |
+| `ai-workflow-engine==0.11.18` | Candidate runtime for complete-child execution windows |
+| `ai-workflow-tools==0.6.9` | Candidate companion; add only for provider clients, CLI agents, or media helpers |
+| `ai-workflow-viewer==0.3.11` | Candidate diagnostic companion; not required in the detector image |
 
-> **Current matrix:** `engine-v0.11.17` + `ai-workflow-tools==0.6.8` +
-> `ai-workflow-viewer==0.3.10`.
+> **Candidate matrix:** `engine-v0.11.18` + `ai-workflow-tools==0.6.9` +
+> `ai-workflow-viewer==0.3.11`. Do not install this matrix until `engine-v0.11.18` is cut.
 
 
 Vendoring only the engine wheel is the correct lightweight configuration for the current direct-VLM

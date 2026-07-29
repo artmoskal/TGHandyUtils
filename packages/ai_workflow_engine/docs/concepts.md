@@ -41,7 +41,7 @@ planner loop, trace runtime, or state-status vocabulary.
 | `branch` | Choose one declared transition label | Inventing nodes or unbounded routing |
 | `evaluate` | Accept, retry, retrace, replan, or fallback under declared bounds | Informal quality logging with no gate |
 | `fanout` | Bounded parallel work with gathered results | Product-written `gather` around capabilities |
-| `subworkflow` | Reuse a registered workflow as a capability | Nested human suspension, currently rejected |
+| `subworkflow` | Reuse a registered workflow under one complete-child execution window | Nested human suspension, currently rejected |
 | `human` | Explicit local or durable wait | Polling inside a capability |
 | `planner` | Produce bounded plans over registered capabilities | Runtime code/tool invention |
 

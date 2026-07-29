@@ -10,6 +10,11 @@ transaction tests before enabling live effects.
 Start a new empty observation root when adopting v0.11.17; inspect bundle v2 only with
 `engine-v0.11.9`.
 
+`engine-v0.11.18` is the pending candidate. Its complete-child execution breaker applies when a
+SlackAzz workflow delegates bounded classification or drafting to a registered/declarative child;
+durable-wait protocol and records are unchanged. Do not install the candidate matrix until the tag
+and verified release directory exist.
+
 This answers the consumer request in
 `SlackAzzCovered/docs/_discussion/2026-07-10-engine-developer-request.md`. Shared mechanics live in
 [concepts](concepts.md), [getting started](getting-started.md), [operations](operations.md), and
@@ -38,12 +43,12 @@ client event
 
 | Package | SlackAzzCovered use |
 |---|---|
-| `ai-workflow-engine==0.11.17` | Required workflow/wait runtime |
-| `ai-workflow-tools==0.6.8` | Add for generic OpenAI-compatible clients, CLI agents, or tool catalog |
-| `ai-workflow-viewer==0.3.10` | Developer diagnostics or product-linked run inspection |
+| `ai-workflow-engine==0.11.18` | Candidate workflow/wait runtime with complete-child ceilings |
+| `ai-workflow-tools==0.6.9` | Candidate companion for provider clients, CLI agents, or tool catalog |
+| `ai-workflow-viewer==0.3.11` | Candidate diagnostics companion |
 
-> **Current matrix:** `engine-v0.11.17` + `ai-workflow-tools==0.6.8` +
-> `ai-workflow-viewer==0.3.10`.
+> **Candidate matrix:** `engine-v0.11.18` + `ai-workflow-tools==0.6.9` +
+> `ai-workflow-viewer==0.3.11`. Do not install this matrix until `engine-v0.11.18` is cut.
 
 
 Verify the complete published directory for the immutable tag and record commit/hash. Never copy

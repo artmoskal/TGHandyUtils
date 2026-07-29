@@ -510,8 +510,15 @@ from ai_workflow_engine import (
     WorkflowGoal,
     load_bundle_meta_v3,
 )
-from ai_workflow_engine.models import CapabilityResult
+from ai_workflow_engine.models import (
+    CapabilityResult,
+    RuntimeLimits,
+    WorkflowProfile,
+    WorkflowUsageEvent,
+)
 from ai_workflow_engine.llm_protocol import LLMRequest
+from ai_workflow_engine.usage_events import record_usage_event
+from ai_workflow_engine.workflow import Retry
 from ai_workflow_tools.providers.openai_compatible import (
     NoAuth,
     OpenAICompatibleLLMClient,
@@ -657,6 +664,143 @@ async def main():
     assert ordinary.status == "completed"
     assert ordinary.output == {"value": 42}
     assert FileEventSource(ordinary_root).read_group("installed-ordinary").status == "completed"
+
+    # v0.11.18 child-window qualification from installed wheels. Both public child doors apply
+    # one complete-workflow breaker, retries consume its shrinking published remainder, and
+    # consumer soft targets remain descriptive payload data under one common hard ceiling.
+    async def child_work(_context, payload):
+        await asyncio.sleep(float(payload.get("sleep_s", 0)))
+        return payload
+
+    async def run_bounded_child_door(door):
+        child_id = f"installed-{door}-child"
+        child = (
+            WorkflowBuilder(child_id)
+            .step("child_work")
+            .with_limits(RuntimeLimits(timeout_s=0.3))
+            .build()
+        )
+        builder = WorkflowEngineBuilder().register_capability(
+            "child_work", child_work, kind="deterministic"
+        ).register_workflow(child)
+        engine = builder.build()
+        if door == "capability":
+            engine.register_workflow_capability("run_child", child_id)
+            parent = WorkflowBuilder(f"installed-{door}-parent").step("run_child").build()
+        else:
+            parent = (
+                WorkflowBuilder(f"installed-{door}-parent")
+                .subworkflow("run_child", workflow=child)
+                .build()
+            )
+        engine.register_workflow(parent)
+        result = await engine.run(parent.workflow_id, {"sleep_s": 3.0})
+        assert result.status == "partial", (door, result.status, result.error)
+        events = [event for event in result.trace if event.phase == "child:window"]
+        assert events and events[-1].metadata["configured_timeout_s"] == 0.3
+        assert events[-1].metadata["limiting_source"] == ["capability_limit"]
+
+    await run_bounded_child_door("capability")
+    await run_bounded_child_door("subworkflow")
+
+    retry_calls = {"count": 0}
+
+    async def retrying_child(_context, payload):
+        retry_calls["count"] += 1
+        await asyncio.sleep(0.15)
+        raise RuntimeError("installed retry rejection")
+
+    retry_child = (
+        WorkflowBuilder("installed-retry-child")
+        .step("retrying_child", retry=Retry(max_attempts=20))
+        .with_limits(RuntimeLimits(timeout_s=0.6))
+        .build()
+    )
+    retry_engine = (
+        WorkflowEngineBuilder()
+        .register_capability("retrying_child", retrying_child, kind="deterministic")
+        .register_workflow(retry_child)
+        .build()
+    )
+    retry_parent = (
+        WorkflowBuilder("installed-retry-parent")
+        .subworkflow("run_child", workflow=retry_child)
+        .build()
+    )
+    retry_engine.register_workflow(retry_parent)
+    retry_result = await retry_engine.run("installed-retry-parent", {})
+    assert retry_result.status == "partial"
+    assert 1 < retry_calls["count"] < 20
+
+    soft_targets_seen = []
+    usage_scenarios = []
+    both_soft_targets = asyncio.Event()
+
+    async def mixed_soft_work(_context, payload):
+        soft_targets_seen.append(payload["soft_target_s"])
+        if len(soft_targets_seen) == 2:
+            both_soft_targets.set()
+        await asyncio.wait_for(both_soft_targets.wait(), timeout=2)
+        usage_scenarios.append(payload["scenario"])
+        record_usage_event(
+            WorkflowUsageEvent(
+                node="mixed_soft_work",
+                operation="chat",
+                input_tokens=1,
+                output_tokens=1,
+                total_tokens=2,
+                invocation_id=f"installed-{payload['scenario']}",
+                metadata={"scenario": payload["scenario"]},
+            )
+        )
+        return payload
+
+    mixed_child = (
+        WorkflowBuilder("installed-mixed-soft-child")
+        .step("mixed_soft_work")
+        .with_limits(RuntimeLimits(timeout_s=1.0))
+        .build()
+    )
+    mixed_engine = (
+        WorkflowEngineBuilder()
+        .register_capability("mixed_soft_work", mixed_soft_work, kind="llm")
+        .register_workflow(mixed_child)
+        .build()
+    )
+    mixed_engine.register_workflow_capability("run_mixed_child", mixed_child.workflow_id)
+    mixed_parent = (
+        WorkflowBuilder("installed-mixed-soft-parent")
+        .step("mixed_items")
+        .fanout(
+            "mixed_fanout",
+            capability="run_mixed_child",
+            items_key="mixed_items",
+            max_parallel=2,
+        )
+        .build()
+    )
+    mixed_engine.register_capability(
+        "mixed_items",
+        lambda _context, _payload: [
+            {"scenario": "quick", "soft_target_s": 0.1},
+            {"scenario": "deep", "soft_target_s": 0.25},
+        ],
+        kind="deterministic",
+    )
+    mixed_engine.register_workflow(
+        mixed_parent,
+        profile=WorkflowProfile(workflow_type=mixed_parent.workflow_id),
+    )
+    mixed_result = await mixed_engine.run(mixed_parent.workflow_id, {})
+    assert mixed_result.status == "completed"
+    assert sorted(soft_targets_seen) == [0.1, 0.25]
+    assert set(usage_scenarios) == {"quick", "deep"}
+    mixed_usage = [event for event in mixed_result.usage.events if event.node == "mixed_soft_work"]
+    assert len(mixed_usage) == 2
+    assert {event.invocation_id for event in mixed_usage} == {
+        "installed-quick", "installed-deep"
+    }
+    assert mixed_result.usage.total_tokens == 4
 
     cancel_root = root / "cancelled"
     artifact_path = root / "completed.txt"

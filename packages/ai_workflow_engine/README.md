@@ -5,8 +5,9 @@ declare a workflow, register typed capabilities, and call one engine door. The e
 transitions, retries, fan-out, budgets, waits, trace, usage, and observation bundles; products own
 domain models, provider clients, storage adapters, clocks, and side-effect delivery.
 
-> **`engine-v0.11.17` is the current release.**
-> Install only from the immutable `engine-v0.11.17` tag and its verified release directory.
+> **`engine-v0.11.18` is the release candidate; do not re-pin until it is cut.**
+> `engine-v0.11.17` remains the current release. Install only from that immutable tag and its
+> verified release directory until the candidate passes independent review and release gates.
 > The engine owner publishes wheels bound to
 > immutable tags; consumer
 > canaries still decide whether each product changes its deployed pin. Never depend on a live
@@ -22,6 +23,15 @@ domain models, provider clients, storage adapters, clocks, and side-effect deliv
 > `wait-v1` records under v0.11.5.
 > Adoption is fresh: new consumers start on the current contract; existing consumers re-adopt the
 > current surface rather than migrate state.
+>
+> **v0.11.18 candidate delta.** A child workflow's own finite `RuntimeLimits.timeout_s` now
+> bounds the complete child invocation through both registered-workflow capabilities and declared
+> subworkflow nodes. One shared breaker spans retries, publishes its shrinking remainder to nested
+> async/process work, preserves completed sibling artifacts and invocation-local usage, and records
+> configured/effective limits, ownership, elapsed time, and terminal truth. An already-tighter
+> parent or run deadline keeps ownership; product soft targets remain descriptive and may differ
+> across fanout items. Engine `0.11.18` carries the runtime change; tools `0.6.9` and viewer
+> `0.3.11` are coherent release identities with no functional delta.
 >
 > **v0.11.17 release delta.** Codex CLI prompts are delivered exactly once through stdin using the
 > CLI's `-` prompt marker, never as command-line arguments. This removes Linux `MAX_ARG_STRLEN`

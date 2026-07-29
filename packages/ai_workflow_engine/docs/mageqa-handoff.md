@@ -19,6 +19,13 @@ adopting; it stays on its existing pin until those canaries pass.
 Do not infer the actual MageQA pin from this document; the consumer repository's pin file is
 authoritative for deployed state.
 
+`engine-v0.11.18` is the pending candidate for MageQA's grouped evaluator audits. A child
+workflow's configured hard ceiling now bounds the complete retrying child through either engine
+door, while heterogeneous scenario soft targets remain descriptive and may share one fanout. A
+strictly tighter parent/run deadline keeps ownership. Completed siblings, artifacts, and
+per-attempt usage survive a timed-out child. Do not install the candidate matrix until its tag and
+verified release directory exist; then rerun MageQA's child-window and E0 canaries before repinning.
+
 Read first: [getting started](getting-started.md), [framework concepts](concepts.md),
 [operations](operations.md), and [misuse risks](misuse-risks.md).
 
@@ -55,12 +62,12 @@ a defect.
 
 | Package | MageQA use |
 |---|---|
-| `ai-workflow-engine==0.11.17` | Required orchestration/runtime |
-| `ai-workflow-tools==0.6.8` | Generic OpenAI-compatible clients, CLI agents, tool catalog, media helpers |
-| `ai-workflow-viewer==0.3.10` | Low-level engine run investigation and bundle rendering |
+| `ai-workflow-engine==0.11.18` | Candidate orchestration/runtime with complete-child hard ceilings |
+| `ai-workflow-tools==0.6.9` | Candidate generic provider/CLI/tool companion |
+| `ai-workflow-viewer==0.3.11` | Candidate low-level bundle investigation companion |
 
-> **Current matrix:** `engine-v0.11.17` + `ai-workflow-tools==0.6.8` +
-> `ai-workflow-viewer==0.3.10`.
+> **Candidate matrix:** `engine-v0.11.18` + `ai-workflow-tools==0.6.9` +
+> `ai-workflow-viewer==0.3.11`. Do not install this matrix until `engine-v0.11.18` is cut.
 
 ### Immutable release evidence
 

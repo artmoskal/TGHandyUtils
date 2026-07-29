@@ -34,6 +34,13 @@ persisted `ExecutionWindowDecision`.
   in trace and shown by the viewer. The engine process owner includes stdin delivery in work and,
   on POSIX, isolates and terminates the full spawned process group; CLI adapters must use that owner
   rather than opening their own subprocess path.
+- A child workflow with a finite `RuntimeLimits.timeout_s` gets one breaker around the complete
+  child graph through either child-workflow door. Retries share that breaker; nested capabilities
+  see its shrinking published remainder. The child owner acts only when its configured limit is
+  strictly tighter than the parent/run bounds, so an ancestor deadline is never double-reserved or
+  relabeled. A clean child expiry is `partial`; an unsettled descendant is a loud containment
+  failure. `child:window` trace events separate configured hard limit, effective work/cleanup
+  intervals, limiting source, elapsed time, and terminal reason.
 - The graph fail-safe covers hangs outside capability invocation. It returns after a separate,
   recorded cancellation allowance. If in-process graph code suppresses cancellation, Python cannot
   kill it; the run fails loudly and operators should recycle the worker. Side-effectful or untrusted
