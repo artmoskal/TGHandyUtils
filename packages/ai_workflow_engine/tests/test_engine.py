@@ -3654,10 +3654,7 @@ async def test_fanout_partial_isolation_preserves_the_completed_sibling_artifact
         arrivals["n"] += 1
         if arrivals["n"] >= 2:
             both_started.set()
-        try:
-            await asyncio.wait_for(both_started.wait(), timeout=1.0)
-        except asyncio.TimeoutError:
-            pass
+        await asyncio.wait_for(both_started.wait(), timeout=1.0)
         if payload.get("slow"):
             await asyncio.sleep(3.0)  # exceeds the 0.4s child breaker
             return {"never": "reached"}
@@ -3853,15 +3850,16 @@ async def test_child_window_spans_retries_and_is_not_reset_per_attempt():
 
     async def _slow_flaky(ctx, payload):
         calls["n"] += 1
-        await asyncio.sleep(0.12)
+        await asyncio.sleep(0.3)
         raise RuntimeError(f"attempt {calls['n']} rejected")
 
-    # 20 x 0.12s = 2.4s of retry work under a 0.6s breaker: exhaustion CANNOT be what stops this
-    # run, so a partial from the child window is unambiguous evidence of one shared deadline.
+    # 20 x 0.3s = 6s of retry work under a 1s breaker: exhaustion CANNOT be what stops this
+    # run. The wider timing geometry also leaves meaningful separation between the nested
+    # shrinking-window timeout and the outer child deadline under loaded CI.
     child = (
         WorkflowBuilder("retry_child")
         .step("flaky", retry=Retry(max_attempts=20))
-        .with_limits(RuntimeLimits(timeout_s=0.6))
+        .with_limits(RuntimeLimits(timeout_s=1.0))
         .build()
     )
     engine = (
@@ -3894,11 +3892,17 @@ async def test_child_window_spans_retries_and_is_not_reset_per_attempt():
     #  (outer) the child graph then settles INSIDE its own breaker, so the owner records
     #          child_window:completed — forcing the owner to "partial" would misstate which timer
     #          fired.
-    inner = [e for e in result.trace if e.node == "flaky" and e.node_status]
-    assert inner, "no nested attempt outcome was recorded"
-    assert inner[-1].node_status == "partial", (
-        f"the nested attempt must record the real timeout as partial, got {inner[-1].node_status}"
-    )
+    inner = [
+        e
+        for e in result.trace
+        if e.node == "flaky"
+        and e.decision == "partial"
+        and e.metadata.get("timeout_reason") == "execution_window_exceeded"
+    ]
+    assert inner, "the nested capability recorded no execution-window timeout"
+    inner_window = inner[-1].metadata["execution_window"]
+    assert inner_window["limiting_sources"] == ["parent_window"], inner_window
+    assert "parent_soft_remaining" in inner_window["clamps"], inner_window
     events = _child_window_events(result)
     assert events, "the child window did not own this run"
     owner_event = events[-1]
@@ -3912,7 +3916,7 @@ async def test_child_window_spans_retries_and_is_not_reset_per_attempt():
     assert owner_event.metadata["elapsed_s"] <= owner_event.metadata["effective_hard_s"] + 0.25, (
         f"child ran past its own window: {owner_event.metadata}"
     )
-    assert elapsed < 1.5, f"child ran ~{elapsed:.2f}s; retries appear to reset the window per attempt"
+    assert elapsed < 2.0, f"child ran ~{elapsed:.2f}s; retries appear to reset the window per attempt"
 
 
 async def test_child_window_reaps_process_backed_descendant(tmp_path):
@@ -4020,17 +4024,19 @@ async def test_child_window_preserves_per_child_usage_attribution_in_concurrent_
     arrivals = {"n": 0}
     attempts = {"fast": 0, "flaky": 0}
 
+    async def _overlap(context, payload):
+        """Non-retried overlap fence: serialization must fail before metered work starts."""
+
+        arrivals["n"] += 1
+        if arrivals["n"] >= 2:
+            both_started.set()
+        await asyncio.wait_for(both_started.wait(), timeout=2.0)
+        return payload
+
     async def _metered(context, payload):
         scenario = payload.get("scenario")
         attempts[scenario] += 1
         attempt_no = attempts[scenario]
-        arrivals["n"] += 1
-        if arrivals["n"] >= 2:
-            both_started.set()
-        # LOUD barrier: if the engine serialises this fanout, the wait raises and the test fails
-        # by name. Swallowing the timeout here would make the "forced overlap" claim vacuous —
-        # a serialisation mutation would still pass.
-        await asyncio.wait_for(both_started.wait(), timeout=2.0)
         # Real usage door, one event per ATTEMPT, carrying consumer scenario correlation.
         record_usage_event(
             WorkflowUsageEvent(
@@ -4050,12 +4056,14 @@ async def test_child_window_preserves_per_child_usage_attribution_in_concurrent_
 
     child = (
         WorkflowBuilder("metered_child")
+        .step("overlap")
         .step("metered", retry=Retry(max_attempts=3))
         .with_limits(RuntimeLimits(timeout_s=5.0))
         .build()
     )
     engine = (
         WorkflowEngineBuilder()
+        .register_capability("overlap", _overlap, kind="deterministic")
         .register_capability("metered", _metered, kind="llm")
         .register_workflow(child)
         .build()
