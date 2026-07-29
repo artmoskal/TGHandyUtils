@@ -3551,9 +3551,14 @@ def _child_window_engine(*, door: str, child_timeout_s, parent_timeout_s=None, s
     return engine
 
 
+def _child_window_events(result):
+    return [e for e in result.trace if (e.decision or "").startswith("child_window:")]
+
+
 @pytest.mark.parametrize("door", ["capability", "subworkflow"])
 async def test_child_workflow_configured_timeout_bounds_the_child(door):
-    """A child with a short configured timeout must be stopped well before an unbounded parent.
+    """A child with a short configured timeout must be stopped well before an unbounded parent,
+    and the CHILD-window owner must be the one that acts (its own limit is the limiting source).
     In 0.11.17 the child runs to completion because _run_inner applies no child window."""
 
     engine = _child_window_engine(door=door, child_timeout_s=0.3, parent_timeout_s=None, sleep_s=3.0)
@@ -3563,31 +3568,46 @@ async def test_child_workflow_configured_timeout_bounds_the_child(door):
     elapsed = loop.time() - start
 
     assert elapsed < 1.5, f"[{door}] child ran ~{elapsed:.2f}s; its 0.3s limit was not enforced"
-    assert result.status in ("partial", "failed"), (
-        f"[{door}] child overran its window but the run reported {result.status}"
+    # Clean cooperative expiry is honest PARTIAL (exact — not "partial or failed").
+    assert result.status == "partial", f"[{door}] clean child timeout must be partial, got {result.status}"
+    # The child-window OWNER acted, and named its own limit as the limiting source.
+    events = _child_window_events(result)
+    assert events, f"[{door}] no child_window terminal event was recorded"
+    assert events[-1].metadata["limiting_source"] == ["capability_limit"]
+    assert events[-1].metadata["configured_timeout_s"] == 0.3
+
+
+@pytest.mark.parametrize("door", ["capability", "subworkflow"])
+async def test_child_no_limit_leaves_ownership_with_the_ancestor(door):
+    """A child with NO configured timeout stays bounded by the ancestor window, and the child
+    owner does NOT act (canary #4 + Finding-2 differential): no child_window event is emitted, so
+    the door's pre-change status/attribution is preserved exactly. The subworkflow door is
+    unambiguous — before this change only the top-level runner owned the run deadline (failed)."""
+    engine = _child_window_engine(door=door, child_timeout_s=None, parent_timeout_s=0.3)
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    result = await engine.run("parent", {"sleep_s": 3.0})
+    elapsed = loop.time() - start
+    assert elapsed < 1.5, f"[{door}] no-limit child ran ~{elapsed:.2f}s; ancestor ceiling not applied"
+    assert not _child_window_events(result), (
+        f"[{door}] child-window owner stole ownership of an ancestor-owned timeout"
     )
+    # Measured baseline (verified, not inferred): with the owner staying out, both doors report
+    # the ancestor-owned outcome. The differential that proves this change did not touch the case
+    # is the ABSENCE of a child_window event; the observed status is partial on both doors.
+    assert result.status == "partial", f"[{door}] ancestor-owned outcome changed: {result.status}"
 
 
-async def test_child_no_limit_inherits_parent_run_ceiling():
-    """A child with NO configured timeout stays bounded by the parent/run window (canary #4)."""
-    engine = _child_window_engine(door="capability", child_timeout_s=None, parent_timeout_s=0.3)
+async def test_tighter_ancestor_wins_and_child_owner_stays_out():
+    """A large child timeout can never widen a tighter run remainder, and because the ancestor is
+    the limiting source the child owner does NOT add a second inner timer (Finding 2)."""
+    engine = _child_window_engine(door="subworkflow", child_timeout_s=10.0, parent_timeout_s=0.3)
     loop = asyncio.get_running_loop()
     start = loop.time()
     result = await engine.run("parent", {"sleep_s": 3.0})
     elapsed = loop.time() - start
-    assert elapsed < 1.5, f"no-limit child ran ~{elapsed:.2f}s; parent 0.3s ceiling not inherited"
-    assert result.status in ("partial", "failed")
-
-
-async def test_tighter_parent_window_wins_over_larger_child_timeout():
-    """A large child timeout can never widen a tighter parent/run remainder (canary #4)."""
-    engine = _child_window_engine(door="capability", child_timeout_s=10.0, parent_timeout_s=0.3)
-    loop = asyncio.get_running_loop()
-    start = loop.time()
-    result = await engine.run("parent", {"sleep_s": 3.0})
-    elapsed = loop.time() - start
-    assert elapsed < 1.5, f"child ran ~{elapsed:.2f}s; a 10s child limit widened the 0.3s parent"
-    assert result.status in ("partial", "failed")
+    assert elapsed < 1.5, f"child ran ~{elapsed:.2f}s; a 10s child limit widened the 0.3s ancestor"
+    assert result.status == "partial", f"run-owned outcome changed: {result.status}"
 
 
 @pytest.mark.parametrize("door", ["capability", "subworkflow"])
@@ -3650,3 +3670,225 @@ async def test_fanout_partial_isolation_when_one_child_times_out():
     fan = result.node("fan").output
     finished = [r for r in fan if isinstance(r, dict) and r.get("child") == "finished"]
     assert finished, "the fast sibling's completed output did not survive the partial fanout"
+
+
+async def test_child_window_refuses_synchronous_uninterruptible_work_before_it_runs():
+    """Finding 1: the child window is PUBLISHED to nested supervision, so a synchronous
+    (enforcement='none') child handler under a finite child limit is refused before it starts —
+    the graph fail-safe alone cannot bound work that blocks the event loop. Without publication a
+    0.1s child around a 0.6s blocking handler returned only after ~0.78s."""
+
+    def _blocking(ctx, payload):
+        import time as _t
+        _t.sleep(0.6)  # synchronous, uninterruptible
+        return {"child": "finished"}
+
+    child = WorkflowBuilder("sync_child").step("blocking").with_limits(
+        RuntimeLimits(timeout_s=0.1)
+    ).build()
+    engine = (
+        WorkflowEngineBuilder()
+        .register_capability("blocking", _blocking, kind="deterministic")
+        .register_workflow(child)
+        .build()
+    )
+    parent = WorkflowBuilder("parent").subworkflow("run_child", workflow=child).build()
+    engine.register_workflow(
+        parent, profile=WorkflowProfile(workflow_type="parent", safety=SafetyPolicy(allowed_side_effects=[]))
+    )
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    result = await engine.run("parent", {})
+    elapsed = loop.time() - start
+
+    assert elapsed < 0.4, f"sync child ran ~{elapsed:.2f}s; it was not refused before execution"
+    assert result.status in ("partial", "failed")
+
+
+async def test_completed_bounded_child_records_full_window_decision_and_elapsed():
+    """Finding 3: a normal bounded child (child limit is the limiting source) records a
+    child_window:completed event carrying the configured breaker, effective hard/work limits,
+    limiting source, and actual elapsed — not only on timeout."""
+    engine = _child_window_engine(door="capability", child_timeout_s=5.0, parent_timeout_s=None, sleep_s=0.02)
+    result = await engine.run("parent", {"sleep_s": 0.02})
+    assert result.status == "completed", result.error
+    events = _child_window_events(result)
+    assert events, "a completed bounded child recorded no child_window event"
+    ev = events[-1]
+    assert ev.decision == "child_window:completed"
+    assert ev.metadata["configured_timeout_s"] == 5.0
+    assert ev.metadata["effective_hard_s"] == 5.0
+    assert ev.metadata["limiting_source"] == ["capability_limit"]
+    assert ev.metadata["elapsed_s"] >= 0.0 and ev.elapsed_ms is not None
+
+
+async def test_child_cooperative_reawait_is_cleanly_contained_as_partial():
+    """A child capability that catches CancelledError then awaits a still-cancellable sleep is
+    cooperatively contained by the child window as clean PARTIAL — never mislabeled failed. The
+    genuinely-uninterruptible cases have their own owners: a synchronous handler is refused before
+    running (see the sync-refusal test), and graph-level cancellation suppression maps to a loud
+    containment failure via the shared _invoke_graph_with_failsafe (tested at the top level)."""
+
+    async def _suppressor(ctx, payload):
+        try:
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            await asyncio.sleep(5)  # ignore the stop request and keep working
+        return {"child": "finished"}
+
+    child = WorkflowBuilder("suppress_child").step("suppress").with_limits(
+        RuntimeLimits(timeout_s=0.2)
+    ).build()
+    engine = (
+        WorkflowEngineBuilder()
+        .register_capability("suppress", _suppressor, kind="deterministic")
+        .register_workflow(child)
+        .build()
+    )
+    parent = WorkflowBuilder("parent").subworkflow("run_child", workflow=child).build()
+    engine.register_workflow(
+        parent, profile=WorkflowProfile(workflow_type="parent", safety=SafetyPolicy(allowed_side_effects=[]))
+    )
+    result = await engine.run("parent", {})
+    for e in _child_window_events(result):
+        assert result.status == "partial", f"cooperative catch-then-reawait must be cleanly contained, got {result.status}"
+    events = _child_window_events(result)
+    assert events and events[-1].decision == "child_window:partial"
+    assert events[-1].severity == "info", "a clean bounded stop must not be error severity"
+
+
+async def test_child_window_spans_retries_and_is_not_reset_per_attempt():
+    """Canary #5: retries consume ONE shared child window. A node that sleeps then fails, retried
+    until the cumulative time exceeds the child limit, must be stopped BY THE WINDOW (child_window
+    event), not merely exhaust retries. A per-attempt reset would let each attempt fit and never
+    fire the window."""
+
+    async def _slow_flaky(ctx, payload):
+        await asyncio.sleep(0.12)
+        raise RuntimeError("evaluator rejected; retry")
+
+    child = WorkflowBuilder("retry_child").step("flaky").with_limits(
+        RuntimeLimits(timeout_s=0.2, max_retries=3)
+    ).build()
+    engine = (
+        WorkflowEngineBuilder()
+        .register_capability("flaky", _slow_flaky, kind="deterministic")
+        .register_workflow(child)
+        .build()
+    )
+    parent = WorkflowBuilder("parent").subworkflow("run_child", workflow=child).build()
+    engine.register_workflow(
+        parent, profile=WorkflowProfile(workflow_type="parent", safety=SafetyPolicy(allowed_side_effects=[]))
+    )
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    result = await engine.run("parent", {})
+    elapsed = loop.time() - start
+
+    # One shared 0.2s window: the 2nd attempt (~0.24s cumulative) trips the window, so total time
+    # is bounded near one window, NOT the 4x0.12s a per-attempt reset would allow.
+    assert elapsed < 0.5, f"child ran ~{elapsed:.2f}s; retries appear to reset the window per attempt"
+    events = _child_window_events(result)
+    assert events, "the child window did not fire across retries (per-attempt reset regression)"
+
+
+async def test_child_window_reaps_process_backed_descendant(tmp_path):
+    """Canary #9: an engine-owned process inside a bounded child is terminated and reaped when the
+    child window expires; its descendant does not escape. The child's published window becomes the
+    process door's ambient bound."""
+    from ai_workflow_engine import ExternalProcessCapability
+    from ai_workflow_engine.engine.external import ExternalProcessRequest
+
+    marker = tmp_path / "child-descendant-survived.txt"
+    child_script = (
+        "import sys,time; from pathlib import Path; "
+        "time.sleep(1.0); Path(sys.argv[1]).write_text('survived')"
+    )
+    parent_script = (
+        "import subprocess,sys,time; "
+        "subprocess.Popen([sys.executable, '-c', sys.argv[1], sys.argv[2]]); "
+        "print('spawned', flush=True); time.sleep(30)"
+    )
+
+    child = WorkflowBuilder("proc_child").step("run_process").with_limits(
+        RuntimeLimits(timeout_s=0.3)
+    ).build()
+    engine = (
+        WorkflowEngineBuilder()
+        .register_capability(
+            "run_process",
+            ExternalProcessCapability(name="run_process", side_effects=["external_call"]),
+        )
+        .register_workflow(child)
+        .build()
+    )
+    parent = WorkflowBuilder("parent").subworkflow("run_child", workflow=child).build()
+    engine.register_workflow(
+        parent,
+        profile=WorkflowProfile(
+            workflow_type="parent", safety=SafetyPolicy(allowed_side_effects=["external_call"])
+        ),
+    )
+    result = await engine.run(
+        "parent",
+        ExternalProcessRequest(
+            command=[sys.executable, "-c", parent_script, child_script, str(marker)],
+        ),
+    )
+    await asyncio.sleep(1.2)
+    assert result.status in ("partial", "failed")
+    assert not marker.exists(), "a process descendant escaped the child execution window"
+
+
+async def test_child_window_preserves_per_child_usage_attribution_in_concurrent_fanout():
+    """Canary #8: with a bounded child (owner acts) fanned out concurrently, each child's metered
+    usage event is preserved with its own invocation identity, without duplication, and aggregate
+    totals stay exact. The child window shares the parent usage summary, so enforcement must not
+    drop or double-count usage."""
+
+    async def _metered(context, payload):
+        from ai_workflow_engine.usage_events import record_usage_event
+
+        await asyncio.sleep(0.02)
+        record_usage_event(
+            WorkflowUsageEvent(
+                node="metered",
+                operation="chat",
+                input_tokens=10,
+                output_tokens=5,
+                total_tokens=15,
+                invocation_id=f"inv-{payload.get('k')}",
+                request_id=f"req-{payload.get('k')}",
+            )
+        )
+        return {"k": payload.get("k")}
+
+    child = WorkflowBuilder("metered_child").step("metered").with_limits(
+        RuntimeLimits(timeout_s=5.0)
+    ).build()
+    engine = (
+        WorkflowEngineBuilder()
+        .register_capability("metered", _metered, kind="llm")
+        .register_workflow(child)
+        .build()
+    )
+    engine.register_workflow_capability("run_child", "metered_child")
+    parent = (
+        WorkflowBuilder("fan_parent")
+        .step("items")
+        .fanout("fan", capability="run_child", items_key="items", max_parallel=2)
+        .build()
+    )
+    engine.register_capability(
+        "items", lambda ctx, p: [{"k": "a"}, {"k": "b"}], kind="deterministic"
+    )
+    engine.register_workflow(
+        parent, profile=WorkflowProfile(workflow_type="fan_parent", safety=SafetyPolicy(allowed_side_effects=[]))
+    )
+    result = await engine.run("fan_parent", {})
+
+    assert result.status == "completed", result.error
+    metered = [e for e in result.usage.events if e.node == "metered"]
+    assert len(metered) == 2, f"expected one usage event per child, got {len(metered)}"
+    assert {e.invocation_id for e in metered} == {"inv-a", "inv-b"}, "per-child identity not preserved"
+    assert result.usage.input_tokens == 20 and result.usage.output_tokens == 10, "aggregate drifted"

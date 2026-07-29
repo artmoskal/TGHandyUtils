@@ -348,3 +348,56 @@ def test_invocation_window_publishes_soft_and_hard_as_one_validated_value():
             soft_deadline_monotonic=now + 2.0,
             hard_deadline_monotonic=now + 1.0,
         )
+
+
+# --- v0.11.18 child-workflow window ownership rule (direct, race-free unit fence) -------------
+#
+# The integration canaries in test_engine.py prove observable behavior, but when an ancestor is
+# the binding constraint the top-level fail-safe races the child owner and masks whether the owner
+# also acted. This unit fence tests the ownership decision directly: the child owner takes the
+# window ONLY when the child's OWN limit is strictly the tightest; otherwise the already-enforced
+# ancestor keeps ownership (no second inner timer, no double reserve, no stolen attribution).
+
+def _child_definition(limit):
+    from ai_workflow_engine.models import RuntimeLimits
+    from ai_workflow_engine.workflow import WorkflowBuilder
+
+    builder = WorkflowBuilder("child").step("node")
+    if limit is not None:
+        builder = builder.with_limits(RuntimeLimits(timeout_s=limit))
+    return builder.build()
+
+
+class _FakeSession:
+    def __init__(self, run_remaining):
+        self._run_remaining = run_remaining
+
+    def run_remaining_s(self):
+        return self._run_remaining
+
+
+def test_child_window_owns_only_when_child_limit_is_strictly_tightest():
+    from types import SimpleNamespace
+
+    from ai_workflow_engine.child_window import ChildWorkflowWindow
+
+    owner = ChildWorkflowWindow(SimpleNamespace(trace_sink=None))
+
+    # Child strictly tightest -> owner takes the window, naming its own limit as the source.
+    decision = owner.resolve(_child_definition(0.5), _FakeSession(5.0))
+    assert decision is not None
+    assert list(decision.limiting_sources) == ["capability_limit"]
+    assert decision.hard_timeout_s == pytest.approx(0.5)
+
+    # Child limit, no ancestor at all -> owner takes it.
+    assert owner.resolve(_child_definition(0.5), _FakeSession(None)) is not None
+
+    # Ancestor (run remaining) strictly tighter -> owner STAYS OUT (ancestor already enforces).
+    assert owner.resolve(_child_definition(5.0), _FakeSession(0.5)) is None
+
+    # Tie with the ancestor -> owner STAYS OUT (avoid a redundant second timer/reserve).
+    assert owner.resolve(_child_definition(1.0), _FakeSession(1.0)) is None
+
+    # No child limit -> owner STAYS OUT regardless of ancestor.
+    assert owner.resolve(_child_definition(None), _FakeSession(0.5)) is None
+    assert owner.resolve(_child_definition(None), _FakeSession(None)) is None
