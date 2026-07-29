@@ -26,6 +26,7 @@ import asyncio
 import logging
 import time
 from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, Iterator, Optional
 
 from ai_workflow_engine.execution_window import (
@@ -241,6 +242,42 @@ async def _run_bounded(
         )
 
 
+# v0.11.18: descendant settlement truth across NESTED cancellation.
+#
+# The caller-cancellation branch stops a child, contains it for its represented grace, then
+# re-raises the caller's CancelledError so caller-owned cancellation keeps its identity. When the
+# child does NOT settle inside that grace it is detached and still running — which an outer engine
+# deadline owner would otherwise read as a clean acknowledged stop and report as honest PARTIAL,
+# while detached work can still run side effects. The detachment is recorded here so the outer
+# graph owner cannot downgrade it; caller-owned cancellation still propagates as CancelledError.
+_UNSETTLED_DESCENDANTS: "ContextVar[Optional[list]]" = ContextVar(
+    "ai_workflow_engine_unsettled_descendants", default=None
+)
+
+
+@contextmanager
+def descendant_settlement_scope() -> Iterator[Any]:
+    """Track descendants detached WITHOUT settling inside this scope.
+
+    Yields a predicate reporting whether any descendant was detached unsettled. The tracker is a
+    shared mutable list so tasks created inside the scope (which copy the context) report into the
+    same record.
+    """
+
+    tracker: list = []
+    token = _UNSETTLED_DESCENDANTS.set(tracker)
+    try:
+        yield lambda: bool(tracker)
+    finally:
+        _UNSETTLED_DESCENDANTS.reset(token)
+
+
+def _note_unsettled_descendant(reason: str) -> None:
+    tracker = _UNSETTLED_DESCENDANTS.get()
+    if tracker is not None:
+        tracker.append(reason)
+
+
 async def _settle_cancelled_inner(inner: "asyncio.Task[Any]", grace_s: float) -> None:
     try:
         if grace_s > 0:
@@ -255,6 +292,12 @@ async def _settle_cancelled_inner(inner: "asyncio.Task[Any]", grace_s: float) ->
 
 
 def _detach_cancelled_inner(inner: "asyncio.Task[Any]") -> None:
+    # Every detachment path (own-window containment timeout, caller-cancellation settlement, or
+    # cancel-while-cancelling) leaves work that did not settle inside its represented grace. Record
+    # it so an outer engine-deadline owner cannot report a clean bounded stop over live work.
+    if not inner.done():
+        _note_unsettled_descendant("capability detached without settling in its grace")
+
     def _consume(task: "asyncio.Task[Any]") -> None:
         if task.cancelled():
             return

@@ -124,7 +124,14 @@ class ChildWorkflowWindow:
             )
             if exc.containment_failed:
                 reason += "; child graph code did not acknowledge cancellation within the bound"
-            self._record(definition, decision, elapsed_s, status=status, reason=reason)
+            self._record(
+                definition,
+                decision,
+                elapsed_s,
+                status=status,
+                reason=reason,
+                containment_failed=exc.containment_failed,
+            )
             return {
                 **child_state,
                 "status": status,
@@ -145,6 +152,7 @@ class ChildWorkflowWindow:
         *,
         status: str,
         reason: Optional[str],
+        containment_failed: bool = False,
     ) -> None:
         """One descriptive child-window terminal event carrying the complete decision + elapsed.
 
@@ -178,6 +186,7 @@ class ChildWorkflowWindow:
                     "elapsed_s": elapsed_s,
                     "terminal_reason": status,
                     "message": reason,
+                    "graph_failsafe_containment_failed": containment_failed,
                 },
             )
         )

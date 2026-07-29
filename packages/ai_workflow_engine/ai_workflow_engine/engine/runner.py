@@ -19,6 +19,7 @@ from ai_workflow_engine.models import (
     WorkflowUsageSummary,
 )
 from ai_workflow_engine.budget import WorkflowUsageContext, budget_from_limits, workflow_usage_scope
+from ai_workflow_engine.engine.invocation_supervision import descendant_settlement_scope
 from ai_workflow_engine.usage_events import UsageSink
 
 logger = logging.getLogger(__name__)
@@ -138,6 +139,18 @@ async def _invoke_graph_with_failsafe(
             invocation.cancel()
         raise _GraphFailsafeExpired(window, containment_failed=False)
 
+    # v0.11.18: create the task INSIDE the settlement scope so nested supervision reports
+    # un-settled detached descendants into this invocation's record. A descendant still running
+    # after its grace is a containment failure the graph owner must not downgrade to a clean stop.
+    with descendant_settlement_scope() as descendants_unsettled:
+        return await _invoke_graph_task(invocation, window, descendants_unsettled)
+
+
+async def _invoke_graph_task(
+    invocation: Awaitable[Dict[str, Any]],
+    window: GraphFailsafeWindow,
+    descendants_unsettled: Any,
+) -> Dict[str, Any]:
     task = asyncio.ensure_future(invocation)
     try:
         done, _ = await asyncio.wait({task}, timeout=window.work_timeout_s)
@@ -175,7 +188,11 @@ async def _invoke_graph_with_failsafe(
             task.cancel()
             task.add_done_callback(_consume_background_task)
             raise
-        raise _GraphFailsafeExpired(window, containment_failed=False) from None
+        # The graph acknowledged the stop, but a nested capability may have detached work that
+        # never settled — that is containment failure, not a clean bounded stop.
+        raise _GraphFailsafeExpired(
+            window, containment_failed=descendants_unsettled()
+        ) from None
     except asyncio.TimeoutError:
         task.cancel()
         task.add_done_callback(_consume_background_task)
@@ -183,7 +200,9 @@ async def _invoke_graph_with_failsafe(
     except BaseException:
         # Work expired first. An exception while acknowledging cancellation is cleanup
         # evidence, not permission to relabel the timeout as an unrelated graph failure.
-        raise _GraphFailsafeExpired(window, containment_failed=False) from None
+        raise _GraphFailsafeExpired(
+            window, containment_failed=descendants_unsettled()
+        ) from None
     else:
         # Returning after cancellation means the graph swallowed the stop request. The work
         # cannot be trusted as a successful completion, even if it happened inside grace.

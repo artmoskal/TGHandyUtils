@@ -3722,26 +3722,34 @@ async def test_completed_bounded_child_records_full_window_decision_and_elapsed(
     assert ev.metadata["elapsed_s"] >= 0.0 and ev.elapsed_ms is not None
 
 
-async def test_child_cooperative_reawait_is_cleanly_contained_as_partial():
-    """A child capability that catches CancelledError then awaits a still-cancellable sleep is
-    cooperatively contained by the child window as clean PARTIAL — never mislabeled failed. The
-    genuinely-uninterruptible cases have their own owners: a synchronous handler is refused before
-    running (see the sync-refusal test), and graph-level cancellation suppression maps to a loud
-    containment failure via the shared _invoke_graph_with_failsafe (tested at the top level)."""
+async def test_stubborn_child_that_ignores_cancellation_is_loud_containment_failed():
+    """Blocking contract: a child capability that ignores cancellation and keeps working must be
+    a LOUD containment failure, never a clean partial.
 
-    async def _suppressor(ctx, payload):
-        try:
-            await asyncio.sleep(5)
-        except asyncio.CancelledError:
-            await asyncio.sleep(5)  # ignore the stop request and keep working
+    Before the fix, the outer child deadline cancelled the graph, nested supervision detached the
+    still-running handler and re-raised ordinary CancelledError, and the graph owner read that as
+    an acknowledged stop -> partial in ~0.16s while the work continued. The engine must not claim a
+    bounded stop it did not perform.
+    """
+
+    finished = {"value": False}
+
+    async def _stubborn(context, payload):
+        deadline = asyncio.get_running_loop().time() + 0.6
+        while asyncio.get_running_loop().time() < deadline:
+            try:
+                await asyncio.sleep(0.05)
+            except asyncio.CancelledError:
+                continue  # ignore every cancellation and keep working
+        finished["value"] = True
         return {"child": "finished"}
 
-    child = WorkflowBuilder("suppress_child").step("suppress").with_limits(
+    child = WorkflowBuilder("stubborn_child").step("stubborn").with_limits(
         RuntimeLimits(timeout_s=0.2)
     ).build()
     engine = (
         WorkflowEngineBuilder()
-        .register_capability("suppress", _suppressor, kind="deterministic")
+        .register_capability("stubborn", _stubborn, kind="deterministic")
         .register_workflow(child)
         .build()
     )
@@ -3750,26 +3758,41 @@ async def test_child_cooperative_reawait_is_cleanly_contained_as_partial():
         parent, profile=WorkflowProfile(workflow_type="parent", safety=SafetyPolicy(allowed_side_effects=[]))
     )
     result = await engine.run("parent", {})
-    for e in _child_window_events(result):
-        assert result.status == "partial", f"cooperative catch-then-reawait must be cleanly contained, got {result.status}"
+
+    assert result.status == "failed", (
+        f"a child that ignored cancellation must be loud containment failed, got {result.status}"
+    )
     events = _child_window_events(result)
-    assert events and events[-1].decision == "child_window:partial"
-    assert events[-1].severity == "info", "a clean bounded stop must not be error severity"
+    assert events and events[-1].decision == "child_window:failed"
+    assert events[-1].severity == "error"
+    assert events[-1].metadata["graph_failsafe_containment_failed"] is True
 
 
 async def test_child_window_spans_retries_and_is_not_reset_per_attempt():
-    """Canary #5: retries consume ONE shared child window. A node that sleeps then fails, retried
-    until the cumulative time exceeds the child limit, must be stopped BY THE WINDOW (child_window
-    event), not merely exhaust retries. A per-attempt reset would let each attempt fit and never
-    fire the window."""
+    """Canary #5: retries consume ONE shared child window, never a fresh window per attempt.
+
+    Step retries are node-level (``step(retry=Retry(...))``) — an earlier version wrongly used
+    RuntimeLimits.max_retries and executed exactly ONE attempt, so it proved nothing. Here the node
+    retries a failing handler whose CUMULATIVE attempts exceed the child breaker; the test asserts
+    at least two real attempts occurred and that the outer child window (not retry exhaustion) is
+    what stopped the run.
+    """
+
+    from ai_workflow_engine.workflow import Retry
+
+    calls = {"n": 0}
 
     async def _slow_flaky(ctx, payload):
+        calls["n"] += 1
         await asyncio.sleep(0.12)
-        raise RuntimeError("evaluator rejected; retry")
+        raise RuntimeError(f"attempt {calls['n']} rejected")
 
-    child = WorkflowBuilder("retry_child").step("flaky").with_limits(
-        RuntimeLimits(timeout_s=0.2, max_retries=3)
-    ).build()
+    child = (
+        WorkflowBuilder("retry_child")
+        .step("flaky", retry=Retry(max_attempts=4))
+        .with_limits(RuntimeLimits(timeout_s=0.6))
+        .build()
+    )
     engine = (
         WorkflowEngineBuilder()
         .register_capability("flaky", _slow_flaky, kind="deterministic")
@@ -3781,37 +3804,50 @@ async def test_child_window_spans_retries_and_is_not_reset_per_attempt():
         parent, profile=WorkflowProfile(workflow_type="parent", safety=SafetyPolicy(allowed_side_effects=[]))
     )
     loop = asyncio.get_running_loop()
-    start = loop.time()
+    start_t = loop.time()
     result = await engine.run("parent", {})
-    elapsed = loop.time() - start
+    elapsed = loop.time() - start_t
 
-    # One shared 0.2s window: the 2nd attempt (~0.24s cumulative) trips the window, so total time
-    # is bounded near one window, NOT the 4x0.12s a per-attempt reset would allow.
-    assert elapsed < 0.5, f"child ran ~{elapsed:.2f}s; retries appear to reset the window per attempt"
+    # Real retries happened (a per-attempt reset regression is only meaningful if >1 attempt ran).
+    assert calls["n"] >= 2, f"retry canary executed only {calls['n']} attempt(s); it proves nothing"
+    # ONE shared 0.6s window across cumulative attempts: the run is bounded near that window, not
+    # 4 x 0.12s of fresh per-attempt windows plus overhead.
+    assert elapsed < 1.2, f"child ran ~{elapsed:.2f}s; retries appear to reset the window per attempt"
     events = _child_window_events(result)
-    assert events, "the child window did not fire across retries (per-attempt reset regression)"
+    assert events, "the shared child window never fired across cumulative retries"
 
 
 async def test_child_window_reaps_process_backed_descendant(tmp_path):
-    """Canary #9: an engine-owned process inside a bounded child is terminated and reaped when the
-    child window expires; its descendant does not escape. The child's published window becomes the
-    process door's ambient bound."""
+    """Canary #9: a real engine-owned process under a bounded child is terminated and reaped, and
+    its descendant does not escape.
+
+    An earlier version asserted only that a delayed marker was absent — it passed in ~20ms with a
+    nonexistent executable, proving neither spawn nor reap. This requires POSITIVE start evidence
+    (the parent writes its own pid, the descendant writes its pid) before asserting cleanup, so a
+    spawn failure can no longer masquerade as successful containment.
+    """
+
     from ai_workflow_engine import ExternalProcessCapability
     from ai_workflow_engine.engine.external import ExternalProcessRequest
 
-    marker = tmp_path / "child-descendant-survived.txt"
+    started = tmp_path / "parent-started.pid"
+    descendant_pid_file = tmp_path / "descendant.pid"
+    escaped = tmp_path / "descendant-escaped.txt"
+
     child_script = (
-        "import sys,time; from pathlib import Path; "
-        "time.sleep(1.0); Path(sys.argv[1]).write_text('survived')"
+        "import os,sys,time; from pathlib import Path; "
+        "Path(sys.argv[1]).write_text(str(os.getpid())); "
+        "time.sleep(1.5); Path(sys.argv[2]).write_text('escaped')"
     )
     parent_script = (
-        "import subprocess,sys,time; "
-        "subprocess.Popen([sys.executable, '-c', sys.argv[1], sys.argv[2]]); "
+        "import os,subprocess,sys,time; from pathlib import Path; "
+        "subprocess.Popen([sys.executable, '-c', sys.argv[1], sys.argv[2], sys.argv[3]]); "
+        "Path(sys.argv[4]).write_text(str(os.getpid())); "
         "print('spawned', flush=True); time.sleep(30)"
     )
 
     child = WorkflowBuilder("proc_child").step("run_process").with_limits(
-        RuntimeLimits(timeout_s=0.3)
+        RuntimeLimits(timeout_s=0.5)
     ).build()
     engine = (
         WorkflowEngineBuilder()
@@ -3832,12 +3868,36 @@ async def test_child_window_reaps_process_backed_descendant(tmp_path):
     result = await engine.run(
         "parent",
         ExternalProcessRequest(
-            command=[sys.executable, "-c", parent_script, child_script, str(marker)],
+            command=[
+                sys.executable,
+                "-c",
+                parent_script,
+                child_script,
+                str(descendant_pid_file),
+                str(escaped),
+                str(started),
+            ],
         ),
     )
-    await asyncio.sleep(1.2)
-    assert result.status in ("partial", "failed")
-    assert not marker.exists(), "a process descendant escaped the child execution window"
+
+    # POSITIVE start evidence first: a spawn failure must not pass this test.
+    assert started.exists(), "the process never started; this test would prove nothing about reaping"
+    assert descendant_pid_file.exists(), "the descendant never started; cleanup is unproven"
+    parent_pid = int(started.read_text())
+    descendant_pid = int(descendant_pid_file.read_text())
+
+    # The child window (not the process's own default) bounded it.
+    assert result.status in ("partial", "failed"), result.status
+
+    # Both the owned process and its descendant are gone, and the descendant never completed.
+    await asyncio.sleep(1.8)
+    for label, pid in (("owned process", parent_pid), ("descendant", descendant_pid)):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            continue
+        raise AssertionError(f"{label} pid {pid} survived the child execution window")
+    assert not escaped.exists(), "a descendant escaped the child execution window"
 
 
 async def test_child_window_preserves_per_child_usage_attribution_in_concurrent_fanout():
@@ -3892,3 +3952,40 @@ async def test_child_window_preserves_per_child_usage_attribution_in_concurrent_
     assert len(metered) == 2, f"expected one usage event per child, got {len(metered)}"
     assert {e.invocation_id for e in metered} == {"inv-a", "inv-b"}, "per-child identity not preserved"
     assert result.usage.input_tokens == 20 and result.usage.output_tokens == 10, "aggregate drifted"
+
+
+def test_child_window_uses_the_current_trace_sink_after_a_consumer_rebind():
+    """The owner must resolve runtime.trace_sink at RECORD time. Consumers rebind the sink after
+    engine construction (the pilots.py pattern locked by test_capability_observation.py); freezing
+    it in the constructor would send child-window events to a stale sink."""
+
+    from types import SimpleNamespace
+
+    from ai_workflow_engine.child_window import ChildWorkflowWindow
+    from ai_workflow_engine.execution_window import (
+        ExecutionWindowInputs,
+        resolve_execution_window,
+    )
+
+    class _Sink:
+        def __init__(self):
+            self.events = []
+
+        def record(self, event):
+            self.events.append(event)
+
+    original, replacement = _Sink(), _Sink()
+    runtime = SimpleNamespace(trace_sink=original)
+    owner = ChildWorkflowWindow(runtime)
+
+    runtime.trace_sink = replacement  # consumer swap AFTER construction
+
+    decision = resolve_execution_window(
+        ExecutionWindowInputs(capability_timeout_s=1.0), enforcement="cooperative"
+    )
+    definition = WorkflowBuilder("rebind_child").step("node").build()
+    owner._record(definition, decision, 0.01, status="completed", reason=None)
+
+    assert not original.events, "child-window event went to the stale (frozen) sink"
+    assert len(replacement.events) == 1, "child-window event did not reach the rebound sink"
+    assert replacement.events[0].decision == "child_window:completed"
