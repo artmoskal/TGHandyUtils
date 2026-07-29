@@ -246,8 +246,8 @@ await run_openai_compatible_provider_conformance(make_client)
 ```
 
 The v0.6.4 release carries the v0.6.3 provider behavior unchanged under the corrected source-only
-release-evidence contract. Tools `0.6.9` targets `ai-workflow-engine>=0.11.18,<0.12` and belongs to
-the verified `engine-v0.11.18` release matrix.
+release-evidence contract. Tools `0.6.10` targets `ai-workflow-engine>=0.11.19,<0.12` and belongs to
+the verified `engine-v0.11.19` release matrix.
 
 The v0.6.3 release carries the v0.6.2 behavior unchanged and gives the clean-checkout operational
 release a unique wheel identity. It targets `ai-workflow-engine>=0.11.12,<0.12`.

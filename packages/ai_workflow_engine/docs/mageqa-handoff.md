@@ -1,25 +1,25 @@
 # MageQA Engine Adoption Guide
 
-Status: **`engine-v0.11.18` is the current immutable release.**
+Status: **`engine-v0.11.19` is the current immutable release.**
 This corrective release closes durable-wait registration exposure races, makes observation
 provider-evidence integrity explicit in bundle schema v3, and hardens provider/CLI failure
 accounting. It also sends every rendered Codex CLI prompt exactly once through bounded stdin, so
 large curation prompts no longer enter process argv or hit the operating system's argument-size
 limit. It retains the generic OpenAI-compatible provider MageQA requested. Repin only the coherent
-`0.11.18 / 0.6.9 / 0.3.11` matrix after verifying its immutable release directory and passing E0.
+`0.11.19 / 0.6.10 / 0.3.12` matrix after verifying its immutable release directory and passing E0.
 MageQA's two durable-registration race canaries fail on `engine-v0.11.5`. MageQA must stay on its
 existing pin and keep its fork until its E0
 canaries pass against the current immutable tag. The five historical E0 blockers (planned
 `partial` rewritten to `done`, unenforced `RuntimeLimits.timeout_s`, hidden retrace provenance,
 the CLI 600s default, and the reused tools wheel identity) are addressed and carried forward;
 v0.11 additionally hardens every persisted contract (strict versioned snapshot, bundle meta v3,
-wait records) with NO migration layer. MageQA must pin tag `engine-v0.11.18`,
+wait records) with NO migration layer. MageQA must pin tag `engine-v0.11.19`,
 verify the complete published release directory, install the required wheels, and pass its E0 canaries before
 adopting; it stays on its existing pin until those canaries pass.
 Do not infer the actual MageQA pin from this document; the consumer repository's pin file is
 authoritative for deployed state.
 
-`engine-v0.11.18` supports MageQA's grouped evaluator audits. A child
+`engine-v0.11.19` carries forward v0.11.18's grouped-evaluator runtime. A child
 workflow's configured hard ceiling now bounds the complete retrying child through either engine
 door, while heterogeneous scenario soft targets remain descriptive and may share one fanout. A
 strictly tighter parent/run deadline keeps ownership. Completed siblings, artifacts, and
@@ -62,35 +62,24 @@ a defect.
 
 | Package | MageQA use |
 |---|---|
-| `ai-workflow-engine==0.11.18` | Orchestration/runtime with complete-child hard ceilings |
-| `ai-workflow-tools==0.6.9` | Generic provider/CLI/tool companion |
-| `ai-workflow-viewer==0.3.11` | Low-level bundle investigation companion |
+| `ai-workflow-engine==0.11.19` | Orchestration/runtime with complete-child hard ceilings |
+| `ai-workflow-tools==0.6.10` | Generic provider/CLI/tool companion |
+| `ai-workflow-viewer==0.3.12` | Low-level bundle investigation companion |
 
-> **Current matrix:** `engine-v0.11.18` + `ai-workflow-tools==0.6.9` +
-> `ai-workflow-viewer==0.3.11`.
+> **Current matrix:** `engine-v0.11.19` + `ai-workflow-tools==0.6.10` +
+> `ai-workflow-viewer==0.3.12`.
 
 ### Immutable release evidence
 
-- Source commit: `a9bd8af5d895bd9d4964a12b899adbfaf7b7142a`
-- Annotated tag object: `fa516c3e17f1c0a769065ed48fffe2a9b462bad0`
-- Artifact prefix: `s3://artmoskal-artifact-cache/ai-workflow-engine/engine-v0.11.18/`
-- Release manifest SHA-256:
-  `4b4dd6151aa439aa874b511c3b662cb7166662b66af053b065d406c93d9bdf77`
-- `SHA256SUMS` SHA-256:
-  `d2bce496cc58a17a92e2b1ebf45cd236f8ff7f94501e04dd2d84dd732408017a`
-- Engine wheel SHA-256:
-  `5dc6d6a915f15bdeaa8c5bf6dcc37da991ba5a0efd9bf1cabe8e4ecd24ec5f89`
-- Tools wheel SHA-256:
-  `99a347dc602201dd95ba30144c172125b416f6c84d08553e39a99d756cfbac6c`
-- Viewer wheel SHA-256:
-  `17b7ecf0a618595f9ad64d7ab4d99be4a66c58b5987ac3805b0b9a0ecd0838f6`
+- Artifact prefix: `s3://artmoskal-artifact-cache/ai-workflow-engine/engine-v0.11.19/`
+- Verify `SHA256SUMS`, then run the bundled `release_artifacts.py verify-bundle` before installing.
+- Read the source commit, annotated tag object, package hashes, and producer gate evidence from the
+  verified `release-manifest.json`; record those consumed values in MageQA's own adoption record.
 
-The producer release tier passed `1804` tests with `3` skips, `153` deselections, and zero failures.
-The published 15-file directory was downloaded through read-only credentials, byte-compared with
-staging, checksum-verified, and accepted by both tag-derived and embedded verifiers. The producer's
-live Codex call was blocked before session creation by its nested managed Codex sandbox and is not
-claimed as a passing live canary. MageQA must therefore run the retained-prompt replay below in its
-own non-nested environment before changing its pin.
+The source handoff does not duplicate dynamic release identities. Those values are generated only
+after source commit and tag creation, so embedding them here would be stale or self-referential.
+MageQA must run the retained-prompt replay and B2/E0 canaries in its own environment before changing
+its pin.
 
 
 The MageQA Next.js dashboard remains product-owned. It may link/embed/project engine bundle data, but
@@ -303,12 +292,12 @@ with a scenario and acceptance proof. Upgrade via [`operations.md`](operations.m
 
 ## v0.11 Release Contract
 
-`engine-v0.11.18` is the current immutable release for the **latest-only** line. The line uses strict versioned persisted
+`engine-v0.11.19` is the current immutable release for the **latest-only** line. The line uses strict versioned persisted
 contracts (snapshot `v0.11`, bundle meta v3, wait records `wait-v2`), one strict viewer loader, and
 NO migration layer — the sealed current-contract corpus shows 0 behavior deltas vs v0.10.1, but old
 persisted data is rejected loudly naming its historical tag. Adopt by re-pinning fresh
-(pin tag `engine-v0.11.18`, verify the published `release-manifest-v2` bundle, then
-install engine `0.11.18`, tools `0.6.9`, and viewer `0.3.11`) and
+(pin tag `engine-v0.11.19`, verify the published `release-manifest-v2` bundle, then
+install engine `0.11.19`, tools `0.6.10`, and viewer `0.3.12`) and
 re-run your canaries before changing any deployed pin.
 `wait-v1` records written by v0.11.5 are non-current: settle or discard them under v0.11.5 and
 start a new coordinator namespace before v0.11.6 writes `wait-v2`.

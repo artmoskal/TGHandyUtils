@@ -5,8 +5,8 @@ declare a workflow, register typed capabilities, and call one engine door. The e
 transitions, retries, fan-out, budgets, waits, trace, usage, and observation bundles; products own
 domain models, provider clients, storage adapters, clocks, and side-effect delivery.
 
-> **`engine-v0.11.18` is the current release.**
-> Install only from the immutable `engine-v0.11.18` tag and its verified release directory.
+> **`engine-v0.11.19` is the current release.**
+> Install only from the immutable `engine-v0.11.19` tag and its verified release directory.
 > The engine owner publishes wheels bound to
 > immutable tags; consumer
 > canaries still decide whether each product changes its deployed pin. Never depend on a live
@@ -22,6 +22,13 @@ domain models, provider clients, storage adapters, clocks, and side-effect deliv
 > `wait-v1` records under v0.11.5.
 > Adoption is fresh: new consumers start on the current contract; existing consumers re-adopt the
 > current surface rather than migrate state.
+>
+> **v0.11.19 release delta.** This fix-forward release corrects the MageQA adoption handoff and
+> adds a permanent guard against mixing a current package matrix with stale dynamic release
+> identities. Source handoffs no longer duplicate commit, tag-object, artifact-hash, or test-count
+> evidence that only exists after the source is committed and tagged; consumers derive those facts
+> from the immutable `release-manifest.json` and `SHA256SUMS`. Runtime behavior is byte-identical to
+> v0.11.18. Engine `0.11.19`, tools `0.6.10`, and viewer `0.3.12` provide unique artifact identities.
 >
 > **v0.11.18 release delta.** A child workflow's own finite `RuntimeLimits.timeout_s` now
 > bounds the complete child invocation through both registered-workflow capabilities and declared
@@ -191,15 +198,15 @@ the packages their product needs. Building from source is a producer operation, 
 verification. The exact producer and consumer commands are in
 [`docs/operations.md`](docs/operations.md#release-artifacts-and-verification-v01113).
 The required pre-install door is
-`python3 release_artifacts.py verify-bundle --dir /path/to/engine-v0.11.18`.
+`python3 release_artifacts.py verify-bundle --dir /path/to/engine-v0.11.19`.
 
 Current release matrix:
 
 | Package | Install when |
 |---|---|
-| `ai-workflow-engine==0.11.18` | Always. Core builder, executor, memory, waits, observation writer. |
-| `ai-workflow-tools==0.6.9` | The product uses provider clients, CLI agents, the tool catalog, or media helpers. |
-| `ai-workflow-viewer==0.3.11` | A developer or product service renders observation bundles. |
+| `ai-workflow-engine==0.11.19` | Always. Core builder, executor, memory, waits, observation writer. |
+| `ai-workflow-tools==0.6.10` | The product uses provider clients, CLI agents, the tool catalog, or media helpers. |
+| `ai-workflow-viewer==0.3.12` | A developer or product service renders observation bundles. |
 
 Record the engine tag, source commit, and wheel SHA-256 in the consumer repository. A tag already
 consumed by another repository is frozen; fixes require a new tag.
@@ -265,7 +272,7 @@ minimal profile.
 
 `engine-v0.11.0` made the line **latest-only**: strict versioned persisted contracts,
 one strict viewer loader with typed status authority, a sealed current-contract oracle replacing
-old-wheel equality, and removal of every compatibility fallback. The current v0.11.18 release
+old-wheel equality, and removal of every compatibility fallback. The current v0.11.19 release
 keeps MachineSnapshot `schema_version="v0.11"`, advances observation bundle meta to v3, and keeps wait
 records to `record_schema_version="wait-v2"` with required persisted registration-attempt
 identity. Old persisted data fails loudly naming its historical tag. Earlier lines added, and

@@ -395,6 +395,45 @@ def test_documented_package_matrix_is_coherent_and_derived_from_pyproject():
             assert "Candidate matrix" not in text
 
 
+def test_source_handoffs_never_embed_dynamic_release_evidence():
+    """Source is committed before tag/artifact identities exist, so embedding those values
+    creates a stale or self-referential release record. Consumers must read them from the
+    immutable release directory instead."""
+
+    import ai_workflow_engine
+
+    current_tag = f"engine-v{ai_workflow_engine.__version__}"
+    handoffs = tuple(sorted((PACKAGE_ROOT / "docs").glob("*handoff.md")))
+    assert handoffs
+    for path in handoffs:
+        text = path.read_text(encoding="utf-8")
+        dynamic_claims = {
+            "source commit": r"Source commit:\s*`[0-9a-f]{40}`",
+            "tag object": r"Annotated tag object:\s*`[0-9a-f]{40}`",
+            "manifest hash": r"Release manifest SHA-256:\s*\n?\s*`[0-9a-f]{64}`",
+            "checksum hash": r"SHA256SUMS`? SHA-256:\s*\n?\s*`[0-9a-f]{64}`",
+            "wheel hash": r"wheel SHA-256:\s*\n?\s*`[0-9a-f]{64}`",
+            "release test count": r"release tier passed\s+`?\d+`?\s+tests",
+        }
+        for claim, pattern in dynamic_claims.items():
+            assert re.search(pattern, text, flags=re.IGNORECASE) is None, (
+                f"{path.name} embeds a dynamic {claim}; source handoffs cannot know release "
+                "identities generated after commit/tag creation"
+            )
+
+        if "### Immutable release evidence" not in text:
+            continue
+        evidence = text.split("### Immutable release evidence", 1)[1]
+        evidence = re.split(r"\n#{2,3} ", evidence, maxsplit=1)[0]
+        tags = set(re.findall(r"engine-v\d+\.\d+\.\d+", evidence))
+        assert tags <= {current_tag}, (
+            f"{path.name} mixes release identities in its current evidence section: {tags}"
+        )
+        assert "release-manifest.json" in evidence
+        assert "SHA256SUMS" in evidence
+        assert "does not duplicate" in evidence.lower()
+
+
 def test_documented_bundle_schema_version_is_the_engine_truth():
     """C2-5: docs state the CURRENT bundle schema version from the engine constant —
     a stale hand-written number misleads every dashboard author."""
