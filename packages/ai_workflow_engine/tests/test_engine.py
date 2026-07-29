@@ -3629,47 +3629,92 @@ async def test_child_timeout_clean_expiry_is_partial_not_failed():
     assert result.status == "partial", f"clean child timeout should be partial, got {result.status}"
 
 
-async def test_fanout_partial_isolation_when_one_child_times_out():
-    """Concurrent fanout over the child capability: one stuck child times out (partial) while a
-    fast sibling completes and its output survives (canary #6)."""
-    child = WorkflowBuilder("slow_child").step("slow_node").with_limits(
-        RuntimeLimits(timeout_s=0.3)
+async def test_fanout_partial_isolation_preserves_the_completed_sibling_artifact(tmp_path):
+    """Canaries #6 + #8: two child invocations overlap behind a barrier; the slow one exceeds its
+    child breaker while the fast one completes and emits a real artifact. The parent is partial, the
+    completed sibling's artifact survives BY IDENTITY in the run result, and the finalized
+    observation bundle on disk records it as copied.
+
+    (An earlier attempt concluded child artifacts do not propagate; that probe was miswired —
+    `CapabilityRuntime.invoke` retains completed-invocation artifacts into the run session before
+    graph-state commit, and this test now pins that behaviour under a child-window timeout.)
+    """
+
+    from ai_workflow_engine import ObservationConfig
+
+    evidence = tmp_path / "sibling-evidence.png"
+    evidence.write_bytes(b"\x89PNG\r\n\x1a\nsibling")
+    bundle_root = tmp_path / "bundles"
+    both_started = asyncio.Event()
+    arrivals = {"n": 0}
+
+    async def _worker(ctx, payload):
+        # Barrier: force the two fanout children to be genuinely in flight together.
+        arrivals["n"] += 1
+        if arrivals["n"] >= 2:
+            both_started.set()
+        try:
+            await asyncio.wait_for(both_started.wait(), timeout=1.0)
+        except asyncio.TimeoutError:
+            pass
+        if payload.get("slow"):
+            await asyncio.sleep(3.0)  # exceeds the 0.4s child breaker
+            return {"never": "reached"}
+        return artifact_result(
+            {"k": payload.get("k")},
+            [WorkflowArtifact(path=str(evidence), kind="media", source="unit", owner_node="work")],
+        )
+
+    child = WorkflowBuilder("evidence_child").step("work").with_limits(
+        RuntimeLimits(timeout_s=0.4)
     ).build()
     engine = (
         WorkflowEngineBuilder()
-        .register_capability("slow_node", _slow_child_node, kind="deterministic")
+        .with_observation(
+            ObservationConfig(
+                enabled=True, bundle_dir=str(bundle_root), capture="full", artifacts="copy"
+            )
+        )
+        .register_capability("work", _worker, kind="tool", side_effects=["local_write"])
         .register_workflow(child)
         .build()
     )
-    engine.register_workflow_capability("run_child", "slow_child")
+    engine.register_workflow_capability("run_child", "evidence_child")
     parent = (
         WorkflowBuilder("fan_parent")
         .step("items")
         .fanout("fan", capability="run_child", items_key="items", max_parallel=2)
         .build()
     )
-    # The items node returns the list DIRECTLY (mirrors the working fanout pattern); items_key
-    # names that node's output.
     engine.register_capability(
         "items",
-        lambda ctx, p: [{"sleep_s": 0.02}, {"sleep_s": 3.0}],
+        lambda ctx, p: [{"k": "fast", "slow": False}, {"k": "slow", "slow": True}],
         kind="deterministic",
     )
     engine.register_workflow(
         parent,
         profile=WorkflowProfile(
-            workflow_type="fan_parent", safety=SafetyPolicy(allowed_side_effects=[])
+            workflow_type="fan_parent", safety=SafetyPolicy(allowed_side_effects=["local_write"])
         ),
     )
+
     loop = asyncio.get_running_loop()
-    start = loop.time()
+    start_t = loop.time()
     result = await engine.run("fan_parent", {})
-    elapsed = loop.time() - start
+    elapsed = loop.time() - start_t
+
     assert elapsed < 1.5, f"fanout ran ~{elapsed:.2f}s; the stuck child was not bounded"
-    assert result.status == "partial", f"one child timed out; fanout should be partial, got {result.status}"
-    fan = result.node("fan").output
-    finished = [r for r in fan if isinstance(r, dict) and r.get("child") == "finished"]
-    assert finished, "the fast sibling's completed output did not survive the partial fanout"
+    assert result.status == "partial", f"one child timed out; expected partial, got {result.status}"
+    assert arrivals["n"] == 2, "the two children did not both start; overlap was not forced"
+
+    # The completed sibling's artifact survives BY IDENTITY in the run result...
+    assert [a.path for a in result.artifacts] == [str(evidence)], (
+        f"the completed sibling's artifact was lost: {[a.path for a in result.artifacts]}"
+    )
+    # ...and in the finalized on-disk bundle, actually copied.
+    manifest = json.loads((Path(result.observation_bundle_path) / "artifacts.json").read_text())
+    assert manifest, "the completed sibling's artifact is missing from the bundle manifest"
+    assert any(entry.get("copied") for entry in manifest), f"artifact not copied: {manifest}"
 
 
 async def test_child_window_refuses_synchronous_uninterruptible_work_before_it_runs():
@@ -3762,10 +3807,18 @@ async def test_stubborn_child_that_ignores_cancellation_is_loud_containment_fail
     assert result.status == "failed", (
         f"a child that ignored cancellation must be loud containment failed, got {result.status}"
     )
+    # The point of the contract: the engine reported a LOUD failure precisely because the work had
+    # NOT finished. A clean partial here would be a claim the engine never performed.
+    assert finished["value"] is False, "setup invalid: the handler completed before the breaker"
     events = _child_window_events(result)
     assert events and events[-1].decision == "child_window:failed"
     assert events[-1].severity == "error"
     assert events[-1].metadata["graph_failsafe_containment_failed"] is True
+    # Settle the detached handler explicitly so the test owns its own cleanup.
+    for _ in range(100):
+        if finished["value"]:
+            break
+        await asyncio.sleep(0.02)
 
 
 async def test_child_window_spans_retries_and_is_not_reset_per_attempt():
@@ -3787,9 +3840,11 @@ async def test_child_window_spans_retries_and_is_not_reset_per_attempt():
         await asyncio.sleep(0.12)
         raise RuntimeError(f"attempt {calls['n']} rejected")
 
+    # 20 x 0.12s = 2.4s of retry work under a 0.6s breaker: exhaustion CANNOT be what stops this
+    # run, so a partial from the child window is unambiguous evidence of one shared deadline.
     child = (
         WorkflowBuilder("retry_child")
-        .step("flaky", retry=Retry(max_attempts=4))
+        .step("flaky", retry=Retry(max_attempts=20))
         .with_limits(RuntimeLimits(timeout_s=0.6))
         .build()
     )
@@ -3810,11 +3865,21 @@ async def test_child_window_spans_retries_and_is_not_reset_per_attempt():
 
     # Real retries happened (a per-attempt reset regression is only meaningful if >1 attempt ran).
     assert calls["n"] >= 2, f"retry canary executed only {calls['n']} attempt(s); it proves nothing"
-    # ONE shared 0.6s window across cumulative attempts: the run is bounded near that window, not
-    # 4 x 0.12s of fresh per-attempt windows plus overhead.
-    assert elapsed < 1.2, f"child ran ~{elapsed:.2f}s; retries appear to reset the window per attempt"
+    assert calls["n"] < 20, "retries exhausted; the breaker never fired, so nothing is proven"
+    # The WINDOW stopped it, not retry exhaustion. Note the mechanism: because the child window is
+    # PUBLISHED, each nested attempt is bounded by the SHRINKING remainder, so attempts consume one
+    # shared budget and stop early — the child graph then finishes just inside the window (a
+    # `child_window:completed` event with elapsed ~= the work budget). That is the shared-deadline
+    # contract; a per-attempt RESET would instead allow ~20 x 0.12s of work.
+    assert result.status == "partial", f"the shared window must stop this run, got {result.status}"
     events = _child_window_events(result)
-    assert events, "the shared child window never fired across cumulative retries"
+    assert events, "the child window did not own this run"
+    owner_event = events[-1]
+    assert owner_event.metadata["limiting_source"] == ["capability_limit"]
+    assert owner_event.metadata["elapsed_s"] <= owner_event.metadata["effective_hard_s"] + 0.25, (
+        f"child ran past its own window: {owner_event.metadata}"
+    )
+    assert elapsed < 1.5, f"child ran ~{elapsed:.2f}s; retries appear to reset the window per attempt"
 
 
 async def test_child_window_reaps_process_backed_descendant(tmp_path):
@@ -3886,8 +3951,14 @@ async def test_child_window_reaps_process_backed_descendant(tmp_path):
     parent_pid = int(started.read_text())
     descendant_pid = int(descendant_pid_file.read_text())
 
-    # The child window (not the process's own default) bounded it.
-    assert result.status in ("partial", "failed"), result.status
+    # The CHILD WINDOW (not an unrelated process failure) bounded it: exact status + owner
+    # attribution. The published window bounds the process AT THE CAPABILITY DOOR, so the child
+    # graph settles inside its own window and the owner event records the enforced decision.
+    assert result.status == "partial", f"expected the child window to bound this, got {result.status}"
+    events = _child_window_events(result)
+    assert events, "process cleanup was not attributed to the child window"
+    assert events[-1].metadata["limiting_source"] == ["capability_limit"]
+    assert events[-1].metadata["configured_timeout_s"] == 0.5
 
     # Both the owned process and its descendant are gone, and the descendant never completed.
     await asyncio.sleep(1.8)
@@ -3901,15 +3972,33 @@ async def test_child_window_reaps_process_backed_descendant(tmp_path):
 
 
 async def test_child_window_preserves_per_child_usage_attribution_in_concurrent_fanout():
-    """Canary #8: with a bounded child (owner acts) fanned out concurrently, each child's metered
-    usage event is preserved with its own invocation identity, without duplication, and aggregate
-    totals stay exact. The child window shares the parent usage summary, so enforcement must not
-    drop or double-count usage."""
+    """Canary #8 (full contract): two child invocations forced to overlap, one performing a REAL
+    node-level retry, each attempt emitting usage through the real usage door.
+
+    Asserts the consumer's scenario correlation, the attempt sequence, per-attempt invocation
+    identity, the exact event count (no duplication), and exact aggregate totals — an earlier
+    version hand-authored two ids with no retry and proved only that two events aggregate.
+    """
+
+    from ai_workflow_engine.usage_events import record_usage_event
+    from ai_workflow_engine.workflow import Retry
+
+    both_started = asyncio.Event()
+    arrivals = {"n": 0}
+    attempts = {"fast": 0, "flaky": 0}
 
     async def _metered(context, payload):
-        from ai_workflow_engine.usage_events import record_usage_event
-
-        await asyncio.sleep(0.02)
+        scenario = payload.get("scenario")
+        attempts[scenario] += 1
+        attempt_no = attempts[scenario]
+        arrivals["n"] += 1
+        if arrivals["n"] >= 2:
+            both_started.set()
+        try:
+            await asyncio.wait_for(both_started.wait(), timeout=1.0)
+        except asyncio.TimeoutError:
+            pass
+        # Real usage door, one event per ATTEMPT, carrying consumer scenario correlation.
         record_usage_event(
             WorkflowUsageEvent(
                 node="metered",
@@ -3917,15 +4006,21 @@ async def test_child_window_preserves_per_child_usage_attribution_in_concurrent_
                 input_tokens=10,
                 output_tokens=5,
                 total_tokens=15,
-                invocation_id=f"inv-{payload.get('k')}",
-                request_id=f"req-{payload.get('k')}",
+                attempt=attempt_no,
+                invocation_id=f"inv-{scenario}-{attempt_no}",
+                metadata={"scenario": scenario},
             )
         )
-        return {"k": payload.get("k")}
+        if scenario == "flaky" and attempt_no == 1:
+            raise RuntimeError("first attempt rejected; retry")
+        return {"scenario": scenario, "attempt": attempt_no}
 
-    child = WorkflowBuilder("metered_child").step("metered").with_limits(
-        RuntimeLimits(timeout_s=5.0)
-    ).build()
+    child = (
+        WorkflowBuilder("metered_child")
+        .step("metered", retry=Retry(max_attempts=3))
+        .with_limits(RuntimeLimits(timeout_s=5.0))
+        .build()
+    )
     engine = (
         WorkflowEngineBuilder()
         .register_capability("metered", _metered, kind="llm")
@@ -3940,18 +4035,35 @@ async def test_child_window_preserves_per_child_usage_attribution_in_concurrent_
         .build()
     )
     engine.register_capability(
-        "items", lambda ctx, p: [{"k": "a"}, {"k": "b"}], kind="deterministic"
+        "items",
+        lambda ctx, p: [{"scenario": "fast"}, {"scenario": "flaky"}],
+        kind="deterministic",
     )
     engine.register_workflow(
         parent, profile=WorkflowProfile(workflow_type="fan_parent", safety=SafetyPolicy(allowed_side_effects=[]))
     )
+
     result = await engine.run("fan_parent", {})
 
     assert result.status == "completed", result.error
+    assert arrivals["n"] >= 2, "the children did not overlap; concurrency was not forced"
+    assert attempts["flaky"] == 2, f"the flaky child did not really retry: {attempts}"
+
     metered = [e for e in result.usage.events if e.node == "metered"]
-    assert len(metered) == 2, f"expected one usage event per child, got {len(metered)}"
-    assert {e.invocation_id for e in metered} == {"inv-a", "inv-b"}, "per-child identity not preserved"
-    assert result.usage.input_tokens == 20 and result.usage.output_tokens == 10, "aggregate drifted"
+    # Exact count: fast(1) + flaky(2 attempts) = 3 events, no duplication, none dropped.
+    assert len(metered) == 3, f"expected 3 usage events (1 fast + 2 flaky attempts), got {len(metered)}"
+    # Per-attempt invocation identity is preserved and distinct.
+    assert {e.invocation_id for e in metered} == {"inv-fast-1", "inv-flaky-1", "inv-flaky-2"}
+    # Consumer scenario correlation survives concurrent execution (no cross-child attribution).
+    by_scenario = {}
+    for event in metered:
+        by_scenario.setdefault(event.metadata["scenario"], []).append(event.attempt)
+    assert sorted(by_scenario["flaky"]) == [1, 2], f"attempt sequence collapsed: {by_scenario}"
+    assert by_scenario["fast"] == [1], f"fast child attribution drifted: {by_scenario}"
+    # Exact aggregate over all three attempts.
+    assert result.usage.input_tokens == 30 and result.usage.output_tokens == 15, (
+        f"aggregate drifted: in={result.usage.input_tokens} out={result.usage.output_tokens}"
+    )
 
 
 def test_child_window_uses_the_current_trace_sink_after_a_consumer_rebind():
