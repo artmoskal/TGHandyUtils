@@ -226,6 +226,8 @@ async def test_visual_scenario_planner_returns_prompt_and_layout():
     assert "Priority order for visual cards" in system_prompt
     assert "image explains the answer relationship" in system_prompt
     assert "one visual card must still cover the whole planned set" in system_prompt
+    assert "one coherent visual card" in system_prompt
+    assert "allowed and prohibited states" in system_prompt
     assert "Do not include the recurring aircraft mascot by default" in system_prompt
     assert "Prefer humor from the concept itself" in system_prompt
     assert "airliners" in system_prompt

@@ -1254,10 +1254,21 @@ class AnkiGenerationGraph:
         elif card_kind != "visual_basic" and image_policy in ("generate", "reference"):
             image_policy = "none"
 
+        target_count = AnkiGenerationGraph._target_count(plan, directives)
+        if card_kind == "visual_basic":
+            target_count = 1
+            marker = (
+                "explicit_generated_visual_single_card"
+                if directives.image_policy == "generate"
+                else "visual_single_card"
+            )
+            if marker not in constraints:
+                constraints.append(marker)
+
         return CardBuildPlan(
             card_kind=card_kind,
             image_policy=image_policy,
-            count=AnkiGenerationGraph._target_count(plan, directives),
+            count=target_count,
             source_facts=plan.source_facts,
             study_goal=plan.study_goal or "Create focused Anki flashcards from the supplied content",
             visual_rationale=plan.visual_rationale if card_kind == "visual_basic" else None,

@@ -64,6 +64,8 @@ async def test_card_set_planner_returns_validated_plan():
     assert "Count is based on independent study objectives" in llm.messages[0][0].content
     assert "sibling list/set under one category" in llm.messages[0][0].content
     assert "do not select one representative item and drop the rest" in llm.messages[0][0].content
+    assert "Explicit generated visuals are a hard single-card contract" in llm.messages[0][0].content
+    assert "combine all relevant, related source facts into that one card" in llm.messages[0][0].content
     assert "A valve controls flow" in llm.messages[0][1].content
 
 

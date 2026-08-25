@@ -33,6 +33,17 @@ Rules:
 - Decide target count when the user did not request an exact count. Prefer fewer cards by default:
   usually 1 card, 2-3 only for clearly separate high-value facts, and never more than 5 unless the
   user explicitly requested a count.
+- Visual cards currently produce exactly one card. Explicit generated visuals are a hard single-card contract:
+  when directive_summary.image_policy is "generate", choose visual_basic with count=1.
+  Do not let the general 2-3 card guidance override this rule.
+- For that one visual card, combine all relevant, related source facts into that one card and retain
+  them in source_facts. Design one coherent recall question and one image composition that explains
+  the complete rule or relationship. Prefer showing allowed and prohibited states, before/after,
+  cause/effect, contrast, or grouped components in one image rather than splitting complementary
+  clauses into separate cards.
+- Do not downgrade an explicit generated visual to basic or cloze merely because several related
+  facts must be combined. Use fallback_kind only when generation is unavailable, unsafe, ungrounded,
+  or the material genuinely cannot form one usable visual study objective.
 - Count is based on independent study objectives, not line count or bullet count. When the source is
   a sibling list/set under one category (for example annexes, required documents, conditions,
   checklist items, limitations, symptoms, or steps that are learned as one named set), prefer one

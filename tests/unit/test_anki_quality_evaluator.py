@@ -87,6 +87,8 @@ async def test_quality_evaluator_accepts_valid_cards():
     assert "requested funny/collage/story visual" in system_prompt
     assert "tidy static icon grid without a memory hook is not enough" in system_prompt
     assert "use retry_scenario for bad image-to-answer mapping" in system_prompt
+    assert "intentionally produces exactly one card" in system_prompt
+    assert "together preserve every relevant planned fact" in system_prompt
     assert "language voice cards" in system_prompt.lower()
     assert "Do not evaluate audio" in system_prompt
 

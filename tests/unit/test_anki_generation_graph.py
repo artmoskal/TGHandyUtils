@@ -1259,6 +1259,92 @@ async def test_forced_generated_visual_does_not_downgrade_to_planner_cloze_fallb
 
 
 @pytest.mark.unit
+async def test_explicit_gen_combines_overtaking_facts_into_one_visual_card(tmp_path):
+    """The real 2026-08-25 failure: the generic planner proposed two cards even though
+    explicit generated-visual mode has one paid image slot and one visual scenario."""
+
+    svc = Mock()
+    facts = [
+        (
+            "The overtaking aircraft, whether climbing, descending or in horizontal flight, "
+            "must keep out of the way by altering its heading to the right."
+        ),
+        (
+            "The overtaking aircraft must not pass over, under or in front of the other "
+            "aircraft unless well clear."
+        ),
+    ]
+    planner = FakeCardSetPlanner(
+        CardBuildPlan(
+            card_kind="visual_basic",
+            image_policy="generate",
+            count=2,
+            source_facts=facts,
+            study_goal="Learn both parts of the overtaking right-of-way rule",
+            visual_rationale="The allowed and prohibited paths form one visual rule",
+            fallback_kind="basic",
+        )
+    )
+    visual_planner = FakeScenarioPlanner(
+        VisualCardScenario(
+            source_content=" ".join(facts),
+            question_text="What must an overtaking aircraft do, and which paths must it avoid?",
+            facts_to_test=facts,
+            visual_prompt=(
+                "Show the correct rightward overtaking path in green; cross out passing over, "
+                "under, or in front in red; preserve the unless-well-clear qualification."
+            ),
+            layout="text_front_image_back",
+            image_count=1,
+            answer_text=(
+                "Alter heading to the right; do not pass over, under, or in front unless well clear."
+            ),
+            rendering_guide="One card must cover both complementary parts of the overtaking rule.",
+        )
+    )
+    generator = FakeImageGenerator()
+    quality = FakeQualityEvaluator([RenderedCardEvaluation(accepted=True)])
+    source = build_content_source(
+        [
+            (
+                "U",
+                (
+                    "An overtaking aircraft must alter heading right to keep clear and must not "
+                    "pass over, under, or in front unless well clear. [i gen]"
+                ),
+            )
+        ],
+        user_id=10,
+        owner_name="U",
+    )
+
+    graph = AnkiGenerationGraph(
+        svc,
+        card_set_planner=planner,
+        visual_scenario_planner=visual_planner,
+        image_generator=generator,
+        quality_evaluator=quality,
+        enable_image_generation=True,
+        generated_media_root=str(tmp_path),
+    )
+    rendered = await graph.run(source)
+
+    normalized = graph.last_run_state["build_plan"]
+    assert normalized.card_kind == "visual_basic"
+    assert normalized.count == 1
+    assert normalized.source_facts == facts
+    assert "explicit_generated_visual_single_card" in normalized.user_constraints_applied
+    assert len(generator.requests) == 1
+    assert len(rendered.cards) == 1
+    assert rendered.fallback_used is False
+    assert "heading to the right" in rendered.cards[0].answer
+    assert "over, under, or in front" in rendered.cards[0].answer
+    assert "rightward overtaking path in green" in generator.requests[0].prompt
+    assert "cross out passing over, under, or in front in red" in generator.requests[0].prompt
+    svc.extract_cards.assert_not_called()
+
+
+@pytest.mark.unit
 async def test_graph_uses_visual_scenario_planner_prompt_and_rendering_guide(tmp_path):
     svc = Mock()
     svc.extract_cards.return_value = [AnkiCard(question="Why does a wing lift?", answer="Pressure difference.")]

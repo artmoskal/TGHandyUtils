@@ -21,6 +21,14 @@ Rules:
   unless the source gives them. Prefer generic labels, arrows, blank gauge marks, or source-grounded
   short text. Never request impossible aviation values or units.
 - Use one generated image by default.
+- Produce one coherent visual card. Combine every relevant source_fact from the build plan into its
+  question_text, answer_text, facts_to_test, and visual composition instead of silently selecting one
+  clause or proposing additional cards. Exact qualifiers may stay in answer_text when drawing them
+  would be unreliable, but they must not be omitted.
+- When one rule contains both required and forbidden behavior, show the allowed and prohibited states
+  together: make the correct path/action visually affirmative and cross out or otherwise clearly mark
+  the forbidden alternatives. Apply the same composition principle to complementary limits,
+  conditions, before/after states, and cause/effect facts.
 - question_text must be the exact Anki front text. It must be self-contained, must not reveal the
   answer, and must not depend on the generated image when layout is text_front_image_back.
 - question_text must be specific with a single definite answer. Never use vague framings like

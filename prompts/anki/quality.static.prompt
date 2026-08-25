@@ -30,6 +30,10 @@ Evaluation rules:
   the image changes source qualifiers, exceptions, or conditions. Do not accept visuals that turn
   "if equipped", "if applicable", optional extras, exceptions, or conditional rule items into
   unconditional "must" statements or misleading counts.
+- A generated visual plan intentionally produces exactly one card. Do not request multiple cards merely
+  because one coherent rule has several complementary clauses. Instead, require that the single
+  question, answer, and image together preserve every relevant planned fact; reject only when that
+  combined coverage is missing, misleading, or unusable.
 - Reject generated visuals that rename source items, introduce unexplained abbreviations, genericize
   labels, or replace exact source item names with broad category names when those names matter for
   recall.
