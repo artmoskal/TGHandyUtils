@@ -16,6 +16,7 @@ from ai_workflow_engine import (
     WorkflowBuilder,
     WorkflowEngine,
     WorkflowEngineBuilder,
+    WorkflowGoal,
 )
 from ai_workflow_engine.config_loader import load_workflow_config
 from ai_workflow_engine.observation_bundle import open_observation_run_bundle
@@ -250,6 +251,43 @@ def test_explicit_bundle_escape_hatch_beats_the_config(tmp_path):
     assert not (tmp_path / "auto").exists(), "auto bundle opened despite explicit escape hatch"
     meta = json.loads((explicit.path / "meta.json").read_text())
     assert meta["status"] == "completed"
+    trace_rows = [json.loads(line) for line in explicit.trace_path.read_text().splitlines()]
+    detail_rows = [json.loads(line) for line in explicit.detail_path.read_text().splitlines()]
+    assert trace_rows and detail_rows
+    assert {row["run_id"] for row in [*trace_rows, *detail_rows]} == {"run-x"}
+
+
+def test_explicit_bundle_refuses_a_conflicting_goal_run_id_before_capability_calls(tmp_path):
+    calls = []
+
+    def probe(payload, context):
+        calls.append(payload)
+        return {"ok": True}
+
+    engine = WorkflowEngine()
+    engine.register_capability("probe", probe, kind="deterministic")
+    engine.register_workflow(WorkflowBuilder("identity_flow").step("probe").build())
+    explicit = open_observation_run_bundle(tmp_path, "bundle-run")
+    goal = WorkflowGoal(
+        workflow_type="identity_flow",
+        objective="identity conflict",
+        metadata={"run_id": "foreign-run"},
+    )
+
+    with pytest.raises(ValueError, match="bundle-run.*foreign-run|foreign-run.*bundle-run"):
+        asyncio.run(
+            engine.run(
+                "identity_flow",
+                {"x": 1},
+                goal=goal,
+                observation_bundle=explicit,
+            )
+        )
+
+    assert calls == []
+    assert explicit.trace_path.read_text() == ""
+    assert explicit.detail_path.read_text() == ""
+    assert explicit.usage_path.read_text() == ""
 
 
 def test_explicit_bundle_wrong_types_fail_at_the_door_with_zero_calls(tmp_path):

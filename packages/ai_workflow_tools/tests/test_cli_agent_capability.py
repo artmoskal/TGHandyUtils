@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import sys
@@ -413,6 +414,13 @@ async def test_codex_image_agent_persists_one_linked_provider_invocation_graph(
     row = json.loads(usage_path.read_text(encoding="utf-8"))
     row.pop("invocation_id")
     usage_path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"usage\.jsonl failed SHA-256 validation"):
+        FileEventSource(result.observation_bundle_path).read()
+
+    meta_path = Path(result.observation_bundle_path) / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["usage_sha256"] = hashlib.sha256(usage_path.read_bytes()).hexdigest()
+    meta_path.write_text(json.dumps(meta) + "\n", encoding="utf-8")
     with pytest.raises(ValueError, match="exactly one usage event"):
         FileEventSource(result.observation_bundle_path).read()
 

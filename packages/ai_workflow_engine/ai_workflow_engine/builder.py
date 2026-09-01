@@ -626,6 +626,7 @@ class WorkflowEngine:
         execution: Optional[RunExecutionRequest] = None,
     ) -> WorkflowRunResult:
         definition = self._resolve(workflow)
+        explicit_bundle_run_id: Optional[str] = None
         if observation_bundle is not None:
             # C2-4 (F-2G-1): the escape hatch is public API — a string/path or partial duck
             # object must fail HERE, at the door, not deep inside the run session. Call-time
@@ -639,6 +640,7 @@ class WorkflowEngine:
                     "open_observation_run_bundle(...), or configure engine-owned bundles "
                     "via with_observation(ObservationConfig(enabled=True, bundle_dir=...))."
                 )
+            explicit_bundle_run_id = str(observation_bundle.run_id)
         context = self._run_context_for(
             definition,
             goal=goal,
@@ -646,6 +648,7 @@ class WorkflowEngine:
             constraints=constraints,
             delivery_target=delivery_target,
             execution=execution,
+            explicit_bundle_run_id=explicit_bundle_run_id,
         )
         if (
             observation_bundle is None
@@ -857,6 +860,7 @@ class WorkflowEngine:
         constraints: Optional[Dict[str, Any]] = None,
         delivery_target: Optional[str] = None,
         execution: Optional[RunExecutionRequest] = None,
+        explicit_bundle_run_id: Optional[str] = None,
     ) -> CapabilityContext:
         plan = self._plan_for(definition)
         run_goal = goal or WorkflowGoal(
@@ -887,7 +891,17 @@ class WorkflowEngine:
                     "source": execution.source,
                 }
             }
-        run_id = str(run_goal.metadata.get("run_id") or uuid.uuid4())
+        requested_run_id = run_goal.metadata.get("run_id") or None
+        if (
+            explicit_bundle_run_id is not None
+            and requested_run_id is not None
+            and str(requested_run_id) != explicit_bundle_run_id
+        ):
+            raise ValueError(
+                "explicit observation bundle run_id conflicts with the goal run_id: "
+                f"bundle={explicit_bundle_run_id!r}, goal={requested_run_id!r}"
+            )
+        run_id = str(explicit_bundle_run_id or requested_run_id or uuid.uuid4())
         return CapabilityContext(
             goal=run_goal,
             run_context=WorkflowRunContext(

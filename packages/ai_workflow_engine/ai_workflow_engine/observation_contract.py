@@ -35,6 +35,7 @@ BundleStatus = Literal[
     "abandoned",
 ]
 _BUNDLE_STATUSES = get_args(BundleStatus)
+ObservationStreamName = Literal["trace", "detail", "usage"]
 
 
 def canonical_json_chunks(value: Any) -> Iterator[bytes]:
@@ -255,6 +256,11 @@ class ObservationBundleMetaV4(BaseModel):
     trace_count: int = Field(ge=0)
     detail_count: int = Field(ge=0)
     usage_count: int = Field(ge=0)
+    trace_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    detail_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    usage_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    incomplete_streams: list[ObservationStreamName] = Field(max_length=3)
+    stream_diagnostic: Optional[str] = Field(max_length=500)
     usage_totals_scope: Literal["run_cumulative_at_finalize"]
     total_tokens: int = Field(ge=0)
     metered_usd: Optional[float] = Field(default=None, allow_inf_nan=False)
@@ -271,6 +277,15 @@ class ObservationBundleMetaV4(BaseModel):
         problems = _meta_identity_problems(self)
         problems.extend(_timestamp_problems(self.timestamp))
         problems.extend(_segment_shape_problems(self))
+        if len(set(self.incomplete_streams)) != len(self.incomplete_streams):
+            problems.append("incomplete_streams must not contain duplicates")
+        if self.incomplete_streams:
+            if self.status != "abandoned":
+                problems.append("only an abandoned bundle may carry incomplete record streams")
+            if not str(self.stream_diagnostic or "").strip():
+                problems.append("incomplete record streams require a bounded diagnostic")
+        elif self.stream_diagnostic is not None:
+            problems.append("complete record streams must not carry a diagnostic")
         if self.status == "completed" and self.provider_evidence.integrity != "complete":
             problems.append("completed bundle requires complete provider evidence")
         if problems:
@@ -365,6 +380,7 @@ __all__ = [
     "ObservationBundleMetaV4",
     "ObservationDetailEnvelope",
     "ObservationSegment",
+    "ObservationStreamName",
     "PersistedObservationBody",
     "ProviderEvidenceIntegrity",
     "ReferencedObservationBody",

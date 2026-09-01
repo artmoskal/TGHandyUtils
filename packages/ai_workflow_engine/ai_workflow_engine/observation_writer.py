@@ -32,7 +32,6 @@ from ai_workflow_engine.observation_contract import (
     DEFAULT_ARTIFACT_MAX_BYTES,
     ObservationBundleMetaV4,
     ObservationSegment,
-    ProviderEvidenceIntegrity,
     BUNDLE_SCHEMA_VERSION,
     assert_plain_identity,
     load_bundle_meta_v4,
@@ -40,7 +39,6 @@ from ai_workflow_engine.observation_contract import (
 )
 from ai_workflow_engine.observation_finalization import (
     PersistedDetailSink,
-    count_jsonl_records,
     materialize_usage_events,
     summarize_segment_evidence,
     sum_optional_cost,
@@ -63,10 +61,34 @@ class ObservationSequence:
     """Run-local monotonic sequence shared by trace/detail/usage bundle writers."""
 
     value: int = 0
+    claimed: set[int] = field(default_factory=set, repr=False)
 
-    def next(self) -> int:
-        self.value += 1
-        return self.value
+    def claim(self, supplied: int | None) -> int:
+        if supplied is None:
+            candidate = self.value + 1
+            while candidate in self.claimed:
+                candidate += 1
+        else:
+            if not isinstance(supplied, int) or isinstance(supplied, bool) or supplied < 1:
+                raise ValueError("observation sequence must be a positive integer")
+            candidate = supplied
+        if candidate in self.claimed:
+            raise ValueError(f"duplicate observation sequence {candidate}")
+        self.claimed.add(candidate)
+        self.value = max(self.value, candidate)
+        return candidate
+
+
+def _owned_run_updates(record: Any, *, run_id: str, sequence: ObservationSequence) -> dict:
+    supplied_run_id = getattr(record, "run_id", None)
+    if supplied_run_id not in (None, run_id):
+        raise ValueError(
+            f"observation record belongs to foreign run {supplied_run_id!r}, not {run_id!r}"
+        )
+    return {
+        "run_id": run_id,
+        "sequence": sequence.claim(getattr(record, "sequence", None)),
+    }
 
 
 class SequencedTraceSink:
@@ -78,12 +100,11 @@ class SequencedTraceSink:
         self.sequence = sequence
 
     def record(self, event: WorkflowTraceEvent) -> None:
-        updates = {}
-        if event.run_id is None:
-            updates["run_id"] = self.run_id
-        if event.sequence is None:
-            updates["sequence"] = self.sequence.next()
-        self.inner.record(event.model_copy(update=updates) if updates else event)
+        self.inner.record(
+            event.model_copy(
+                update=_owned_run_updates(event, run_id=self.run_id, sequence=self.sequence)
+            )
+        )
 
 
 class SequencedDetailSink:
@@ -95,12 +116,11 @@ class SequencedDetailSink:
         self.sequence = sequence
 
     def record(self, detail: ObservationDetail) -> None:
-        updates = {}
-        if detail.run_id is None:
-            updates["run_id"] = self.run_id
-        if detail.sequence is None:
-            updates["sequence"] = self.sequence.next()
-        self.inner.record(detail.model_copy(update=updates) if updates else detail)
+        self.inner.record(
+            detail.model_copy(
+                update=_owned_run_updates(detail, run_id=self.run_id, sequence=self.sequence)
+            )
+        )
 
     def clear(self) -> None:
         clear = getattr(self.inner, "clear", None)
@@ -120,11 +140,8 @@ class SequencedUsageSink:
         metadata = dict(event.metadata or {})
         metadata.setdefault("run_id", self.run_id)
         metadata.setdefault("workflow_id", self.run_id)
-        updates = {"metadata": metadata}
-        if event.run_id is None:
-            updates["run_id"] = self.run_id
-        if event.sequence is None:
-            updates["sequence"] = self.sequence.next()
+        updates = _owned_run_updates(event, run_id=self.run_id, sequence=self.sequence)
+        updates["metadata"] = metadata
         self.inner.record(event.model_copy(update=updates))
 
 
@@ -215,6 +232,7 @@ class ObservationRunBundle:
             usage_path=self.usage_path,
             value_store=self.value_store,
             status=status,
+            expected_run_id=self.run_id,
         )
         definition_json = definition.model_dump_json()
         (self.path / "definition.json").write_text(definition_json, encoding="utf-8")
@@ -244,6 +262,11 @@ class ObservationRunBundle:
             trace_count=evidence.trace_count,
             detail_count=evidence.detail_count,
             usage_count=evidence.usage_count,
+            trace_sha256=evidence.trace_sha256,
+            detail_sha256=evidence.detail_sha256,
+            usage_sha256=evidence.usage_sha256,
+            incomplete_streams=list(evidence.incomplete_streams),
+            stream_diagnostic=evidence.stream_diagnostic,
             usage_totals_scope="run_cumulative_at_finalize",
             total_tokens=sum(event.total_tokens for event in usage_events),
             metered_usd=sum_optional_cost(
@@ -377,6 +400,15 @@ def write_minimal_abandoned_meta(
 ) -> None:
     """Write terminal metadata for a crashed, never-finalized attempt directory."""
 
+    evidence = summarize_segment_evidence(
+        trace_path=path / "trace.jsonl",
+        detail_path=path / "details.jsonl",
+        usage_path=path / "usage.jsonl",
+        value_store=RunValueStore(path.parent.parent, create=False),
+        status="abandoned",
+        expected_run_id=run_id,
+        allow_incomplete_streams=True,
+    )
     definition_json = definition.model_dump_json()
     (path / "definition.json").write_text(definition_json, encoding="utf-8")
     meta_model = ObservationBundleMetaV4(
@@ -396,9 +428,14 @@ def write_minimal_abandoned_meta(
         inline_body_max_bytes=4096,
         artifact_count=0,
         artifacts_copied=0,
-        trace_count=count_jsonl_records(path / "trace.jsonl"),
-        detail_count=count_jsonl_records(path / "details.jsonl"),
-        usage_count=count_jsonl_records(path / "usage.jsonl"),
+        trace_count=evidence.trace_count,
+        detail_count=evidence.detail_count,
+        usage_count=evidence.usage_count,
+        trace_sha256=evidence.trace_sha256,
+        detail_sha256=evidence.detail_sha256,
+        usage_sha256=evidence.usage_sha256,
+        incomplete_streams=list(evidence.incomplete_streams),
+        stream_diagnostic=evidence.stream_diagnostic,
         usage_totals_scope="run_cumulative_at_finalize",
         total_tokens=0,
         metered_usd=None,
@@ -408,7 +445,7 @@ def write_minimal_abandoned_meta(
         segment_kind="resume",
         attempt=attempt,
         correlation_id=correlation_id or None,
-        provider_evidence=ProviderEvidenceIntegrity(integrity="complete"),
+        provider_evidence=evidence.provider_evidence,
     )
     meta = json.loads(meta_model.model_dump_json())
     if meta.get("correlation_id") is None:

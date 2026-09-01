@@ -85,7 +85,11 @@ from ai_workflow_engine.models import (
     WorkflowGoal,
     WorkflowRunContext,
 )
-from ai_workflow_engine.observation_values import body_sha256, render_observation_body_text
+from ai_workflow_engine.observation_values import (
+    body_sha256,
+    canonical_body_bytes,
+    render_observation_body_text,
+)
 
 # Behavior-inventory rows (plan §"Behavior Inventory To Freeze"). Every row maps to >= 1 scenario;
 # the completeness guard fails by NAME when a row has no scenario. Integrated rows (nested/
@@ -276,6 +280,7 @@ def _canon_detail(detail: Any, amap: dict[str, str] | None = None) -> dict[str, 
         "event": amap.get(getattr(detail, "event_id", None)),        # EDGE: detail -> its event
         "artifact": amap.get(getattr(detail, "artifact_id", None)),  # EDGE: detail -> its artifact
         "body": _canon(getattr(detail, "body", None), amap),
+        "body_byte_length": len(canonical_body_bytes(detail.body)),
         "display_text": _canon(render_observation_body_text(detail.body), amap),
         "metadata": _canon(dict(getattr(detail, "metadata", {}) or {}), amap),
         "has_digest": bool(getattr(detail, "digest", None)),

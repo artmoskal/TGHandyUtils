@@ -52,9 +52,21 @@ class FileEventSource:
                 f"not {run_id!r} — the meta identity is the truth, never the directory name"
             )
         definition = reader.read_definition()
-        trace_records = list(_wrap_records(reader.iter_trace_events(), "trace"))
-        detail_records = list(_wrap_records(reader.iter_detail_envelopes(), "detail"))
-        usage_records = list(_wrap_records(reader.iter_usage_events(), "usage"))
+        trace_records = (
+            list(_wrap_records(reader.iter_trace_events(), "trace"))
+            if "trace" not in meta.incomplete_streams
+            else []
+        )
+        detail_records = (
+            list(_wrap_records(reader.iter_detail_envelopes(), "detail"))
+            if "detail" not in meta.incomplete_streams
+            else []
+        )
+        usage_records = (
+            list(_wrap_records(reader.iter_usage_events(), "usage"))
+            if "usage" not in meta.incomplete_streams
+            else []
+        )
         reader.validate_record_counts(
             trace_count=len(trace_records),
             detail_count=len(detail_records),
@@ -359,6 +371,12 @@ def _raw_logical_run_id(path: Path) -> str | None:
 
 
 def _validate_provider_evidence(meta, records: list[ObservationRecord]) -> None:
+    if meta.incomplete_streams:
+        if meta.status != "abandoned" or meta.provider_evidence.integrity != "incomplete":
+            raise ValueError(
+                f"Observation bundle {meta.segment_id!r} has incoherent incomplete-stream truth"
+            )
+        return
     try:
         validate_provider_invocation_links(
             (item.record for item in records if item.type == "trace"),

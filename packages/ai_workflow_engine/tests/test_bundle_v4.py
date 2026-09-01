@@ -7,6 +7,7 @@ loudly and retention never half-reads a foreign or corrupt run.
 from __future__ import annotations
 
 import importlib.util
+import gzip
 import hashlib
 import json
 import os
@@ -19,8 +20,10 @@ import pytest
 
 from ai_workflow_engine import (
     ObservationBundleMetaV4,
+    ObservationSegment,
     ProviderEvidenceIntegrity,
     WorkflowTraceEvent,
+    WorkflowUsageEvent,
     load_bundle_meta_v4,
     open_observation_run_bundle,
     prune_observation_bundles,
@@ -67,6 +70,8 @@ def _v4_segment(tmp_path: Path, detail: ObservationDetail) -> tuple[Path, Observ
         body=persist_observation_body(store, detail.body),
     )
     (segment / "details.jsonl").write_text(envelope.model_dump_json() + "\n")
+    (segment / "trace.jsonl").write_text("")
+    (segment / "usage.jsonl").write_text("")
     meta = ObservationBundleMetaV4(
         bundle_schema_version=4,
         run_id=str(detail.run_id),
@@ -87,6 +92,11 @@ def _v4_segment(tmp_path: Path, detail: ObservationDetail) -> tuple[Path, Observ
         trace_count=0,
         detail_count=1,
         usage_count=0,
+        trace_sha256=hashlib.sha256((segment / "trace.jsonl").read_bytes()).hexdigest(),
+        detail_sha256=hashlib.sha256((segment / "details.jsonl").read_bytes()).hexdigest(),
+        usage_sha256=hashlib.sha256((segment / "usage.jsonl").read_bytes()).hexdigest(),
+        incomplete_streams=[],
+        stream_diagnostic=None,
         usage_totals_scope="run_cumulative_at_finalize",
         total_tokens=0,
         segment_id=str(detail.run_id),
@@ -239,6 +249,67 @@ def test_v4_reader_validates_suffix_before_emitting_and_reuses_one_open(tmp_path
     assert emitted == [], "a corrupt suffix must be found before the first byte is emitted"
 
 
+def test_v4_reader_rejects_valid_gzip_with_wrong_complete_body_before_emitting(tmp_path):
+    """The final SHA/length comparison, not gzip framing, owns complete-body truth."""
+
+    detail = _logical_detail({"payload": "x" * 100_000})
+    segment, envelope = _v4_segment(tmp_path, detail)
+    reader = ObservationReader(segment)
+    object_path = reader.value_store.object_path(envelope.body.sha256)
+    expected = b"".join(reader.iter_body_bytes(envelope))
+    forged = expected.replace(b"x", b"y")
+    assert len(forged) == len(expected) and forged != expected
+    object_path.write_bytes(gzip.compress(forged, mtime=0))
+
+    emitted = []
+    with pytest.raises(ValueError, match="digest/length"):
+        for chunk in reader.iter_body_bytes(envelope):
+            emitted.append(chunk)
+    assert emitted == [], "valid gzip with forged body bytes must emit nothing"
+
+
+def test_v4_reader_rejects_persisted_compact_stream_tampering(tmp_path):
+    """Envelope equality must be bound to finalized bytes, not a detached caller copy."""
+
+    detail = _logical_detail({"payload": "bound"})
+    segment, _envelope = _v4_segment(tmp_path, detail)
+    persisted = json.loads((segment / "details.jsonl").read_text())
+    persisted["metadata"] = {"forged_after_finalize": True}
+    (segment / "details.jsonl").write_text(json.dumps(persisted) + "\n")
+
+    with pytest.raises(ValueError, match="details.jsonl.*SHA-256|stream.*digest"):
+        list(ObservationReader(segment).iter_detail_envelopes())
+
+
+@pytest.mark.parametrize(
+    ("stream_name", "reader_method"),
+    [
+        ("trace.jsonl", "iter_trace_events"),
+        ("details.jsonl", "iter_detail_envelopes"),
+        ("usage.jsonl", "iter_usage_events"),
+    ],
+)
+def test_v4_reader_rejects_each_finalized_stream_tamper_before_records(
+    tmp_path,
+    stream_name,
+    reader_method,
+):
+    bundle = open_observation_run_bundle(tmp_path, "sealed-streams")
+    bundle.trace_sink.record(WorkflowTraceEvent(node="n", event_id="trace-1"))
+    bundle.detail_sink.record(
+        _logical_detail({"payload": "sealed"}, run_id="sealed-streams").model_copy(
+            update={"sequence": None}
+        )
+    )
+    bundle.usage_sink.record(WorkflowUsageEvent(node="n", event_id="usage-1"))
+    bundle.finalize(WorkflowBuilder("wf").step("s").build(), status="failed")
+    target = bundle.path / stream_name
+    target.write_bytes(target.read_bytes() + b"\n")  # still valid JSONL, different exact bytes
+
+    with pytest.raises(ValueError, match=f"{stream_name}.*SHA-256"):
+        list(getattr(ObservationReader(bundle.path), reader_method)())
+
+
 def test_v4_reader_enforces_body_bounds_and_bindings(tmp_path):
     detail = _logical_detail({"payload": "bounded" * 2_000})
     segment, envelope = _v4_segment(tmp_path, detail)
@@ -260,6 +331,117 @@ def test_v4_reader_enforces_body_bounds_and_bindings(tmp_path):
     altered = envelope.model_copy(update={"metadata": {"forged": True}})
     with pytest.raises(ValueError, match="disagrees with its persisted envelope"):
         list(reader.iter_body_bytes(altered))
+
+
+@pytest.mark.parametrize("kind", ["trace", "detail", "usage"])
+def test_v4_writer_rejects_foreign_run_identity_before_persistence(tmp_path, kind):
+    bundle = open_observation_run_bundle(tmp_path, "owned-run")
+    if kind == "trace":
+        record = WorkflowTraceEvent(node="n", run_id="foreign-run")
+        sink = bundle.trace_sink
+    elif kind == "detail":
+        record = _logical_detail({"payload": "foreign"}, run_id="foreign-run")
+        sink = bundle.detail_sink
+    else:
+        record = WorkflowUsageEvent(node="n", run_id="foreign-run")
+        sink = bundle.usage_sink
+
+    with pytest.raises(ValueError, match="foreign-run.*owned-run|owned-run.*foreign-run"):
+        sink.record(record)
+    assert bundle.trace_path.read_text() == ""
+    assert bundle.detail_path.read_text() == ""
+    assert bundle.usage_path.read_text() == ""
+
+
+def test_v4_writer_rejects_duplicate_pre_stamped_sequence_before_persistence(tmp_path):
+    bundle = open_observation_run_bundle(tmp_path, "sequence-owner")
+    bundle.trace_sink.record(WorkflowTraceEvent(node="n", sequence=3))
+    with pytest.raises(ValueError, match="duplicate observation sequence 3"):
+        bundle.usage_sink.record(WorkflowUsageEvent(node="n", sequence=3))
+    assert bundle.usage_path.read_text() == ""
+
+
+@pytest.mark.parametrize("duplicate", ["sequence", "event_id"])
+def test_v4_finalization_rejects_duplicate_persisted_identity(tmp_path, duplicate):
+    bundle = open_observation_run_bundle(tmp_path, f"duplicate-{duplicate}")
+    first = WorkflowTraceEvent(
+        node="n",
+        run_id=bundle.run_id,
+        sequence=1,
+        event_id="event-1",
+    )
+    if duplicate == "sequence":
+        second = WorkflowUsageEvent(
+            node="n",
+            run_id=bundle.run_id,
+            sequence=1,
+            event_id="usage-2",
+        )
+        bundle.trace_path.write_text(first.model_dump_json() + "\n")
+        bundle.usage_path.write_text(second.model_dump_json() + "\n")
+    else:
+        second = first.model_copy(update={"sequence": 2})
+        bundle.trace_path.write_text(
+            first.model_dump_json() + "\n" + second.model_dump_json() + "\n"
+        )
+
+    with pytest.raises(ValueError, match=f"duplicate observation {duplicate}"):
+        bundle.finalize(WorkflowBuilder("wf").step("s").build(), status="failed")
+    assert not (bundle.path / "meta.json").exists()
+
+
+def test_v4_finalization_rejects_foreign_persisted_run_identity(tmp_path):
+    bundle = open_observation_run_bundle(tmp_path, "expected-run")
+    foreign = WorkflowTraceEvent(
+        node="n",
+        run_id="foreign-run",
+        sequence=1,
+        event_id="foreign-event",
+    )
+    bundle.trace_path.write_text(foreign.model_dump_json() + "\n")
+
+    with pytest.raises(ValueError, match="foreign-run.*expected-run|expected-run.*foreign-run"):
+        bundle.finalize(WorkflowBuilder("wf").step("s").build(), status="failed")
+    assert not (bundle.path / "meta.json").exists()
+
+
+@pytest.mark.parametrize("stream", ["trace", "usage", "detail"])
+def test_v4_finalization_rejects_duplicate_per_stream_record_identity(tmp_path, stream):
+    bundle = open_observation_run_bundle(tmp_path, f"duplicate-{stream}-identity")
+    if stream == "trace":
+        records = [
+            WorkflowTraceEvent(node="n", event_id="same-id", sequence=1, run_id=bundle.run_id),
+            WorkflowTraceEvent(node="n", event_id="same-id", sequence=2, run_id=bundle.run_id),
+        ]
+        bundle.trace_path.write_text("\n".join(item.model_dump_json() for item in records) + "\n")
+        expected = "duplicate observation event_id"
+    elif stream == "usage":
+        records = [
+            WorkflowUsageEvent(node="n", event_id="same-id", sequence=1, run_id=bundle.run_id),
+            WorkflowUsageEvent(node="n", event_id="same-id", sequence=2, run_id=bundle.run_id),
+        ]
+        bundle.usage_path.write_text("\n".join(item.model_dump_json() for item in records) + "\n")
+        expected = "duplicate observation event_id"
+    else:
+        first = _logical_detail({"payload": 1}, detail_id="same-id", run_id=bundle.run_id)
+        second = _logical_detail({"payload": 2}, detail_id="same-id", run_id=bundle.run_id)
+        bundle.detail_sink.record(first.model_copy(update={"sequence": None}))
+        bundle.detail_sink.record(second.model_copy(update={"sequence": None}))
+        expected = "duplicate observation detail_id"
+
+    with pytest.raises(ValueError, match=expected):
+        bundle.finalize(WorkflowBuilder("wf").step("s").build(), status="failed")
+    assert not (bundle.path / "meta.json").exists()
+
+
+def test_v4_finalization_rejects_nonpositive_persisted_sequence(tmp_path):
+    bundle = open_observation_run_bundle(tmp_path, "invalid-sequence")
+    invalid = WorkflowTraceEvent(node="n", event_id="event-1", sequence=0, run_id=bundle.run_id)
+    bundle.trace_path.write_text(invalid.model_dump_json() + "\n")
+
+    with pytest.raises(ValueError, match="positive observation sequence"):
+        bundle.finalize(WorkflowBuilder("wf").step("s").build(), status="failed")
+    assert not (bundle.path / "meta.json").exists()
 
 
 def test_v4_reader_rejects_meta_record_count_drift(tmp_path):
@@ -323,6 +505,7 @@ summary = summarize_segment_evidence(
     detail_path=segment / "details.jsonl",
     usage_path=segment / "usage.jsonl",
     value_store=RunValueStore(segment.parent.parent, create=False),
+    expected_run_id=segment.parent.parent.name,
 )
 after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
 print(json.dumps({"rss_growth_kib": max(0, after - before),
@@ -420,6 +603,10 @@ def test_v4_meta_round_trips_with_the_one_digest_authority(tmp_path):
     assert meta.segment_kind == "initial" and meta.segment_index == 0
     assert meta.usage_totals_scope == "run_cumulative_at_finalize"
     assert meta.provider_evidence.integrity == "complete"
+    assert meta.incomplete_streams == [] and meta.stream_diagnostic is None
+    assert meta.trace_sha256 == hashlib.sha256((path / "trace.jsonl").read_bytes()).hexdigest()
+    assert meta.detail_sha256 == hashlib.sha256((path / "details.jsonl").read_bytes()).hexdigest()
+    assert meta.usage_sha256 == hashlib.sha256((path / "usage.jsonl").read_bytes()).hexdigest()
     definition = WorkflowBuilder("wf").step("s").build()
     assert meta.definition_digest == definition.definition_digest(), (
         "meta digest must come from the ONE digest authority (WorkflowDefinition.definition_digest)"
@@ -478,6 +665,10 @@ def test_segment_identity_rules_hold_in_the_meta_model():
         artifact_manifest_path="artifacts.json", artifact_root="artifacts",
         value_store_layout="run-scoped-sha256-gzip-v1", inline_body_max_bytes=4096,
         artifact_count=0, artifacts_copied=0, trace_count=0, detail_count=0, usage_count=0,
+        trace_sha256=hashlib.sha256(b"").hexdigest(),
+        detail_sha256=hashlib.sha256(b"").hexdigest(),
+        usage_sha256=hashlib.sha256(b"").hexdigest(),
+        incomplete_streams=[], stream_diagnostic=None,
         usage_totals_scope="run_cumulative_at_finalize", total_tokens=0,
         segment_id="r", segment_index=0, segment_kind="initial",
         provider_evidence={"integrity": "complete"},
@@ -500,6 +691,35 @@ def test_segment_identity_rules_hold_in_the_meta_model():
                     "diagnostic": "missing terminal provider trace",
                 },
             }
+        )
+    with pytest.raises(ValueError, match="only an abandoned bundle"):
+        ObservationBundleMetaV4.model_validate(
+            {
+                **base,
+                "incomplete_streams": ["trace"],
+                "stream_diagnostic": "partial trace line",
+                "provider_evidence": {
+                    "integrity": "incomplete",
+                    "diagnostic": "partial trace line",
+                },
+            }
+        )
+    with pytest.raises(ValueError, match="must not contain duplicates"):
+        ObservationBundleMetaV4.model_validate(
+            {
+                **base,
+                "status": "abandoned",
+                "incomplete_streams": ["trace", "trace"],
+                "stream_diagnostic": "partial trace line",
+                "provider_evidence": {
+                    "integrity": "incomplete",
+                    "diagnostic": "partial trace line",
+                },
+            }
+        )
+    with pytest.raises(ValueError, match="must not carry a diagnostic"):
+        ObservationBundleMetaV4.model_validate(
+            {**base, "stream_diagnostic": "unbound diagnostic"}
         )
 
 
@@ -541,6 +761,111 @@ def test_completed_bundle_rejects_incomplete_provider_evidence(tmp_path):
     with pytest.raises(ValueError, match="exactly one usage event"):
         bundle.finalize(WorkflowBuilder("wf").step("s").build(), status="completed")
     assert not (bundle.path / "meta.json").exists()
+
+
+def test_malformed_abandoned_attempt_does_not_poison_successful_retry_group(tmp_path):
+    """Crash bytes remain intact and typed while a later canonical retry stays readable."""
+
+    from ai_workflow_engine.observation_writer import write_minimal_abandoned_meta
+    from ai_workflow_engine.segment_lifecycle import commit_attempt
+    from ai_workflow_viewer import FileEventSource
+
+    run_id = "crash-retry"
+    definition = WorkflowBuilder("wf").step("s").build()
+    initial = open_observation_run_bundle(tmp_path, run_id)
+    initial.finalize(definition, status="completed")
+
+    dead = open_observation_run_bundle(
+        tmp_path,
+        run_id,
+        segment=ObservationSegment(
+            segment_id=f"{run_id}--s001",
+            segment_index=1,
+            kind="resume",
+            definition_digest=definition.definition_digest(),
+            attempt=1,
+        ),
+    )
+    dead.usage_sink.record(WorkflowUsageEvent(node="dead", total_tokens=7))
+    dead.trace_path.write_bytes(b'{"node":"dead","event_id":')
+    crashed_trace = dead.trace_path.read_bytes()
+    write_minimal_abandoned_meta(
+        dead.path,
+        run_id=run_id,
+        definition=definition,
+        segment_index=1,
+        definition_digest=definition.definition_digest(),
+        attempt=1,
+    )
+    (dead.path / "abandoned.json").write_text('{"attempt":1,"superseded_by_attempt":2}')
+
+    retry = open_observation_run_bundle(
+        tmp_path,
+        run_id,
+        segment=ObservationSegment(
+            segment_id=f"{run_id}--s001-r2",
+            segment_index=1,
+            kind="resume",
+            definition_digest=definition.definition_digest(),
+            attempt=2,
+        ),
+    )
+    retry.finalize(definition, status="completed")
+    assert commit_attempt(tmp_path, run_id, retry.segment.segment_id, attempt=2)
+
+    dead_meta = load_bundle_meta_v4(dead.path)
+    assert dead.trace_path.read_bytes() == crashed_trace, "reconciliation must retain exact crash bytes"
+    assert dead_meta.incomplete_streams == ["trace"]
+    assert dead_meta.provider_evidence.integrity == "incomplete"
+
+    group = FileEventSource(tmp_path).read_group(run_id)
+    assert group.status == "completed"
+    assert [item.segment_id for item in group.non_canonical] == [dead.segment.segment_id]
+    assert group.non_canonical[0].disposition == "abandoned"
+    assert group.non_canonical_usage_totals["total_tokens"] == 7
+
+
+def test_abandoned_reconciliation_never_certifies_incomplete_provider_call(tmp_path):
+    from ai_workflow_engine.observation_writer import write_minimal_abandoned_meta
+    from ai_workflow_viewer import FileEventSource
+
+    run_id = "abandoned-provider"
+    definition = WorkflowBuilder("wf").step("s").build()
+    initial = open_observation_run_bundle(tmp_path, run_id)
+    initial.finalize(definition, status="completed")
+    dead = open_observation_run_bundle(
+        tmp_path,
+        run_id,
+        segment=ObservationSegment(
+            segment_id=f"{run_id}--s001",
+            segment_index=1,
+            kind="resume",
+            definition_digest=definition.definition_digest(),
+            attempt=1,
+        ),
+    )
+    dead.trace_sink.record(
+        WorkflowTraceEvent(
+            node="provider",
+            phase="provider:request",
+            invocation_id="inv-crashed",
+            detail_capture="capture_mode_off",
+        )
+    )
+    write_minimal_abandoned_meta(
+        dead.path,
+        run_id=run_id,
+        definition=definition,
+        segment_index=1,
+        definition_digest=definition.definition_digest(),
+        attempt=1,
+    )
+
+    meta = load_bundle_meta_v4(dead.path)
+    assert meta.incomplete_streams == []
+    assert meta.provider_evidence.integrity == "incomplete"
+    assert "exactly one usage event" in (meta.provider_evidence.diagnostic or "")
+    assert FileEventSource(dead.path).read().meta.status == "abandoned"
 
 
 def test_meta_commit_failure_leaves_no_partial_commit_marker(tmp_path, monkeypatch):

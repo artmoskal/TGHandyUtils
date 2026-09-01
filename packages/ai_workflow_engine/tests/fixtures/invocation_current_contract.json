@@ -11,6 +11,7 @@
             "payload": {}
           }
         },
+        "body_byte_length": 56,
         "content_type": "application/json",
         "digest_consistent": true,
         "display_text": "{\n  \"capability\": \"art\",\n  \"kind\": \"deterministic\",\n  \"payload\": {}\n}",
@@ -42,6 +43,7 @@
             "status": "accepted"
           }
         },
+        "body_byte_length": 228,
         "content_type": "application/json",
         "digest_consistent": true,
         "display_text": "{\n  \"artifact_refs\": [\n    {\n      \"artifact_id\": \"A0\",\n      \"kind\": \"media\",\n      \"owner_node\": \"art\",\n      \"source\": \"x\"\n    }\n  ],\n  \"capability\": \"art\",\n  \"error\": null,\n  \"kind\": \"deterministic\",\n  \"metadata\": {},\n  \"output\": {\n    \"ok\": 1\n  },\n  \"status\": \"accepted\"\n}",
@@ -67,6 +69,7 @@
             "capability": "art"
           }
         },
+        "body_byte_length": 188,
         "content_type": "application/json",
         "digest_consistent": true,
         "display_text": "{\n  \"artifact\": {\n    \"artifact_id\": \"A0\",\n    \"cleanup_on_failure\": true,\n    \"kind\": \"media\",\n    \"metadata\": {},\n    \"owner_node\": \"art\",\n    \"path\": \"a.png\",\n    \"source\": \"x\"\n  },\n  \"capability\": \"art\"\n}",
@@ -492,6 +495,7 @@
             "payload": {}
           }
         },
+        "body_byte_length": 61,
         "content_type": "application/json",
         "digest_consistent": true,
         "display_text": "{\n  \"capability\": \"cap_full\",\n  \"kind\": \"deterministic\",\n  \"payload\": {}\n}",
@@ -516,6 +520,7 @@
             "status": "accepted"
           }
         },
+        "body_byte_length": 132,
         "content_type": "application/json",
         "digest_consistent": true,
         "display_text": "{\n  \"artifact_refs\": [],\n  \"capability\": \"cap_full\",\n  \"error\": null,\n  \"kind\": \"deterministic\",\n  \"metadata\": {},\n  \"output\": {\n    \"ok\": 1\n  },\n  \"status\": \"accepted\"\n}",

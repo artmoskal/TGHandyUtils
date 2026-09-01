@@ -139,6 +139,7 @@ def test_comparator_and_canonicalizer_detect_real_drift():
                 {"kind": "tool_payload", "content_type": "application/json",
                  "event": "E0", "artifact": None,
                  "body": {"kind": "json", "value": {"capability": "n", "payload": {"a": 1}}},
+                 "body_byte_length": 36,
                  "display_text": "{\n  \"capability\": \"n\",\n  \"payload\": {\n    \"a\": 1\n  }\n}",
                  "metadata": {}, "has_digest": True, "digest_consistent": True},
             ],
@@ -185,6 +186,9 @@ def test_comparator_and_canonicalizer_detect_real_drift():
     assert mutated(lambda s: s["details"][0].__setitem__("event", "E1"))           # detail re-parented
     # --- full detail payload + digest ---
     assert mutated(lambda s: s["details"][0]["body"]["value"].__setitem__("payload", {"a": 2}))  # body corruption
+    assert mutated(lambda s: s["details"][0]["body"].__setitem__("kind", "text"))  # body variant
+    assert mutated(lambda s: s["details"][0].__setitem__("body_byte_length", 999))  # raw length
+    assert mutated(lambda s: s["details"][0].__setitem__("content_type", "text/plain"))  # content type
     assert mutated(lambda s: s["details"][0].__setitem__("display_text", "drift"))  # display derivation drift
     assert mutated(lambda s: s["details"][0].__setitem__("digest_consistent", False))   # digest drift
     # --- artifact fields ---

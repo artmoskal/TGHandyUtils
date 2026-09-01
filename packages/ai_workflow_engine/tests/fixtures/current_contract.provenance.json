@@ -1,13 +1,13 @@
 {
   "contract": "v0.11 current-contract seal",
-  "corpus_sha256": "07cde11ea7c0265f0c1a24eecf4cabddb23476edb72efd5c97a0a08b3598401e",
+  "corpus_sha256": "85a4939fc5ac860a0e3229007f9f361fd24fd0679f24a158acb8669840949435",
   "determinism": "two-run-equal",
-  "fixture_sha256": "d08806310c955952f40c7375d9defa5e627d361e427baa9ade1d17556839de72",
+  "fixture_sha256": "67af962251d5eadf5282a0a7e8538dd7e22318007ee73b20bd6a389a95082793",
   "how_to_verify": "re-run this sealer in verify mode (rebuilds the candidate wheel and compares to the sealed fixture); the hermetic per-run gate re-hashes every sealed input and compares the live corpus inside ./test.sh.",
-  "ledger_sha256": "1f1d5a3964fe750cec1edffb5f1a979adb59323ddbf31853f8f26bdbad10783a",
-  "public_surface_sha256": "29e256860b08e48014012e1786ae7344656780a649f1cf23034491637398fff0",
+  "ledger_sha256": "504870a6e978ed1e6f8301ed9721a500e2d5cc31528d6af869d607eed8c03dd5",
+  "public_surface_sha256": "0f15404b0cdb0a7de7be800b22aa7aafb86b4e05513a0d26e6fbb3fc54d69847",
   "pydantic_pin": "2.13.4",
   "python_version": "3.14",
-  "sealed_at": "2026-09-01T12:07:03+00:00",
+  "sealed_at": "2026-09-01T14:44:06+00:00",
   "sealer_sha256": "e9c7c07bf3b004fde241d72cb1358acddc5d089a6dc356179688ec76a674d43e"
 }

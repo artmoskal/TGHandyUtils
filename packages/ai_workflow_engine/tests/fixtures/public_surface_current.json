@@ -6840,6 +6840,24 @@
           "title": "Detail Path",
           "type": "string"
         },
+        "detail_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Detail Sha256",
+          "type": "string"
+        },
+        "incomplete_streams": {
+          "items": {
+            "enum": [
+              "trace",
+              "detail",
+              "usage"
+            ],
+            "type": "string"
+          },
+          "maxItems": 3,
+          "title": "Incomplete Streams",
+          "type": "array"
+        },
         "inline_body_max_bytes": {
           "const": 4096,
           "title": "Inline Body Max Bytes",
@@ -6913,6 +6931,18 @@
           "title": "Status",
           "type": "string"
         },
+        "stream_diagnostic": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Stream Diagnostic"
+        },
         "timestamp": {
           "title": "Timestamp",
           "type": "string"
@@ -6932,6 +6962,11 @@
           "title": "Trace Path",
           "type": "string"
         },
+        "trace_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Trace Sha256",
+          "type": "string"
+        },
         "usage_count": {
           "minimum": 0,
           "title": "Usage Count",
@@ -6940,6 +6975,11 @@
         "usage_path": {
           "const": "usage.jsonl",
           "title": "Usage Path",
+          "type": "string"
+        },
+        "usage_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Usage Sha256",
           "type": "string"
         },
         "usage_totals_scope": {
@@ -6977,6 +7017,11 @@
         "trace_count",
         "detail_count",
         "usage_count",
+        "trace_sha256",
+        "detail_sha256",
+        "usage_sha256",
+        "incomplete_streams",
+        "stream_diagnostic",
         "usage_totals_scope",
         "total_tokens",
         "segment_id",

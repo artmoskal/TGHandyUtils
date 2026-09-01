@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -14,6 +15,7 @@ from ai_workflow_engine.models import (
 )
 from ai_workflow_engine.observation_contract import (
     ObservationDetailEnvelope,
+    ObservationStreamName,
     ProviderEvidenceIntegrity,
     ReferencedObservationBody,
 )
@@ -49,6 +51,19 @@ class SegmentEvidenceSummary:
     trace_count: int
     detail_count: int
     usage_count: int
+    trace_sha256: str
+    detail_sha256: str
+    usage_sha256: str
+    incomplete_streams: tuple[ObservationStreamName, ...]
+    stream_diagnostic: str | None
+
+
+@dataclass(frozen=True)
+class _StreamScan:
+    count: int
+    sequences: frozenset[int]
+    identities: frozenset[str]
+    diagnostic: str | None = None
 
 
 def materialize_usage_events(
@@ -73,46 +88,197 @@ def summarize_segment_evidence(
     detail_path: Path,
     usage_path: Path,
     value_store: RunValueStore,
+    expected_run_id: str,
+    allow_incomplete_streams: bool = False,
 ) -> SegmentEvidenceSummary:
     """Validate one segment incrementally without materializing its record streams."""
 
-    validator = ProviderEvidenceValidator()
-    trace_count = 0
-    detail_count = 0
-    usage_count = 0
+    paths: dict[ObservationStreamName, Path] = {
+        "trace": trace_path,
+        "detail": detail_path,
+        "usage": usage_path,
+    }
+    digests = {name: sha256_file(path) for name, path in paths.items()}
+    counts, incomplete, diagnostics = _scan_segment_streams(
+        paths,
+        value_store=value_store,
+        expected_run_id=expected_run_id,
+        allow_incomplete=allow_incomplete_streams,
+    )
+    integrity = _provider_integrity(paths, incomplete=incomplete, status=status)
+    if incomplete:
+        diagnostic = "; ".join(diagnostics).strip()[:500]
+        integrity = ProviderEvidenceIntegrity(
+            integrity="incomplete",
+            diagnostic=diagnostic or "one or more compact record streams are incomplete",
+        )
+    return SegmentEvidenceSummary(
+        provider_evidence=integrity,
+        trace_count=counts["trace"],
+        detail_count=counts["detail"],
+        usage_count=counts["usage"],
+        trace_sha256=digests["trace"],
+        detail_sha256=digests["detail"],
+        usage_sha256=digests["usage"],
+        incomplete_streams=tuple(incomplete),
+        stream_diagnostic="; ".join(diagnostics).strip()[:500] or None,
+    )
+
+
+def _scan_segment_streams(
+    paths: dict[ObservationStreamName, Path],
+    *,
+    value_store: RunValueStore,
+    expected_run_id: str,
+    allow_incomplete: bool,
+) -> tuple[dict[ObservationStreamName, int], list[ObservationStreamName], list[str]]:
+    models: dict[ObservationStreamName, type[Any]] = {
+        "trace": WorkflowTraceEvent,
+        "detail": ObservationDetailEnvelope,
+        "usage": WorkflowUsageEvent,
+    }
+    counts: dict[ObservationStreamName, int] = {name: 0 for name in paths}
+    incomplete: list[ObservationStreamName] = []
+    diagnostics: list[str] = []
+    seen_sequences: set[int] = set()
+    seen_ids: dict[ObservationStreamName, set[str]] = {name: set() for name in paths}
     validated_bodies: set[str] = set()
-    for trace in iter_jsonl_models(trace_path, WorkflowTraceEvent):
-        validator.record_trace(trace)
-        trace_count += 1
-    for detail in iter_jsonl_models(detail_path, ObservationDetailEnvelope):
-        if isinstance(detail.body, ReferencedObservationBody) and (
-            detail.body.sha256 not in validated_bodies
-        ):
-            value_store.validate(detail.body.sha256, detail.body.byte_length)
-            validated_bodies.add(detail.body.sha256)
-        validator.record_detail(detail)
-        detail_count += 1
-    for event in iter_jsonl_models(usage_path, WorkflowUsageEvent):
-        validator.record_usage(event)
-        usage_count += 1
+    for name, model in models.items():
+        scan = _scan_stream(
+            name,
+            paths[name],
+            model,
+            value_store=value_store,
+            expected_run_id=expected_run_id,
+            seen_sequences=seen_sequences,
+            seen_ids=seen_ids[name],
+            validated_bodies=validated_bodies,
+            allow_incomplete=allow_incomplete,
+        )
+        if scan.diagnostic is not None:
+            incomplete.append(name)
+            diagnostics.append(scan.diagnostic)
+            continue
+        seen_sequences.update(scan.sequences)
+        seen_ids[name].update(scan.identities)
+        counts[name] = scan.count
+    return counts, incomplete, diagnostics
+
+
+def _scan_stream(
+    name: ObservationStreamName,
+    path: Path,
+    model: type[Any],
+    *,
+    value_store: RunValueStore,
+    expected_run_id: str,
+    seen_sequences: set[int],
+    seen_ids: set[str],
+    validated_bodies: set[str],
+    allow_incomplete: bool,
+) -> _StreamScan:
+    local_sequences = set(seen_sequences)
+    local_ids = set(seen_ids)
+    count = 0
+    try:
+        for record in iter_jsonl_models(path, model):
+            _validate_record_identity(
+                record,
+                stream=name,
+                expected_run_id=expected_run_id,
+                seen_sequences=local_sequences,
+                seen_ids=local_ids,
+            )
+            if name == "detail" and isinstance(record.body, ReferencedObservationBody) and (
+                record.body.sha256 not in validated_bodies
+            ):
+                value_store.validate(record.body.sha256, record.body.byte_length)
+                validated_bodies.add(record.body.sha256)
+            count += 1
+    except (FileNotFoundError, ValueError) as exc:
+        if not allow_incomplete:
+            raise
+        return _StreamScan(
+            count=0,
+            sequences=frozenset(),
+            identities=frozenset(),
+            diagnostic=f"{path.name}: {str(exc).strip()[:350]}",
+        )
+    return _StreamScan(
+        count=count,
+        sequences=frozenset(local_sequences),
+        identities=frozenset(local_ids),
+    )
+
+
+def _provider_integrity(
+    paths: dict[ObservationStreamName, Path],
+    *,
+    incomplete: list[ObservationStreamName],
+    status: str,
+) -> ProviderEvidenceIntegrity:
+    validator = ProviderEvidenceValidator()
+    # Crash reconciliation may keep one malformed stream verbatim. Only complete siblings enter
+    # the provider-link graph; this second bounded pass avoids retaining compact records in memory.
+    if "trace" not in incomplete:
+        for trace in iter_jsonl_models(paths["trace"], WorkflowTraceEvent):
+            validator.record_trace(trace)
+    if "detail" not in incomplete:
+        for detail in iter_jsonl_models(paths["detail"], ObservationDetailEnvelope):
+            validator.record_detail(detail)
+    if "usage" not in incomplete:
+        for event in iter_jsonl_models(paths["usage"], WorkflowUsageEvent):
+            validator.record_usage(event)
     try:
         validator.validate()
     except ValueError as integrity_error:
         if status == "completed":
             raise
         diagnostic = str(integrity_error).strip()[:500] or "provider evidence is incomplete"
-        integrity = ProviderEvidenceIntegrity(
+        return ProviderEvidenceIntegrity(
             integrity="incomplete",
             diagnostic=diagnostic,
         )
-    else:
-        integrity = ProviderEvidenceIntegrity(integrity="complete")
-    return SegmentEvidenceSummary(
-        provider_evidence=integrity,
-        trace_count=trace_count,
-        detail_count=detail_count,
-        usage_count=usage_count,
-    )
+    return ProviderEvidenceIntegrity(integrity="complete")
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as source:
+            while chunk := source.read(64 * 1024):
+                digest.update(chunk)
+    except OSError as exc:
+        raise ValueError(f"cannot hash observation stream {path.name}: {exc}") from exc
+    return digest.hexdigest()
+
+
+def _validate_record_identity(
+    record: Any,
+    *,
+    stream: ObservationStreamName,
+    expected_run_id: str,
+    seen_sequences: set[int],
+    seen_ids: set[str],
+) -> None:
+    run_id = getattr(record, "run_id", None)
+    if run_id != expected_run_id:
+        raise ValueError(
+            f"{stream} record belongs to run {run_id!r}, not expected run {expected_run_id!r}"
+        )
+    sequence = getattr(record, "sequence", None)
+    if not isinstance(sequence, int) or isinstance(sequence, bool) or sequence < 1:
+        raise ValueError(f"{stream} record requires a positive observation sequence")
+    if sequence in seen_sequences:
+        raise ValueError(f"duplicate observation sequence {sequence}")
+    seen_sequences.add(sequence)
+    identity_name = "detail_id" if stream == "detail" else "event_id"
+    identity = str(getattr(record, identity_name, None) or "").strip()
+    if not identity:
+        raise ValueError(f"{stream} record requires a nonblank {identity_name}")
+    if identity in seen_ids:
+        raise ValueError(f"duplicate observation {identity_name} {identity!r} in {stream} stream")
+    seen_ids.add(identity)
 
 
 def count_jsonl_records(path: Path) -> int:
@@ -125,7 +291,7 @@ def count_jsonl_records(path: Path) -> int:
 def iter_jsonl_models(path: Path, model: type[Any]) -> Iterable[Any]:
     if not path.exists():
         return
-    with path.open("r", encoding="utf-8") as source:
+    with path.open("rb") as source:
         for line_number, line in enumerate(source, start=1):
             if not line.strip():
                 continue
@@ -142,5 +308,6 @@ __all__ = [
     "SegmentEvidenceSummary",
     "count_jsonl_records",
     "iter_jsonl_models",
+    "sha256_file",
     "summarize_segment_evidence",
 ]

@@ -54,18 +54,23 @@ class ObservationReader:
         return definition
 
     def iter_trace_events(self) -> Iterator[WorkflowTraceEvent]:
+        path = _contained_file(self.segment_path, self.meta.trace_path)
+        self._validate_compact_stream("trace", path, self.meta.trace_sha256)
         yield from _iter_jsonl_models(
-            _contained_file(self.segment_path, self.meta.trace_path),
+            path,
             WorkflowTraceEvent,
         )
 
     def iter_usage_events(self) -> Iterator[WorkflowUsageEvent]:
+        path = _contained_file(self.segment_path, self.meta.usage_path)
+        self._validate_compact_stream("usage", path, self.meta.usage_sha256)
         yield from _iter_jsonl_models(
-            _contained_file(self.segment_path, self.meta.usage_path),
+            path,
             WorkflowUsageEvent,
         )
 
     def iter_detail_envelopes(self) -> Iterator[ObservationDetailEnvelope]:
+        self._validate_compact_stream("detail", self.detail_path, self.meta.detail_sha256)
         if not self.detail_path.is_file():
             raise FileNotFoundError(
                 f"observation segment {self.meta.segment_id!r} is missing details.jsonl"
@@ -88,6 +93,11 @@ class ObservationReader:
                     )
                 seen.add(detail.detail_id)
                 yield detail
+
+    def _stream_is_complete(self, name: str) -> bool:
+        if name not in {"trace", "detail", "usage"}:
+            raise ValueError(f"unknown observation stream {name!r}")
+        return name not in self.meta.incomplete_streams
 
     def get_detail(
         self,
@@ -214,6 +224,30 @@ class ObservationReader:
             raise ValueError(
                 f"observation detail {detail.detail_id!r} belongs to run {detail.run_id!r}, "
                 f"not segment run {self.meta.run_id!r}"
+            )
+
+    def _validate_compact_stream(self, name: str, path: Path, expected_sha256: str) -> None:
+        if not self._stream_is_complete(name):
+            raise ValueError(
+                f"observation {name} stream is incomplete after crash reconciliation: "
+                f"{self.meta.stream_diagnostic}"
+            )
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"observation segment {self.meta.segment_id!r} is missing {path.name}"
+            )
+        digest = hashlib.sha256()
+        try:
+            with path.open("rb") as source:
+                while chunk := source.read(_CHUNK_BYTES):
+                    digest.update(chunk)
+        except OSError as exc:
+            raise ValueError(f"cannot validate observation stream {path.name}: {exc}") from exc
+        actual = digest.hexdigest()
+        if actual != expected_sha256:
+            raise ValueError(
+                f"observation stream {path.name} failed SHA-256 validation: "
+                f"expected {expected_sha256!r}, got {actual!r}"
             )
 
     def _require_persisted_detail(self, detail: ObservationDetailEnvelope) -> None:

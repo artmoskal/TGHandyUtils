@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 from pathlib import Path
 
@@ -332,6 +333,14 @@ def _write_bundle(
         "\n".join(event.model_dump_json() for event in (usage_events or [])) + "\n",
         encoding="utf-8",
     )
+    stream_hashes = {
+        name: hashlib.sha256((run_path / filename).read_bytes()).hexdigest()
+        for name, filename in {
+            "trace": "trace.jsonl",
+            "detail": "details.jsonl",
+            "usage": "usage.jsonl",
+        }.items()
+    }
     # Full strict v4 meta — the loader rejects anything less; totals/counts are
     # derived from the actual inputs, ``meta_extra`` overrides (e.g. segment identity).
     usage = usage_events or []
@@ -363,6 +372,11 @@ def _write_bundle(
                 "trace_count": len(trace_events or []),
                 "detail_count": len(persisted_details),
                 "usage_count": len(usage),
+                "trace_sha256": stream_hashes["trace"],
+                "detail_sha256": stream_hashes["detail"],
+                "usage_sha256": stream_hashes["usage"],
+                "incomplete_streams": [],
+                "stream_diagnostic": None,
                 "usage_totals_scope": "run_cumulative_at_finalize",
                 "total_tokens": sum(event.total_tokens for event in usage),
                 "metered_usd": round(sum(metered), 6) if metered else None,

@@ -1610,6 +1610,30 @@
    "status": "spent",
    "reason": "Observation v4 seals canonical logical text bodies.",
    "manifest_row": "OBS-V4-I1"
+  },
+  {
+   "path_prefix": "artifact_result.details",
+   "match": "prefix",
+   "status": "spent",
+   "reason": "Observation v4 integrity repair adds the independently derived canonical body byte length to the behavior oracle.",
+   "manifest_row": "OBS-V4-I1R",
+   "consumed_by_seal": "2026-09-01 observation-v4 Iteration 1 integrity repair"
+  },
+  {
+   "path_prefix": "capture_full.details",
+   "match": "prefix",
+   "status": "spent",
+   "reason": "Observation v4 integrity repair adds the independently derived canonical body byte length to the behavior oracle.",
+   "manifest_row": "OBS-V4-I1R",
+   "consumed_by_seal": "2026-09-01 observation-v4 Iteration 1 integrity repair"
+  },
+  {
+   "path_prefix": "public.schemas.ObservationBundleMetaV4.",
+   "match": "prefix",
+   "status": "spent",
+   "reason": "Observation v4 integrity repair makes exact compact-stream hashes and crash-incomplete stream truth required metadata.",
+   "manifest_row": "OBS-V4-I1R",
+   "consumed_by_seal": "2026-09-01 observation-v4 Iteration 1 integrity repair"
   }
  ]
 }
