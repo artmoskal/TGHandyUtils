@@ -6,6 +6,10 @@ from dataclasses import replace
 from typing import AbstractSet
 
 from ai_workflow_engine import WorkflowUsageEvent
+from ai_workflow_engine.observation_canonical import (
+    CanonicalSegmentCandidate,
+    select_canonical_segments,
+)
 
 from ai_workflow_viewer.observation_data import (
     ObservationGroupData,
@@ -169,43 +173,27 @@ def _canonical_partition(
             "corruption, not a display choice"
         )
 
-    canonical: list[dict] = []
-    non_canonical: list[tuple[dict, str]] = []
-    by_index: dict[int, list[dict]] = {}
-    for row in rows:
-        if row["abandoned"]:
-            non_canonical.append((row, "abandoned"))
-            continue
-        by_index.setdefault(int(row["index"]), []).append(row)
-    for index in sorted(by_index):
-        candidates = by_index[index]
-        committed = [row for row in candidates if row["committed"]]
-        durable = sorted(
-            (row for row in committed if row["attempt"] is not None),
-            key=lambda row: row["attempt"],
-        )
-        if durable:
-            if len(durable) >= 2 and durable[-1]["attempt"] == durable[-2]["attempt"]:
-                raise ValueError(
-                    f"Observation group {logical_run_id!r}: two COMMITTED attempts share "
-                    f"ordinal {durable[-1]['attempt']} at segment index {index} "
-                    f"({durable[-2]['id']} vs {durable[-1]['id']}) — impossible "
-                    "under single-claimant CAS; refusing corrupt history"
-                )
-            winner = durable[-1]
-        elif committed:
-            winner = sorted(
-                committed, key=lambda row: (str(row["timestamp"] or ""), row["id"])
-            )[-1]
-        else:
-            winner = None
-        for row in candidates:
-            if row is winner:
-                canonical.append(row)
-            elif row["committed"]:
-                non_canonical.append((row, "superseded"))
-            else:
-                non_canonical.append((row, "provisional"))
+    by_id = {str(row["id"]): row for row in rows}
+    selection = select_canonical_segments(
+        logical_run_id,
+        [
+            CanonicalSegmentCandidate(
+                segment_id=str(row["id"]),
+                segment_index=int(row["index"]),
+                attempt=row["attempt"],
+                commit_marker=row["attempt"] is not None and bool(row["committed"]),
+                abandoned=bool(row["abandoned"]),
+                timestamp=str(row["timestamp"] or ""),
+            )
+            for row in rows
+        ],
+    )
+    canonical = [by_id[segment_id] for segment_id in selection.canonical_ids]
+    non_canonical = [
+        (by_id[segment_id], disposition)
+        for segment_id, disposition in selection.dispositions.items()
+        if disposition != "canonical"
+    ]
     return canonical, non_canonical
 
 

@@ -69,6 +69,57 @@ class ObservationReader:
             WorkflowUsageEvent,
         )
 
+    def iter_trace_prefix(self) -> Iterator[WorkflowTraceEvent]:
+        self._require_incomplete_prefix("trace")
+        path = self._stream_path("trace")
+        self._validate_prefix_stream("trace", path, self.meta.trace_sha256, self.meta.trace_count)
+        yield from _iter_jsonl_prefix(
+            path, WorkflowTraceEvent, self.meta.trace_count,
+            expected_sha256=self.meta.trace_sha256,
+        )
+
+    def iter_usage_prefix(self) -> Iterator[WorkflowUsageEvent]:
+        self._require_incomplete_prefix("usage")
+        path = self._stream_path("usage")
+        self._validate_prefix_stream("usage", path, self.meta.usage_sha256, self.meta.usage_count)
+        yield from _iter_jsonl_prefix(
+            path, WorkflowUsageEvent, self.meta.usage_count,
+            expected_sha256=self.meta.usage_sha256,
+        )
+
+    def iter_detail_prefix(self) -> Iterator[ObservationDetailEnvelope]:
+        self._require_incomplete_prefix("detail")
+        count = self.meta.detail_count
+        path = self.detail_path
+        self._validate_prefix_stream("detail", path, self.meta.detail_sha256, count)
+        if count == 0:
+            return
+        with path.open("rb") as source:
+            yielded = 0
+            for line_number, line in enumerate(source, start=1):
+                if not line.strip():
+                    continue
+                if yielded == count:
+                    break
+                try:
+                    detail = ObservationDetailEnvelope.model_validate_json(line)
+                except Exception as exc:
+                    raise ValueError(f"invalid abandoned detail prefix at line {line_number}: {exc}") from exc
+                self._validate_binding(detail)
+                yielded += 1
+                yield detail
+        if yielded != count:
+            raise ValueError(f"details.jsonl contains {yielded} valid records, expected prefix of {count}")
+
+    def _stream_path(self, name: str) -> Path:
+        return _contained_file(self.segment_path, getattr(self.meta, f"{name}_path"))
+
+    def _require_incomplete_prefix(self, name: str) -> None:
+        if self.meta.status != "abandoned" or name not in self.meta.incomplete_streams:
+            raise ValueError(
+                f"{name} prefix reads are allowed only for abandoned incomplete streams"
+            )
+
     def iter_detail_envelopes(self) -> Iterator[ObservationDetailEnvelope]:
         self._validate_compact_stream("detail", self.detail_path, self.meta.detail_sha256)
         if not self.detail_path.is_file():
@@ -236,6 +287,20 @@ class ObservationReader:
             raise FileNotFoundError(
                 f"observation segment {self.meta.segment_id!r} is missing {path.name}"
             )
+        self._validate_stream_digest(name, path, expected_sha256)
+
+    def _validate_prefix_stream(
+        self, name: str, path: Path, expected_sha256: str, count: int
+    ) -> None:
+        if not path.is_file():
+            if count == 0 and expected_sha256 == hashlib.sha256(b"").hexdigest():
+                return
+            raise FileNotFoundError(
+                f"missing abandoned observation stream {path.name}"
+            )
+        self._validate_stream_digest(name, path, expected_sha256)
+
+    def _validate_stream_digest(self, name: str, path: Path, expected_sha256: str) -> None:
         digest = hashlib.sha256()
         try:
             with path.open("rb") as source:
@@ -337,6 +402,45 @@ def _iter_jsonl_models(path: Path, model: type[Any]) -> Iterator[Any]:
                 raise ValueError(
                     f"invalid observation record in {path.name} at line {line_number}: {exc}"
                 ) from exc
+
+
+def _iter_jsonl_prefix(
+    path: Path,
+    model: type[Any],
+    count: int,
+    *,
+    expected_sha256: str,
+) -> Iterator[Any]:
+    if not path.is_file():
+        if count == 0:
+            return
+        raise FileNotFoundError(f"missing abandoned observation stream {path.name}")
+    digest_builder = hashlib.sha256()
+    with path.open("rb") as raw:
+        while chunk := raw.read(_CHUNK_BYTES):
+            digest_builder.update(chunk)
+    digest = digest_builder.hexdigest()
+    if digest != expected_sha256:
+        raise ValueError(
+            f"abandoned observation stream {path.name} digest mismatch before prefix read"
+        )
+    if count == 0:
+        return
+    yielded = 0
+    with path.open("rb") as source:
+        for line_number, line in enumerate(source, start=1):
+            if not line.strip():
+                continue
+            if yielded == count:
+                break
+            try:
+                record = model.model_validate_json(line)
+            except Exception as exc:
+                raise ValueError(f"invalid abandoned {path.name} prefix at line {line_number}: {exc}") from exc
+            yielded += 1
+            yield record
+    if yielded != count:
+        raise ValueError(f"{path.name} contains {yielded} valid records, expected prefix of {count}")
 
 
 __all__ = ["ObservationReader"]

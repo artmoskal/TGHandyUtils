@@ -37,6 +37,10 @@ from ai_workflow_engine.observation_contract import (
     load_bundle_meta_v4,
     resolve_child_dir,
 )
+from ai_workflow_engine.observation_canonical import (
+    CanonicalSegmentCandidate,
+    select_canonical_segments,
+)
 from ai_workflow_engine.observation_finalization import (
     PersistedDetailSink,
     materialize_usage_events,
@@ -409,6 +413,7 @@ def write_minimal_abandoned_meta(
         expected_run_id=run_id,
         allow_incomplete_streams=True,
     )
+    prior = _prior_run_totals(path, run_id=run_id, segment_index=segment_index)
     definition_json = definition.model_dump_json()
     (path / "definition.json").write_text(definition_json, encoding="utf-8")
     meta_model = ObservationBundleMetaV4(
@@ -437,9 +442,9 @@ def write_minimal_abandoned_meta(
         incomplete_streams=list(evidence.incomplete_streams),
         stream_diagnostic=evidence.stream_diagnostic,
         usage_totals_scope="run_cumulative_at_finalize",
-        total_tokens=0,
-        metered_usd=None,
-        notional_usd=None,
+        total_tokens=prior[0] + evidence.total_tokens,
+        metered_usd=sum_optional_cost((prior[1], evidence.metered_usd)),
+        notional_usd=sum_optional_cost((prior[2], evidence.notional_usd)),
         segment_id=path.name,
         segment_index=segment_index,
         segment_kind="resume",
@@ -451,6 +456,43 @@ def write_minimal_abandoned_meta(
     if meta.get("correlation_id") is None:
         meta.pop("correlation_id", None)
     _write_json_atomic(path / "meta.json", meta)
+
+
+def _prior_run_totals(
+    segment_path: Path, *, run_id: str, segment_index: int
+) -> tuple[int, float | None, float | None]:
+    """Return cumulative totals from the latest canonical earlier segment."""
+    candidates: list[CanonicalSegmentCandidate] = []
+    metadata: dict[str, ObservationBundleMetaV4] = {}
+    for sibling in segment_path.parent.iterdir():
+        if sibling == segment_path or not sibling.is_dir():
+            continue
+        meta_path = sibling / "meta.json"
+        if not meta_path.exists() and not meta_path.is_symlink():
+            continue
+        meta = load_bundle_meta_v4(sibling)
+        if meta.run_id != run_id or meta.segment_index >= segment_index:
+            continue
+
+        metadata[meta.segment_id] = meta
+        candidates.append(
+            CanonicalSegmentCandidate(
+                segment_id=meta.segment_id,
+                segment_index=meta.segment_index,
+                attempt=meta.attempt,
+                commit_marker=(sibling / "commit.json").is_file(),
+                abandoned=(
+                    meta.status == "abandoned"
+                    or (sibling / "abandoned.json").is_file()
+                ),
+                timestamp=meta.timestamp,
+            )
+        )
+    selection = select_canonical_segments(run_id, candidates)
+    if not selection.canonical_ids:
+        return 0, None, None
+    meta = metadata[selection.canonical_ids[-1]]
+    return meta.total_tokens, meta.metered_usd, meta.notional_usd
 
 
 def _require_v4_initial_segment(run_path: Path, run_id: str) -> None:

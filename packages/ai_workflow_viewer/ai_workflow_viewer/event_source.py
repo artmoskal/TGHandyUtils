@@ -55,17 +55,17 @@ class FileEventSource:
         trace_records = (
             list(_wrap_records(reader.iter_trace_events(), "trace"))
             if "trace" not in meta.incomplete_streams
-            else []
+            else list(_wrap_records(reader.iter_trace_prefix(), "trace"))
         )
         detail_records = (
             list(_wrap_records(reader.iter_detail_envelopes(), "detail"))
             if "detail" not in meta.incomplete_streams
-            else []
+            else list(_wrap_records(reader.iter_detail_prefix(), "detail"))
         )
         usage_records = (
             list(_wrap_records(reader.iter_usage_events(), "usage"))
             if "usage" not in meta.incomplete_streams
-            else []
+            else list(_wrap_records(reader.iter_usage_prefix(), "usage"))
         )
         reader.validate_record_counts(
             trace_count=len(trace_records),

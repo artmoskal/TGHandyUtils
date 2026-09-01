@@ -56,6 +56,9 @@ class SegmentEvidenceSummary:
     usage_sha256: str
     incomplete_streams: tuple[ObservationStreamName, ...]
     stream_diagnostic: str | None
+    total_tokens: int
+    metered_usd: float | None
+    notional_usd: float | None
 
 
 @dataclass(frozen=True)
@@ -98,14 +101,19 @@ def summarize_segment_evidence(
         "detail": detail_path,
         "usage": usage_path,
     }
-    digests = {name: sha256_file(path) for name, path in paths.items()}
-    counts, incomplete, diagnostics = _scan_segment_streams(
+    counts, incomplete, diagnostics, usage_totals = _scan_segment_streams(
         paths,
         value_store=value_store,
         expected_run_id=expected_run_id,
         allow_incomplete=allow_incomplete_streams,
     )
-    integrity = _provider_integrity(paths, incomplete=incomplete, status=status)
+    digests = {
+        name: sha256_file(path) if path.exists() else hashlib.sha256(b"").hexdigest()
+        for name, path in paths.items()
+    }
+    integrity = _provider_integrity(
+        paths, incomplete=incomplete, status=status, prefix_counts=counts
+    )
     if incomplete:
         diagnostic = "; ".join(diagnostics).strip()[:500]
         integrity = ProviderEvidenceIntegrity(
@@ -122,6 +130,9 @@ def summarize_segment_evidence(
         usage_sha256=digests["usage"],
         incomplete_streams=tuple(incomplete),
         stream_diagnostic="; ".join(diagnostics).strip()[:500] or None,
+        total_tokens=usage_totals[0],
+        metered_usd=usage_totals[1],
+        notional_usd=usage_totals[2],
     )
 
 
@@ -131,7 +142,12 @@ def _scan_segment_streams(
     value_store: RunValueStore,
     expected_run_id: str,
     allow_incomplete: bool,
-) -> tuple[dict[ObservationStreamName, int], list[ObservationStreamName], list[str]]:
+) -> tuple[
+    dict[ObservationStreamName, int],
+    list[ObservationStreamName],
+    list[str],
+    tuple[int, float | None, float | None],
+]:
     models: dict[ObservationStreamName, type[Any]] = {
         "trace": WorkflowTraceEvent,
         "detail": ObservationDetailEnvelope,
@@ -143,6 +159,7 @@ def _scan_segment_streams(
     seen_sequences: set[int] = set()
     seen_ids: dict[ObservationStreamName, set[str]] = {name: set() for name in paths}
     validated_bodies: set[str] = set()
+    usage_events: list[WorkflowUsageEvent] = []
     for name, model in models.items():
         scan = _scan_stream(
             name,
@@ -154,15 +171,30 @@ def _scan_segment_streams(
             seen_ids=seen_ids[name],
             validated_bodies=validated_bodies,
             allow_incomplete=allow_incomplete,
+            usage_events=usage_events,
         )
         if scan.diagnostic is not None:
             incomplete.append(name)
             diagnostics.append(scan.diagnostic)
+            counts[name] = scan.count
+            seen_sequences.update(scan.sequences)
+            seen_ids[name].update(scan.identities)
             continue
         seen_sequences.update(scan.sequences)
         seen_ids[name].update(scan.identities)
         counts[name] = scan.count
-    return counts, incomplete, diagnostics
+    return (
+        counts,
+        incomplete,
+        diagnostics,
+        (
+            sum(event.total_tokens for event in usage_events),
+            sum_optional_cost(
+                event.estimated_usd for event in usage_events if event.cost_class == "metered"
+            ),
+            sum_optional_cost(event.notional_usd for event in usage_events),
+        ),
+    )
 
 
 def _scan_stream(
@@ -176,11 +208,14 @@ def _scan_stream(
     seen_ids: set[str],
     validated_bodies: set[str],
     allow_incomplete: bool,
+    usage_events: list[WorkflowUsageEvent],
 ) -> _StreamScan:
     local_sequences = set(seen_sequences)
     local_ids = set(seen_ids)
     count = 0
     try:
+        if not path.exists():
+            raise FileNotFoundError(path)
         for record in iter_jsonl_models(path, model):
             _validate_record_identity(
                 record,
@@ -195,13 +230,15 @@ def _scan_stream(
                 value_store.validate(record.body.sha256, record.body.byte_length)
                 validated_bodies.add(record.body.sha256)
             count += 1
+            if name == "usage":
+                usage_events.append(record)
     except (FileNotFoundError, ValueError) as exc:
         if not allow_incomplete:
             raise
         return _StreamScan(
-            count=0,
-            sequences=frozenset(),
-            identities=frozenset(),
+            count=count,
+            sequences=frozenset(local_sequences),
+            identities=frozenset(local_ids),
             diagnostic=f"{path.name}: {str(exc).strip()[:350]}",
         )
     return _StreamScan(
@@ -216,18 +253,34 @@ def _provider_integrity(
     *,
     incomplete: list[ObservationStreamName],
     status: str,
+    prefix_counts: dict[ObservationStreamName, int],
 ) -> ProviderEvidenceIntegrity:
     validator = ProviderEvidenceValidator()
     # Crash reconciliation may keep one malformed stream verbatim. Only complete siblings enter
     # the provider-link graph; this second bounded pass avoids retaining compact records in memory.
     if "trace" not in incomplete:
-        for trace in iter_jsonl_models(paths["trace"], WorkflowTraceEvent):
-            validator.record_trace(trace)
+        trace_records = iter_jsonl_models(paths["trace"], WorkflowTraceEvent)
+    else:
+        trace_records = iter_jsonl_prefix_models(
+            paths["trace"], WorkflowTraceEvent, prefix_counts["trace"]
+        )
+    for trace in trace_records:
+        validator.record_trace(trace)
     if "detail" not in incomplete:
-        for detail in iter_jsonl_models(paths["detail"], ObservationDetailEnvelope):
+        detail_records = iter_jsonl_models(paths["detail"], ObservationDetailEnvelope)
+    else:
+        detail_records = iter_jsonl_prefix_models(
+            paths["detail"], ObservationDetailEnvelope, prefix_counts["detail"]
+        )
+    for detail in detail_records:
             validator.record_detail(detail)
     if "usage" not in incomplete:
-        for event in iter_jsonl_models(paths["usage"], WorkflowUsageEvent):
+        usage_records = iter_jsonl_models(paths["usage"], WorkflowUsageEvent)
+    else:
+        usage_records = iter_jsonl_prefix_models(
+            paths["usage"], WorkflowUsageEvent, prefix_counts["usage"]
+        )
+    for event in usage_records:
             validator.record_usage(event)
     try:
         validator.validate()
@@ -303,11 +356,41 @@ def iter_jsonl_models(path: Path, model: type[Any]) -> Iterable[Any]:
                 ) from exc
 
 
+def iter_jsonl_prefix_models(path: Path, model: type[Any], count: int) -> Iterable[Any]:
+    """Read the validated prefix of an abandoned append-only stream."""
+    if count < 0:
+        raise ValueError("stream prefix count must be nonnegative")
+    if count == 0:
+        return
+    if not path.exists():
+        raise ValueError(f"missing stream {path.name} has nonzero valid prefix")
+    yielded = 0
+    with path.open("rb") as source:
+        for line_number, line in enumerate(source, start=1):
+            if not line.strip():
+                continue
+            if yielded == count:
+                break
+            try:
+                record = model.model_validate_json(line)
+            except Exception as exc:
+                raise ValueError(
+                    f"invalid validated-prefix record in {path.name} at line {line_number}: {exc}"
+                ) from exc
+            yielded += 1
+            yield record
+    if yielded != count:
+        raise ValueError(
+            f"{path.name} contains {yielded} valid records, expected prefix of {count}"
+        )
+
+
 __all__ = [
     "PersistedDetailSink",
     "SegmentEvidenceSummary",
     "count_jsonl_records",
     "iter_jsonl_models",
+    "iter_jsonl_prefix_models",
     "sha256_file",
     "summarize_segment_evidence",
 ]

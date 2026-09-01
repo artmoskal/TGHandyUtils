@@ -6,7 +6,6 @@ loudly and retention never half-reads a foreign or corrupt run.
 
 from __future__ import annotations
 
-import importlib.util
 import gzip
 import hashlib
 import json
@@ -34,6 +33,7 @@ from ai_workflow_engine.observation_contract import (
     ObservationDetailEnvelope,
 )
 from ai_workflow_engine.observation_reader import ObservationReader
+from ai_workflow_engine.usage_contract import NotionalPricingResult
 from ai_workflow_engine.observation_values import (
     INLINE_BODY_MAX_BYTES,
     RunValueStore,
@@ -550,17 +550,25 @@ def test_v4_loader_rejects_v3_without_a_compatibility_route(tmp_path):
         load_bundle_meta_v4(path)
 
 
-def _load_v4_spike_module():
+def _run_v4_spike(tmp_path: Path):
     script = Path(__file__).parents[1] / "scripts" / "observation_v4_spike.py"
-    spec = importlib.util.spec_from_file_location("observation_v4_spike", script)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    output = tmp_path / "observation-v4-spike.json"
+    child_env = {
+        key: value for key, value in os.environ.items() if not key.startswith("COVERAGE")
+    }
+    subprocess.run(
+        [sys.executable, str(script), "--output", str(output)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=child_env,
+    )
+    return json.loads(output.read_text(encoding="utf-8"))
 
 
-def test_v4_format_spike_exercises_the_closed_threshold_and_codec_matrix():
-    report = _load_v4_spike_module().build_report()
+def test_v4_format_spike_exercises_the_closed_threshold_and_codec_matrix(tmp_path):
+    report = _run_v4_spike(tmp_path)
 
     assert report["schema"] == "observation-v4-spike-v1"
     assert report["record_count"] == 1_524
@@ -655,6 +663,212 @@ def test_retention_isolates_pre_v4_bundles_and_ignores_non_bundles(tmp_path):
     (old_segment / "trace.jsonl").write_text("")
     prune_observation_bundles(tmp_path, 1)
     assert old.exists(), "corrupt/foreign evidence is preserved for operator inspection"
+
+
+def test_retention_uses_highest_durable_attempt_not_newest_timestamp(tmp_path):
+    from ai_workflow_engine.segment_lifecycle import commit_attempt
+
+    run_id = "durable-retention"
+    definition = WorkflowBuilder("wf").step("s").build()
+    initial = open_observation_run_bundle(tmp_path, run_id)
+    initial.finalize(definition, status="completed")
+    _mutated_meta(initial.path, timestamp="2025-01-01T00:00:00Z")
+
+    attempts = (
+        (1, "2025-01-03T00:00:00Z", "completed"),
+        (2, "2025-01-02T00:00:00Z", "requires_user_input"),
+    )
+    for attempt, timestamp, status in attempts:
+        segment_id = f"{run_id}--s001-r{attempt}"
+        bundle = open_observation_run_bundle(
+            tmp_path,
+            run_id,
+            segment=ObservationSegment(
+                segment_id=segment_id,
+                segment_index=1,
+                kind="resume",
+                definition_digest=definition.definition_digest(),
+                attempt=attempt,
+            ),
+        )
+        bundle.finalize(definition, status=status)
+        _mutated_meta(bundle.path, timestamp=timestamp)
+        assert commit_attempt(tmp_path, run_id, segment_id, attempt=attempt)
+
+    newer = _finalized(tmp_path, "newer-terminal")
+    _mutated_meta(newer, timestamp="2026-01-01T00:00:00Z")
+    prune_observation_bundles(tmp_path, 1)
+
+    assert (tmp_path / run_id).exists(), (
+        "the highest committed durable attempt is suspended, so the logical run is "
+        "in-flight even when an older completed attempt has a later timestamp"
+    )
+    assert (tmp_path / "newer-terminal").exists()
+
+
+def test_retention_preserves_group_during_finalize_to_commit_window(tmp_path):
+    from ai_workflow_engine.segment_lifecycle import commit_attempt
+
+    run_id = "provisional-retention"
+    definition = WorkflowBuilder("wf").step("s").build()
+    initial = open_observation_run_bundle(tmp_path, run_id)
+    initial.finalize(definition, status="completed")
+    _mutated_meta(initial.path, timestamp="2025-01-01T00:00:00Z")
+
+    committed_id = f"{run_id}--s001-r1"
+    committed = open_observation_run_bundle(
+        tmp_path,
+        run_id,
+        segment=ObservationSegment(
+            segment_id=committed_id,
+            segment_index=1,
+            kind="resume",
+            definition_digest=definition.definition_digest(),
+            attempt=1,
+        ),
+    )
+    committed.finalize(definition, status="completed")
+    _mutated_meta(committed.path, timestamp="2025-01-02T00:00:00Z")
+    assert commit_attempt(tmp_path, run_id, committed_id, attempt=1)
+
+    provisional = open_observation_run_bundle(
+        tmp_path,
+        run_id,
+        segment=ObservationSegment(
+            segment_id=f"{run_id}--s001-r2",
+            segment_index=1,
+            kind="resume",
+            definition_digest=definition.definition_digest(),
+            attempt=2,
+        ),
+    )
+    provisional.finalize(definition, status="completed")
+    _mutated_meta(provisional.path, timestamp="2025-01-03T00:00:00Z")
+    assert not (provisional.path / "commit.json").exists()
+
+    newer = _finalized(tmp_path, "newer-terminal-provisional")
+    _mutated_meta(newer, timestamp="2026-01-01T00:00:00Z")
+    prune_observation_bundles(tmp_path, 1)
+
+    assert (tmp_path / run_id).exists(), (
+        "a finalized durable attempt awaiting its commit marker is still in flight; "
+        "retention must preserve the complete logical run"
+    )
+    assert (tmp_path / "newer-terminal-provisional").exists()
+
+    assert commit_attempt(
+        tmp_path,
+        run_id,
+        provisional.segment.segment_id,
+        attempt=2,
+    )
+    prune_observation_bundles(tmp_path, 1)
+    assert not (tmp_path / run_id).exists(), (
+        "after commit resolves the provisional attempt, ordinary retention resumes"
+    )
+
+
+def test_retention_preserves_group_while_attempt_has_no_meta(tmp_path):
+    from ai_workflow_engine.segment_lifecycle import commit_attempt
+
+    run_id = "open-attempt-retention"
+    definition = WorkflowBuilder("wf").step("s").build()
+    initial = open_observation_run_bundle(tmp_path, run_id)
+    initial.finalize(definition, status="completed")
+    _mutated_meta(initial.path, timestamp="2025-01-01T00:00:00Z")
+
+    committed_id = f"{run_id}--s001-r1"
+    committed = open_observation_run_bundle(
+        tmp_path,
+        run_id,
+        segment=ObservationSegment(
+            segment_id=committed_id,
+            segment_index=1,
+            kind="resume",
+            definition_digest=definition.definition_digest(),
+            attempt=1,
+        ),
+    )
+    committed.finalize(definition, status="completed")
+    _mutated_meta(committed.path, timestamp="2025-01-02T00:00:00Z")
+    assert commit_attempt(tmp_path, run_id, committed_id, attempt=1)
+
+    open_attempt = open_observation_run_bundle(
+        tmp_path,
+        run_id,
+        segment=ObservationSegment(
+            segment_id=f"{run_id}--s001-r2",
+            segment_index=1,
+            kind="resume",
+            definition_digest=definition.definition_digest(),
+            attempt=2,
+        ),
+    )
+    assert open_attempt.path.is_dir()
+    assert not (open_attempt.path / "meta.json").exists()
+
+    newer = _finalized(tmp_path, "newer-terminal-open-attempt")
+    _mutated_meta(newer, timestamp="2026-01-01T00:00:00Z")
+    prune_observation_bundles(tmp_path, 1)
+
+    assert (tmp_path / run_id).exists(), (
+        "an open physical attempt without metadata is in flight and must protect its "
+        "complete logical run from retention"
+    )
+
+
+def test_canonical_segment_selector_owns_attempt_dispositions():
+    from ai_workflow_engine.observation_canonical import (
+        CanonicalSegmentCandidate,
+        select_canonical_segments,
+    )
+
+    candidate = CanonicalSegmentCandidate
+    selection = select_canonical_segments(
+        "run",
+        [
+            candidate("run", 0, None, False, False, "2026-01-01T00:00:00Z"),
+            candidate("attempt-1", 1, 1, True, False, "2026-01-01T00:03:00Z"),
+            candidate("attempt-2", 1, 2, True, False, "2026-01-01T00:02:00Z"),
+            candidate("attempt-3", 1, 3, False, False, "2026-01-01T00:04:00Z"),
+            candidate("local-old", 2, None, False, False, "2026-01-01T00:05:00Z"),
+            candidate("local-new", 2, None, False, False, "2026-01-01T00:06:00Z"),
+            candidate("abandoned", 3, 1, False, True, "2026-01-01T00:07:00Z"),
+        ],
+    )
+
+    assert selection.canonical_ids == ("run", "attempt-2", "local-new")
+    assert selection.dispositions == {
+        "abandoned": "abandoned",
+        "run": "canonical",
+        "attempt-1": "superseded",
+        "attempt-2": "canonical",
+        "attempt-3": "provisional",
+        "local-old": "superseded",
+        "local-new": "canonical",
+    }
+    with pytest.raises(ValueError, match="both committed and abandoned"):
+        select_canonical_segments(
+            "run",
+            [candidate("conflict", 1, 1, True, True, "2026-01-01T00:00:00Z")],
+        )
+    with pytest.raises(ValueError, match="duplicate segment identity"):
+        select_canonical_segments(
+            "run",
+            [
+                candidate("same", 0, None, False, False, "2026-01-01T00:00:00Z"),
+                candidate("same", 1, None, False, False, "2026-01-01T00:01:00Z"),
+            ],
+        )
+    with pytest.raises(ValueError, match="share ordinal 1"):
+        select_canonical_segments(
+            "run",
+            [
+                candidate("attempt-1a", 1, 1, True, False, "2026-01-01T00:00:00Z"),
+                candidate("attempt-1b", 1, 1, True, False, "2026-01-01T00:01:00Z"),
+                candidate("attempt-2", 1, 2, True, False, "2026-01-01T00:02:00Z"),
+            ],
+        )
 
 
 def test_segment_identity_rules_hold_in_the_meta_model():
@@ -823,6 +1037,517 @@ def test_malformed_abandoned_attempt_does_not_poison_successful_retry_group(tmp_
     assert [item.segment_id for item in group.non_canonical] == [dead.segment.segment_id]
     assert group.non_canonical[0].disposition == "abandoned"
     assert group.non_canonical_usage_totals["total_tokens"] == 7
+
+
+def test_abandoned_reconciliation_recovers_segment_created_before_streams(tmp_path):
+    from ai_workflow_engine.observation_writer import write_minimal_abandoned_meta
+
+    run_id = "early-crash"
+    definition = WorkflowBuilder("wf").step("s").build()
+    initial = open_observation_run_bundle(tmp_path, run_id)
+    initial.finalize(definition, status="completed")
+    dead = open_observation_run_bundle(
+        tmp_path,
+        run_id,
+        segment=ObservationSegment(
+            segment_id=f"{run_id}--s001",
+            segment_index=1,
+            kind="resume",
+            definition_digest=definition.definition_digest(),
+            attempt=1,
+        ),
+    )
+    for stream_path in (dead.trace_path, dead.detail_path, dead.usage_path):
+        stream_path.unlink()
+    write_minimal_abandoned_meta(
+        dead.path,
+        run_id=run_id,
+        definition=definition,
+        segment_index=1,
+        definition_digest=definition.definition_digest(),
+        attempt=1,
+    )
+    meta = load_bundle_meta_v4(dead.path)
+    assert meta.status == "abandoned"
+    assert set(meta.incomplete_streams) == {"trace", "detail", "usage"}
+    assert (dead.path / "meta.json").is_file()
+
+
+def test_abandoned_torn_suffix_preserves_valid_usage_prefix_and_totals(tmp_path):
+    from ai_workflow_engine.observation_writer import write_minimal_abandoned_meta
+    from ai_workflow_viewer import FileEventSource
+
+    run_id = "torn-usage"
+    definition = WorkflowBuilder("wf").step("s").build()
+    initial = open_observation_run_bundle(tmp_path, run_id)
+    initial.finalize(definition, status="completed")
+    dead = open_observation_run_bundle(
+        tmp_path,
+        run_id,
+        segment=ObservationSegment(
+            segment_id=f"{run_id}--s001",
+            segment_index=1,
+            kind="resume",
+            definition_digest=definition.definition_digest(),
+            attempt=1,
+        ),
+    )
+    for tokens in (7, 11, 13):
+        dead.usage_sink.record(WorkflowUsageEvent(node="provider", total_tokens=tokens))
+    with dead.usage_path.open("ab") as stream:
+        stream.write(b'{"event_id":"torn"')
+    write_minimal_abandoned_meta(
+        dead.path,
+        run_id=run_id,
+        definition=definition,
+        segment_index=1,
+        definition_digest=definition.definition_digest(),
+        attempt=1,
+    )
+    meta = load_bundle_meta_v4(dead.path)
+    assert meta.incomplete_streams == ["usage"]
+    assert meta.usage_count == 3
+    assert meta.total_tokens == 31
+    data = FileEventSource(dead.path).read()
+    assert len(data.records) == 3
+    assert sum(item.record.total_tokens for item in data.records) == 31
+
+
+def test_abandoned_prefix_reader_rejects_persisted_prefix_tampering(tmp_path):
+    from ai_workflow_engine.observation_writer import write_minimal_abandoned_meta
+    from ai_workflow_viewer import FileEventSource
+
+    run_id = "torn-prefix-tamper"
+    definition = WorkflowBuilder("wf").step("s").build()
+    initial = open_observation_run_bundle(tmp_path, run_id)
+    initial.finalize(definition, status="completed")
+    dead = open_observation_run_bundle(
+        tmp_path,
+        run_id,
+        segment=ObservationSegment(
+            segment_id=f"{run_id}--s001",
+            segment_index=1,
+            kind="resume",
+            definition_digest=definition.definition_digest(),
+            attempt=1,
+        ),
+    )
+    dead.usage_sink.record(WorkflowUsageEvent(node="provider", total_tokens=7))
+    dead.usage_path.open("ab").write(b'{"event_id":"torn"')
+    dead.trace_sink.record(WorkflowTraceEvent(node="provider"))
+    dead.trace_path.open("ab").write(b'{"event_id":"torn"')
+    write_minimal_abandoned_meta(
+        dead.path,
+        run_id=run_id,
+        definition=definition,
+        segment_index=1,
+        definition_digest=definition.definition_digest(),
+        attempt=1,
+    )
+    with dead.trace_path.open("r+b") as stream:
+        payload = stream.read()
+        stream.seek(0)
+        stream.write(payload.replace(b'"node":"provider"', b'"node":"tampered"', 1))
+        stream.truncate()
+    with pytest.raises(ValueError, match="SHA-256 validation|digest mismatch"):
+        FileEventSource(dead.path).read()
+
+
+def test_abandoned_torn_detail_suffix_preserves_valid_prefix(tmp_path):
+    from ai_workflow_engine.observation_writer import write_minimal_abandoned_meta
+    from ai_workflow_viewer import FileEventSource
+
+    run_id = "torn-detail"
+    definition = WorkflowBuilder("wf").step("s").build()
+    initial = open_observation_run_bundle(tmp_path, run_id)
+    initial.finalize(definition, status="completed")
+    dead = open_observation_run_bundle(
+        tmp_path,
+        run_id,
+        segment=ObservationSegment(
+            segment_id=f"{run_id}--s001",
+            segment_index=1,
+            kind="resume",
+            definition_digest=definition.definition_digest(),
+            attempt=1,
+        ),
+    )
+    first = _logical_detail({"value": 1}, detail_id="detail-1", run_id=run_id)
+    second = _logical_detail({"value": 2}, detail_id="detail-2", run_id=run_id).model_copy(
+        update={"event_id": "event-2", "sequence": None}
+    )
+    dead.detail_sink.record(first.model_copy(update={"sequence": None}))
+    dead.detail_sink.record(second)
+    dead.detail_path.open("ab").write(b'{"detail_id":"torn"')
+    write_minimal_abandoned_meta(
+        dead.path,
+        run_id=run_id,
+        definition=definition,
+        segment_index=1,
+        definition_digest=definition.definition_digest(),
+        attempt=1,
+    )
+
+    data = FileEventSource(dead.path).read()
+    assert [item.record.detail_id for item in data.records if item.type == "detail"] == [
+        "detail-1",
+        "detail-2",
+    ]
+
+
+def test_abandoned_missing_stream_requires_empty_digest(tmp_path):
+    from ai_workflow_engine.observation_writer import write_minimal_abandoned_meta
+    from ai_workflow_viewer import FileEventSource
+
+    run_id = "missing-stream-digest"
+    definition = WorkflowBuilder("wf").step("s").build()
+    initial = open_observation_run_bundle(tmp_path, run_id)
+    initial.finalize(definition, status="completed")
+    dead = open_observation_run_bundle(
+        tmp_path,
+        run_id,
+        segment=ObservationSegment(
+            segment_id=f"{run_id}--s001",
+            segment_index=1,
+            kind="resume",
+            definition_digest=definition.definition_digest(),
+            attempt=1,
+        ),
+    )
+    dead.usage_path.unlink()
+    write_minimal_abandoned_meta(
+        dead.path,
+        run_id=run_id,
+        definition=definition,
+        segment_index=1,
+        definition_digest=definition.definition_digest(),
+        attempt=1,
+    )
+    meta_path = dead.path / "meta.json"
+    meta = json.loads(meta_path.read_text())
+    meta["usage_sha256"] = "f" * 64
+    meta_path.write_text(json.dumps(meta))
+    with pytest.raises(FileNotFoundError, match="missing abandoned observation stream"):
+        FileEventSource(dead.path).read()
+
+
+def test_abandoned_metadata_adds_recovered_usage_to_prior_cumulative_total(tmp_path):
+    from ai_workflow_engine.observation_writer import write_minimal_abandoned_meta
+
+    run_id = "cumulative-recovery"
+    definition = WorkflowBuilder("wf").step("s").build()
+    initial = open_observation_run_bundle(tmp_path, run_id)
+    prior = WorkflowUsageEvent(node="provider", total_tokens=10)
+    initial.usage_sink.record(prior)
+    initial.finalize(definition, status="completed", usage=[prior])
+    dead = open_observation_run_bundle(
+        tmp_path,
+        run_id,
+        segment=ObservationSegment(
+            segment_id=f"{run_id}--s001",
+            segment_index=1,
+            kind="resume",
+            definition_digest=definition.definition_digest(),
+            attempt=1,
+        ),
+    )
+    dead.usage_sink.record(WorkflowUsageEvent(node="provider", total_tokens=31))
+    dead.usage_path.open("ab").write(b'{"event_id":"torn"')
+    write_minimal_abandoned_meta(
+        dead.path,
+        run_id=run_id,
+        definition=definition,
+        segment_index=1,
+        definition_digest=definition.definition_digest(),
+        attempt=1,
+    )
+    assert load_bundle_meta_v4(dead.path).total_tokens == 41
+
+
+def test_abandoned_metadata_uses_committed_attempt_not_provisional_baseline(tmp_path):
+    from ai_workflow_engine.observation_writer import write_minimal_abandoned_meta
+    from ai_workflow_engine.segment_lifecycle import commit_attempt
+
+    run_id = "canonical-cumulative-recovery"
+    definition = WorkflowBuilder("wf").step("s").build()
+    initial = open_observation_run_bundle(tmp_path, run_id)
+    initial.finalize(definition, status="completed")
+
+    provisional = open_observation_run_bundle(
+        tmp_path,
+        run_id,
+        segment=ObservationSegment(
+            segment_id=f"{run_id}--s001",
+            segment_index=1,
+            kind="resume",
+            definition_digest=definition.definition_digest(),
+            attempt=1,
+        ),
+    )
+    provisional_usage = WorkflowUsageEvent(
+        node="provider", total_tokens=100, cost_class="metered", estimated_usd=1.0,
+    )
+    provisional.usage_sink.record(provisional_usage)
+    provisional.finalize(definition, status="completed", usage=[provisional_usage])
+    assert not (provisional.path / "commit.json").exists()
+    assert not (provisional.path / "abandoned.json").exists()
+
+    committed = open_observation_run_bundle(
+        tmp_path,
+        run_id,
+        segment=ObservationSegment(
+            segment_id=f"{run_id}--s001-r2",
+            segment_index=1,
+            kind="resume",
+            definition_digest=definition.definition_digest(),
+            attempt=2,
+        ),
+    )
+    committed_usage = WorkflowUsageEvent(
+        node="provider", total_tokens=20, cost_class="metered", estimated_usd=0.2,
+    )
+    committed.usage_sink.record(committed_usage)
+    committed.finalize(definition, status="completed", usage=[committed_usage])
+    assert commit_attempt(tmp_path, run_id, committed.segment.segment_id, attempt=2)
+    assert (committed.path / "commit.json").is_file()
+    assert load_bundle_meta_v4(committed.path).segment_index == 1
+
+    dead = open_observation_run_bundle(
+        tmp_path,
+        run_id,
+        segment=ObservationSegment(
+            segment_id=f"{run_id}--s002",
+            segment_index=2,
+            kind="resume",
+            definition_digest=definition.definition_digest(),
+            attempt=1,
+        ),
+    )
+    dead.usage_sink.record(
+        WorkflowUsageEvent(
+            node="provider", total_tokens=1, cost_class="metered", estimated_usd=0.01,
+        )
+    )
+    dead.usage_path.open("ab").write(b'{"event_id":"torn"')
+    write_minimal_abandoned_meta(
+        dead.path,
+        run_id=run_id,
+        definition=definition,
+        segment_index=2,
+        definition_digest=definition.definition_digest(),
+        attempt=1,
+    )
+
+    recovered = load_bundle_meta_v4(dead.path)
+    assert recovered.total_tokens == 21
+    assert recovered.metered_usd == pytest.approx(0.21)
+    assert recovered.notional_usd is None
+
+
+def test_abandoned_metadata_keeps_attemptless_suspension_usage_and_costs(tmp_path):
+    from ai_workflow_engine.observation_writer import write_minimal_abandoned_meta
+
+    run_id = "suspended-cumulative-recovery"
+    definition = WorkflowBuilder("wf").step("s").build()
+    suspended = open_observation_run_bundle(tmp_path, run_id)
+    suspended_usage = WorkflowUsageEvent(
+        node="provider", total_tokens=10, cost_class="subscription_notional", notional_usd=0.3,
+        provider_reported_notional_usd=0.3,
+        notional_pricing=NotionalPricingResult(
+            source="provider_reported", amount_usd=0.3, catalog_version="provider-reported"
+        ),
+    )
+    suspended.usage_sink.record(suspended_usage)
+    suspended.finalize(definition, status="requires_user_input", usage=[suspended_usage])
+
+    dead = open_observation_run_bundle(
+        tmp_path,
+        run_id,
+        segment=ObservationSegment(
+            segment_id=f"{run_id}--s001",
+            segment_index=1,
+            kind="resume",
+            definition_digest=definition.definition_digest(),
+            attempt=1,
+        ),
+    )
+    dead.usage_sink.record(
+        WorkflowUsageEvent(
+            node="provider", total_tokens=1, cost_class="subscription_notional", notional_usd=0.02,
+            provider_reported_notional_usd=0.02,
+            notional_pricing=NotionalPricingResult(
+                source="provider_reported", amount_usd=0.02,
+                catalog_version="provider-reported",
+            ),
+        )
+    )
+    dead.usage_path.open("ab").write(b'{"event_id":"torn"')
+    write_minimal_abandoned_meta(
+        dead.path,
+        run_id=run_id,
+        definition=definition,
+        segment_index=1,
+        definition_digest=definition.definition_digest(),
+        attempt=1,
+    )
+
+    recovered = load_bundle_meta_v4(dead.path)
+    assert recovered.total_tokens == 11
+    assert recovered.metered_usd is None
+    assert recovered.notional_usd == pytest.approx(0.32)
+
+
+def test_abandoned_metadata_rejects_multiple_canonical_prior_attempts(tmp_path):
+    from ai_workflow_engine.observation_writer import write_minimal_abandoned_meta
+    from ai_workflow_engine.segment_lifecycle import commit_attempt
+
+    run_id = "duplicate-canonical-recovery"
+    definition = WorkflowBuilder("wf").step("s").build()
+    initial = open_observation_run_bundle(tmp_path, run_id)
+    initial.finalize(definition, status="completed")
+
+    for attempt, segment_id in (
+        (2, f"{run_id}--s001-r2x"),
+        (2, f"{run_id}--s001-r2y"),
+    ):
+        prior = open_observation_run_bundle(
+            tmp_path,
+            run_id,
+            segment=ObservationSegment(
+                segment_id=segment_id,
+                segment_index=1,
+                kind="resume",
+                definition_digest=definition.definition_digest(),
+                attempt=attempt,
+            ),
+        )
+        prior.finalize(definition, status="completed")
+        assert commit_attempt(tmp_path, run_id, segment_id, attempt=attempt)
+
+    dead = open_observation_run_bundle(
+        tmp_path,
+        run_id,
+        segment=ObservationSegment(
+            segment_id=f"{run_id}--s002",
+            segment_index=2,
+            kind="resume",
+            definition_digest=definition.definition_digest(),
+            attempt=1,
+        ),
+    )
+    with pytest.raises(ValueError, match="share ordinal 2"):
+        write_minimal_abandoned_meta(
+            dead.path,
+            run_id=run_id,
+            definition=definition,
+            segment_index=2,
+            definition_digest=definition.definition_digest(),
+            attempt=1,
+        )
+    assert not (dead.path / "meta.json").exists()
+
+
+def test_abandoned_metadata_uses_highest_committed_durable_attempt(tmp_path):
+    from ai_workflow_engine.observation_writer import write_minimal_abandoned_meta
+    from ai_workflow_engine.segment_lifecycle import commit_attempt
+
+    run_id = "repeated-durable-recovery"
+    definition = WorkflowBuilder("wf").step("s").build()
+    initial = open_observation_run_bundle(tmp_path, run_id)
+    initial.finalize(definition, status="completed")
+    for attempt, tokens in ((1, 10), (2, 20)):
+        segment_id = f"{run_id}--s001" + ("" if attempt == 1 else "-r2")
+        prior = open_observation_run_bundle(
+            tmp_path,
+            run_id,
+            segment=ObservationSegment(
+                segment_id=segment_id,
+                segment_index=1,
+                kind="resume",
+                definition_digest=definition.definition_digest(),
+                attempt=attempt,
+            ),
+        )
+        usage = WorkflowUsageEvent(node="provider", total_tokens=tokens)
+        prior.usage_sink.record(usage)
+        prior.finalize(definition, status="completed", usage=[usage])
+        assert commit_attempt(tmp_path, run_id, segment_id, attempt=attempt)
+
+    dead = open_observation_run_bundle(
+        tmp_path,
+        run_id,
+        segment=ObservationSegment(
+            segment_id=f"{run_id}--s002",
+            segment_index=2,
+            kind="resume",
+            definition_digest=definition.definition_digest(),
+            attempt=1,
+        ),
+    )
+    dead.usage_sink.record(WorkflowUsageEvent(node="provider", total_tokens=1))
+    dead.usage_path.open("ab").write(b'{"event_id":"torn"')
+    write_minimal_abandoned_meta(
+        dead.path,
+        run_id=run_id,
+        definition=definition,
+        segment_index=2,
+        definition_digest=definition.definition_digest(),
+        attempt=1,
+    )
+    assert load_bundle_meta_v4(dead.path).total_tokens == 21
+
+
+def test_abandoned_metadata_uses_latest_attemptless_local_resume(tmp_path):
+    from ai_workflow_engine.observation_writer import write_minimal_abandoned_meta
+
+    run_id = "repeated-local-recovery"
+    definition = WorkflowBuilder("wf").step("s").build()
+    initial = open_observation_run_bundle(tmp_path, run_id)
+    initial.finalize(definition, status="completed")
+    for suffix, timestamp, tokens in (
+        ("aaa", "2026-09-01T10:00:00Z", 10),
+        ("bbb", "2026-09-01T10:01:00Z", 20),
+    ):
+        prior = open_observation_run_bundle(
+            tmp_path,
+            run_id,
+            segment=ObservationSegment(
+                segment_id=f"{run_id}--s001-{suffix}",
+                segment_index=1,
+                kind="resume",
+                definition_digest=definition.definition_digest(),
+            ),
+        )
+        usage = WorkflowUsageEvent(node="provider", total_tokens=tokens)
+        prior.usage_sink.record(usage)
+        prior.finalize(definition, status="completed", usage=[usage])
+        meta_path = prior.path / "meta.json"
+        meta = json.loads(meta_path.read_text())
+        meta["timestamp"] = timestamp
+        meta_path.write_text(json.dumps(meta))
+
+    dead = open_observation_run_bundle(
+        tmp_path,
+        run_id,
+        segment=ObservationSegment(
+            segment_id=f"{run_id}--s002",
+            segment_index=2,
+            kind="resume",
+            definition_digest=definition.definition_digest(),
+            attempt=1,
+        ),
+    )
+    dead.usage_sink.record(WorkflowUsageEvent(node="provider", total_tokens=1))
+    dead.usage_path.open("ab").write(b'{"event_id":"torn"')
+    write_minimal_abandoned_meta(
+        dead.path,
+        run_id=run_id,
+        definition=definition,
+        segment_index=2,
+        definition_digest=definition.definition_digest(),
+        attempt=1,
+    )
+    assert load_bundle_meta_v4(dead.path).total_tokens == 21
 
 
 def test_abandoned_reconciliation_never_certifies_incomplete_provider_call(tmp_path):

@@ -11,6 +11,10 @@ from ai_workflow_engine.observation_contract import (
     ObservationBundleMetaV4,
     load_bundle_meta_v4,
 )
+from ai_workflow_engine.observation_canonical import (
+    CanonicalSegmentCandidate,
+    select_canonical_segments,
+)
 
 
 def prune_observation_bundles(
@@ -47,11 +51,16 @@ def _load_finalized_group(
     stored: list[tuple[Path, ObservationBundleMetaV4]] = []
     try:
         for segment_path in segments_root.iterdir():
-            if segment_path.is_dir() and _is_finalized_bundle(segment_path):
-                meta = _bundle_meta(segment_path)
-                if meta.run_id != run_path.name:
-                    raise ValueError("observation run directory identity disagrees with meta")
-                stored.append((segment_path, meta))
+            if segment_path.is_symlink():
+                return None
+            if not segment_path.is_dir():
+                continue
+            if not _is_finalized_bundle(segment_path):
+                return None
+            meta = _bundle_meta(segment_path)
+            if meta.run_id != run_path.name:
+                raise ValueError("observation run directory identity disagrees with meta")
+            stored.append((segment_path, meta))
     except Exception:
         # Corrupt or foreign-version evidence is preserved, never treated as prunable.
         return None
@@ -62,7 +71,32 @@ def _prunable_entry(
     run_path: Path,
     stored: list[tuple[Path, ObservationBundleMetaV4]],
 ) -> tuple[tuple[str, float], Path] | None:
-    canonical = [entry for entry in stored if _is_canonical_attempt(*entry)] or stored
+    by_id = {meta.segment_id: (path, meta) for path, meta in stored}
+    try:
+        selection = select_canonical_segments(
+            run_path.name,
+            [
+                CanonicalSegmentCandidate(
+                    segment_id=meta.segment_id,
+                    segment_index=meta.segment_index,
+                    attempt=meta.attempt,
+                    commit_marker=(path / COMMIT_MARKER_NAME).is_file(),
+                    abandoned=(
+                        meta.status == "abandoned"
+                        or (path / ABANDON_MARKER_NAME).is_file()
+                    ),
+                    timestamp=meta.timestamp,
+                )
+                for path, meta in stored
+            ],
+        )
+    except ValueError:
+        return None
+    if "provisional" in selection.dispositions.values():
+        return None
+    canonical = [by_id[segment_id] for segment_id in selection.canonical_ids]
+    if not canonical:
+        return None
     newest_meta = max(
         (meta for _path, meta in canonical),
         key=lambda meta: (meta.segment_index, meta.timestamp),
@@ -70,14 +104,6 @@ def _prunable_entry(
     if newest_meta.status == "requires_user_input":
         return None
     return (max(_bundle_sort_key(path) for path, _meta in stored), run_path)
-
-
-def _is_canonical_attempt(path: Path, meta: ObservationBundleMetaV4) -> bool:
-    return (
-        meta.status != "abandoned"
-        and not (path / ABANDON_MARKER_NAME).exists()
-        and (meta.attempt is None or (path / COMMIT_MARKER_NAME).exists())
-    )
 
 
 def _bundle_sort_key(path: Path) -> tuple[str, float]:
