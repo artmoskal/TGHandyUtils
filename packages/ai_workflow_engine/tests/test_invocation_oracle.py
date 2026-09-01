@@ -136,9 +136,10 @@ def test_comparator_and_canonicalizer_detect_real_drift():
                  "event": "E1", "detail_refs": ["D1"], "artifacts": ["A0"]},
             ],
             "details": [
-                {"kind": "tool_payload", "privacy": "internal", "redaction_state": "none",
-                 "content_type": "application/json", "event": "E0", "artifact": None,
-                 "text": "{payload}", "json": {"capability": "n", "payload": {"a": 1}},
+                {"kind": "tool_payload", "content_type": "application/json",
+                 "event": "E0", "artifact": None,
+                 "body": {"kind": "json", "value": {"capability": "n", "payload": {"a": 1}}},
+                 "display_text": "{\n  \"capability\": \"n\",\n  \"payload\": {\n    \"a\": 1\n  }\n}",
                  "metadata": {}, "has_digest": True, "digest_consistent": True},
             ],
             "usage": {
@@ -183,9 +184,9 @@ def test_comparator_and_canonicalizer_detect_real_drift():
     assert mutated(lambda s: s["trace"][1].__setitem__("artifacts", []))           # event->artifact ref dropped
     assert mutated(lambda s: s["details"][0].__setitem__("event", "E1"))           # detail re-parented
     # --- full detail payload + digest ---
-    assert mutated(lambda s: s["details"][0]["json"].__setitem__("payload", {"a": 2}))  # payload corruption
+    assert mutated(lambda s: s["details"][0]["body"]["value"].__setitem__("payload", {"a": 2}))  # body corruption
+    assert mutated(lambda s: s["details"][0].__setitem__("display_text", "drift"))  # display derivation drift
     assert mutated(lambda s: s["details"][0].__setitem__("digest_consistent", False))   # digest drift
-    assert mutated(lambda s: s["details"][0].__setitem__("redaction_state", "digest_only"))  # redaction
     # --- artifact fields ---
     assert mutated(lambda s: s["result"]["artifacts"][0].__setitem__("path", "b.png"))      # artifact field
     assert mutated(lambda s: s["result"]["artifacts"][0].__setitem__("kind", "file"))       # artifact kind

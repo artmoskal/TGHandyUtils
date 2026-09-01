@@ -668,7 +668,7 @@ async def test_author_observation_detail_contains_prompt_and_response():
 
     await author_engine.run("authoring", {"goal": "find the odd frame", "context": {}})
 
-    payloads = _json.dumps([[d.text, d.json_value] for d in detail_sink.details], default=str)
+    payloads = _json.dumps([d.body.model_dump() for d in detail_sink.details], default=str)
     assert "find the odd frame" in payloads, "rendered prompt must be captured"
     assert "frame_scan" in payloads, "LLM response must be captured"
 

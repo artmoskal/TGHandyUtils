@@ -164,12 +164,13 @@ including abandoned attempts.
 `correlation_id` filters multiple independent run groups belonging to one case. It never merges their
 state or results.
 
-**Bundle schema is versioned.** Each bundle's `meta.json` carries `bundle_schema_version` (currently
-`3` — the value of `ai_workflow_engine.observation_bundle.BUNDLE_SCHEMA_VERSION`) and a required
-provider-evidence integrity fact. A dashboard that
-reads bundle files directly must check it and **fail loudly on an unknown version** rather than
-mis-parse a future layout; prefer the engine's `load_bundle_meta_v3`, which is that check. The
-current reader rejects v2; use `engine-v0.11.9` only if historical v2 evidence must be inspected.
+**Bundle schema is versioned.** Each segment's `meta.json` carries `bundle_schema_version` (currently
+`4` in the source candidate, from `ai_workflow_engine.observation_bundle.BUNDLE_SCHEMA_VERSION`)
+and a required provider-evidence integrity fact. Consumers use `ObservationReader` for compact
+records and explicitly bounded detail-body access; they do not parse physical JSONL/value files.
+`load_bundle_meta_v4` is the strict metadata door. The v4 reader rejects v3 and older data with no
+compatibility bridge; use the matching historical release when old evidence must be inspected and
+start v4 on a fresh observation root.
 Resolve a run's disposition through the group reader
 (`read_group(...).status`) rather than re-deriving it from raw events, and project result/segment
 status into product state through an exhaustive closed mapping (partial vs failed vs rejected vs
@@ -198,7 +199,7 @@ consent around the engine:
 
 - Finalized groups follow `ObservationConfig.retention_limit`.
 - Suspended groups are retained indefinitely by default.
-- `evict_suspended_after_s` is opt-in and sacrifices viewer history only. A durable wait remains
+- Suspended observation runs are never retention candidates. Their run-scoped value store remains
   resumable from coordinator storage; a local wait remains resumable only if the caller retained its
   snapshot.
 - Archived artifacts are pruned with their bundle.

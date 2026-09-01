@@ -1,6 +1,7 @@
 """Prompt observability: static manifest (viz.render_prompt_manifest) + runtime capture
 (prompt_capture.PromptCapturingLLMClient). Both are additive, read-only over existing seams."""
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -150,9 +151,9 @@ async def test_prompt_capturing_client_can_capture_full_text_in_detail_only():
     detail = details.details[0]
     assert "hello world" not in event.model_dump_json()
     assert "be terse" not in event.model_dump_json()
-    assert "hello world" in detail.text
-    assert "be terse" in detail.text
-    assert detail.redaction_state == "none"
+    assert detail.body.kind == "json"
+    assert "hello world" in json.dumps(detail.body.value)
+    assert "be terse" in json.dumps(detail.body.value)
     definition = WorkflowBuilder("prompt_run").step("ask").build()
     graph = build_observation_graph(definition, sink.events, details=details.details)
     assert event.detail_refs[0] in graph.details
@@ -203,9 +204,8 @@ async def test_prompt_capturing_client_captures_response_text_in_detail_only():
     response_event = sink.events[1]
     response_detail = details.details[1]
     assert "visible answer" not in response_event.model_dump_json()
-    assert "visible answer" in response_detail.text
-    assert response_detail.json_value["text"] == "visible answer"
-    assert response_detail.redaction_state == "none"
+    assert response_detail.body.kind == "json"
+    assert response_detail.body.value["text"] == "visible answer"
 
 
 async def test_prompt_capturing_client_records_error_response_then_reraises():
@@ -234,8 +234,8 @@ async def test_prompt_capturing_client_records_error_response_then_reraises():
     assert response_event.error == "model unavailable"
     assert response_event.detail_refs == [response_detail.detail_id]
     assert response_detail.kind == "llm_response"
-    assert response_detail.redaction_state == "none"
-    assert response_detail.json_value["error"] == "model unavailable"
+    assert response_detail.body.kind == "json"
+    assert response_detail.body.value["error"] == "model unavailable"
 
 
 

@@ -232,7 +232,7 @@ def test_session_close_finalizes_a_real_observation_bundle(tmp_path):
 
     import json
 
-    meta = json.loads((tmp_path / "run-b5" / "meta.json").read_text())
+    meta = json.loads((bundle.path / "meta.json").read_text())
     assert meta["status"] == "failed"
     assert meta["workflow_id"] == "bundle_flow"
 

@@ -19,7 +19,6 @@ from typing import Any
 
 from ai_workflow_engine.engine.capabilities import DetailSink, TraceSink
 from ai_workflow_engine.llm_protocol import LLMRequest, LLMResponse
-from ai_workflow_engine.models import PrivacyLevel
 from ai_workflow_engine.observability_capture import (
     is_engine_worker_observation_active,
     llm_request_payload,
@@ -61,14 +60,12 @@ class PromptCapturingLLMClient:
         detail_sink: DetailSink,
         decision: str = "llm:prompt",
         capture_text: bool = False,
-        privacy: PrivacyLevel = "internal",
     ) -> None:
         self._inner = inner
         self._trace_sink = trace_sink
         self.detail_sink = detail_sink
         self._decision = decision
         self._capture_text = capture_text
-        self._privacy = privacy
 
     async def __call__(self, request: LLMRequest) -> LLMResponse:
         if is_engine_worker_observation_active():
@@ -100,7 +97,6 @@ class PromptCapturingLLMClient:
                 "request_image_count": len(request.images),
             },
             capture_text=self._capture_text,
-            privacy=self._privacy,
             digest_metadata_key="prompt_digest",
         )
 
@@ -127,7 +123,6 @@ class PromptCapturingLLMClient:
                 "cost_class": response.cost_class,
             },
             capture_text=self._capture_text,
-            privacy=self._privacy,
             digest_metadata_key="response_digest",
         )
 
@@ -151,7 +146,6 @@ class PromptCapturingLLMClient:
                 "error_type": exc.__class__.__name__,
             },
             capture_text=self._capture_text,
-            privacy=self._privacy,
             digest_metadata_key="response_digest",
         )
 

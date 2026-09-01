@@ -1,5 +1,6 @@
 """G3 — declarative per-node model binding (AC-G3) incl. RC1 fixed-client conflict."""
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -125,10 +126,10 @@ async def test_factory_structured_llm_node_emits_observation_details_without_wra
     assert result.status == "completed"
     prompt_detail = next(detail for detail in details.details if detail.kind == "rendered_prompt")
     response_detail = next(detail for detail in details.details if detail.kind == "llm_response")
-    assert prompt_detail.redaction_state == "none"
-    assert response_detail.redaction_state == "none"
-    assert "observable work" in (prompt_detail.text or "")
-    assert '"note": "done"' in (response_detail.text or "")
+    assert prompt_detail.body.kind == "json"
+    assert response_detail.body.kind == "json"
+    assert "observable work" in json.dumps(prompt_detail.body.value)
+    assert response_detail.body.value["text"] == '{"note": "done"}'
 
 
 async def test_factory_structured_llm_node_emits_compact_trace_when_detail_capture_off():

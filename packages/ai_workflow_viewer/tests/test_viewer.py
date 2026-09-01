@@ -10,18 +10,28 @@ import pytest
 
 from ai_workflow_engine import (
     ObservationDetail,
+    ObservationJsonBody,
+    ObservationReader,
+    ObservationTextBody,
     WorkflowBuilder,
     WorkflowTraceEvent,
     WorkflowUsageEvent,
 )
+from ai_workflow_engine.observation_contract import ObservationDetailEnvelope
+from ai_workflow_engine.observation_values import RunValueStore, body_sha256, persist_observation_body
 from ai_workflow_engine.usage_contract import (
     NormalizedTokenUsage,
     NotionalPricingResult,
     NotionalRate,
 )
-from ai_workflow_viewer import JsonlObservationViewer
+from ai_workflow_viewer import FileEventSource, JsonlObservationViewer
 
 pytestmark = pytest.mark.unit
+
+
+def _detail(*, value=None, **fields) -> ObservationDetail:
+    body = ObservationJsonBody(value={} if value is None else value)
+    return ObservationDetail(body=body, digest=body_sha256(body), **fields)
 
 
 def test_viewer_renders_persisted_pricing_basis_without_recalculation():
@@ -293,22 +303,36 @@ def _write_bundle(
     dir_name=None,
     meta_extra=None,
 ):
-    run_path = base / (dir_name or run_id)
+    run_root = base / run_id
+    run_path = run_root / "segments" / (dir_name or run_id)
     run_path.mkdir(parents=True)
+    value_store = RunValueStore(run_root)
+    persisted_details = []
+    for detail in details or []:
+        if isinstance(detail, ObservationDetailEnvelope):
+            persisted_details.append(detail)
+            continue
+        logical = detail.model_copy(update={"run_id": detail.run_id or run_id})
+        persisted_details.append(
+            ObservationDetailEnvelope(
+                **logical.model_dump(exclude={"body", "digest"}),
+                body=persist_observation_body(value_store, logical.body),
+            )
+        )
     (run_path / "definition.json").write_text(definition.model_dump_json(), encoding="utf-8")
     (run_path / "trace.jsonl").write_text(
         "\n".join(event.model_dump_json() for event in (trace_events or [])) + "\n",
         encoding="utf-8",
     )
     (run_path / "details.jsonl").write_text(
-        "\n".join(detail.model_dump_json(by_alias=True) for detail in (details or [])) + "\n",
+        "\n".join(detail.model_dump_json() for detail in persisted_details) + "\n",
         encoding="utf-8",
     )
     (run_path / "usage.jsonl").write_text(
         "\n".join(event.model_dump_json() for event in (usage_events or [])) + "\n",
         encoding="utf-8",
     )
-    # Full STRICT v3 meta — the loader rejects anything less; totals/counts are
+    # Full strict v4 meta — the loader rejects anything less; totals/counts are
     # derived from the actual inputs, ``meta_extra`` overrides (e.g. segment identity).
     usage = usage_events or []
     metered = [
@@ -320,7 +344,7 @@ def _write_bundle(
     (run_path / "meta.json").write_text(
         json.dumps(
             {
-                "bundle_schema_version": 3,
+                "bundle_schema_version": 4,
                 "run_id": run_id,
                 "workflow_id": definition.workflow_id,
                 "status": "completed",
@@ -332,10 +356,12 @@ def _write_bundle(
                 "definition_digest": definition.definition_digest(),
                 "artifact_manifest_path": "artifacts.json",
                 "artifact_root": "artifacts",
+                "value_store_layout": "run-scoped-sha256-gzip-v1",
+                "inline_body_max_bytes": 4096,
                 "artifact_count": 0,
                 "artifacts_copied": 0,
                 "trace_count": len(trace_events or []),
-                "detail_count": len(details or []),
+                "detail_count": len(persisted_details),
                 "usage_count": len(usage),
                 "usage_totals_scope": "run_cumulative_at_finalize",
                 "total_tokens": sum(event.total_tokens for event in usage),
@@ -366,13 +392,13 @@ def test_jsonl_observation_viewer_renders_html_from_public_contracts(tmp_path):
         run_id="run-1",
         sequence=1,
     )
-    detail = ObservationDetail(
+    detail = _detail(
         detail_id="detail-1",
         event_id=event.event_id,
         invocation_id="inv-viewer-test",
         kind="rendered_prompt",
-        content_type="text/plain",
-        digest="digest",
+        content_type="application/json",
+        value={"prompt": "viewer prompt"},
         run_id="run-1",
         sequence=2,
     )
@@ -414,10 +440,82 @@ def test_jsonl_observation_viewer_renders_html_from_public_contracts(tmp_path):
     assert "flowchart TD" in html
     assert "9 tok" in html
     assert "metered $0.0100" in html
-    assert "digest" in html
+    assert detail.digest in html
     assert "<dialog" in html
     assert "Copy raw" in html
     assert [record["type"] for record in viewer.event_records()] == ["trace", "detail", "trace", "usage"]
+
+
+def test_compact_viewer_never_opens_referenced_detail_bodies(tmp_path, monkeypatch):
+    definition = WorkflowBuilder("compact-viewer").step("inspect").build()
+    detail = _detail(
+        detail_id="large-detail",
+        event_id="event-large",
+        invocation_id="inv-large",
+        kind="tool_result",
+        content_type="application/json",
+        value={"payload": "x" * 100_000},
+        run_id="compact-run",
+        sequence=2,
+    )
+    run_path = _write_bundle(
+        tmp_path,
+        "compact-run",
+        definition,
+        trace_events=[
+            WorkflowTraceEvent(
+                node="inspect",
+                event_id="event-large",
+                phase="tool:request",
+                invocation_id="inv-large",
+                detail_capture="captured",
+                detail_refs=["large-detail"],
+                run_id="compact-run",
+                sequence=1,
+            ),
+            WorkflowTraceEvent(
+                node="inspect",
+                event_id="event-complete",
+                phase="tool:result",
+                invocation_id="inv-large",
+                detail_capture="capture_mode_off",
+                run_id="compact-run",
+                sequence=3,
+            ),
+        ],
+        usage_events=[
+            WorkflowUsageEvent(
+                node="inspect",
+                invocation_id="inv-large",
+                run_id="compact-run",
+                sequence=4,
+            )
+        ],
+        details=[detail],
+    )
+    persisted = next(ObservationReader(run_path).iter_detail_envelopes())
+    assert persisted.body.kind == "body_ref"
+
+    def body_open_is_a_bug(*_args, **_kwargs):
+        raise AssertionError("compact viewer opened a referenced body")
+
+    monkeypatch.setattr(ObservationReader, "iter_body_bytes", body_open_is_a_bug)
+    viewer = JsonlObservationViewer.from_run_bundle(run_path)
+    html = viewer.html()
+    assert "large-detail" in html
+    assert detail.digest in html
+    assert str(persisted.body.byte_length) in html
+
+
+def test_viewer_rejects_meta_record_count_drift(tmp_path):
+    definition = WorkflowBuilder("count-drift").step("inspect").build()
+    run_path = _write_bundle(tmp_path, "count-run", definition)
+    meta = json.loads((run_path / "meta.json").read_text(encoding="utf-8"))
+    meta["trace_count"] = 1
+    (run_path / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="trace_count disagrees.*expected 1, read 0"):
+        FileEventSource(run_path).read()
 
 
 def test_jsonl_observation_viewer_lists_runs_for_multi_run_bundle_sources(tmp_path):
@@ -442,12 +540,12 @@ def test_jsonl_observation_viewer_lists_runs_for_multi_run_bundle_sources(tmp_pa
         definition,
         trace_events=[run_1_event],
         details=[
-            ObservationDetail(
+            _detail(
                 detail_id="detail-1",
                 event_id=run_1_event.event_id,
                 run_id="run-1",
                 kind="rendered_prompt",
-                digest="run-1-digest",
+                value={"source": "run-1"},
                 sequence=2,
             ),
         ],
@@ -458,12 +556,12 @@ def test_jsonl_observation_viewer_lists_runs_for_multi_run_bundle_sources(tmp_pa
         definition,
         trace_events=[run_2_event],
         details=[
-            ObservationDetail(
+            _detail(
                 detail_id="detail-2",
                 event_id=run_2_event.event_id,
                 run_id="run-2",
                 kind="rendered_prompt",
-                digest="run-2-digest",
+                value={"source": "run-2"},
                 sequence=2,
             ),
         ],
@@ -479,8 +577,8 @@ def test_jsonl_observation_viewer_lists_runs_for_multi_run_bundle_sources(tmp_pa
     selected = JsonlObservationViewer.from_run_bundle(tmp_path, run_id="run-2")
     html = selected.html()
 
-    assert "run-2-digest" in html
-    assert "run-1-digest" not in html
+    assert "&quot;source&quot;: &quot;run-2&quot;" in html
+    assert "&quot;source&quot;: &quot;run-1&quot;" not in html
     assert [record["record"]["run_id"] for record in selected.event_records()] == ["run-2", "run-2"]
 
 
@@ -513,6 +611,10 @@ def _mark(run_path, marker):
     import json as _json
 
     (run_path / marker).write_text(_json.dumps({}), encoding="utf-8")
+
+
+def _segment_path(base: Path, run_id: str, segment_id: str | None = None) -> Path:
+    return base / run_id / "segments" / (segment_id or run_id)
 
 
 def _write_group(tmp_path, *, duplicate_usage_id=False, second_digest="dig-1"):
@@ -567,7 +669,11 @@ def _write_group(tmp_path, *, duplicate_usage_id=False, second_digest="dig-1"):
             "logical-run", "logical-run--s001", 1,
             digest=(real_digest if second_digest == "dig-1" else second_digest),
             status="completed",
-        ) | {"total_tokens": 12, "metered_usd": 0.03, "usage_count": 2},
+        ) | {
+            "total_tokens": 12,
+            "metered_usd": 0.03,
+            "usage_count": len(resume_usage),
+        },
     )
     return definition
 
@@ -592,7 +698,7 @@ def test_read_group_merges_segments_ordered_with_per_segment_sequences(tmp_path)
     # duplicate sequence NUMBERS across segments are legal — each segment restarts at 1
     assert {record.sequence for record in group.records if record.type == "trace"} == {1, 2, 4}
     # single-bundle semantics unchanged: reading one segment alone still works
-    single = FileEventSource(tmp_path / "logical-run--s001").read()
+    single = FileEventSource(_segment_path(tmp_path, "logical-run", "logical-run--s001")).read()
     assert single.run_id == "logical-run" and len(single.records) == 3
 
 
@@ -606,10 +712,10 @@ def test_damaged_group_segment_never_falls_back_to_a_partial_page(tmp_path):
     from ai_workflow_viewer import FileEventSource, JsonlObservationViewer, serve_viewer
 
     _write_group(tmp_path)
-    (tmp_path / "logical-run--s001" / "definition.json").unlink()
+    (_segment_path(tmp_path, "logical-run", "logical-run--s001") / "definition.json").unlink()
     viewer = JsonlObservationViewer(FileEventSource(tmp_path))
 
-    with _pytest.raises(ValueError, match="corrupt segment.*missing workflow definition"):
+    with _pytest.raises(ValueError, match="corrupt segment.*missing definition.json"):
         viewer.html("logical-run")
 
     server = serve_viewer(viewer, port=0)
@@ -621,7 +727,7 @@ def test_damaged_group_segment_never_falls_back_to_a_partial_page(tmp_path):
             urllib.request.urlopen(f"{root}/?run_id=logical-run", timeout=5)
         assert caught.value.code == 500
         body = caught.value.read().decode("utf-8")
-        assert "corrupt segment" in body and "missing workflow definition" in body
+        assert "corrupt segment" in body and "missing definition.json" in body
         assert "<html" not in body.lower()
 
         with _pytest.raises(urllib.error.HTTPError) as missing:
@@ -680,7 +786,7 @@ def test_read_group_uses_highest_committed_durable_attempt_as_canonical(tmp_path
     from ai_workflow_viewer import FileEventSource
 
     definition = _write_group(tmp_path)
-    first_path = tmp_path / "logical-run--s001"
+    first_path = _segment_path(tmp_path, "logical-run", "logical-run--s001")
     first_meta_path = first_path / "meta.json"
     first_meta = json.loads(first_meta_path.read_text(encoding="utf-8"))
     first_meta["attempt"] = 1
@@ -753,20 +859,20 @@ def test_read_group_lineage_corruption_is_loud(tmp_path):
     # give BOTH index-1 attempts the same ordinal + commit markers
     import json as _json
 
-    s001_meta = tmp_path / "logical-run--s001" / "meta.json"
+    s001_meta = _segment_path(tmp_path, "logical-run", "logical-run--s001") / "meta.json"
     meta = _json.loads(s001_meta.read_text(encoding="utf-8"))
     meta["attempt"] = 1
     s001_meta.write_text(_json.dumps(meta), encoding="utf-8")
-    _mark(tmp_path / "logical-run--s001", "commit.json")
-    _mark(tmp_path / "logical-run--s001-r2x", "commit.json")
+    _mark(_segment_path(tmp_path, "logical-run", "logical-run--s001"), "commit.json")
+    _mark(_segment_path(tmp_path, "logical-run", "logical-run--s001-r2x"), "commit.json")
     with _pytest.raises(ValueError, match="share ordinal"):
         FileEventSource(tmp_path).read_group("logical-run")
 
     # broken chain: the suspension half was deleted by hand -> not contiguous
     import shutil
 
-    shutil.rmtree(tmp_path / "logical-run--s001-r2x")
-    shutil.rmtree(tmp_path / "logical-run")
+    shutil.rmtree(_segment_path(tmp_path, "logical-run", "logical-run--s001-r2x"))
+    shutil.rmtree(_segment_path(tmp_path, "logical-run"))
     with _pytest.raises(ValueError, match="contiguous|chain"):
         FileEventSource(tmp_path).read_group("logical-run")
 
@@ -774,7 +880,7 @@ def test_read_group_lineage_corruption_is_loud(tmp_path):
     for path in tmp_path.iterdir():
         shutil.rmtree(path)
     _write_group(tmp_path, second_digest="dig-FORGED")
-    with _pytest.raises(ValueError, match="forged or stale"):
+    with _pytest.raises(ValueError, match="claims definition digest.*recomputes"):
         FileEventSource(tmp_path).read_group("logical-run")
 
     # ACTUAL definition split: correct metas, but segment 1 executes a different machine
@@ -830,8 +936,8 @@ def test_read_group_lineage_corruption_is_loud(tmp_path):
         FileEventSource(tmp_path).read_group("kind-run")
 
 
-def test_pre_v3_bundle_is_loud_directly_but_isolated_from_healthy_groups(tmp_path):
-    """The latest-only viewer rejects v2 directly while keeping unrelated v3 history usable."""
+def test_pre_v4_bundle_is_loud_directly_but_isolated_from_healthy_groups(tmp_path):
+    """The latest-only viewer rejects v3 directly while keeping unrelated v4 history usable."""
 
     import json as _json
     import shutil as _shutil
@@ -847,8 +953,7 @@ def test_pre_v3_bundle_is_loud_directly_but_isolated_from_healthy_groups(tmp_pat
     definition = WorkflowBuilder("legacy").step("gate").build()
     _write_group(tmp_path)  # current-contract group beside the relic
     # A v2 relic is a different closed wire contract, not a partially-readable v3 bundle.
-    relic = tmp_path / "old-run"
-    _write_bundle(
+    relic = _write_bundle(
         tmp_path,
         "old-run",
         definition,
@@ -864,11 +969,11 @@ def test_pre_v3_bundle_is_loud_directly_but_isolated_from_healthy_groups(tmp_pat
         ],
     )
     old_meta = _json.loads((relic / "meta.json").read_text(encoding="utf-8"))
-    old_meta["bundle_schema_version"] = 2
+    old_meta["bundle_schema_version"] = 3
     old_meta.pop("provider_evidence")
     (relic / "meta.json").write_text(_json.dumps(old_meta), encoding="utf-8")
 
-    with _pytest.raises(ValueError, match="historical"):
+    with _pytest.raises(ValueError, match="no v3 reader"):
         FileEventSource(relic).read()
     source = FileEventSource(tmp_path)
     assert source.read_group("logical-run").status == "completed"
@@ -891,14 +996,14 @@ def test_pre_v3_bundle_is_loud_directly_but_isolated_from_healthy_groups(tmp_pat
             urllib.request.urlopen(f"{root}/?run_id=old-run", timeout=5)
         assert caught.value.code == 500
         body = caught.value.read().decode("utf-8")
-        assert "historical" in body and "<html" not in body.lower()
+        assert "no v3 reader" in body and "<html" not in body.lower()
     finally:
         server.shutdown()
         thread.join(timeout=5)
 
     # Malformed v3: an unknown key is rejected directly and listed as corruption.
     _shutil.rmtree(relic)
-    meta_path = tmp_path / "logical-run" / "meta.json"
+    meta_path = _segment_path(tmp_path, "logical-run") / "meta.json"
     meta = _json.loads(meta_path.read_text(encoding="utf-8"))
     meta["parent_segment_id"] = "ghost"
     meta_path.write_text(_json.dumps(meta), encoding="utf-8")
@@ -945,7 +1050,7 @@ def test_single_resumed_segment_read_is_no_longer_empty(tmp_path):
     from ai_workflow_viewer import FileEventSource, build_observation_graph
 
     _write_group(tmp_path)
-    data = FileEventSource(tmp_path / "logical-run--s001").read()
+    data = FileEventSource(_segment_path(tmp_path, "logical-run", "logical-run--s001")).read()
     assert data.run_id == "logical-run"
     graph = build_observation_graph(
         data.definition, data.trace_events, data.usage_events, data.details, run_id=data.run_id
@@ -995,8 +1100,15 @@ def test_read_group_reports_abandoned_attempts_without_merging_them(tmp_path):
         ],
         meta_extra=_segment_meta(
             "logical-run", "logical-run--s001-dead", 1, digest=digest,
-        ) | {"status": "abandoned"},
-    )
+            )
+            | {
+                "status": "abandoned",
+                "usage_count": 3,
+                "total_tokens": 6,
+                "metered_usd": 0.005,
+                "notional_usd": 0.007,
+            },
+        )
 
     group = FileEventSource(tmp_path).read_group("logical-run")
     assert [segment.segment_index for segment in group.segments] == [0, 1]
@@ -1066,10 +1178,10 @@ def test_wait_terminal_segment_closes_the_group_and_fake_definitions_are_loud(tm
 
     # forge: same meta, but the evidence file carries a DIFFERENT machine
     other = WorkflowBuilder("grouped").step("gate").step("finish").step("extra").build()
-    (tmp_path / "wfail-run--s001-wfail" / "definition.json").write_text(
+    (_segment_path(tmp_path, "wfail-run", "wfail-run--s001-wfail") / "definition.json").write_text(
         other.model_dump_json(), encoding="utf-8"
     )
-    with _pytest.raises(ValueError, match="DIFFERENT actual workflow definitions|forged or stale"):
+    with _pytest.raises(ValueError, match="claims definition digest.*recomputes"):
         FileEventSource(tmp_path).read_group("wfail-run")
 
 
@@ -1311,7 +1423,7 @@ def test_group_html_resolves_artifacts_with_previews_and_skip_reasons(tmp_path):
         trace_events=[WorkflowTraceEvent(node="gate", node_status="completed", phase="node:result", run_id="art-run", sequence=1, event_id="a-1")],
         meta_extra=_segment_meta("art-run", "art-run", 0, digest=digest),
     )
-    bundle = tmp_path / "art-run"
+    bundle = _segment_path(tmp_path, "art-run")
     (bundle / "artifacts").mkdir()
     (bundle / "artifacts" / "frame.png").write_bytes(b"\x89PNG fake")
     (bundle / "artifacts.json").write_text(_json.dumps([
@@ -1353,7 +1465,7 @@ def test_served_artifact_links_resolve_over_real_http(tmp_path):
         trace_events=[WorkflowTraceEvent(node="gate", node_status="completed", phase="node:result", run_id="served-art-run", sequence=1, event_id="sa-1")],
         meta_extra=_segment_meta("served-art-run", "served-art-run", 0, digest=digest),
     )
-    bundle = tmp_path / "served-art-run"
+    bundle = _segment_path(tmp_path, "served-art-run")
     (bundle / "artifacts").mkdir()
     png = b"\x89PNG served"
     (bundle / "artifacts" / "frame.png").write_bytes(png)
@@ -1485,7 +1597,7 @@ def test_served_artifacts_roundtrip_hostile_names_and_never_serve_active_content
         trace_events=[WorkflowTraceEvent(node="gate", node_status="completed", phase="node:result", run_id="hostile-run", sequence=1, event_id="h-1")],
         meta_extra=_segment_meta("hostile-run", "hostile-run", 0, digest=digest),
     )
-    bundle = tmp_path / "hostile-run"
+    bundle = _segment_path(tmp_path, "hostile-run")
     (bundle / "artifacts").mkdir()
     hostile_name = "frame 1 #50% ünïcode.png"
     png = b"\x89PNG hostile"
@@ -1687,7 +1799,7 @@ def test_served_route_404s_missing_but_stays_loud_on_malformed_and_corruption(tm
         trace_events=[WorkflowTraceEvent(node="gate", node_status="completed", phase="node:result", run_id="rr-run", sequence=1, event_id="g-1")],
         meta_extra=_segment_meta("rr-run", "rr-run", 0, digest=digest),
     )
-    bundle = tmp_path / "rr-run"
+    bundle = _segment_path(tmp_path, "rr-run")
     (bundle / "artifacts").mkdir()
     (bundle / "artifacts" / "a.png").write_bytes(b"x")
     (bundle / "artifacts.json").write_text(_json.dumps({"artifacts": []}))  # wrong shape
@@ -1929,12 +2041,13 @@ def test_raw_detail_surface_uses_the_same_bounded_renderer_as_graph_details():
         run_id="r",
         sequence=1,
     )
+    text_body = ObservationTextBody(value=body)
     detail = ObservationDetail(
         detail_id="large-detail",
         event_id=event.event_id,
         kind="tool_result",
-        redaction_state="none",
-        text=body,
+        body=text_body,
+        digest=body_sha256(text_body),
         run_id="r",
         sequence=2,
     )
@@ -1948,8 +2061,8 @@ def test_raw_detail_surface_uses_the_same_bounded_renderer_as_graph_details():
     assert len(page) < 300_000, f"detail was duplicated into the page without a display cap: {len(page)}"
 
 
-def test_single_detail_body_owner_preserves_structured_json_precedence():
-    """Consolidating the duplicate helper must not change the prior effective rendering order."""
+def test_single_detail_body_owner_renders_the_complete_structured_value():
+    """The sole logical body is the complete representation used by every viewer pane."""
 
     from ai_workflow_engine import WorkflowBuilder
     from ai_workflow_viewer.observability import build_observation_graph, observation_graph_to_html
@@ -1962,13 +2075,11 @@ def test_single_detail_body_owner_preserves_structured_json_precedence():
         run_id="r",
         sequence=1,
     )
-    detail = ObservationDetail(
+    detail = _detail(
         detail_id="structured-detail",
         event_id=event.event_id,
         kind="tool_result",
-        redaction_state="none",
-        text="legacy-text-must-not-win",
-        json_value={"canonical": "structured-json"},
+        value={"canonical": "structured-json", "nested": {"count": 2}},
         run_id="r",
         sequence=2,
     )
@@ -1979,7 +2090,7 @@ def test_single_detail_body_owner_preserves_structured_json_precedence():
     )
 
     assert "structured-json" in page
-    assert "legacy-text-must-not-win" not in page
+    assert "&quot;count&quot;: 2" in page
 
 
 def test_decision_text_never_sets_terminal_status(tmp_path):
@@ -2068,7 +2179,7 @@ def test_boundary_attacks_are_refused_on_every_viewer_surface(tmp_path):
     outside.write_text("", encoding="utf-8")
     (sym_run / "trace.jsonl").unlink()
     (sym_run / "trace.jsonl").symlink_to(outside)
-    with _pytest.raises(ValueError, match="escapes its bundle directory"):
+    with _pytest.raises(ValueError, match="escapes .*sym-run/segments/sym-run"):
         FileEventSource(sym_run).read()
     _shutil.rmtree(sym_run)
 
@@ -2081,18 +2192,20 @@ def test_boundary_attacks_are_refused_on_every_viewer_surface(tmp_path):
     meta = _json.loads((forge_run / "meta.json").read_text(encoding="utf-8"))
     meta["definition_digest"] = "deadbeefdeadbeef"
     (forge_run / "meta.json").write_text(_json.dumps(meta), encoding="utf-8")
-    with _pytest.raises(ValueError, match="forged or stale"):
+    with _pytest.raises(ValueError, match="claims definition digest.*recomputes"):
         FileEventSource(forge_run).read()
 
     # (d) damaged meta-only segment: VISIBLE in the chooser, loud on read
-    damaged = tmp_path / "damaged-run"
-    damaged.mkdir()
-    base_meta = _json.loads((tmp_path / "logical-run" / "meta.json").read_text(encoding="utf-8"))
+    damaged = _segment_path(tmp_path, "damaged-run")
+    damaged.mkdir(parents=True)
+    base_meta = _json.loads(
+        (_segment_path(tmp_path, "logical-run") / "meta.json").read_text(encoding="utf-8")
+    )
     base_meta.update(run_id="damaged-run", segment_id="damaged-run")
     (damaged / "meta.json").write_text(_json.dumps(base_meta), encoding="utf-8")
     rows = {row["run_id"] for row in source.list_groups()}
     assert "damaged-run" in rows, "a damaged segment must stay visible, never disappear"
-    with _pytest.raises(ValueError, match="corrupt segment.*missing workflow definition"):
+    with _pytest.raises(ValueError, match="corrupt segment.*missing definition.json"):
         source.read_group("damaged-run")
 
     # (e) served doors: query traversal, missing run, and contract violations are plain
@@ -2114,12 +2227,12 @@ def test_boundary_attacks_are_refused_on_every_viewer_surface(tmp_path):
         with _pytest.raises(urllib.error.HTTPError) as caught:
             urllib.request.urlopen(f"{root}/events?run_id=forge-run", timeout=5)
         assert caught.value.code == 500
-        assert "forged or stale" in caught.value.read().decode("utf-8")
+        assert "claims definition digest" in caught.value.read().decode("utf-8")
 
         with _pytest.raises(urllib.error.HTTPError) as caught:
             urllib.request.urlopen(f"{root}/artifact/forge-run/forge-run/artifacts/x.png", timeout=5)
         assert caught.value.code == 500
-        assert "forged or stale" in caught.value.read().decode("utf-8")
+        assert "claims definition digest" in caught.value.read().decode("utf-8")
     finally:
         server.shutdown()
         thread.join(timeout=5)

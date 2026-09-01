@@ -10,10 +10,10 @@ from urllib.parse import quote
 import re
 from typing import Any, Mapping, Optional
 
-from ai_workflow_engine.models import (
-    ObservationDetail,
-    WorkflowUsageEvent,
-)
+from ai_workflow_engine.models import WorkflowUsageEvent
+from ai_workflow_engine.models import ObservationDetail
+from ai_workflow_engine.observation_contract import ObservationDetailEnvelope
+from ai_workflow_engine.observation_values import render_observation_body_text
 from ai_workflow_engine.workflow import END, WorkflowDefinition
 from ai_workflow_viewer.assets import load_asset_text
 from ai_workflow_viewer.projection import (
@@ -883,15 +883,17 @@ def _bounded_detail_body(body: str) -> str:
     )
 
 
-def _detail_view(detail: ObservationDetail) -> dict[str, Any]:
+ObservationDisplayDetail = ObservationDetail | ObservationDetailEnvelope
+
+
+def _detail_view(detail: ObservationDisplayDetail) -> dict[str, Any]:
     body = _bounded_detail_body(_detail_body(detail))
     return {
         "id": detail.detail_id,
         "kind": detail.kind,
-        "privacy": detail.privacy,
-        "redaction_state": detail.redaction_state,
+        "storage": _detail_storage(detail),
         "content_type": detail.content_type,
-        "digest": detail.digest,
+        "digest": _detail_sha256(detail),
         "summary": _detail_summary(detail, body),
         "body": body,
         "anchor": _dom_id("detail", detail.detail_id),
@@ -996,24 +998,28 @@ def _kind_label(kind: str) -> str:
     }.get(kind, kind or "node")
 
 
-def _detail_body(detail: ObservationDetail) -> str:
-    if detail.json_value is not None:
-        return json.dumps(detail.json_value, indent=2, sort_keys=True, default=str)
-    if detail.text:
-        return detail.text
-    if detail.digest:
-        return f"digest: {detail.digest}"
-    if detail.artifact_id:
-        return f"artifact: {detail.artifact_id}"
-    return ""
+def _detail_body(detail: ObservationDisplayDetail) -> str:
+    if detail.body.kind != "body_ref":
+        return render_observation_body_text(detail.body)
+    return (
+        f"Body stored out of line ({detail.body.byte_length} bytes, "
+        f"sha256 {detail.body.sha256}). Open it through the bounded detail reader."
+    )
 
 
-def _detail_summary(detail: ObservationDetail, body: str) -> str:
-    if detail.redaction_state == "digest_only":
-        digest = f" digest={detail.digest[:16]}" if detail.digest else ""
-        return f"Digest-only {detail.kind}.{digest}"
-    if detail.json_value is not None:
-        highlights = _json_highlights(detail.json_value)
+def _detail_storage(detail: ObservationDisplayDetail) -> str:
+    if detail.body.kind in {"json", "text"}:
+        return f"logical_{detail.body.kind}"
+    return detail.body.kind
+
+
+def _detail_sha256(detail: ObservationDisplayDetail) -> str:
+    return detail.digest if isinstance(detail, ObservationDetail) else detail.body.sha256
+
+
+def _detail_summary(detail: ObservationDisplayDetail, body: str) -> str:
+    if detail.body.kind in {"json", "inline_json"}:
+        highlights = _json_highlights(detail.body.value)
         if highlights:
             return "; ".join(highlights)
     return _truncate(_single_line(body), 420)
@@ -1194,7 +1200,10 @@ def _timestamp_label(timestamp: str) -> str:
     return timestamp
 
 
-def _timeline_row(item: ObservationTimelineEntry, details: Mapping[str, ObservationDetail]) -> str:
+def _timeline_row(
+    item: ObservationTimelineEntry,
+    details: Mapping[str, ObservationDisplayDetail],
+) -> str:
     detail_bits = []
     for ref in item.detail_refs:
         detail = details.get(ref)
@@ -1222,16 +1231,16 @@ def _timeline_row(item: ObservationTimelineEntry, details: Mapping[str, Observat
     )
 
 
-def _detail_row(detail: ObservationDetail) -> str:
+def _detail_row(detail: ObservationDisplayDetail) -> str:
     body = _bounded_detail_body(_detail_body(detail))
-    digest = f" digest={detail.digest}" if detail.digest else ""
+    digest = f" digest={_detail_sha256(detail)}"
     detail_dom_id = _dom_id("detail", detail.detail_id)
     dialog_id = _dom_id("detail_dialog", detail.detail_id)
     raw_id = _dom_id("detail_raw", detail.detail_id)
     return (
         f'<details class="observation-detail" id="{html.escape(detail_dom_id, quote=True)}">'
         f"<summary><code>{html.escape(detail.detail_id)}</code> {html.escape(detail.kind)} "
-        f"({html.escape(detail.redaction_state)}){html.escape(digest)}</summary>"
+        f"({html.escape(_detail_storage(detail))}){html.escape(digest)}</summary>"
         '<div class="detail-actions">'
         f'<button type="button" data-open-dialog="{html.escape(dialog_id, quote=True)}">Expand</button>'
         f'<button type="button" data-copy-target="{html.escape(raw_id, quote=True)}">Copy raw</button>'

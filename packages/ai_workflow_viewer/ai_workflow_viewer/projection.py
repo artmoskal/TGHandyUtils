@@ -12,6 +12,7 @@ from ai_workflow_engine.models import (
     WorkflowUsageEvent,
     WorkflowUsageSummary,
 )
+from ai_workflow_engine.observation_contract import ObservationDetailEnvelope
 from ai_workflow_engine.workflow import WorkflowDefinition
 
 
@@ -50,12 +51,15 @@ class ObservationNode(BaseModel):
     outcome_suspended: int = 0
 
 
+ObservationGraphDetail = ObservationDetail | ObservationDetailEnvelope
+
+
 class ObservationGraph(BaseModel):
     workflow_id: str
     run_id: Optional[str] = None
     nodes: dict[str, ObservationNode] = Field(default_factory=dict)
     timeline: list[ObservationTimelineEntry] = Field(default_factory=list)
-    details: dict[str, ObservationDetail] = Field(default_factory=dict)
+    details: dict[str, ObservationGraphDetail] = Field(default_factory=dict)
     usage_events: list[WorkflowUsageEvent] = Field(default_factory=list)
 
 
@@ -63,7 +67,7 @@ def build_observation_graph(
     definition: WorkflowDefinition,
     trace_events: Iterable[WorkflowTraceEvent],
     usage_events: Iterable[WorkflowUsageEvent] | WorkflowUsageSummary = (),
-    details: Iterable[ObservationDetail] = (),
+    details: Iterable[ObservationGraphDetail] = (),
     *,
     run_id: str | None = None,
 ) -> ObservationGraph:

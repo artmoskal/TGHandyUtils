@@ -105,22 +105,6 @@ class JsonlTraceSink:
             fh.write("\n")
 
 
-class JsonlDetailSink:
-    """Append observation details to a JSONL file."""
-
-    def __init__(self, path: str | Path) -> None:
-        self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-
-    def record(self, detail: ObservationDetail) -> None:
-        with self.path.open("a", encoding="utf-8") as fh:
-            fh.write(detail.model_dump_json(by_alias=True))
-            fh.write("\n")
-
-    def clear(self) -> None:
-        self.path.write_text("", encoding="utf-8")
-
-
 class CallbackTraceSink:
     """Forward trace events to a callback without letting callback errors stop the run."""
 

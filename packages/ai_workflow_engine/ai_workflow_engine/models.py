@@ -7,7 +7,7 @@ but use these goal/trace/artifact records so workflow execution is observable an
 import math
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Literal, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
 from pydantic import (
     BaseModel,
@@ -63,7 +63,6 @@ ObservationDetailKind = Literal[
     "planner_output",
     "memory_projection",
 ]
-ObservationRedactionState = Literal["none", "redacted", "digest_only"]
 DetailCaptureState = Literal[
     "captured",
     "capture_mode_off",
@@ -293,10 +292,43 @@ class WorkflowTraceEvent(BaseModel):
     run_id: Optional[str] = None
 
 
-class ObservationDetail(BaseModel):
-    """Heavy/private observability payload linked from a compact trace event."""
+class ObservationJsonBody(BaseModel):
+    """One logical structured observation body before persistence chooses its layout."""
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["json"] = "json"
+    value: Any
+
+    @model_validator(mode="after")
+    def _canonical_json(self) -> "ObservationJsonBody":
+        from ai_workflow_engine.observation_values import canonical_json_bytes
+
+        if _contains_raw_bytes(self.value):
+            raise ValueError("ObservationJsonBody value must not contain raw bytes")
+        canonical_json_bytes(self.value)
+        return self
+
+
+class ObservationTextBody(BaseModel):
+    """One logical exact UTF-8 text observation body."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["text"] = "text"
+    value: str
+
+
+ObservationBody = Annotated[
+    Union[ObservationJsonBody, ObservationTextBody],
+    Field(discriminator="kind"),
+]
+
+
+class ObservationDetail(BaseModel):
+    """Logical observation detail with exactly one source body."""
+
+    model_config = ConfigDict(extra="forbid")
 
     detail_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     event_id: str
@@ -304,20 +336,23 @@ class ObservationDetail(BaseModel):
     sequence: Optional[int] = None
     invocation_id: Optional[ProviderInvocationId] = None
     kind: ObservationDetailKind
-    privacy: PrivacyLevel = "internal"
-    redaction_state: ObservationRedactionState = "digest_only"
     content_type: str = "text/plain"
-    text: Optional[str] = None
-    json_value: Optional[Dict[str, Any]] = Field(default=None, alias="json")
+    body: ObservationBody
     artifact_id: Optional[str] = None
-    digest: Optional[str] = None
+    digest: str
     # engine-written enrichment (e.g. related-run id) — same rule as trace/usage events
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def _reject_raw_bytes(self) -> "ObservationDetail":
-        if _contains_raw_bytes(self.json_value):
-            raise ValueError("ObservationDetail json payload must not contain raw bytes")
+    def _validate_body_digest(self) -> "ObservationDetail":
+        from ai_workflow_engine.observation_values import body_sha256
+
+        actual = body_sha256(self.body)
+        if self.digest != actual:
+            raise ValueError(
+                "ObservationDetail digest must equal canonical body SHA-256: "
+                f"expected {actual!r}, got {self.digest!r}"
+            )
         return self
 
 

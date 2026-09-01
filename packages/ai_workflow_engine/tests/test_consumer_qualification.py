@@ -20,6 +20,7 @@ from ai_workflow_engine import (
     DurableWaitPolicy,
     InMemoryWaitCoordinator,
     ObservationConfig,
+    ObservationReader,
     WorkflowBuilder,
     WorkflowEngineBuilder,
     WorkflowGoal,
@@ -29,11 +30,9 @@ from ai_workflow_engine.models import (
     CapabilityResult,
     CapabilitySpec,
     ModelProfile,
-    ObservationDetail,
     SafetyPolicy,
     WorkflowArtifact,
     WorkflowProfile,
-    WorkflowTraceEvent,
 )
 from ai_workflow_viewer import build_observation_graph, observation_graph_to_html
 
@@ -77,14 +76,9 @@ async def test_anki_shape_accepted_artifact_bundle_and_viewer(tmp_path):
     assert result.observation_bundle_path, "config-first observation must auto-open a bundle"
     bundle = Path(result.observation_bundle_path)
 
-    trace_events = [
-        WorkflowTraceEvent.model_validate_json(line)
-        for line in (bundle / "trace.jsonl").read_text().splitlines()
-    ]
-    details = [
-        ObservationDetail.model_validate_json(line)
-        for line in (bundle / "details.jsonl").read_text().splitlines()
-    ]
+    reader = ObservationReader(bundle)
+    trace_events = list(reader.iter_trace_events())
+    details = list(reader.iter_detail_envelopes())
     detail_kinds = {d.kind for d in details}
     assert "artifact_preview" in detail_kinds, f"artifact preview missing: {detail_kinds}"
     assert "tool_result" in detail_kinds
@@ -268,10 +262,11 @@ async def test_slackazz_shape_durable_suspend_resume_grouped_bundle(tmp_path):
     assert outcome.kind == "executed"
     assert outcome.run_result.status == "completed"
 
-    segments = sorted(p.name for p in bundle_root.iterdir() if (p / "meta.json").exists())
+    segment_root = bundle_root / "qual-slack" / "segments"
+    segments = sorted(p.name for p in segment_root.iterdir() if (p / "meta.json").exists())
     assert segments == ["qual-slack", "qual-slack--s001"], segments
     metas = {
-        name: json.loads((bundle_root / name / "meta.json").read_text()) for name in segments
+        name: json.loads((segment_root / name / "meta.json").read_text()) for name in segments
     }
     assert metas["qual-slack"]["segment_kind"] == "initial"
     assert [metas[name]["segment_index"] for name in segments] == [0, 1]

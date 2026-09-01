@@ -161,7 +161,7 @@ def test_engine_run_finalizes_attached_bundle_with_envelope_status(tmp_path):
     result = asyncio.run(engine.run("bundled_flow", {"x": 1}, observation_bundle=bundle))
 
     assert result.status == "completed"
-    meta = json.loads((tmp_path / "run-a4" / "meta.json").read_text())
+    meta = json.loads((bundle.path / "meta.json").read_text())
     assert meta["status"] == "completed"
 
 
@@ -183,7 +183,7 @@ def test_terminal_status_hook_overrides_the_archived_status(tmp_path):
 
     # B-post2: the returned result and the durable record must agree — both failed.
     assert result.status == "failed"
-    meta = json.loads((tmp_path / "run-hook" / "meta.json").read_text())
+    meta = json.loads((bundle.path / "meta.json").read_text())
     assert meta["status"] == "failed"
 
 
@@ -205,7 +205,7 @@ def test_raising_terminal_status_hook_still_finalizes_the_bundle(tmp_path):
             )
         )
 
-    meta = json.loads((tmp_path / "run-hook-boom" / "meta.json").read_text())
+    meta = json.loads((bundle.path / "meta.json").read_text())
     assert meta["status"] == "failed"  # never left unfinalized
 
 
@@ -223,7 +223,7 @@ def test_invalid_terminal_status_override_is_loud(tmp_path):
                 observation_bundle=bundle, terminal_status=lambda e: "hollow",
             )
         )
-    meta = json.loads((tmp_path / "run-hook-bad" / "meta.json").read_text())
+    meta = json.loads((bundle.path / "meta.json").read_text())
     assert meta["status"] == "failed"
 
 
@@ -245,5 +245,5 @@ def test_engine_run_finalizes_bundle_failed_when_the_run_raises(tmp_path):
     with pytest.raises(RuntimeError, match="boom"):
         asyncio.run(engine.run("raising_flow", {"x": 1}, observation_bundle=bundle))
 
-    meta = json.loads((tmp_path / "run-raise" / "meta.json").read_text())
+    meta = json.loads((bundle.path / "meta.json").read_text())
     assert meta["status"] == "failed"

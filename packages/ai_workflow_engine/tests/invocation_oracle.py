@@ -16,7 +16,6 @@ tmp paths); any OTHER difference is a real behavior delta, never silently ignore
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import re
 from typing import Any, Callable
@@ -86,6 +85,7 @@ from ai_workflow_engine.models import (
     WorkflowGoal,
     WorkflowRunContext,
 )
+from ai_workflow_engine.observation_values import body_sha256, render_observation_body_text
 
 # Behavior-inventory rows (plan §"Behavior Inventory To Freeze"). Every row maps to >= 1 scenario;
 # the completeness guard fails by NAME when a row has no scenario. Integrated rows (nested/
@@ -254,35 +254,29 @@ def _canon_event(event: Any, amap: dict[str, str] | None = None) -> dict[str, An
 
 
 def _digest_consistent(detail: Any) -> bool | None:
-    """Whether the stored digest matches a re-digest of the stored json payload. Mirrors
-    observability_capture.payload_digest (a stable helper untouched by v0.11); detects a projector
-    that ever desyncs a detail's digest from its content. Deterministic within a run (uses the
-    detail's OWN raw payload), so it is stable across the baseline and candidate wheels."""
+    """Whether the stored digest matches the detail's one canonical logical body."""
 
     digest = getattr(detail, "digest", None)
-    payload = getattr(detail, "json_value", None)
-    if digest is None or payload is None:
+    body = getattr(detail, "body", None)
+    if digest is None or body is None:
         return None
-    raw = json.dumps(payload, sort_keys=True, default=str, ensure_ascii=True).encode("utf-8")
-    return hashlib.sha256(raw).hexdigest() == digest
+    return body_sha256(body) == digest
 
 
 def _canon_detail(detail: Any, amap: dict[str, str] | None = None) -> dict[str, Any]:
     """Full byte-safe detail record with the reference graph preserved via aliases: content
-    (text/json/metadata), classification (kind/privacy/redaction_state/content_type), the event
-    this detail hangs off, the artifact it describes, and digest integrity — payload corruption,
-    digest drift, and broken linkage can no longer pass as EQUAL."""
+    (one body plus its engine-derived display text), classification, the event this detail hangs
+    off, the artifact it describes, and digest integrity. Body corruption, display drift, digest
+    drift, and broken linkage can no longer pass as EQUAL."""
 
     amap = amap or {}
     return {
         "kind": detail.kind,
-        "privacy": getattr(detail, "privacy", None),
-        "redaction_state": getattr(detail, "redaction_state", None),
         "content_type": getattr(detail, "content_type", None),
         "event": amap.get(getattr(detail, "event_id", None)),        # EDGE: detail -> its event
         "artifact": amap.get(getattr(detail, "artifact_id", None)),  # EDGE: detail -> its artifact
-        "text": _canon(getattr(detail, "text", None), amap),
-        "json": _canon(getattr(detail, "json_value", None), amap),
+        "body": _canon(getattr(detail, "body", None), amap),
+        "display_text": _canon(render_observation_body_text(detail.body), amap),
         "metadata": _canon(dict(getattr(detail, "metadata", {}) or {}), amap),
         "has_digest": bool(getattr(detail, "digest", None)),
         "digest_consistent": _digest_consistent(detail),

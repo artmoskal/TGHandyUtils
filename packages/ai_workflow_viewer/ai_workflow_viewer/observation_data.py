@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ai_workflow_engine import (
-    ObservationBundleMetaV3,
-    ObservationDetail,
+    ObservationBundleMetaV4,
+    ObservationDetailEnvelope,
     WorkflowDefinition,
     WorkflowTraceEvent,
     WorkflowUsageEvent,
@@ -20,7 +20,7 @@ class ObservationRecord:
     type: str
     sequence: int | None
     event_id: str
-    record: WorkflowTraceEvent | ObservationDetail | WorkflowUsageEvent
+    record: WorkflowTraceEvent | ObservationDetailEnvelope | WorkflowUsageEvent
 
     def as_event_payload(self) -> dict:
         return {"type": self.type, "record": self.record.model_dump(by_alias=True)}
@@ -33,14 +33,14 @@ class ObservationRunData:
     run_id: str
     definition: WorkflowDefinition
     records: list[ObservationRecord]
-    meta: ObservationBundleMetaV3
+    meta: ObservationBundleMetaV4
 
     @property
     def trace_events(self) -> list[WorkflowTraceEvent]:
         return [item.record for item in self.records if item.type == "trace"]
 
     @property
-    def details(self) -> list[ObservationDetail]:
+    def details(self) -> list[ObservationDetailEnvelope]:
         return [item.record for item in self.records if item.type == "detail"]
 
     @property
@@ -83,7 +83,7 @@ class ObservationGroupData:
         return [item.record for item in self.records if item.type == "trace"]
 
     @property
-    def details(self) -> list[ObservationDetail]:
+    def details(self) -> list[ObservationDetailEnvelope]:
         return [item.record for item in self.records if item.type == "detail"]
 
     @property

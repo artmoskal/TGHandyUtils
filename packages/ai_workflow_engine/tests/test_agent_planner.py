@@ -438,10 +438,10 @@ async def test_llm_agent_planner_memory_projection_full_capture_fingerprints_ima
 
     assert decision.action == "finish"
     detail = next(item for item in details.details if item.kind == "memory_projection")
-    assert detail.redaction_state == "none"
-    assert detail.text is not None
-    assert "c2VjcmV0LWJ5dGVz" not in detail.text
-    assert "fingerprint" in detail.text
+    assert detail.body.kind == "json"
+    rendered = json.dumps(detail.body.value, sort_keys=True)
+    assert "c2VjcmV0LWJ5dGVz" not in rendered
+    assert "fingerprint" in rendered
 
 
 async def test_llm_agent_planner_records_prompt_and_response_details_when_full_capture_enabled():
@@ -469,10 +469,10 @@ async def test_llm_agent_planner_records_prompt_and_response_details_when_full_c
     assert "llm_response" in kinds
     prompt_detail = next(detail for detail in details.details if detail.kind == "rendered_prompt")
     response_detail = next(detail for detail in details.details if detail.kind == "llm_response")
-    assert prompt_detail.redaction_state == "none"
-    assert response_detail.redaction_state == "none"
-    assert "Agent prompt" in (prompt_detail.text or "")
-    assert '"caption": "done"' in (response_detail.text or "")
+    assert prompt_detail.body.kind == "json"
+    assert response_detail.body.kind == "json"
+    assert "Agent prompt" in json.dumps(prompt_detail.body.value)
+    assert response_detail.body.value["text"] == '{"caption": "done"}'
 
 
 async def test_llm_agent_planner_prefers_ambient_observation_capture():

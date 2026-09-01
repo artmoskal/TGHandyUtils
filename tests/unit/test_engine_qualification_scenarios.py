@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from ai_workflow_engine.llm_protocol import LLMResponse
+from ai_workflow_engine import ObservationReader
 
 from tests.support.engine_qualification import (
     QualificationConfig,
@@ -239,12 +240,11 @@ async def test_slackazz_scenario_suspends_resumes_and_denies_external_send(tmp_p
     # completed; the suspension half stays linked.
     assert outcome.bundle_path and outcome.linked_bundles.get("suspension")
     assert outcome.bundle_path != outcome.linked_bundles["suspension"]
-    import json as _json
-
-    resumed_trace = (Path(outcome.bundle_path) / "trace.jsonl").read_text(encoding="utf-8")
-    assert "machine:resumed" in resumed_trace
-    meta = _json.loads((Path(outcome.bundle_path) / "meta.json").read_text(encoding="utf-8"))
-    assert meta.get("status") == "completed", f"resumed bundle must finalize completed: {meta}"
+    reader = ObservationReader(outcome.bundle_path)
+    assert any(event.decision == "machine:resumed" for event in reader.iter_trace_events())
+    assert reader.meta.status == "completed", (
+        f"resumed bundle must finalize completed: {reader.meta.model_dump()}"
+    )
 
 
 async def test_slackazz_reject_decision_fails_loudly_through_the_real_resume_path(tmp_path):

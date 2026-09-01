@@ -136,8 +136,8 @@ async def test_planner_records_planner_output_detail_when_enabled():
     planner_detail = next(detail for detail in details.details if detail.kind == "planner_output")
     assert planner_event.detail_refs == [planner_detail.detail_id]
     assert planner_event.metadata["task_count"] == 1
-    assert planner_detail.redaction_state == "none"
-    assert planner_detail.json_value["goal"] == "SECRET goal"
+    assert planner_detail.body.kind == "json"
+    assert planner_detail.body.value["goal"] == "SECRET goal"
     assert "SECRET" not in planner_event.model_dump_json()
     assert "SECRET" in planner_detail.model_dump_json(by_alias=True)
 

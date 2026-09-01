@@ -301,6 +301,7 @@ class WorkflowEngine:
                 # at-least-once redelivery repairs it (branch below).
                 committed = segment_lifecycle.commit_attempt(
                     self.observation.bundle_dir,
+                    str(record.run_id),
                     segment_lifecycle.attempt_segment_id(
                         str(record.run_id),
                         int(record.origin_segment_index) + 1,
@@ -665,7 +666,6 @@ class WorkflowEngine:
                 retention_limit=self.observation.retention_limit,
                 artifact_policy=self.observation.artifacts,
                 artifact_max_bytes=self.observation.artifact_max_bytes,
-                evict_suspended_after_s=self.observation.evict_suspended_after_s,
                 correlation_id=context.run_context.correlation_id,
                 # W4.1: the initial segment keeps the pre-W4 directory key (= run id), so
                 # ordinary single-run bundle paths are byte-stable; segment meta is additive.
@@ -831,7 +831,6 @@ class WorkflowEngine:
                 retention_limit=self.observation.retention_limit,
                 artifact_policy=self.observation.artifacts,
                 artifact_max_bytes=self.observation.artifact_max_bytes,
-                evict_suspended_after_s=self.observation.evict_suspended_after_s,
                 correlation_id=context.run_context.correlation_id,
                 segment=ObservationSegment(
                     segment_id=segment_id,

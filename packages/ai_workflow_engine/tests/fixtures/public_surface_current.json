@@ -62,7 +62,6 @@
     "InMemoryUsageSink": "export",
     "InMemoryWaitCoordinator": "export",
     "JsonlCheckpointStore": "export",
-    "JsonlDetailSink": "export",
     "JsonlExternalWriteSink": "export",
     "JsonlTraceSink": "export",
     "JsonlUsageSink": "export",
@@ -84,12 +83,16 @@
     "NotionalPricingPolicy": "export",
     "NotionalPricingResult": "export",
     "NotionalRate": "export",
-    "ObservationBundleMetaV3": "export",
+    "ObservationBundleMetaV4": "export",
     "ObservationConfig": "export",
     "ObservationDetail": "export",
+    "ObservationDetailEnvelope": "export",
+    "ObservationJsonBody": "export",
+    "ObservationReader": "export",
     "ObservationRunBundle": "export",
     "ObservationSegment": "export",
     "ObservationSequence": "export",
+    "ObservationTextBody": "export",
     "PlanArtifact": "export",
     "PlanTask": "export",
     "ProcessIOLimits": "export",
@@ -188,7 +191,7 @@
     "format_trace_events": "export",
     "gather_capabilities": "export",
     "is_plain_llm_callable": "export",
-    "load_bundle_meta_v3": "export",
+    "load_bundle_meta_v4": "export",
     "load_prompt_template": "export",
     "load_workflow_config": "export",
     "model_profile_scope": "export",
@@ -6730,7 +6733,7 @@
       "title": "NotionalRate",
       "type": "object"
     },
-    "ObservationBundleMetaV3": {
+    "ObservationBundleMetaV4": {
       "$defs": {
         "ProviderEvidenceIntegrity": {
           "additionalProperties": false,
@@ -6766,7 +6769,7 @@
         }
       },
       "additionalProperties": false,
-      "description": "The CLOSED, versioned meta contract of one observation segment.\n\nEvery engine-written bundle is a segment of a logical run and carries its full identity,\nfile layout, counts, cost truth, definition digest, and provider-evidence integrity.\nUnknown or missing fields fail; pre-v3 metas are rejected by\n:func:`load_bundle_meta_v3` with the historical-tag route. The current line has no\nimporter or compatibility reader.",
+      "description": "Closed latest-only metadata for one v4 observation segment.",
       "properties": {
         "artifact_count": {
           "minimum": 0,
@@ -6802,7 +6805,7 @@
           "title": "Attempt"
         },
         "bundle_schema_version": {
-          "const": 3,
+          "const": 4,
           "title": "Bundle Schema Version",
           "type": "integer"
         },
@@ -6836,6 +6839,11 @@
           "const": "details.jsonl",
           "title": "Detail Path",
           "type": "string"
+        },
+        "inline_body_max_bytes": {
+          "const": 4096,
+          "title": "Inline Body Max Bytes",
+          "type": "integer"
         },
         "metered_usd": {
           "anyOf": [
@@ -6939,6 +6947,11 @@
           "title": "Usage Totals Scope",
           "type": "string"
         },
+        "value_store_layout": {
+          "const": "run-scoped-sha256-gzip-v1",
+          "title": "Value Store Layout",
+          "type": "string"
+        },
         "workflow_id": {
           "title": "Workflow Id",
           "type": "string"
@@ -6957,6 +6970,8 @@
         "definition_digest",
         "artifact_manifest_path",
         "artifact_root",
+        "value_store_layout",
+        "inline_body_max_bytes",
         "artifact_count",
         "artifacts_copied",
         "trace_count",
@@ -6969,7 +6984,7 @@
         "segment_kind",
         "provider_evidence"
       ],
-      "title": "ObservationBundleMetaV3",
+      "title": "ObservationBundleMetaV4",
       "type": "object"
     },
     "ObservationConfig": {
@@ -7010,19 +7025,6 @@
           "title": "Enabled",
           "type": "boolean"
         },
-        "evict_suspended_after_s": {
-          "anyOf": [
-            {
-              "exclusiveMinimum": 0,
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Evict Suspended After S"
-        },
         "retention_limit": {
           "anyOf": [
             {
@@ -7040,7 +7042,51 @@
       "type": "object"
     },
     "ObservationDetail": {
-      "description": "Heavy/private observability payload linked from a compact trace event.",
+      "$defs": {
+        "ObservationJsonBody": {
+          "additionalProperties": false,
+          "description": "One logical structured observation body before persistence chooses its layout.",
+          "properties": {
+            "kind": {
+              "const": "json",
+              "default": "json",
+              "title": "Kind",
+              "type": "string"
+            },
+            "value": {
+              "title": "Value"
+            }
+          },
+          "required": [
+            "value"
+          ],
+          "title": "ObservationJsonBody",
+          "type": "object"
+        },
+        "ObservationTextBody": {
+          "additionalProperties": false,
+          "description": "One logical exact UTF-8 text observation body.",
+          "properties": {
+            "kind": {
+              "const": "text",
+              "default": "text",
+              "title": "Kind",
+              "type": "string"
+            },
+            "value": {
+              "title": "Value",
+              "type": "string"
+            }
+          },
+          "required": [
+            "value"
+          ],
+          "title": "ObservationTextBody",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "description": "Logical observation detail with exactly one source body.",
       "properties": {
         "artifact_id": {
           "anyOf": [
@@ -7054,6 +7100,24 @@
           "default": null,
           "title": "Artifact Id"
         },
+        "body": {
+          "discriminator": {
+            "mapping": {
+              "json": "#/$defs/ObservationJsonBody",
+              "text": "#/$defs/ObservationTextBody"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ObservationJsonBody"
+            },
+            {
+              "$ref": "#/$defs/ObservationTextBody"
+            }
+          ],
+          "title": "Body"
+        },
         "content_type": {
           "default": "text/plain",
           "title": "Content Type",
@@ -7064,16 +7128,8 @@
           "type": "string"
         },
         "digest": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Digest"
+          "title": "Digest",
+          "type": "string"
         },
         "event_id": {
           "title": "Event Id",
@@ -7094,19 +7150,6 @@
           "default": null,
           "title": "Invocation Id"
         },
-        "json": {
-          "anyOf": [
-            {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Json"
-        },
         "kind": {
           "enum": [
             "rendered_prompt",
@@ -7124,27 +7167,6 @@
           "additionalProperties": true,
           "title": "Metadata",
           "type": "object"
-        },
-        "privacy": {
-          "default": "internal",
-          "enum": [
-            "public",
-            "internal",
-            "confidential",
-            "secret"
-          ],
-          "title": "Privacy",
-          "type": "string"
-        },
-        "redaction_state": {
-          "default": "digest_only",
-          "enum": [
-            "none",
-            "redacted",
-            "digest_only"
-          ],
-          "title": "Redaction State",
-          "type": "string"
         },
         "run_id": {
           "anyOf": [
@@ -7169,8 +7191,125 @@
           ],
           "default": null,
           "title": "Sequence"
+        }
+      },
+      "required": [
+        "event_id",
+        "kind",
+        "body",
+        "digest"
+      ],
+      "title": "ObservationDetail",
+      "type": "object"
+    },
+    "ObservationDetailEnvelope": {
+      "$defs": {
+        "InlineJsonObservationBody": {
+          "additionalProperties": false,
+          "description": "Canonical JSON stored directly in a compact detail envelope.",
+          "properties": {
+            "byte_length": {
+              "maximum": 4096,
+              "minimum": 0,
+              "title": "Byte Length",
+              "type": "integer"
+            },
+            "kind": {
+              "const": "inline_json",
+              "title": "Kind",
+              "type": "string"
+            },
+            "sha256": {
+              "pattern": "^[0-9a-f]{64}$",
+              "title": "Sha256",
+              "type": "string"
+            },
+            "value": {
+              "title": "Value"
+            }
+          },
+          "required": [
+            "kind",
+            "value",
+            "sha256",
+            "byte_length"
+          ],
+          "title": "InlineJsonObservationBody",
+          "type": "object"
         },
-        "text": {
+        "InlineTextObservationBody": {
+          "additionalProperties": false,
+          "description": "Exact UTF-8 text stored directly in a compact detail envelope.",
+          "properties": {
+            "byte_length": {
+              "maximum": 4096,
+              "minimum": 0,
+              "title": "Byte Length",
+              "type": "integer"
+            },
+            "kind": {
+              "const": "inline_text",
+              "title": "Kind",
+              "type": "string"
+            },
+            "sha256": {
+              "pattern": "^[0-9a-f]{64}$",
+              "title": "Sha256",
+              "type": "string"
+            },
+            "value": {
+              "title": "Value",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "value",
+            "sha256",
+            "byte_length"
+          ],
+          "title": "InlineTextObservationBody",
+          "type": "object"
+        },
+        "ReferencedObservationBody": {
+          "additionalProperties": false,
+          "description": "Run-scoped immutable canonical body selected by SHA-256.",
+          "properties": {
+            "byte_length": {
+              "exclusiveMinimum": 4096,
+              "title": "Byte Length",
+              "type": "integer"
+            },
+            "codec": {
+              "const": "gzip",
+              "title": "Codec",
+              "type": "string"
+            },
+            "kind": {
+              "const": "body_ref",
+              "title": "Kind",
+              "type": "string"
+            },
+            "sha256": {
+              "pattern": "^[0-9a-f]{64}$",
+              "title": "Sha256",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "sha256",
+            "byte_length",
+            "codec"
+          ],
+          "title": "ReferencedObservationBody",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "description": "Closed persisted v4 detail occurrence; body truth is inline or run-scoped.",
+      "properties": {
+        "artifact_id": {
           "anyOf": [
             {
               "type": "string"
@@ -7180,14 +7319,140 @@
             }
           ],
           "default": null,
-          "title": "Text"
+          "title": "Artifact Id"
+        },
+        "body": {
+          "discriminator": {
+            "mapping": {
+              "body_ref": "#/$defs/ReferencedObservationBody",
+              "inline_json": "#/$defs/InlineJsonObservationBody",
+              "inline_text": "#/$defs/InlineTextObservationBody"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/InlineJsonObservationBody"
+            },
+            {
+              "$ref": "#/$defs/InlineTextObservationBody"
+            },
+            {
+              "$ref": "#/$defs/ReferencedObservationBody"
+            }
+          ],
+          "title": "Body"
+        },
+        "content_type": {
+          "title": "Content Type",
+          "type": "string"
+        },
+        "detail_id": {
+          "title": "Detail Id",
+          "type": "string"
+        },
+        "event_id": {
+          "title": "Event Id",
+          "type": "string"
+        },
+        "invocation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Invocation Id"
+        },
+        "kind": {
+          "enum": [
+            "rendered_prompt",
+            "llm_response",
+            "tool_payload",
+            "tool_result",
+            "artifact_preview",
+            "planner_output",
+            "memory_projection"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "title": "Metadata",
+          "type": "object"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "sequence": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sequence"
         }
       },
       "required": [
+        "detail_id",
         "event_id",
-        "kind"
+        "run_id",
+        "kind",
+        "content_type",
+        "body"
       ],
-      "title": "ObservationDetail",
+      "title": "ObservationDetailEnvelope",
+      "type": "object"
+    },
+    "ObservationJsonBody": {
+      "additionalProperties": false,
+      "description": "One logical structured observation body before persistence chooses its layout.",
+      "properties": {
+        "kind": {
+          "const": "json",
+          "default": "json",
+          "title": "Kind",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value"
+        }
+      },
+      "required": [
+        "value"
+      ],
+      "title": "ObservationJsonBody",
+      "type": "object"
+    },
+    "ObservationTextBody": {
+      "additionalProperties": false,
+      "description": "One logical exact UTF-8 text observation body.",
+      "properties": {
+        "kind": {
+          "const": "text",
+          "default": "text",
+          "title": "Kind",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "value"
+      ],
+      "title": "ObservationTextBody",
       "type": "object"
     },
     "PlanArtifact": {
@@ -9422,19 +9687,6 @@
               "default": false,
               "title": "Enabled",
               "type": "boolean"
-            },
-            "evict_suspended_after_s": {
-              "anyOf": [
-                {
-                  "exclusiveMinimum": 0,
-                  "type": "number"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "title": "Evict Suspended After S"
             },
             "retention_limit": {
               "anyOf": [

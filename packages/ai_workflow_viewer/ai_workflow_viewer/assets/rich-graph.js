@@ -103,7 +103,7 @@
       <div class="detail-card">
         <div class="detail-card-header">
           <span class="detail-kind">${escapeHtml(detail.kind)}</span>
-          <span class="muted">${escapeHtml(detail.redaction_state)} · ${escapeHtml(detail.privacy)}</span>
+          <span class="muted">${escapeHtml(detail.storage || "detail")}</span>
           ${rawLink}
         </div>
         <div class="detail-summary">${escapeHtml(detail.summary || "(no summary)")}</div>

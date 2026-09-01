@@ -507,8 +507,8 @@ async def test_capability_runtime_records_tool_payload_and_result_details_when_e
     assert tool_events[1].detail_refs == [details.details[1].detail_id]
     assert details.details[0].event_id == tool_events[0].event_id
     assert details.details[1].event_id == tool_events[1].event_id
-    assert details.details[0].redaction_state == "none"
-    assert details.details[0].json_value["payload"]["text"] == "SECRET input"
+    assert details.details[0].body.kind == "json"
+    assert details.details[0].body.value["payload"]["text"] == "SECRET input"
     trace_blob = json.dumps([event.model_dump() for event in tool_events], default=str)
     detail_blob = json.dumps([detail.model_dump(by_alias=True) for detail in details.details], default=str)
     assert "SECRET input" not in trace_blob
@@ -534,8 +534,8 @@ async def test_capability_runtime_records_tool_error_detail_when_enabled():
     assert response_event.severity == "error"
     assert response_event.error == "tool exploded"
     assert response_event.detail_refs == [response_detail.detail_id]
-    assert response_detail.redaction_state == "none"
-    assert response_detail.json_value["error"] == "tool exploded"
+    assert response_detail.body.kind == "json"
+    assert response_detail.body.value["error"] == "tool exploded"
 
 
 async def test_capability_runtime_records_artifact_preview_details_when_enabled():
@@ -569,8 +569,8 @@ async def test_capability_runtime_records_artifact_preview_details_when_enabled(
     artifact_detail = details.details[2]
     assert artifact_event.detail_refs == [details.details[1].detail_id, artifact_detail.detail_id]
     assert artifact_detail.event_id == artifact_event.event_id
-    assert artifact_detail.redaction_state == "none"
-    assert artifact_detail.json_value["artifact"]["path"] == "/tmp/engine-observation-report.html"
+    assert artifact_detail.body.kind == "json"
+    assert artifact_detail.body.value["artifact"]["path"] == "/tmp/engine-observation-report.html"
 
 
 async def test_jsonl_trace_sink_records_events(tmp_path):

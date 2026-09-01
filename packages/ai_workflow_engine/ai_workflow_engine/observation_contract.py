@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 import json
 from pathlib import Path
-from typing import Literal, Optional, get_args
+from typing import Annotated, Any, Iterator, Literal, Optional, Union, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -16,7 +16,8 @@ COMMIT_MARKER_NAME = "commit.json"
 ABANDON_MARKER_NAME = "abandoned.json"
 ARTIFACT_DIR_NAME = "artifacts"
 ARTIFACT_MANIFEST_NAME = "artifacts.json"
-BUNDLE_SCHEMA_VERSION = 3
+BUNDLE_SCHEMA_VERSION = 4
+INLINE_BODY_MAX_BYTES = 4_096
 
 BundleStatus = Literal[
     "accepted",
@@ -34,6 +35,23 @@ BundleStatus = Literal[
     "abandoned",
 ]
 _BUNDLE_STATUSES = get_args(BundleStatus)
+
+
+def canonical_json_chunks(value: Any) -> Iterator[bytes]:
+    """Yield the persisted canonical JSON representation."""
+
+    encoder = json.JSONEncoder(
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+    for chunk in encoder.iterencode(value):
+        yield chunk.encode("utf-8")
+
+
+def canonical_json_bytes(value: Any) -> bytes:
+    return b"".join(canonical_json_chunks(value))
 
 
 def _looks_like_path(value: str) -> bool:
@@ -125,19 +143,100 @@ class ProviderEvidenceIntegrity(BaseModel):
         return self
 
 
-class ObservationBundleMetaV3(BaseModel):
-    """The CLOSED, versioned meta contract of one observation segment.
-
-    Every engine-written bundle is a segment of a logical run and carries its full identity,
-    file layout, counts, cost truth, definition digest, and provider-evidence integrity.
-    Unknown or missing fields fail; pre-v3 metas are rejected by
-    :func:`load_bundle_meta_v3` with the historical-tag route. The current line has no
-    importer or compatibility reader.
-    """
+class InlineJsonObservationBody(BaseModel):
+    """Canonical JSON stored directly in a compact detail envelope."""
 
     model_config = ConfigDict(extra="forbid")
 
-    bundle_schema_version: Literal[3]
+    kind: Literal["inline_json"]
+    value: Any
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    byte_length: int = Field(ge=0, le=INLINE_BODY_MAX_BYTES)
+
+    @model_validator(mode="after")
+    def _canonical_identity(self) -> "InlineJsonObservationBody":
+        raw = canonical_json_bytes(self.value)
+        _assert_body_identity(raw, self.sha256, self.byte_length)
+        return self
+
+
+class InlineTextObservationBody(BaseModel):
+    """Exact UTF-8 text stored directly in a compact detail envelope."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["inline_text"]
+    value: str
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    byte_length: int = Field(ge=0, le=INLINE_BODY_MAX_BYTES)
+
+    @model_validator(mode="after")
+    def _canonical_identity(self) -> "InlineTextObservationBody":
+        raw = self.value.encode("utf-8")
+        _assert_body_identity(raw, self.sha256, self.byte_length)
+        return self
+
+
+class ReferencedObservationBody(BaseModel):
+    """Run-scoped immutable canonical body selected by SHA-256."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["body_ref"]
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    byte_length: int = Field(gt=INLINE_BODY_MAX_BYTES)
+    codec: Literal["gzip"]
+
+
+PersistedObservationBody = Annotated[
+    Union[
+        InlineJsonObservationBody,
+        InlineTextObservationBody,
+        ReferencedObservationBody,
+    ],
+    Field(discriminator="kind"),
+]
+
+
+class ObservationDetailEnvelope(BaseModel):
+    """Closed persisted v4 detail occurrence; body truth is inline or run-scoped."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    detail_id: str
+    event_id: str
+    run_id: str
+    sequence: Optional[int] = Field(default=None, ge=1)
+    invocation_id: Optional[str] = None
+    kind: Literal[
+        "rendered_prompt",
+        "llm_response",
+        "tool_payload",
+        "tool_result",
+        "artifact_preview",
+        "planner_output",
+        "memory_projection",
+    ]
+    content_type: str
+    body: PersistedObservationBody
+    artifact_id: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _closed_identity(self) -> "ObservationDetailEnvelope":
+        for name in ("detail_id", "event_id", "run_id", "content_type"):
+            if not str(getattr(self, name) or "").strip():
+                raise ValueError(f"observation detail envelope {name} must be nonblank")
+        assert_plain_identity(self.run_id, what="observation detail run_id")
+        return self
+
+
+class ObservationBundleMetaV4(BaseModel):
+    """Closed latest-only metadata for one v4 observation segment."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    bundle_schema_version: Literal[4]
     run_id: str
     workflow_id: str
     status: BundleStatus
@@ -149,6 +248,8 @@ class ObservationBundleMetaV3(BaseModel):
     definition_digest: str
     artifact_manifest_path: Literal["artifacts.json"]
     artifact_root: Literal["artifacts"]
+    value_store_layout: Literal["run-scoped-sha256-gzip-v1"]
+    inline_body_max_bytes: Literal[4096]
     artifact_count: int = Field(ge=0)
     artifacts_copied: int = Field(ge=0)
     trace_count: int = Field(ge=0)
@@ -166,31 +267,10 @@ class ObservationBundleMetaV3(BaseModel):
     provider_evidence: ProviderEvidenceIntegrity
 
     @model_validator(mode="after")
-    def _coherent_segment_identity(self) -> "ObservationBundleMetaV3":
-        problems: list[str] = []
-        for name in ("run_id", "workflow_id", "segment_id", "timestamp", "definition_digest"):
-            if not str(getattr(self, name) or "").strip():
-                problems.append(f"{name} is blank")
-        for name in ("run_id", "segment_id"):
-            try:
-                assert_plain_identity(str(getattr(self, name)), what=name)
-            except ValueError as exc:
-                problems.append(str(exc))
-        try:
-            parsed = datetime.fromisoformat(str(self.timestamp).replace("Z", "+00:00"))
-            if parsed.tzinfo is None:
-                problems.append(f"timestamp {self.timestamp!r} is not timezone-aware")
-        except ValueError:
-            problems.append(f"timestamp {self.timestamp!r} is not ISO-8601")
-        if self.segment_kind == "initial" and (
-            self.segment_index != 0 or self.attempt is not None
-        ):
-            problems.append(
-                f"initial segment must have segment_index=0 and no attempt — got "
-                f"index={self.segment_index}, attempt={self.attempt!r}"
-            )
-        if self.segment_kind in ("resume", "wait_terminal") and self.segment_index < 1:
-            problems.append(f"{self.segment_kind} segment needs segment_index >= 1")
+    def _coherent_segment_identity(self) -> "ObservationBundleMetaV4":
+        problems = _meta_identity_problems(self)
+        problems.extend(_timestamp_problems(self.timestamp))
+        problems.extend(_segment_shape_problems(self))
         if self.status == "completed" and self.provider_evidence.integrity != "complete":
             problems.append("completed bundle requires complete provider evidence")
         if problems:
@@ -198,15 +278,45 @@ class ObservationBundleMetaV3(BaseModel):
         return self
 
 
-def load_bundle_meta_v3(bundle_dir: Path) -> ObservationBundleMetaV3:
-    """Read one strict current-schema bundle meta without following child symlinks."""
+def _meta_identity_problems(meta: ObservationBundleMetaV4) -> list[str]:
+    problems = [
+        f"{name} is blank"
+        for name in ("run_id", "workflow_id", "segment_id", "timestamp", "definition_digest")
+        if not str(getattr(meta, name) or "").strip()
+    ]
+    for name in ("run_id", "segment_id"):
+        try:
+            assert_plain_identity(str(getattr(meta, name)), what=name)
+        except ValueError as exc:
+            problems.append(str(exc))
+    return problems
 
-    if Path(bundle_dir).is_symlink():
-        raise ValueError(
-            f"observation bundle directory {bundle_dir} is a symlink — symlinked children "
-            "of the bundle root are rejected (history lives in real directories)"
-        )
-    root = Path(bundle_dir).resolve()
+
+def _timestamp_problems(value: str) -> list[str]:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return [f"timestamp {value!r} is not ISO-8601"]
+    if parsed.tzinfo is None:
+        return [f"timestamp {value!r} is not timezone-aware"]
+    return []
+
+
+def _segment_shape_problems(meta: ObservationBundleMetaV4) -> list[str]:
+    if meta.segment_kind == "initial" and (meta.segment_index != 0 or meta.attempt is not None):
+        return [
+            "initial segment must have segment_index=0 and no attempt — got "
+            f"index={meta.segment_index}, attempt={meta.attempt!r}"
+        ]
+    if meta.segment_kind in ("resume", "wait_terminal") and meta.segment_index < 1:
+        return [f"{meta.segment_kind} segment needs segment_index >= 1"]
+    return []
+
+
+def load_bundle_meta_v4(bundle_dir: Path) -> ObservationBundleMetaV4:
+    """Read one strict v4 segment meta without following symlinks or guessing formats."""
+
+    root = _validated_bundle_root(bundle_dir)
     meta_path = root / "meta.json"
     if not meta_path.resolve().is_relative_to(root):
         raise ValueError(
@@ -218,10 +328,30 @@ def load_bundle_meta_v3(bundle_dir: Path) -> ObservationBundleMetaV3:
     if version != BUNDLE_SCHEMA_VERSION:
         raise ValueError(
             f"unsupported observation-bundle schema in {Path(bundle_dir).name!r}: expected "
-            f"{BUNDLE_SCHEMA_VERSION}, got {version!r} — read pre-v3 bundles with their "
-            "matching historical engine/viewer tag (the current line has no importer)"
+            f"{BUNDLE_SCHEMA_VERSION}, got {version!r} — v4 has no v3 reader, importer, "
+            "or compatibility path; use a fresh observation root"
         )
-    return ObservationBundleMetaV3.model_validate(raw)
+    return ObservationBundleMetaV4.model_validate(raw)
+
+
+def _validated_bundle_root(bundle_dir: Path) -> Path:
+    if Path(bundle_dir).is_symlink():
+        raise ValueError(
+            f"observation bundle directory {bundle_dir} is a symlink — symlinked children "
+            "of the bundle root are rejected (history lives in real directories)"
+        )
+    return Path(bundle_dir).resolve()
+
+
+def _assert_body_identity(raw: bytes, expected_sha256: str, expected_length: int) -> None:
+    import hashlib
+
+    actual_sha256 = hashlib.sha256(raw).hexdigest()
+    if actual_sha256 != expected_sha256 or len(raw) != expected_length:
+        raise ValueError(
+            "inline observation body failed canonical digest/length validation: "
+            f"got sha256={actual_sha256!r}, bytes={len(raw)}"
+        )
 
 
 __all__ = [
@@ -232,10 +362,16 @@ __all__ = [
     "BundleStatus",
     "COMMIT_MARKER_NAME",
     "DEFAULT_ARTIFACT_MAX_BYTES",
-    "ObservationBundleMetaV3",
+    "ObservationBundleMetaV4",
+    "ObservationDetailEnvelope",
     "ObservationSegment",
+    "PersistedObservationBody",
     "ProviderEvidenceIntegrity",
+    "ReferencedObservationBody",
+    "InlineJsonObservationBody",
+    "InlineTextObservationBody",
+    "INLINE_BODY_MAX_BYTES",
     "assert_plain_identity",
-    "load_bundle_meta_v3",
+    "load_bundle_meta_v4",
     "resolve_child_dir",
 ]

@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from ai_workflow_engine import (
     ObservationConfig,
+    ObservationReader,
     WorkflowBuilder,
     WorkflowEngineBuilder,
     WorkflowGoal,
@@ -407,7 +408,8 @@ async def test_codex_image_agent_persists_one_linked_provider_invocation_graph(
     assert str(usage.invocation_id) in page
     assert f"{usage.elapsed_ms} ms" in page
 
-    usage_path = Path(result.observation_bundle_path) / "usage.jsonl"
+    persisted = ObservationReader(result.observation_bundle_path)
+    usage_path = Path(result.observation_bundle_path) / persisted.meta.usage_path
     row = json.loads(usage_path.read_text(encoding="utf-8"))
     row.pop("invocation_id")
     usage_path.write_text(json.dumps(row) + "\n", encoding="utf-8")
@@ -1458,7 +1460,8 @@ async def test_large_stdin_prompt_run_produces_a_truthful_observation_bundle(
         # staged image must be fingerprinted. Blanking "prompt": request.prompt must break this.
         assert rendered, "full capture recorded no rendered_prompt detail"
         detail = next(d for d in rendered if d.invocation_id == usage.invocation_id)
-        payload = detail.json_value or {}
+        reader = ObservationReader(result.observation_bundle_path)
+        payload = reader.parse_json(detail, max_bytes=512 * 1024)
         assert payload.get("prompt") == prompt, "captured prompt is not the complete rendered prompt"
         # The stored digest is the payload digest (sha256 of the canonical-JSON payload), recomputed
         # here independently over the read-back payload — so a decoupled or fabricated digest fails.
@@ -1467,24 +1470,24 @@ async def test_large_stdin_prompt_run_produces_a_truthful_observation_bundle(
         # complete-prompt payload hashes to.
         import hashlib as _hashlib
 
-        recomputed = _hashlib.sha256(
-            json.dumps(payload, sort_keys=True, default=str, ensure_ascii=True).encode("utf-8")
-        ).hexdigest()
-        assert detail.digest == recomputed, "stored digest is decoupled from the captured payload"
+        from ai_workflow_engine.observation_values import canonical_json_bytes
+
+        recomputed = _hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
+        assert detail.body.sha256 == recomputed, (
+            "stored digest is decoupled from the captured payload"
+        )
         prompt_trace = next(
             tr for tr in data.trace_events
             if tr.phase == "provider:request" and tr.invocation_id == usage.invocation_id
         )
-        assert prompt_trace.metadata.get("prompt_digest") == detail.digest, (
+        assert prompt_trace.metadata.get("prompt_digest") == detail.body.sha256, (
             "trace prompt_digest missing or disagrees with the detail digest"
         )
         # Independent proof the digest actually binds THIS prompt: a payload with the prompt blanked
         # must hash differently, which is exactly the mutation codex requires this test to kill.
         blanked = dict(payload, prompt="")
-        blanked_digest = _hashlib.sha256(
-            json.dumps(blanked, sort_keys=True, default=str, ensure_ascii=True).encode("utf-8")
-        ).hexdigest()
-        assert detail.digest != blanked_digest, "digest does not bind the prompt content"
+        blanked_digest = _hashlib.sha256(canonical_json_bytes(blanked)).hexdigest()
+        assert detail.body.sha256 != blanked_digest, "digest does not bind the prompt content"
         fingerprints = payload["input_fingerprints"]
         assert len(fingerprints) == 1
         fp = fingerprints[0]
@@ -1506,9 +1509,7 @@ async def test_large_stdin_prompt_run_produces_a_truthful_observation_bundle(
             if path.is_file() and path.suffix in {".json", ".jsonl"}
         )
         assert _SENTINEL not in bundle_text, "capture=off retained prompt content"
-        assert not any(
-            d.kind == "rendered_prompt" and (d.detail_refs or []) for d in data.details
-        )
+        assert not rendered
         request_traces = [tr for tr in data.trace_events if tr.phase == "provider:request"]
         assert request_traces, "no provider:request trace to project capture truth"
         assert all(tr.detail_capture == "capture_mode_off" for tr in request_traces)

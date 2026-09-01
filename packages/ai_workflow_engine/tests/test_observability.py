@@ -12,6 +12,7 @@ from ai_workflow_engine import (
     InMemoryTraceSink,
     InMemoryUsageSink,
     ObservationDetail,
+    ObservationJsonBody,
     WorkflowBuilder,
     WorkflowEngineBuilder,
     WorkflowGoal,
@@ -19,10 +20,11 @@ from ai_workflow_engine import (
     WorkflowTraceEvent,
     WorkflowUsageEvent,
 )
-from ai_workflow_engine.engine import InMemoryDetailSink, JsonlDetailSink
+from ai_workflow_engine.engine import InMemoryDetailSink
 from ai_workflow_engine.observability_capture import byte_free
 from ai_workflow_engine.observation_bundle import open_observation_run_bundle, prune_observation_bundles
 from ai_workflow_engine.observation_integrity import validate_provider_invocation_links
+from ai_workflow_engine.observation_values import body_sha256
 from ai_workflow_engine.usage import invoke_metered_chat
 from ai_workflow_engine.usage_events import record_usage_event
 from ai_workflow_engine.usage_contract import NotionalPricingResult
@@ -31,39 +33,29 @@ from ai_workflow_viewer import build_observation_graph, observation_graph_to_htm
 pytestmark = pytest.mark.unit
 
 
+def _detail(*, body=None, **fields):
+    logical_body = ObservationJsonBody(value={} if body is None else body)
+    return ObservationDetail(body=logical_body, digest=body_sha256(logical_body), **fields)
+
+
+def _detail_json(detail: ObservationDetail):
+    assert detail.body.kind == "json"
+    return detail.body.value
+
+
 def test_observation_detail_rejects_inline_raw_bytes():
     with pytest.raises(ValueError, match="raw bytes"):
-        ObservationDetail(
+        _detail(
             event_id="event-1",
             kind="tool_payload",
-            redaction_state="none",
             content_type="application/json",
-            json={"image": b"raw"},
+            body={"image": b"raw"},
         )
-
-
-def test_detail_jsonl_sink_round_trips_alias_shape(tmp_path):
-    detail = ObservationDetail(
-        event_id="event-1",
-        kind="rendered_prompt",
-        redaction_state="digest_only",
-        content_type="text/plain",
-        digest="abc123",
-    )
-    memory = InMemoryDetailSink()
-    memory.record(detail)
-    path = tmp_path / "details.jsonl"
-    JsonlDetailSink(path).record(detail)
-
-    assert memory.details == [detail]
-    row = json.loads(path.read_text().splitlines()[0])
-    assert row["event_id"] == "event-1"
-    assert row["json"] is None
 
 
 def test_in_memory_detail_sink_clear_drops_buffered_details():
     memory = InMemoryDetailSink()
-    memory.record(ObservationDetail(event_id="event-1", kind="tool_payload"))
+    memory.record(_detail(event_id="event-1", kind="tool_payload"))
 
     memory.clear()
 
@@ -83,7 +75,7 @@ def test_observation_bundle_prune_skips_unfinalized_runs(tmp_path):
     assert active.path.exists()
     finalized = [
         path for path in tmp_path.iterdir()
-        if path.is_dir() and (path / "meta.json").exists()
+        if path.is_dir() and any((path / "segments").glob("*/meta.json"))
     ]
     assert len(finalized) == 1
 
@@ -147,8 +139,7 @@ async def test_engine_detail_text_capture_is_explicit():
     result = await engine.run("tool_detail_text", {"value": "VISIBLE"})
 
     assert result.status == "completed"
-    assert {detail.redaction_state for detail in details.details} == {"none"}
-    assert any("VISIBLE" in (detail.text or "") for detail in details.details)
+    assert any("VISIBLE" in json.dumps(_detail_json(detail)) for detail in details.details)
 
 
 async def test_engine_detail_text_capture_is_runtime_wide_not_capability_opt_in():
@@ -166,7 +157,6 @@ async def test_engine_detail_text_capture_is_runtime_wide_not_capability_opt_in(
 
     assert result.status == "completed"
     assert details.details
-    assert all(detail.redaction_state == "none" for detail in details.details)
     assert "HIDDEN" in json.dumps([detail.model_dump(by_alias=True) for detail in details.details], default=str)
 
 
@@ -189,7 +179,6 @@ async def test_engine_detail_text_capture_records_external_capabilities_when_ena
 
     assert result.status == "completed"
     assert details.details
-    assert all(detail.redaction_state == "none" for detail in details.details)
     assert "SECRET_TOKEN" in json.dumps([detail.model_dump(by_alias=True) for detail in details.details], default=str)
 
 
@@ -242,15 +231,12 @@ def test_observation_graph_projects_trace_usage_details_and_renders_html():
         detail_refs=["detail-1"],
         run_id="run-1",
     )
-    detail = ObservationDetail(
+    detail = _detail(
         detail_id="detail-1",
         event_id=prompt_event.event_id,
         kind="rendered_prompt",
-        redaction_state="none",
-        content_type="text/plain",
-        text="full prompt text",
-        json={"prompt": "full prompt text"},
-        digest="abc123",
+        content_type="application/json",
+        body={"prompt": "full prompt text"},
     )
     graph = build_observation_graph(
         definition,
@@ -285,7 +271,7 @@ def test_observation_graph_projects_trace_usage_details_and_renders_html():
     assert "flowchart TD" in html
     assert "42 tok" in html
     assert "metered $0.0100" in html
-    assert "abc123" in html
+    assert detail.digest in html
     assert "full prompt text" in html
     assert "20:00:01Z" in html
 
@@ -328,7 +314,7 @@ async def test_invoke_metered_chat_records_prompt_response_details_for_direct_ca
     ]
     assert [event.phase for event in llm_events] == ["llm:request", "llm:response"]
     assert all(event.detail_refs for event in llm_events)
-    detail_text = "\n".join(detail.text or "" for detail in details.details)
+    detail_text = json.dumps([_detail_json(detail) for detail in details.details])
     assert "render prompt input" in detail_text
     assert "rendered answer" in detail_text
 
@@ -392,26 +378,23 @@ def test_observation_graph_filters_selected_run_and_referenced_details():
             WorkflowUsageEvent(node="plan", total_tokens=99, metadata={"run_id": "run-2"}),
         ],
         [
-            ObservationDetail(
+            _detail(
                 detail_id="detail-1",
                 event_id=run_1_event.event_id,
                 run_id="run-1",
                 kind="rendered_prompt",
-                digest="run-1-digest",
             ),
-            ObservationDetail(
+            _detail(
                 detail_id="detail-2",
                 event_id=run_2_event.event_id,
                 run_id="run-2",
                 kind="rendered_prompt",
-                digest="run-2-digest",
             ),
-            ObservationDetail(
+            _detail(
                 detail_id="unreferenced",
                 event_id="other",
                 run_id="run-1",
                 kind="rendered_prompt",
-                digest="should-not-render",
             ),
         ],
         run_id="run-1",
@@ -503,7 +486,7 @@ def _linked_provider_records():
         invocation_id="inv-link-test",
         detail_capture="capture_mode_off",
     )
-    detail = ObservationDetail(
+    detail = _detail(
         detail_id="detail-link-test",
         event_id=request.event_id,
         invocation_id="inv-link-test",
@@ -578,7 +561,7 @@ def test_provider_invocation_integrity_rejects_broken_links(mutation, message):
         )
     elif mutation == "unreferenced_detail":
         details.append(
-            ObservationDetail(
+            _detail(
                 detail_id="detail-orphan",
                 event_id=traces[1].event_id,
                 invocation_id="inv-link-test",

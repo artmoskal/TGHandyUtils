@@ -1477,6 +1477,139 @@
    "reason": "v0.11.10: seal the provider-evidence integrity model.",
    "manifest_row": "V3-8",
    "consumed_by_seal": "2026-07-25 bundle-v3 latest-only corrective release"
+  },
+  {
+   "path_prefix": "artifact_result.details",
+   "match": "prefix",
+   "status": "spent",
+   "reason": "Observation v4 replaces duplicated detail text/json and inert labels with one canonical body plus engine-derived display text.",
+   "manifest_row": "OBS-V4-I1"
+  },
+  {
+   "path_prefix": "capture_full.details",
+   "match": "prefix",
+   "status": "spent",
+   "reason": "Observation v4 replaces duplicated detail text/json and inert labels with one canonical body plus engine-derived display text.",
+   "manifest_row": "OBS-V4-I1"
+  },
+  {
+   "path_prefix": "public.exports.JsonlDetailSink",
+   "match": "exact",
+   "status": "spent",
+   "reason": "Observation v4 removes the public physical detail-file sink; engine composition owns persisted envelopes.",
+   "manifest_row": "OBS-V4-I1"
+  },
+  {
+   "path_prefix": "public.exports.ObservationBundleMetaV3",
+   "match": "exact",
+   "status": "spent",
+   "reason": "Latest-only observation v4 removes the v3 metadata model.",
+   "manifest_row": "OBS-V4-I1"
+  },
+  {
+   "path_prefix": "public.exports.ObservationBundleMetaV4",
+   "match": "exact",
+   "status": "spent",
+   "reason": "Observation v4 publishes the one current closed metadata model.",
+   "manifest_row": "OBS-V4-I1"
+  },
+  {
+   "path_prefix": "public.exports.ObservationDetailEnvelope",
+   "match": "exact",
+   "status": "spent",
+   "reason": "Observation v4 publishes the compact persisted detail occurrence contract.",
+   "manifest_row": "OBS-V4-I1"
+  },
+  {
+   "path_prefix": "public.exports.ObservationJsonBody",
+   "match": "exact",
+   "status": "spent",
+   "reason": "Observation v4 publishes one canonical logical JSON body.",
+   "manifest_row": "OBS-V4-I1"
+  },
+  {
+   "path_prefix": "public.exports.ObservationReader",
+   "match": "exact",
+   "status": "spent",
+   "reason": "Observation v4 publishes the only compact and bounded body reader.",
+   "manifest_row": "OBS-V4-I1"
+  },
+  {
+   "path_prefix": "public.exports.ObservationTextBody",
+   "match": "exact",
+   "status": "spent",
+   "reason": "Observation v4 publishes one canonical logical text body.",
+   "manifest_row": "OBS-V4-I1"
+  },
+  {
+   "path_prefix": "public.exports.load_bundle_meta_v3",
+   "match": "exact",
+   "status": "spent",
+   "reason": "Latest-only observation v4 removes the v3 metadata loader.",
+   "manifest_row": "OBS-V4-I1"
+  },
+  {
+   "path_prefix": "public.exports.load_bundle_meta_v4",
+   "match": "exact",
+   "status": "spent",
+   "reason": "Observation v4 publishes the one strict current metadata loader.",
+   "manifest_row": "OBS-V4-I1"
+  },
+  {
+   "path_prefix": "public.schemas.ObservationBundleMetaV3",
+   "match": "exact",
+   "status": "spent",
+   "reason": "Latest-only observation v4 removes the v3 metadata schema.",
+   "manifest_row": "OBS-V4-I1"
+  },
+  {
+   "path_prefix": "public.schemas.ObservationBundleMetaV4",
+   "match": "exact",
+   "status": "spent",
+   "reason": "Observation v4 seals run-scoped values and the 4096-byte inline threshold.",
+   "manifest_row": "OBS-V4-I1"
+  },
+  {
+   "path_prefix": "public.schemas.ObservationConfig.properties.evict_suspended_after_s",
+   "match": "exact",
+   "status": "spent",
+   "reason": "Observation v4 removes eviction that could delete the value store of a resumable run.",
+   "manifest_row": "OBS-V4-I1"
+  },
+  {
+   "path_prefix": "public.schemas.WorkflowConfigBundle.$defs.ObservationConfig.properties.evict_suspended_after_s",
+   "match": "exact",
+   "status": "spent",
+   "reason": "Observation v4 removes eviction that could delete the value store of a resumable run.",
+   "manifest_row": "OBS-V4-I1"
+  },
+  {
+   "path_prefix": "public.schemas.ObservationDetail.",
+   "match": "prefix",
+   "status": "spent",
+   "reason": "Observation v4 closes the logical detail around exactly one canonical body and required digest.",
+   "manifest_row": "OBS-V4-I1"
+  },
+  {
+   "path_prefix": "public.schemas.ObservationDetailEnvelope",
+   "match": "exact",
+   "status": "spent",
+   "reason": "Observation v4 seals the compact inline-or-reference persisted envelope.",
+   "manifest_row": "OBS-V4-I1"
+  },
+  {
+   "path_prefix": "public.schemas.ObservationJsonBody",
+   "match": "exact",
+   "status": "spent",
+   "reason": "Observation v4 seals canonical logical JSON bodies.",
+   "manifest_row": "OBS-V4-I1"
+  },
+  {
+   "path_prefix": "public.schemas.ObservationTextBody",
+   "match": "exact",
+   "status": "spent",
+   "reason": "Observation v4 seals canonical logical text bodies.",
+   "manifest_row": "OBS-V4-I1"
   }
  ]
 }

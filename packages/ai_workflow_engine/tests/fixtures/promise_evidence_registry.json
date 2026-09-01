@@ -152,7 +152,7 @@
             "durable_suspend_resume"
           ],
           "tests": [
-            "test_pre_v3_bundle_is_loud_directly_but_isolated_from_healthy_groups",
+            "test_pre_v4_bundle_is_loud_directly_but_isolated_from_healthy_groups",
             "test_read_group_reports_abandoned_attempts_without_merging_them",
             "test_group_html_renders_one_truthful_lifecycle"
           ]

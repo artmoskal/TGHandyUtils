@@ -21,7 +21,7 @@ from ai_workflow_engine import (
     WorkflowEngineBuilder,
     WorkflowGoal,
     WorkflowProfile,
-    load_bundle_meta_v3,
+    load_bundle_meta_v4,
 )
 from ai_workflow_engine.engine.external import (
     ExternalProcessCapability,
@@ -57,6 +57,10 @@ def _artifact(path: Path, artifact_id: str) -> WorkflowArtifact:
 
 def _manifest(bundle: Path) -> list[dict]:
     return json.loads((bundle / "artifacts.json").read_text(encoding="utf-8"))
+
+
+def _initial_segment(root: Path, run_id: str) -> Path:
+    return root / run_id / "segments" / run_id
 
 
 def test_run_artifact_journal_is_ordered_idempotent_atomic_and_alias_free(
@@ -170,8 +174,8 @@ async def test_caller_cancellation_finalizes_bundle_and_preserves_completed_arti
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    bundle = bundle_root / "cancel-canary-run"
-    meta = load_bundle_meta_v3(bundle)
+    bundle = _initial_segment(bundle_root, "cancel-canary-run")
+    meta = load_bundle_meta_v4(bundle)
     assert meta.status == "cancelled"
     assert meta.artifact_count == 1
     assert meta.trace_count > 0
@@ -227,8 +231,8 @@ async def test_failed_finalization_uses_the_same_completed_artifact_journal(
             terminal_status=fail_terminal_projection,
         )
 
-    bundle = bundle_root / "failed-journal-run"
-    assert load_bundle_meta_v3(bundle).status == "failed"
+    bundle = _initial_segment(bundle_root, "failed-journal-run")
+    assert load_bundle_meta_v4(bundle).status == "failed"
     [entry] = _manifest(bundle)
     assert entry["artifact_id"] == "before-terminal-failure"
     assert entry["copied"] is True
@@ -269,8 +273,8 @@ async def test_cancellation_before_first_capability_result_finalizes_empty_bundl
         await task
     assert caught.value.args == ("operator-stop",)
 
-    bundle = root / "cancel-empty-run"
-    assert load_bundle_meta_v3(bundle).status == "cancelled"
+    bundle = _initial_segment(root, "cancel-empty-run")
+    assert load_bundle_meta_v4(bundle).status == "cancelled"
     assert _manifest(bundle) == []
     trace = (bundle / "trace.jsonl").read_text(encoding="utf-8")
     assert '"decision":"cancelled"' in trace.replace(" ", "")
@@ -333,7 +337,7 @@ async def test_cancelled_plain_llm_finalizes_one_linked_unknown_usage_event(
 
     from ai_workflow_viewer import FileEventSource
 
-    run = FileEventSource(root / "cancel-llm-run").read()
+    run = FileEventSource(_initial_segment(root, "cancel-llm-run")).read()
     assert run.meta.status == "cancelled"
     assert len(run.usage_events) == 1
     usage = run.usage_events[0]
@@ -424,8 +428,8 @@ async def test_fanout_retains_completed_siblings_before_aggregate_commit(
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    bundle = root / "cancel-fanout-run"
-    assert load_bundle_meta_v3(bundle).status == "cancelled"
+    bundle = _initial_segment(root, "cancel-fanout-run")
+    assert load_bundle_meta_v4(bundle).status == "cancelled"
     assert [entry["artifact_id"] for entry in _manifest(bundle)] == ["fan-0", "fan-1"]
 
 
@@ -492,7 +496,7 @@ async def test_child_workflow_artifact_survives_parent_cancellation(
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    entries = _manifest(root / run_id)
+    entries = _manifest(_initial_segment(root, run_id))
     assert [entry["artifact_id"] for entry in entries] == [f"{door}-artifact"]
 
 
@@ -540,7 +544,10 @@ async def test_child_artifact_is_deduplicated_on_normal_close(
 
     assert result.status == "completed"
     assert [artifact.artifact_id for artifact in result.artifacts] == ["child-artifact"]
-    assert [row["artifact_id"] for row in _manifest(root / "normal-parent-run")] == [
+    assert [
+        row["artifact_id"]
+        for row in _manifest(_initial_segment(root, "normal-parent-run"))
+    ] == [
         "child-artifact"
     ]
 
@@ -616,15 +623,15 @@ async def test_resumed_cancellation_preserves_snapshot_and_new_artifacts(
         await task
 
     resume_segments = []
-    for path in root.iterdir():
+    for path in (root / "cancel-resume-run" / "segments").iterdir():
         if not (path / "meta.json").exists():
             continue
-        meta = load_bundle_meta_v3(path)
+        meta = load_bundle_meta_v4(path)
         if meta.run_id == "cancel-resume-run" and meta.segment_index == 1:
             resume_segments.append(path)
     assert len(resume_segments) == 1
     resume_bundle = resume_segments[0]
-    assert load_bundle_meta_v3(resume_bundle).status == "cancelled"
+    assert load_bundle_meta_v4(resume_bundle).status == "cancelled"
     assert [entry["artifact_id"] for entry in _manifest(resume_bundle)] == [
         "before-wait",
         "after-wait",
@@ -681,7 +688,7 @@ async def test_cancelled_bundle_artifact_policy_off_keeps_truth_without_copy(
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    [entry] = _manifest(root / "cancel-off-run")
+    [entry] = _manifest(_initial_segment(root, "cancel-off-run"))
     assert entry["artifact_id"] == "off-artifact"
     assert entry["copied"] is False
     assert entry["bundle_path"] is None
@@ -808,10 +815,10 @@ async def test_concurrent_cancelled_runs_keep_artifact_journals_isolated(
         with pytest.raises(asyncio.CancelledError):
             await task
 
-    assert [row["artifact_id"] for row in _manifest(root / "run-a")] == [
+    assert [row["artifact_id"] for row in _manifest(_initial_segment(root, "run-a"))] == [
         "artifact-run-a"
     ]
-    assert [row["artifact_id"] for row in _manifest(root / "run-b")] == [
+    assert [row["artifact_id"] for row in _manifest(_initial_segment(root, "run-b"))] == [
         "artifact-run-b"
     ]
 
@@ -890,8 +897,9 @@ async def test_engine_cancellation_keeps_artifact_and_reaps_external_process(
         os.kill(pid, signal.SIGKILL)
         raise AssertionError("cancelled engine run left its external process alive")
 
-    assert load_bundle_meta_v3(root / "cancel-process-run").status == "cancelled"
-    assert [row["artifact_id"] for row in _manifest(root / "cancel-process-run")] == [
+    process_bundle = _initial_segment(root, "cancel-process-run")
+    assert load_bundle_meta_v4(process_bundle).status == "cancelled"
+    assert [row["artifact_id"] for row in _manifest(process_bundle)] == [
         "before-process"
     ]
 

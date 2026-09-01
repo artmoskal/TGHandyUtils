@@ -12,13 +12,15 @@ from ai_workflow_engine.observation_contract import (
     BundleStatus,
     COMMIT_MARKER_NAME,
     DEFAULT_ARTIFACT_MAX_BYTES,
-    ObservationBundleMetaV3,
+    ObservationBundleMetaV4,
+    ObservationDetailEnvelope,
     ObservationSegment,
     ProviderEvidenceIntegrity,
     assert_plain_identity,
-    load_bundle_meta_v3,
+    load_bundle_meta_v4,
     resolve_child_dir,
 )
+from ai_workflow_engine.observation_reader import ObservationReader
 from ai_workflow_engine.observation_retention import prune_observation_bundles
 from ai_workflow_engine.observation_writer import (
     ObservationRunBundle,
@@ -39,7 +41,9 @@ __all__ = [
     "BundleStatus",
     "COMMIT_MARKER_NAME",
     "DEFAULT_ARTIFACT_MAX_BYTES",
-    "ObservationBundleMetaV3",
+    "ObservationBundleMetaV4",
+    "ObservationDetailEnvelope",
+    "ObservationReader",
     "ObservationRunBundle",
     "ObservationSegment",
     "ObservationSequence",
@@ -48,7 +52,7 @@ __all__ = [
     "SequencedTraceSink",
     "SequencedUsageSink",
     "assert_plain_identity",
-    "load_bundle_meta_v3",
+    "load_bundle_meta_v4",
     "open_observation_run_bundle",
     "prune_observation_bundles",
     "resolve_child_dir",

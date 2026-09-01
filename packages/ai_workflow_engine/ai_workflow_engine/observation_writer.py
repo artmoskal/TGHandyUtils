@@ -15,7 +15,6 @@ import uuid
 
 from ai_workflow_engine.engine.capabilities import (
     DetailSink,
-    JsonlDetailSink,
     JsonlTraceSink,
     TraceSink,
 )
@@ -30,16 +29,24 @@ from ai_workflow_engine.observability_capture import byte_free
 from ai_workflow_engine.observation_contract import (
     ARTIFACT_DIR_NAME,
     ARTIFACT_MANIFEST_NAME,
-    BUNDLE_SCHEMA_VERSION,
     DEFAULT_ARTIFACT_MAX_BYTES,
-    ObservationBundleMetaV3,
+    ObservationBundleMetaV4,
     ObservationSegment,
     ProviderEvidenceIntegrity,
+    BUNDLE_SCHEMA_VERSION,
     assert_plain_identity,
+    load_bundle_meta_v4,
     resolve_child_dir,
 )
-from ai_workflow_engine.observation_integrity import validate_provider_invocation_links
+from ai_workflow_engine.observation_finalization import (
+    PersistedDetailSink,
+    count_jsonl_records,
+    materialize_usage_events,
+    summarize_segment_evidence,
+    sum_optional_cost,
+)
 from ai_workflow_engine.observation_retention import prune_observation_bundles
+from ai_workflow_engine.observation_values import RunValueStore
 from ai_workflow_engine.usage_events import JsonlUsageSink, UsageSink
 from ai_workflow_engine.workflow import WorkflowDefinition
 
@@ -131,7 +138,6 @@ class ObservationRunBundle:
     artifact_policy: Literal["copy", "off"] = "copy"
     artifact_max_bytes: int = DEFAULT_ARTIFACT_MAX_BYTES
     segment: Optional[ObservationSegment] = None
-    evict_suspended_after_s: Optional[float] = None
     correlation_id: Optional[str] = None
     sequence: ObservationSequence = field(default_factory=ObservationSequence)
 
@@ -145,12 +151,29 @@ class ObservationRunBundle:
                 segment_id=str(self.run_id), segment_index=0, kind="initial"
             )
         self.base_dir = Path(self.base_dir)
-        self.path = resolve_child_dir(
+        self.run_path = resolve_child_dir(
             self.base_dir,
+            self.run_id,
+            what="observation logical-run directory",
+        )
+        self.run_path.mkdir(parents=True, exist_ok=True)
+        self.segments_path = self.run_path / "segments"
+        if self.segments_path.is_symlink():
+            raise ValueError("observation segments directory must not be a symlink")
+        self.segments_path.mkdir(exist_ok=True)
+        if self.segment.kind != "initial":
+            _require_v4_initial_segment(self.run_path, self.run_id)
+        self.path = resolve_child_dir(
+            self.segments_path,
             self.segment.segment_id,
             what="observation segment directory",
         )
+        if self.path.exists() and any(self.path.iterdir()):
+            raise FileExistsError(
+                f"observation segment {self.segment.segment_id!r} already contains evidence"
+            )
         self.path.mkdir(parents=True, exist_ok=True)
+        self.value_store = RunValueStore(self.run_path)
         self.trace_path = self.path / "trace.jsonl"
         self.detail_path = self.path / "details.jsonl"
         self.usage_path = self.path / "usage.jsonl"
@@ -162,7 +185,7 @@ class ObservationRunBundle:
             sequence=self.sequence,
         )
         self.detail_sink = SequencedDetailSink(
-            JsonlDetailSink(self.detail_path),
+            PersistedDetailSink(self.detail_path, self.value_store),
             run_id=self.run_id,
             sequence=self.sequence,
         )
@@ -182,28 +205,26 @@ class ObservationRunBundle:
     ) -> None:
         if self.segment is None:
             raise RuntimeError(
-                "engine-owned observation lifecycle emits ONLY segmented v3 bundles — "
+                "engine-owned observation lifecycle emits ONLY segmented v4 bundles — "
                 "open the bundle with an ObservationSegment "
                 "(open_observation_run_bundle supplies the initial segment automatically)"
             )
-        traces = _load_jsonl_models(self.trace_path, WorkflowTraceEvent)
-        details = _load_jsonl_models(self.detail_path, ObservationDetail)
-        persisted_usage = _load_jsonl_models(self.usage_path, WorkflowUsageEvent)
-        provider_evidence = _provider_evidence_integrity(
+        evidence = summarize_segment_evidence(
+            trace_path=self.trace_path,
+            detail_path=self.detail_path,
+            usage_path=self.usage_path,
+            value_store=self.value_store,
             status=status,
-            traces=traces,
-            details=details,
-            usage_events=persisted_usage,
         )
         definition_json = definition.model_dump_json()
         (self.path / "definition.json").write_text(definition_json, encoding="utf-8")
-        usage_events = _usage_events(usage)
+        usage_events = materialize_usage_events(usage)
         manifest = self._archive_artifacts(list(artifacts or []))
         (self.path / ARTIFACT_MANIFEST_NAME).write_text(
             json.dumps(manifest, sort_keys=True, indent=2),
             encoding="utf-8",
         )
-        meta_model = ObservationBundleMetaV3(
+        meta_model = ObservationBundleMetaV4(
             bundle_schema_version=BUNDLE_SCHEMA_VERSION,
             run_id=str(self.run_id),
             workflow_id=definition.workflow_id,
@@ -216,25 +237,27 @@ class ObservationRunBundle:
             definition_digest=definition.definition_digest(),
             artifact_manifest_path=ARTIFACT_MANIFEST_NAME,
             artifact_root=ARTIFACT_DIR_NAME,
+            value_store_layout="run-scoped-sha256-gzip-v1",
+            inline_body_max_bytes=4096,
             artifact_count=len(manifest),
             artifacts_copied=sum(1 for entry in manifest if entry["copied"]),
-            trace_count=_line_count(self.trace_path),
-            detail_count=_line_count(self.detail_path),
-            usage_count=len(usage_events),
+            trace_count=evidence.trace_count,
+            detail_count=evidence.detail_count,
+            usage_count=evidence.usage_count,
             usage_totals_scope="run_cumulative_at_finalize",
             total_tokens=sum(event.total_tokens for event in usage_events),
-            metered_usd=_sum_cost(
+            metered_usd=sum_optional_cost(
                 event.estimated_usd
                 for event in usage_events
                 if event.cost_class == "metered"
             ),
-            notional_usd=_sum_cost(event.notional_usd for event in usage_events),
+            notional_usd=sum_optional_cost(event.notional_usd for event in usage_events),
             segment_id=self.segment.segment_id,
             segment_index=self.segment.segment_index,
             segment_kind=self.segment.kind,
             attempt=self.segment.attempt,
             correlation_id=self.correlation_id or None,
-            provider_evidence=provider_evidence,
+            provider_evidence=evidence.provider_evidence,
         )
         meta = json.loads(meta_model.model_dump_json())
         if meta.get("correlation_id") is None:
@@ -244,7 +267,6 @@ class ObservationRunBundle:
             prune_observation_bundles(
                 self.base_dir,
                 self.retention_limit,
-                evict_suspended_after_s=self.evict_suspended_after_s,
             )
 
     def _archive_artifacts(self, artifacts: list[WorkflowArtifact]) -> list[dict[str, Any]]:
@@ -318,7 +340,6 @@ def open_observation_run_bundle(
     artifact_policy: Literal["copy", "off"] = "copy",
     artifact_max_bytes: int = DEFAULT_ARTIFACT_MAX_BYTES,
     segment: Optional[ObservationSegment] = None,
-    evict_suspended_after_s: Optional[float] = None,
     correlation_id: Optional[str] = None,
 ) -> ObservationRunBundle:
     """Create one segmented observation source bundle for a logical run."""
@@ -330,7 +351,6 @@ def open_observation_run_bundle(
         artifact_policy=artifact_policy,
         artifact_max_bytes=artifact_max_bytes,
         segment=segment,
-        evict_suspended_after_s=evict_suspended_after_s,
         correlation_id=correlation_id,
     )
 
@@ -359,7 +379,7 @@ def write_minimal_abandoned_meta(
 
     definition_json = definition.model_dump_json()
     (path / "definition.json").write_text(definition_json, encoding="utf-8")
-    meta_model = ObservationBundleMetaV3(
+    meta_model = ObservationBundleMetaV4(
         bundle_schema_version=BUNDLE_SCHEMA_VERSION,
         run_id=run_id,
         workflow_id=definition.workflow_id,
@@ -372,11 +392,13 @@ def write_minimal_abandoned_meta(
         definition_digest=definition.definition_digest(),
         artifact_manifest_path=ARTIFACT_MANIFEST_NAME,
         artifact_root=ARTIFACT_DIR_NAME,
+        value_store_layout="run-scoped-sha256-gzip-v1",
+        inline_body_max_bytes=4096,
         artifact_count=0,
         artifacts_copied=0,
-        trace_count=_line_count(path / "trace.jsonl"),
-        detail_count=_line_count(path / "details.jsonl"),
-        usage_count=_line_count(path / "usage.jsonl"),
+        trace_count=count_jsonl_records(path / "trace.jsonl"),
+        detail_count=count_jsonl_records(path / "details.jsonl"),
+        usage_count=count_jsonl_records(path / "usage.jsonl"),
         usage_totals_scope="run_cumulative_at_finalize",
         total_tokens=0,
         metered_usd=None,
@@ -394,55 +416,20 @@ def write_minimal_abandoned_meta(
     _write_json_atomic(path / "meta.json", meta)
 
 
-def _usage_events(
-    usage: WorkflowUsageSummary | Iterable[WorkflowUsageEvent] | None,
-) -> list[WorkflowUsageEvent]:
-    if usage is None:
-        return []
-    if isinstance(usage, WorkflowUsageSummary):
-        return list(usage.events)
-    return list(usage)
-
-
-def _line_count(path: Path) -> int:
-    if not path.exists():
-        return 0
-    return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
-
-
-def _load_jsonl_models(path: Path, model: type[Any]) -> list[Any]:
-    if not path.exists():
-        return []
-    return [
-        model.model_validate_json(line)
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
-
-
-def _sum_cost(values: Iterable[float | None]) -> float | None:
-    costs = [float(value) for value in values if value is not None]
-    return round(sum(costs), 6) if costs else None
-
-
-def _provider_evidence_integrity(
-    *,
-    status: str,
-    traces: list[WorkflowTraceEvent],
-    details: list[ObservationDetail],
-    usage_events: list[WorkflowUsageEvent],
-) -> ProviderEvidenceIntegrity:
+def _require_v4_initial_segment(run_path: Path, run_id: str) -> None:
+    initial_path = run_path / "segments" / run_id
     try:
-        validate_provider_invocation_links(traces, details, usage_events)
-    except ValueError as integrity_error:
-        if status == "completed":
-            raise
-        diagnostic = str(integrity_error).strip()[:500] or "provider evidence is incomplete"
-        return ProviderEvidenceIntegrity(
-            integrity="incomplete",
-            diagnostic=diagnostic,
+        meta = load_bundle_meta_v4(initial_path)
+    except Exception as exc:
+        raise ValueError(
+            f"cannot create a v4 continuation for run {run_id!r}: its canonical v4 initial "
+            f"segment is missing or invalid ({exc})"
+        ) from exc
+    if meta.run_id != run_id or meta.segment_id != run_id or meta.segment_kind != "initial":
+        raise ValueError(
+            f"cannot create a v4 continuation for run {run_id!r}: canonical initial identity "
+            "does not match the requested logical run"
         )
-    return ProviderEvidenceIntegrity(integrity="complete")
 
 
 def _write_json_atomic(path: Path, payload: Any) -> None:

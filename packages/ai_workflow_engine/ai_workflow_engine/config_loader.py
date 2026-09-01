@@ -6,8 +6,6 @@ applications decide which files and env prefixes to pass in.
 
 from __future__ import annotations
 
-import math
-
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 import json
@@ -16,7 +14,7 @@ import re
 from typing import Any, Literal, Optional
 
 import yaml
-from pydantic import ConfigDict, BaseModel, Field, ValidationError, field_validator
+from pydantic import ConfigDict, BaseModel, Field, ValidationError
 
 from ai_workflow_engine.models import ModelProfile, WorkflowProfile
 from ai_workflow_engine.usage_contract import NotionalPricingConfig
@@ -86,25 +84,6 @@ class ObservationConfig(BaseModel):
     enabled: bool = False
     bundle_dir: str = "data/observations"
     retention_limit: Optional[int] = None
-    # R4 (user-settled policy, 2026-07-12): suspended (in-flight) observation groups are
-    # NEVER evicted by default — deleting them would erase a resumable wait's history.
-    # OPT-IN cap: groups suspended longer than this many seconds become evictable by the
-    # normal retention sweep (which runs at every finalize — no engine timer). Eviction
-    # sacrifices VIEWER history only, never resumability: the machine snapshot lives in
-    # the wait coordinator, so a late answer still resumes; its grouped view is then
-    # partial and the reader says so loudly.
-    evict_suspended_after_s: Optional[float] = Field(default=None, gt=0)
-
-    @field_validator("evict_suspended_after_s")
-    @classmethod
-    def _finite_eviction_cap(cls, value: Optional[float]) -> Optional[float]:
-        # W5-C2: pydantic gt=0 accepts +inf, and NaN would make `age <= cap` silently
-        # false — an invalid retention policy must refuse loudly, never half-apply.
-        if value is not None and not math.isfinite(value):
-            raise ValueError(
-                "evict_suspended_after_s must be a FINITE positive number of seconds"
-            )
-        return value
     capture: Literal["off", "full"] = "full"
     # G1 evidence resolution: "copy" archives run artifacts (screenshots, dumps, salvage)
     # into each bundle so EvidenceRefs stay resolvable for dashboards; artifacts prune

@@ -84,6 +84,7 @@ def initial_segment(run_id: str, definition_digest: str) -> ObservationSegment:
 
 def commit_attempt(
     base_dir: str | Path,
+    run_id: str,
     segment_id: str,
     *,
     wait_id: Optional[str] = None,
@@ -100,7 +101,7 @@ def commit_attempt(
     exists afterwards.
     """
 
-    path = Path(base_dir) / segment_id
+    path = _segment_path(base_dir, run_id, segment_id)
     marker = path / COMMIT_MARKER_NAME
     try:
         if marker.exists():
@@ -151,11 +152,10 @@ def reconcile_prior_attempts(
     (``upto_attempt``) is never touched — the active claimant owns it.
     """
 
-    base = Path(base_dir)
     reconciled: list[str] = []
     for attempt in range(1, max(1, int(upto_attempt))):
         name = attempt_segment_id(run_id, segment_index, attempt)
-        path = base / name
+        path = _segment_path(base_dir, run_id, name)
         if not path.is_dir():
             continue
         if (path / COMMIT_MARKER_NAME).exists():
@@ -221,6 +221,7 @@ async def ensure_terminal_evidence(observation: Any, runtime: Any, wait_id: str)
             attempt = int(record.resume_attempts or 1)
             committed = commit_attempt(
                 observation.bundle_dir,
+                str(record.run_id),
                 attempt_segment_id(str(record.run_id), segment_index, attempt),
                 wait_id=wait_id,
                 attempt=attempt,
@@ -238,15 +239,15 @@ async def ensure_terminal_evidence(observation: Any, runtime: Any, wait_id: str)
             return "failed"
         registered = WorkflowDefinition.model_validate_json(definition_json)
         segment_id = terminal_segment_id(str(record.run_id), segment_index)
-        segment_path = Path(observation.bundle_dir) / segment_id
+        segment_path = _segment_path(observation.bundle_dir, str(record.run_id), segment_id)
         meta_path = segment_path / "meta.json"
         if meta_path.exists():
             # at-least-once redelivery after the evidence write: validate, never append.
             # v0.11 (M9): the meta is read through the STRICT current loader — a pre-v3 or
             # malformed terminal meta fails loudly instead of being half-compared.
-            from ai_workflow_engine.observation_bundle import load_bundle_meta_v3
+            from ai_workflow_engine.observation_bundle import load_bundle_meta_v4
 
-            meta = load_bundle_meta_v3(segment_path)
+            meta = load_bundle_meta_v4(segment_path)
             existing_definition = WorkflowDefinition.model_validate_json(
                 (segment_path / "definition.json").read_text(encoding="utf-8")
             )
@@ -287,7 +288,6 @@ async def ensure_terminal_evidence(observation: Any, runtime: Any, wait_id: str)
             retention_limit=observation.retention_limit,
             artifact_policy=observation.artifacts,
             artifact_max_bytes=observation.artifact_max_bytes,
-            evict_suspended_after_s=observation.evict_suspended_after_s,
             # the REGISTERED related-run id — never reconstructed from a live context
             correlation_id=record.correlation_id,
             segment=ObservationSegment(
@@ -323,3 +323,7 @@ async def ensure_terminal_evidence(observation: Any, runtime: Any, wait_id: str)
             wait_id,
         )
         return "failed"
+
+
+def _segment_path(base_dir: str | Path, run_id: str, segment_id: str) -> Path:
+    return Path(base_dir) / run_id / "segments" / segment_id

@@ -1748,6 +1748,14 @@ def _bundle_meta(path):
     return json.loads((path / "meta.json").read_text(encoding="utf-8"))
 
 
+def _segments_dir(root, run_id):
+    return root / run_id / "segments"
+
+
+def _segment_dir(root, run_id, segment_id=None):
+    return _segments_dir(root, run_id) / (segment_id or run_id)
+
+
 async def test_chained_durable_waits_register_on_the_resume_path_too(tmp_path):
     """W4.2 (closes a W3 gap): a resumed run that suspends at the NEXT durable wait must
     register it and return a handle-only result — never a raw unregistered snapshot. Before
@@ -1780,7 +1788,9 @@ async def test_repeated_waits_produce_ordered_segments_scan_free(tmp_path):
 
     engine, _coordinator = _delivery_engine(bundle_dir=tmp_path, gates=("a", "b", "c"))
     # Adversarial decoys: allocation must not read ANY directory names.
-    (tmp_path / "seg-run--s050-decoy").mkdir()
+    segments = _segments_dir(tmp_path, "seg-run")
+    segments.mkdir(parents=True)
+    (segments / "seg-run--s050-decoy").mkdir()
     (tmp_path / "zzz-unrelated").mkdir()
 
     goal = WorkflowGoal(
@@ -1798,12 +1808,12 @@ async def test_repeated_waits_produce_ordered_segments_scan_free(tmp_path):
     assert result.status == "completed"
 
     finalized = sorted(
-        path.name for path in tmp_path.iterdir() if (path / "meta.json").exists()
+        path.name for path in segments.iterdir() if (path / "meta.json").exists()
     )
     assert finalized == ["seg-run", "seg-run--s001", "seg-run--s002", "seg-run--s003"], (
         f"decoy directories must never influence segment allocation: {finalized}"
     )
-    metas = {name: _bundle_meta(tmp_path / name) for name in finalized}
+    metas = {name: _bundle_meta(segments / name) for name in finalized}
     assert [metas[name]["segment_index"] for name in finalized] == [0, 1, 2, 3]
     assert all(metas[name]["run_id"] == "seg-run" for name in finalized), (
         "every segment's meta must carry the LOGICAL run id"
@@ -1811,7 +1821,7 @@ async def test_repeated_waits_produce_ordered_segments_scan_free(tmp_path):
     assert metas["seg-run"]["segment_kind"] == "initial"
     assert [metas[f"seg-run--s{i:03d}"]["attempt"] for i in (1, 2, 3)] == [1, 1, 1]
     for i in (1, 2, 3):
-        assert (tmp_path / f"seg-run--s{i:03d}" / "commit.json").exists(), (
+        assert (segments / f"seg-run--s{i:03d}" / "commit.json").exists(), (
             "R1: the facade promotes each attempt AFTER the coordinator terminalizes — "
             "an executed delivery must leave a committed (canonical) segment"
         )
@@ -1841,7 +1851,8 @@ async def test_concurrent_claim_loser_opens_no_segment(tmp_path):
     handle = first.wait_handle
     wait_id = handle.wait_id
 
-    dirs_before = {path.name for path in tmp_path.iterdir() if path.is_dir()}
+    segments = _segments_dir(tmp_path, "race-run")
+    dirs_before = {path.name for path in segments.iterdir() if path.is_dir()}
     claimed = await coordinator.claim_event(
         wait_id,
         WaitEvent(kind="signal", event_id="evt-held", payload="mine"),
@@ -1853,7 +1864,7 @@ async def test_concurrent_claim_loser_opens_no_segment(tmp_path):
         handle, {"kind": "signal", "event_id": "evt-loser", "payload": "steal"}
     )
     assert loser.kind == "already_processing"
-    assert {path.name for path in tmp_path.iterdir() if path.is_dir()} == dirs_before, (
+    assert {path.name for path in segments.iterdir() if path.is_dir()} == dirs_before, (
         "a losing delivery must not open any observation segment"
     )
 
@@ -1862,11 +1873,11 @@ async def test_concurrent_claim_loser_opens_no_segment(tmp_path):
         handle, {"kind": "signal", "event_id": "evt-held", "payload": "mine"}
     )
     assert outcome.kind == "executed"
-    new_dirs = {p.name for p in tmp_path.iterdir() if p.is_dir()} - dirs_before
+    new_dirs = {p.name for p in segments.iterdir() if p.is_dir()} - dirs_before
     assert new_dirs == {"race-run--s001-r2"}, (
         f"exactly one continuation segment from the reclaim attempt, got {new_dirs}"
     )
-    assert _bundle_meta(tmp_path / "race-run--s001-r2")["segment_index"] == 1
+    assert _bundle_meta(segments / "race-run--s001-r2")["segment_index"] == 1
 
 
 async def test_crashed_attempts_become_typed_abandoned_evidence_owned_by_retention(tmp_path):
@@ -1915,13 +1926,15 @@ async def test_crashed_attempts_become_typed_abandoned_evidence_owned_by_retenti
 
     # both dead attempts were reconciled into typed abandoned evidence (append-only marker)
     for name, attempt in (("crash-run--s001", 1), ("crash-run--s001-r2", 2)):
-        meta = _bundle_meta(tmp_path / name)
+        segment_path = _segment_dir(tmp_path, "crash-run", name)
+        meta = _bundle_meta(segment_path)
         assert meta["status"] == "abandoned" and meta["attempt"] == attempt, name
         assert meta["run_id"] == "crash-run" and meta["segment_index"] == 1, name
-        assert (tmp_path / name / "abandoned.json").exists(), name
-    retry_meta = _bundle_meta(tmp_path / "crash-run--s001-r3")
+        assert (segment_path / "abandoned.json").exists(), name
+    retry_path = _segment_dir(tmp_path, "crash-run", "crash-run--s001-r3")
+    retry_meta = _bundle_meta(retry_path)
     assert retry_meta["segment_index"] == 1 and retry_meta["status"] == "completed"
-    assert (tmp_path / "crash-run--s001-r3" / "commit.json").exists(), (
+    assert (retry_path / "commit.json").exists(), (
         "the surviving attempt is promoted canonical after terminalization"
     )
 
@@ -2149,7 +2162,7 @@ async def test_wait_failures_without_continuation_are_observable_and_prunable(tm
     )
     assert stored.failure_detail and "does not match" in stored.failure_detail
 
-    wfail_dir = tmp_path / "wfail-run--s001-wfail"
+    wfail_dir = _segment_dir(tmp_path, "wfail-run", "wfail-run--s001-wfail")
     assert (wfail_dir / "meta.json").exists(), "terminal evidence segment must be finalized"
     meta = _bundle_meta(wfail_dir)
     assert meta["status"] == "failed" and meta["segment_kind"] == "wait_terminal"
@@ -2203,9 +2216,10 @@ async def test_attempts_exhaustion_persists_kind_and_writes_terminal_evidence(tm
     assert stored.failure_kind == "attempts_exhausted"
     assert "3 of 3" in (stored.failure_detail or "")
 
-    terminal_dirs = [p.name for p in tmp_path.iterdir() if p.name.endswith("-wfail")]
+    segments = _segments_dir(tmp_path, "exhaust-run")
+    terminal_dirs = [p.name for p in segments.iterdir() if p.name.endswith("-wfail")]
     assert terminal_dirs == ["exhaust-run--s001-wfail"]
-    assert _bundle_meta(tmp_path / terminal_dirs[0])["status"] == "failed"
+    assert _bundle_meta(segments / terminal_dirs[0])["status"] == "failed"
 
 
 def _budgeted_durable_engine(max_estimated_usd, outbox=None, crash_once=None, clock=None, bundle_dir=None):
@@ -2410,7 +2424,7 @@ async def test_snapshot_missing_failure_yields_a_readable_failed_group(tmp_path)
     stored = await coordinator.get(wait_id)
     assert stored.status == "failed" and stored.failure_kind == "snapshot_missing"
 
-    wfail = tmp_path / "snaploss-run--s001-wfail"
+    wfail = _segment_dir(tmp_path, "snaploss-run", "snaploss-run--s001-wfail")
     meta = _bundle_meta(wfail)
     assert meta["segment_index"] == 1
     assert meta["attempt"] is None, (
@@ -2467,7 +2481,7 @@ async def test_absent_workflow_registration_still_closes_the_group(tmp_path):
     stored = await restarted.wait_coordinator.get(wait_id)
     assert stored.failure_kind == "digest_mismatch"
 
-    wfail = tmp_path / "restart-run--s001-wfail"
+    wfail = _segment_dir(tmp_path, "restart-run", "restart-run--s001-wfail")
     meta = _bundle_meta(wfail)
     assert meta["status"] == "failed" and meta["segment_index"] == 1
     written = WorkflowDefinition.model_validate_json(
@@ -2526,9 +2540,9 @@ async def test_redelivery_repairs_terminal_evidence_after_post_failure_crash(tmp
         current_digest=None,
     )
     assert failed.kind == "rejected" and (await coordinator.get(wait_id)).status == "failed"
-    partial = tmp_path / "repair-run--s001-wfail"
+    partial = _segment_dir(tmp_path, "repair-run", "repair-run--s001-wfail")
     assert not (partial / "meta.json").exists()
-    partial.mkdir()
+    partial.mkdir(parents=True)
     (partial / "trace.jsonl").write_text(
         WorkflowTraceEvent(
             node="gate",
@@ -2593,7 +2607,7 @@ async def test_redelivery_after_resume_failed_never_writes_colliding_evidence(tm
     assert out2.terminal_observation == "recorded", (
         "the redelivery confirms existing evidence — typed, not re-written"
     )
-    names = sorted(p.name for p in tmp_path.iterdir() if p.is_dir())
+    names = sorted(p.name for p in _segments_dir(tmp_path, "rf-run").iterdir() if p.is_dir())
     assert not any(name.endswith("-wfail") for name in names), (
         f"no wait_terminal may collide with the failed continuation attempt: {names}"
     )
@@ -2706,7 +2720,7 @@ async def test_attempt_finalized_but_unterminalized_is_not_canonical(tmp_path):
             handle, {"kind": "signal", "event_id": "evt-f", "payload": "yes"}
         )
     # the attempt FINALIZED (meta exists, status completed) but was never committed
-    dead = tmp_path / "fc-run--s001"
+    dead = _segment_dir(tmp_path, "fc-run", "fc-run--s001")
     assert (dead / "meta.json").exists() and not (dead / "commit.json").exists()
 
     current["now"] += timedelta(seconds=301)
@@ -2946,13 +2960,13 @@ async def test_raising_resume_finalizes_its_segment(tmp_path):
 
     leaked = [
         p.name
-        for p in tmp_path.iterdir()
+        for p in _segments_dir(tmp_path, "boom-run").iterdir()
         if p.is_dir() and p.name.startswith("boom-run--s001") and not (p / "meta.json").exists()
     ]
     assert leaked == [], f"raising resume left unfinalized directories: {leaked}"
     failed_dirs = [
         p.name
-        for p in tmp_path.iterdir()
+        for p in _segments_dir(tmp_path, "boom-run").iterdir()
         if p.is_dir()
         and p.name.startswith("boom-run--s001")
         and _bundle_meta(p).get("status") == "failed"
@@ -3039,7 +3053,8 @@ async def test_failed_commit_marker_is_typed_and_repaired_by_redelivery(tmp_path
         assert out1.terminal_observation == "failed", (
             "a failed marker write must be VISIBLE on the typed outcome, never silent"
         )
-        assert not (tmp_path / "marker-run--s001" / "commit.json").exists()
+        marker_segment = _segment_dir(tmp_path, "marker-run", "marker-run--s001")
+        assert not (marker_segment / "commit.json").exists()
 
         out2 = await engine.deliver_wait_event(
             handle, {"kind": "signal", "event_id": "evt-m", "payload": "yes"}
@@ -3052,7 +3067,7 @@ async def test_failed_commit_marker_is_typed_and_repaired_by_redelivery(tmp_path
     finally:
         segment_lifecycle.commit_attempt = real_commit
 
-    assert (tmp_path / "marker-run--s001" / "commit.json").exists()
+    assert (marker_segment / "commit.json").exists()
     group = FileEventSource(tmp_path).read_group("marker-run")
     assert group.status == "completed", (
         "after repair the group shows the completed truth, not a suspended lie"
@@ -3114,16 +3129,19 @@ async def test_correlation_is_immutable_registration_truth_across_wait_lifecycle
     )
     assert outcome.kind == "rejected" and outcome.terminal_observation == "recorded"
 
-    wfail_meta = _bundle_meta(tmp_path / "corr-run--s001-wfail")
+    wfail_path = _segment_dir(tmp_path, "corr-run", "corr-run--s001-wfail")
+    wfail_meta = _bundle_meta(wfail_path)
     assert wfail_meta["correlation_id"] == "case-42", (
         "terminal evidence projects the REGISTERED related-run id, no live context needed"
     )
-    abandoned_meta = _bundle_meta(tmp_path / "corr-run--s001")
+    abandoned_meta = _bundle_meta(
+        _segment_dir(tmp_path, "corr-run", "corr-run--s001")
+    )
     assert abandoned_meta["status"] == "abandoned"
     assert abandoned_meta["correlation_id"] == "case-42", (
         "crashed-attempt reconciliation keeps the registered related-run id"
     )
-    trace_text = (tmp_path / "corr-run--s001-wfail" / "trace.jsonl").read_text(encoding="utf-8")
+    trace_text = (wfail_path / "trace.jsonl").read_text(encoding="utf-8")
     assert '"correlation_id":"case-42"' in trace_text
 
     # changed-correlation re-registration is an identity violation (same wait id inputs)
@@ -3144,7 +3162,9 @@ async def test_correlation_is_immutable_registration_truth_across_wait_lifecycle
     second = await engine.run("durable_flow", {}, goal=goal2)
     record, observation = await engine.cancel_wait(second.wait_handle.wait_id, reason="op")
     assert observation == "recorded"
-    plain_meta = _bundle_meta(tmp_path / "plain-w--s001-wfail")
+    plain_meta = _bundle_meta(
+        _segment_dir(tmp_path, "plain-w", "plain-w--s001-wfail")
+    )
     assert "correlation_id" not in plain_meta
 
 
@@ -4374,7 +4394,7 @@ async def test_terminal_status_override_settles_unexposed_durable_wait(tmp_path)
     just-registered durable continuation executable and its bundle unfinalized."""
 
     from ai_workflow_engine import InMemoryWaitCoordinator, open_observation_run_bundle
-    from ai_workflow_engine.observation_contract import load_bundle_meta_v3
+    from ai_workflow_engine.observation_contract import load_bundle_meta_v4
 
     coordinator = InMemoryWaitCoordinator(clock=_clock())
     engine = _durable_engine(coordinator)
@@ -4392,14 +4412,14 @@ async def test_terminal_status_override_settles_unexposed_durable_wait(tmp_path)
     [stored] = list(coordinator._records.values())
     assert stored.status == "cancelled"
     assert "terminal_status" in (stored.failure_detail or "")
-    assert load_bundle_meta_v3(bundle.path).status == "failed"
+    assert load_bundle_meta_v4(bundle.path).status == "failed"
 
 
 async def test_raising_terminal_status_settles_unexposed_durable_wait(tmp_path):
     """R2 sibling: a raising hook still closes both lifecycle owners truthfully."""
 
     from ai_workflow_engine import InMemoryWaitCoordinator, open_observation_run_bundle
-    from ai_workflow_engine.observation_contract import load_bundle_meta_v3
+    from ai_workflow_engine.observation_contract import load_bundle_meta_v4
 
     coordinator = InMemoryWaitCoordinator(clock=_clock())
     engine = _durable_engine(coordinator)
@@ -4418,7 +4438,7 @@ async def test_raising_terminal_status_settles_unexposed_durable_wait(tmp_path):
 
     [stored] = list(coordinator._records.values())
     assert stored.status == "cancelled"
-    assert load_bundle_meta_v3(bundle.path).status == "failed"
+    assert load_bundle_meta_v4(bundle.path).status == "failed"
 
 
 async def test_terminal_status_cannot_revoke_a_concurrently_exposed_retry_handle():

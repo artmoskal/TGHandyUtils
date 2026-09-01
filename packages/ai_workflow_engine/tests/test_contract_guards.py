@@ -149,16 +149,21 @@ def test_extracted_runtime_owners_never_import_the_executor():
 
 
 def test_observation_bundle_owners_have_one_way_dependencies():
-    """Bundle truth flows contract -> retention/writer -> canonical composition door."""
+    """Bundle truth flows from the contract into focused v4 owners and the facade."""
 
+    owner_names = (
+        "observation_contract.py",
+        "observation_values.py",
+        "observation_integrity.py",
+        "observation_finalization.py",
+        "observation_retention.py",
+        "observation_reader.py",
+        "observation_writer.py",
+        "observation_bundle.py",
+    )
     modules = {
         name: ast.parse((ENGINE_ROOT / name).read_text(encoding="utf-8"))
-        for name in (
-            "observation_contract.py",
-            "observation_retention.py",
-            "observation_writer.py",
-            "observation_bundle.py",
-        )
+        for name in owner_names
     }
 
     def imports(tree: ast.AST) -> set[str]:
@@ -177,6 +182,24 @@ def test_observation_bundle_owners_have_one_way_dependencies():
         if name.startswith("ai_workflow_engine.") or name.startswith("ai_workflow_viewer")
     }, "persisted observation contract must stay dependency-light"
 
+    values_imports = imports(modules["observation_values.py"])
+    assert "ai_workflow_engine.observation_contract" in values_imports
+    assert not any(name.startswith("ai_workflow_viewer") for name in values_imports)
+
+    finalization_imports = imports(modules["observation_finalization.py"])
+    assert {
+        "ai_workflow_engine.observation_contract",
+        "ai_workflow_engine.observation_integrity",
+        "ai_workflow_engine.observation_values",
+    } <= finalization_imports
+
+    reader_imports = imports(modules["observation_reader.py"])
+    assert {
+        "ai_workflow_engine.observation_contract",
+        "ai_workflow_engine.observation_values",
+    } <= reader_imports
+    assert "ai_workflow_engine.observation_writer" not in reader_imports
+
     retention_imports = imports(modules["observation_retention.py"])
     assert "ai_workflow_engine.observation_contract" in retention_imports
     assert not {
@@ -187,7 +210,9 @@ def test_observation_bundle_owners_have_one_way_dependencies():
     writer_imports = imports(modules["observation_writer.py"])
     assert {
         "ai_workflow_engine.observation_contract",
+        "ai_workflow_engine.observation_finalization",
         "ai_workflow_engine.observation_retention",
+        "ai_workflow_engine.observation_values",
     } <= writer_imports
     assert not any(name.startswith("ai_workflow_viewer") for name in writer_imports)
 

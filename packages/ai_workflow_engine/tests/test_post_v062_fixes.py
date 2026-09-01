@@ -89,7 +89,7 @@ def test_terminal_status_requires_user_input_without_snapshot_is_loud(tmp_path):
                 terminal_status=lambda e: "requires_user_input",
             )
         )
-    meta = json.loads((tmp_path / "run-fake-suspend" / "meta.json").read_text())
+    meta = json.loads((bundle.path / "meta.json").read_text())
     assert meta["status"] == "failed"
 
 

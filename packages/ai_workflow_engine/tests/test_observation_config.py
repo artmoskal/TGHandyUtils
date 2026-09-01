@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 
@@ -173,7 +174,7 @@ def test_builder_with_observation_override_wins_regardless_of_order(tmp_path):
 
     for result in (before, after):
         assert result.observation_bundle_path, "override observation did not open a bundle"
-        assert Path(result.observation_bundle_path).parent == override_dir
+        assert Path(result.observation_bundle_path).parents[2] == override_dir
     assert not (tmp_path / "config-bundles").exists(), (
         "config observation dir used despite explicit override"
     )
@@ -189,7 +190,7 @@ def test_enabled_observation_auto_opens_routes_and_finalizes(tmp_path):
     result = asyncio.run(engine.run("auto_flow", {"x": 1}))
 
     assert result.observation_bundle_path, "engine did not report the bundle location"
-    bundle_dir = tmp_path / result.observation_bundle_path.split("/")[-1]
+    bundle_dir = Path(result.observation_bundle_path)
     meta = json.loads((bundle_dir / "meta.json").read_text())
     assert meta["status"] == "completed"
     trace_lines = (bundle_dir / "trace.jsonl").read_text().strip().splitlines()
@@ -247,7 +248,7 @@ def test_explicit_bundle_escape_hatch_beats_the_config(tmp_path):
 
     assert result.observation_bundle_path == str(explicit.path)
     assert not (tmp_path / "auto").exists(), "auto bundle opened despite explicit escape hatch"
-    meta = json.loads((tmp_path / "explicit" / "run-x" / "meta.json").read_text())
+    meta = json.loads((explicit.path / "meta.json").read_text())
     assert meta["status"] == "completed"
 
 
@@ -560,6 +561,159 @@ async def test_resumed_bundle_is_a_segment_of_the_logical_run(tmp_path):
     assert resumed_meta["definition_digest"] == initial_meta["definition_digest"]
 
 
+async def test_v4_run_store_reuses_child_evidence_across_suspend_resume(tmp_path):
+    """One logical run owns exact bodies across child execution and resumed segments."""
+
+    from pydantic import BaseModel
+
+    from ai_workflow_engine import ObservationReader
+    from ai_workflow_engine.models import WorkflowGoal
+
+    bundles = tmp_path / "bundles"
+    repeated = "same child evidence: " * 8_000
+
+    class Gate(BaseModel):
+        status: str
+        value: str = ""
+
+    def repeat(_context, _payload):
+        return {"evidence": repeated}
+
+    def ask(context, _payload):
+        event = context.metadata.get("resume_event")
+        if event is None:
+            return Gate(status="pending")
+        return Gate(status="answered", value=str(event))
+
+    child = WorkflowBuilder("v4_child").step("child_repeat", capability="repeat").build()
+    parent = (
+        WorkflowBuilder("v4_parent")
+        .subworkflow("child", workflow=child)
+        .human("ask", wait_policy=LocalWaitPolicy())
+        .step("after_repeat", capability="repeat")
+        .build()
+    )
+    engine = (
+        WorkflowEngineBuilder()
+        .with_observation(
+            ObservationConfig(enabled=True, bundle_dir=str(bundles), capture="full")
+        )
+        .register_capability("repeat", repeat, kind="tool")
+        .register_capability("ask", ask, kind="deterministic")
+        .register_workflow(child)
+        .register_workflow(parent)
+        .build()
+    )
+    goal = WorkflowGoal(
+        workflow_type="v4_parent",
+        objective="prove run-scoped values",
+        metadata={"run_id": "v4-shared-run"},
+    )
+
+    first = await engine.run("v4_parent", {}, goal=goal)
+    assert first.status == "requires_user_input"
+    resumed = await engine.resume(first.snapshot, "continue")
+    assert resumed.status == "completed"
+
+    readers = [
+        ObservationReader(first.observation_bundle_path),
+        ObservationReader(resumed.observation_bundle_path),
+    ]
+    envelopes = [list(reader.iter_detail_envelopes()) for reader in readers]
+    referenced = [
+        {detail.body.sha256 for detail in segment if detail.body.kind == "body_ref"}
+        for segment in envelopes
+    ]
+    shared = referenced[0] & referenced[1]
+    identities = [
+        [
+            (detail.kind, detail.body.kind, detail.body.sha256, detail.body.byte_length)
+            for detail in segment
+        ]
+        for segment in envelopes
+    ]
+    assert shared, (
+        "the same completed child/result body was not reused after resume: "
+        f"{identities}"
+    )
+
+    run_root = readers[0].run_root
+    objects = list((run_root / "values").glob("*/*.body.gz"))
+    assert len(objects) == len(referenced[0] | referenced[1]), (
+        "run-scoped storage must publish one object per exact referenced body identity"
+    )
+    assert sum(len(segment) for segment in envelopes) > len(objects), (
+        "every detail envelope must survive even when exact bodies are reused"
+    )
+    shared_detail = next(
+        detail for segment in envelopes for detail in segment if detail.body.sha256 in shared
+    )
+    assert repeated.encode() in readers[0].read_body_bytes(
+        shared_detail,
+        max_bytes=shared_detail.body.byte_length,
+    )
+    assert not (run_root / "details.jsonl").exists()
+    assert {reader.meta.bundle_schema_version for reader in readers} == {4}
+
+
+@pytest.mark.parametrize("damage", ["missing", "v3"])
+async def test_v4_resume_refuses_invalid_initial_before_continuation_executes(tmp_path, damage):
+    from pydantic import BaseModel
+
+    from ai_workflow_engine.models import WorkflowGoal
+
+    calls = {"finish": 0}
+
+    class Gate(BaseModel):
+        status: str
+        value: str = ""
+
+    def ask(context, _payload):
+        event = context.metadata.get("resume_event")
+        return Gate(status="answered", value=str(event)) if event is not None else Gate(
+            status="pending"
+        )
+
+    def finish(_context, payload):
+        calls["finish"] += 1
+        return payload
+
+    bundles = tmp_path / damage
+    engine = (
+        WorkflowEngineBuilder()
+        .with_observation(ObservationConfig(enabled=True, bundle_dir=str(bundles)))
+        .register_capability("ask", ask, kind="deterministic")
+        .register_capability("finish", finish, kind="deterministic")
+        .register_workflow(
+            WorkflowBuilder("v4_resume_guard")
+            .human("ask", wait_policy=LocalWaitPolicy())
+            .step("finish")
+            .build()
+        )
+        .build()
+    )
+    goal = WorkflowGoal(
+        workflow_type="v4_resume_guard",
+        objective="refuse invalid observation lineage",
+        metadata={"run_id": f"resume-{damage}"},
+    )
+    first = await engine.run("v4_resume_guard", {}, goal=goal)
+    initial_meta = Path(first.observation_bundle_path) / "meta.json"
+    if damage == "missing":
+        initial_meta.unlink()
+    else:
+        initial_meta.write_text(
+            json.dumps({"bundle_schema_version": 3, "run_id": f"resume-{damage}"})
+        )
+
+    with pytest.raises(ValueError, match="canonical v4 initial segment is missing or invalid"):
+        await engine.resume(first.snapshot, "continue")
+
+    assert calls["finish"] == 0
+    run_root = bundles / f"resume-{damage}"
+    assert len(list((run_root / "segments").iterdir())) == 1
+
+
 async def test_group_retention_prunes_logical_runs_as_units(tmp_path):
     """W4.5 (Q-R5 reproducer): retention must never delete a suspension half while keeping
     its continuation — the logical run is the unit. With limit 1, the OLD run's two
@@ -579,13 +733,17 @@ async def test_group_retention_prunes_logical_runs_as_units(tmp_path):
     resumed = await engine.resume(new_first.snapshot, "done")
     assert resumed.status == "completed"
 
-    names = {path.name for path in bundles.iterdir() if (path / "meta.json").exists()}
+    names = {path.name for path in bundles.iterdir() if path.is_dir()}
     assert not any(name.startswith("old-run") for name in names), (
         f"the old logical run must be pruned as a UNIT: {names}"
     )
-    assert "new-run" in names and any(name.startswith("new-run--s001-") for name in names), (
-        f"retention limit 1 must preserve EVERY segment of the newest run: {names}"
-    )
+    assert "new-run" in names
+    new_segments = {
+        path.name for path in (bundles / "new-run" / "segments").iterdir()
+    }
+    assert "new-run" in new_segments and any(
+        name.startswith("new-run--s001-") for name in new_segments
+    ), f"retention limit 1 must preserve EVERY segment of the newest run: {new_segments}"
 
 
 async def test_in_flight_suspended_group_is_never_pruned(tmp_path):
@@ -610,7 +768,7 @@ async def test_in_flight_suspended_group_is_never_pruned(tmp_path):
         result = await engine.run("plain_flow", {}, goal=goal)
         assert result.status == "completed"
 
-    names = {path.name for path in bundles.iterdir() if (path / "meta.json").exists()}
+    names = {path.name for path in bundles.iterdir() if path.is_dir()}
     assert "waiting-run" in names, f"in-flight suspended group was pruned: {names}"
     assert "done-1" in names and "done-0" not in names, (
         f"terminal groups still rotate normally around the protected one: {names}"
@@ -621,7 +779,7 @@ async def test_in_flight_suspended_group_is_never_pruned(tmp_path):
     assert resumed.status == "completed"
     goal = WorkflowGoal(workflow_type="plain_flow", objective="n", metadata={"run_id": "done-2"})
     await engine.run("plain_flow", {}, goal=goal)
-    names = {path.name for path in bundles.iterdir() if (path / "meta.json").exists()}
+    names = {path.name for path in bundles.iterdir() if path.is_dir()}
     assert not any(name.startswith("waiting-run") for name in names), (
         f"terminalized group must prune as a unit again: {names}"
     )
@@ -652,72 +810,15 @@ def test_malformed_segment_identity_is_loud(tmp_path):
         )
 
 
-async def test_suspended_eviction_cap_is_opt_in_and_age_based(tmp_path):
-    """R4-B (user-settled policy): by default a suspended group is NEVER evicted; with
-    `evict_suspended_after_s` set, groups suspended longer than the cap rotate out at the
-    normal finalize-time sweep — viewer history only. This LOCAL wait resumes afterwards
-    because the CALLER kept its snapshot (durable waits would resume via the coordinator's
-    stored snapshot); the engine never stored a local snapshot anywhere."""
+def test_suspended_eviction_option_is_removed_because_retention_cannot_break_resume(tmp_path):
+    """Run-scoped v4 values make resumable groups indivisible retention units."""
 
-    import json
-    from datetime import datetime, timedelta, timezone
-
-    from ai_workflow_engine.models import WorkflowGoal
-
-    bundles = tmp_path / "bundles"
-    engine = _suspend_resume_engine(bundles, retention_limit=1)
-    # opt in: anything suspended for more than an hour is evictable
-    engine.observation = engine.observation.model_copy(update={"evict_suspended_after_s": 3600.0})
-
-    goal = WorkflowGoal(workflow_type="seg_flow", objective="old", metadata={"run_id": "aged-run"})
-    aged = await engine.run("seg_flow", {}, goal=goal)
-    assert aged.status == "requires_user_input"
-    # age the suspension two hours into the past (meta timestamp is the sweep's clock)
-    meta_path = bundles / "aged-run" / "meta.json"
-    meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    meta["timestamp"] = (
-        (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat().replace("+00:00", "Z")
-    )
-    meta_path.write_text(json.dumps(meta), encoding="utf-8")
-
-    fresh_goal = WorkflowGoal(workflow_type="seg_flow", objective="f", metadata={"run_id": "fresh-run"})
-    fresh = await engine.run("seg_flow", {}, goal=fresh_goal)  # suspended NOW (inside cap)
-    for index in (0, 1):
-        goal_n = WorkflowGoal(
-            workflow_type="plain_flow", objective="n", metadata={"run_id": f"done-{index}"}
+    with pytest.raises(Exception, match="evict_suspended_after_s|extra"):
+        ObservationConfig(
+            enabled=True,
+            bundle_dir=str(tmp_path),
+            evict_suspended_after_s=3600.0,
         )
-        await engine.run("plain_flow", {}, goal=goal_n)  # terminal groups -> sweep fires
-
-    names = {p.name for p in bundles.iterdir() if (p / "meta.json").exists()}
-    assert "aged-run" not in names, f"over-cap suspended group must rotate out: {names}"
-    assert "fresh-run" in names, "a suspended group INSIDE the cap stays protected"
-    # resumability is untouched: the aged run's snapshot still resumes fine
-    resumed = await engine.resume(aged.snapshot, "late answer")
-    assert resumed.status == "completed", (
-        "eviction sacrifices viewer history only — the caller-retained snapshot resumes"
-    )
-
-
-def test_eviction_cap_rejects_non_positive_and_non_finite_values(tmp_path):
-    """W5-C2: an invalid retention policy refuses loudly at construction — NaN would
-    otherwise make `age <= cap` silently false and evict nothing (or worse, mislead the
-    operator into thinking a bound exists). Same discipline as durable timeout_s."""
-
-    import math
-
-    import pytest as _pytest
-
-    from ai_workflow_engine import ObservationConfig
-
-    for bad in (-1.0, 0.0, float("inf"), float("nan")):
-        with _pytest.raises(Exception) as err:
-            ObservationConfig(enabled=True, bundle_dir=str(tmp_path), evict_suspended_after_s=bad)
-        assert "evict_suspended_after_s" in str(err.value) or "greater than 0" in str(err.value), (
-            f"cap {bad!r} must be rejected loudly, got: {err.value}"
-        )
-    ok = ObservationConfig(enabled=True, bundle_dir=str(tmp_path), evict_suspended_after_s=3600.0)
-    assert math.isfinite(ok.evict_suspended_after_s)
-    assert ObservationConfig(enabled=True, bundle_dir=str(tmp_path)).evict_suspended_after_s is None
 
 
 async def test_correlation_id_spans_runs_events_bundles_and_writes(tmp_path):
@@ -771,8 +872,12 @@ async def test_correlation_id_spans_runs_events_bundles_and_writes(tmp_path):
     assert captured_writes and captured_writes[0].metadata["correlation_id"] == "case-7"
 
     # every finalized segment of BOTH runs carries the correlation in meta AND in events
-    dirs = [p for p in tmp_path.iterdir() if (p / "meta.json").exists()]
-    assert len(dirs) >= 3
+    dirs = [
+        Path(first.observation_bundle_path),
+        Path(resumed.observation_bundle_path),
+        Path(second.observation_bundle_path),
+    ]
+    assert len(dirs) == 3
     for d in dirs:
         meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
         assert meta["correlation_id"] == "case-7", d.name
@@ -789,8 +894,10 @@ async def test_correlation_id_spans_runs_events_bundles_and_writes(tmp_path):
     goal3 = WorkflowGoal(
         workflow_type="case_flow", objective="n", metadata={"run_id": "plain-run"}
     )
-    await engine.run("case_flow", {}, goal=goal3)
-    plain_meta = json.loads((tmp_path / "plain-run" / "meta.json").read_text(encoding="utf-8"))
+    plain = await engine.run("case_flow", {}, goal=goal3)
+    plain_meta = json.loads(
+        (Path(plain.observation_bundle_path) / "meta.json").read_text(encoding="utf-8")
+    )
     assert "correlation_id" not in plain_meta
 
 
@@ -843,7 +950,9 @@ async def test_usage_correlation_is_identical_across_all_five_surfaces(tmp_path)
     assert snap_events[0]["metadata"]["correlation_id"] == "case-5"
     # surface 3: observation JSONL (identical event id + correlation)
     usage_line = json.loads(
-        (tmp_path / "five-run" / "usage.jsonl").read_text(encoding="utf-8").splitlines()[0]
+        (Path(first.observation_bundle_path) / "usage.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[0]
     )
     assert usage_line["event_id"] == event.event_id
     assert usage_line["metadata"]["correlation_id"] == "case-5"
@@ -910,6 +1019,7 @@ async def test_conflicting_related_run_identity_is_loud_on_every_event_surface(t
 
     from ai_workflow_engine.models import (
         ObservationDetail,
+        ObservationTextBody,
         WorkflowRunContext,
         WorkflowTraceEvent,
         WorkflowUsageEvent,
@@ -956,10 +1066,18 @@ async def test_conflicting_related_run_identity_is_loud_on_every_event_surface(t
 
         detail_sink = SessionScopedDetailSink(Collect())
         with _pytest.raises(ValueError, match="conflicting related-run identity"):
+            from ai_workflow_engine.observation_values import body_sha256
+
+            body = ObservationTextBody(value="payload")
             detail_sink.record(
                 ObservationDetail(
-                    detail_id="d1", event_id="e1", kind="tool_result", content_type="text/plain",
-                    digest="x", metadata={"correlation_id": "case-wrong"},
+                    detail_id="d1",
+                    event_id="e1",
+                    kind="tool_result",
+                    content_type="text/plain",
+                    body=body,
+                    digest=body_sha256(body),
+                    metadata={"correlation_id": "case-wrong"},
                 )
             )
 

@@ -34,7 +34,6 @@ observation:
   artifacts: copy     # off | copy
   artifact_max_bytes: 26214400
   retention_limit: 100
-  evict_suspended_after_s: null
 ```
 
 The engine then opens, routes, finalizes, and prunes per-run bundles. Products do **not** create
@@ -51,17 +50,19 @@ enter JSON records; copied artifacts live under the bundle manifest.
 
 ## Bundle Contents
 
-A finalized segment contains the workflow definition, metadata, trace/details/usage JSONL, artifacts
-manifest/files, and terminal status. Suspend/resume creates multiple immutable physical segments for
-one logical `run_id`.
+A logical run owns immutable value objects plus immutable physical segments. Each finalized segment
+contains the workflow definition, metadata, compact trace/detail-envelope/usage streams, artifacts,
+and terminal status. Large detail bodies are addressed by SHA-256 from compact envelopes and stored
+once per logical run. Suspend/resume creates multiple segments that share that run-scoped store.
 
-Use `FileEventSource.read_group(run_id)` to obtain one logical lifecycle. The reader:
+Use `ObservationReader` for exact compact or targeted body access and
+`FileEventSource.read_group(run_id)` to obtain one logical lifecycle. The readers:
 
 - selects one canonical attempt per logical segment index;
 - keeps abandoned/superseded/provisional attempts inspectable;
 - reports actual spend including non-canonical attempts;
 - validates event identity, sequence, machine digest, and related-run consistency;
-- treats older pre-segment bundles as groups of one.
+- reject older bundle schemas rather than guessing or adapting them.
 
 Do not concatenate files or sum `meta.json` totals manually.
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 from pathlib import Path
 import re
@@ -18,7 +17,7 @@ from ai_workflow_engine.models import (
     DetailCaptureState,
     ObservationDetail,
     ObservationDetailKind,
-    PrivacyLevel,
+    ObservationJsonBody,
     WorkflowTraceEvent,
     WorkflowTraceSeverity,
 )
@@ -89,7 +88,6 @@ class ObservationCapture:
         error: str | None = None,
         metadata: dict[str, Any] | None = None,
         digest_metadata_key: str | None = None,
-        privacy: PrivacyLevel = "internal",
         invocation_id: str | None = None,
     ) -> tuple[WorkflowTraceEvent, ObservationDetail | None] | None:
         return record_observation(
@@ -105,7 +103,6 @@ class ObservationCapture:
             error=error,
             metadata=metadata,
             capture_text=self.enabled,
-            privacy=privacy,
             digest_metadata_key=digest_metadata_key,
             invocation_id=invocation_id,
             capture_unavailable_reason=self.unavailable_reason,
@@ -117,7 +114,6 @@ class ObservationCapture:
         event_id: str,
         kind: ObservationDetailKind,
         payload: dict[str, Any],
-        privacy: PrivacyLevel = "internal",
         invocation_id: str | None = None,
     ) -> ObservationDetail | None:
         if not self.enabled:
@@ -128,7 +124,6 @@ class ObservationCapture:
             kind=kind,
             payload=payload,
             capture_text=True,
-            privacy=privacy,
             invocation_id=invocation_id,
         )
 
@@ -162,7 +157,6 @@ def record_observation(
     error: str | None = None,
     metadata: dict[str, Any] | None = None,
     capture_text: bool = False,
-    privacy: PrivacyLevel = "internal",
     digest_metadata_key: str | None = None,
     invocation_id: str | None = None,
     capture_unavailable_reason: DetailCaptureState | None = None,
@@ -215,7 +209,6 @@ def record_observation(
                     kind=kind,
                     payload=safe_payload,
                     digest=digest,
-                    privacy=privacy,
                     invocation_id=invocation_id,
                 )
                 event = event.model_copy(update={"detail_refs": [detail.detail_id]})
@@ -243,7 +236,6 @@ def record_observation_detail(
     kind: ObservationDetailKind,
     payload: dict[str, Any],
     capture_text: bool = False,
-    privacy: PrivacyLevel = "internal",
     invocation_id: str | None = None,
 ) -> ObservationDetail | None:
     """Record only a detail payload for an already-owned trace event."""
@@ -261,7 +253,6 @@ def record_observation_detail(
             kind=kind,
             payload=safe_payload,
             digest=payload_digest(safe_payload),
-            privacy=privacy,
             invocation_id=invocation_id,
         )
     except Exception:
@@ -273,18 +264,9 @@ def record_observation_detail(
 
 
 def payload_digest(payload: dict[str, Any]) -> str:
-    raw = json.dumps(payload, sort_keys=True, default=str, ensure_ascii=True).encode("utf-8")
-    return hashlib.sha256(raw).hexdigest()
+    from ai_workflow_engine.observation_values import canonical_json_bytes
 
-
-def render_payload_text(payload: dict[str, Any]) -> str:
-    return json.dumps(payload, indent=2, sort_keys=True, default=str, ensure_ascii=True)
-
-
-def render_detail_text(kind: ObservationDetailKind, payload: dict[str, Any]) -> str:
-    if kind == "llm_response" and isinstance(payload.get("text"), str):
-        return payload["text"]
-    return render_payload_text(payload)
+    return hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
 
 
 def llm_request_payload(request: Any) -> dict[str, Any]:
@@ -375,18 +357,14 @@ def _build_observation_detail(
     kind: ObservationDetailKind,
     payload: dict[str, Any],
     digest: str,
-    privacy: PrivacyLevel,
     invocation_id: str | None,
 ) -> ObservationDetail:
     return ObservationDetail(
         event_id=event_id,
         run_id=run_id,
         kind=kind,
-        privacy=privacy,
-        redaction_state="none",
         content_type="application/json",
-        text=render_detail_text(kind, payload),
-        json_value=payload,
+        body=ObservationJsonBody(value=payload),
         digest=digest,
         invocation_id=invocation_id,
     )

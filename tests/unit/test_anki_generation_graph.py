@@ -20,6 +20,7 @@ from ai_workflow_tools.media.image_models import (
     ImageGenerationEvidence,
 )
 from ai_workflow_tools.media.voice_generation import GeneratedVoiceAudio
+from ai_workflow_engine import ObservationReader
 from ai_workflow_engine.engine import InMemoryDetailSink
 from ai_workflow_viewer import JsonlObservationViewer, build_observation_graph
 from services.content.anki_generation_graph import AnkiGenerationGraph
@@ -276,7 +277,6 @@ async def test_graph_reuses_uploaded_image_by_default():
 
 @pytest.mark.unit
 async def test_graph_nodes_run_through_generic_capability_runtime(tmp_path):
-    import json
     from pathlib import Path
 
     svc = Mock()
@@ -302,20 +302,19 @@ async def test_graph_nodes_run_through_generic_capability_runtime(tmp_path):
     bundle_path = graph.last_observation_bundle_path()
     assert bundle_path
     bundle_dir = Path(bundle_path)
-    for name in (
-        "trace.jsonl",
-        "details.jsonl",
-        "usage.jsonl",
-        "definition.json",
-        "artifacts.json",
-        "meta.json",
-    ):
-        assert (bundle_dir / name).exists(), f"missing observation bundle file: {name}"
-    meta = json.loads((bundle_dir / "meta.json").read_text(encoding="utf-8"))
-    assert meta["bundle_schema_version"] == 3  # v0.11.10 latest-only bundle contract
-    assert meta["status"] == "completed"
-    assert meta["trace_count"] == len((bundle_dir / "trace.jsonl").read_text().splitlines())
-    assert meta["detail_count"] == len((bundle_dir / "details.jsonl").read_text().splitlines())
+    reader = ObservationReader(bundle_dir)
+    trace_events = list(reader.iter_trace_events())
+    detail_envelopes = list(reader.iter_detail_envelopes())
+    usage_events = list(reader.iter_usage_events())
+    assert reader.meta.bundle_schema_version == 4
+    assert reader.meta.status == "completed"
+    reader.validate_record_counts(
+        trace_count=len(trace_events),
+        detail_count=len(detail_envelopes),
+        usage_count=len(usage_events),
+    )
+    assert reader.read_definition().workflow_id == "anki_generation"
+    assert (bundle_dir / reader.meta.artifact_manifest_path).exists()
     viewer = JsonlObservationViewer.from_run_bundle(bundle_path, title="Anki generation observation")
     run = viewer.source.read()
     sequences = [record.sequence for record in run.records if record.sequence is not None]
@@ -333,7 +332,10 @@ async def test_graph_nodes_run_through_generic_capability_runtime(tmp_path):
     assert details.details
     assert observation.details
     assert all(ref in observation.details for event in observation.timeline for ref in event.detail_refs)
-    detail_text = "\n".join(detail.text or "" for detail in observation.details.values())
+    detail_text = "\n".join(
+        reader.read_body_bytes(detail, max_bytes=1_000_000).decode("utf-8")
+        for detail in run.details
+    )
     assert "Valve diagram" in detail_text
     assert "data:image" not in detail_text
     assert "base64," not in detail_text
@@ -1057,13 +1059,20 @@ async def test_graph_propagates_private_image_identity_and_safe_evidence_to_bund
     assert generated_trace.metadata["generated_media"] == metadata
 
     bundle = Path(graph.last_observation_bundle_path())
-    manifest = json.loads((bundle / "artifacts.json").read_text(encoding="utf-8"))
+    reader = ObservationReader(bundle)
+    manifest = json.loads(
+        (bundle / reader.meta.artifact_manifest_path).read_text(encoding="utf-8")
+    )
     generated = next(item for item in manifest if item["owner_node"] == "generate_image")
     assert generated["copied"] is True
     assert generated["metadata"]["generation_conversation_mode"] == "reuse"
     durable_text = "\n".join(
-        (bundle / name).read_text(encoding="utf-8")
-        for name in ("trace.jsonl", "details.jsonl", "usage.jsonl", "artifacts.json")
+        [
+            *(event.model_dump_json() for event in reader.iter_trace_events()),
+            *(detail.model_dump_json() for detail in reader.iter_detail_envelopes()),
+            *(usage.model_dump_json() for usage in reader.iter_usage_events()),
+            json.dumps(manifest),
+        ]
     )
     assert "source_url" not in durable_text
     assert "CHATGPT_BROWSER_API_TOKEN" not in durable_text

@@ -3,74 +3,77 @@
     "details": [
       {
         "artifact": null,
+        "body": {
+          "kind": "json",
+          "value": {
+            "capability": "art",
+            "kind": "deterministic",
+            "payload": {}
+          }
+        },
         "content_type": "application/json",
         "digest_consistent": true,
+        "display_text": "{\n  \"capability\": \"art\",\n  \"kind\": \"deterministic\",\n  \"payload\": {}\n}",
         "event": "E0",
         "has_digest": true,
-        "json": {
-          "capability": "art",
-          "kind": "deterministic",
-          "payload": {}
-        },
         "kind": "tool_payload",
-        "metadata": {},
-        "privacy": "internal",
-        "redaction_state": "none",
-        "text": "{\n  \"capability\": \"art\",\n  \"kind\": \"deterministic\",\n  \"payload\": {}\n}"
+        "metadata": {}
       },
       {
         "artifact": null,
-        "content_type": "application/json",
-        "digest_consistent": true,
-        "event": "E1",
-        "has_digest": true,
-        "json": {
-          "artifact_refs": [
-            {
-              "artifact_id": "A0",
-              "kind": "media",
-              "owner_node": "art",
-              "source": "x"
-            }
-          ],
-          "capability": "art",
-          "error": null,
-          "kind": "deterministic",
-          "metadata": {},
-          "output": {
-            "ok": 1
-          },
-          "status": "accepted"
-        },
-        "kind": "tool_result",
-        "metadata": {},
-        "privacy": "internal",
-        "redaction_state": "none",
-        "text": "{\n  \"artifact_refs\": [\n    {\n      \"artifact_id\": \"A0\",\n      \"kind\": \"media\",\n      \"owner_node\": \"art\",\n      \"source\": \"x\"\n    }\n  ],\n  \"capability\": \"art\",\n  \"error\": null,\n  \"kind\": \"deterministic\",\n  \"metadata\": {},\n  \"output\": {\n    \"ok\": 1\n  },\n  \"status\": \"accepted\"\n}"
-      },
-      {
-        "artifact": null,
-        "content_type": "application/json",
-        "digest_consistent": true,
-        "event": "E1",
-        "has_digest": true,
-        "json": {
-          "artifact": {
-            "artifact_id": "A0",
-            "cleanup_on_failure": true,
-            "kind": "media",
+        "body": {
+          "kind": "json",
+          "value": {
+            "artifact_refs": [
+              {
+                "artifact_id": "A0",
+                "kind": "media",
+                "owner_node": "art",
+                "source": "x"
+              }
+            ],
+            "capability": "art",
+            "error": null,
+            "kind": "deterministic",
             "metadata": {},
-            "owner_node": "art",
-            "path": "a.png",
-            "source": "x"
-          },
-          "capability": "art"
+            "output": {
+              "ok": 1
+            },
+            "status": "accepted"
+          }
         },
+        "content_type": "application/json",
+        "digest_consistent": true,
+        "display_text": "{\n  \"artifact_refs\": [\n    {\n      \"artifact_id\": \"A0\",\n      \"kind\": \"media\",\n      \"owner_node\": \"art\",\n      \"source\": \"x\"\n    }\n  ],\n  \"capability\": \"art\",\n  \"error\": null,\n  \"kind\": \"deterministic\",\n  \"metadata\": {},\n  \"output\": {\n    \"ok\": 1\n  },\n  \"status\": \"accepted\"\n}",
+        "event": "E1",
+        "has_digest": true,
+        "kind": "tool_result",
+        "metadata": {}
+      },
+      {
+        "artifact": null,
+        "body": {
+          "kind": "json",
+          "value": {
+            "artifact": {
+              "artifact_id": "A0",
+              "cleanup_on_failure": true,
+              "kind": "media",
+              "metadata": {},
+              "owner_node": "art",
+              "path": "a.png",
+              "source": "x"
+            },
+            "capability": "art"
+          }
+        },
+        "content_type": "application/json",
+        "digest_consistent": true,
+        "display_text": "{\n  \"artifact\": {\n    \"artifact_id\": \"A0\",\n    \"cleanup_on_failure\": true,\n    \"kind\": \"media\",\n    \"metadata\": {},\n    \"owner_node\": \"art\",\n    \"path\": \"a.png\",\n    \"source\": \"x\"\n  },\n  \"capability\": \"art\"\n}",
+        "event": "E1",
+        "has_digest": true,
         "kind": "artifact_preview",
-        "metadata": {},
-        "privacy": "internal",
-        "redaction_state": "none",
-        "text": "{\n  \"artifact\": {\n    \"artifact_id\": \"A0\",\n    \"cleanup_on_failure\": true,\n    \"kind\": \"media\",\n    \"metadata\": {},\n    \"owner_node\": \"art\",\n    \"path\": \"a.png\",\n    \"source\": \"x\"\n  },\n  \"capability\": \"art\"\n}"
+        "metadata": {}
       }
     ],
     "exception": null,
@@ -481,43 +484,45 @@
     "details": [
       {
         "artifact": null,
+        "body": {
+          "kind": "json",
+          "value": {
+            "capability": "cap_full",
+            "kind": "deterministic",
+            "payload": {}
+          }
+        },
         "content_type": "application/json",
         "digest_consistent": true,
+        "display_text": "{\n  \"capability\": \"cap_full\",\n  \"kind\": \"deterministic\",\n  \"payload\": {}\n}",
         "event": "E0",
         "has_digest": true,
-        "json": {
-          "capability": "cap_full",
-          "kind": "deterministic",
-          "payload": {}
-        },
         "kind": "tool_payload",
-        "metadata": {},
-        "privacy": "internal",
-        "redaction_state": "none",
-        "text": "{\n  \"capability\": \"cap_full\",\n  \"kind\": \"deterministic\",\n  \"payload\": {}\n}"
+        "metadata": {}
       },
       {
         "artifact": null,
+        "body": {
+          "kind": "json",
+          "value": {
+            "artifact_refs": [],
+            "capability": "cap_full",
+            "error": null,
+            "kind": "deterministic",
+            "metadata": {},
+            "output": {
+              "ok": 1
+            },
+            "status": "accepted"
+          }
+        },
         "content_type": "application/json",
         "digest_consistent": true,
+        "display_text": "{\n  \"artifact_refs\": [],\n  \"capability\": \"cap_full\",\n  \"error\": null,\n  \"kind\": \"deterministic\",\n  \"metadata\": {},\n  \"output\": {\n    \"ok\": 1\n  },\n  \"status\": \"accepted\"\n}",
         "event": "E1",
         "has_digest": true,
-        "json": {
-          "artifact_refs": [],
-          "capability": "cap_full",
-          "error": null,
-          "kind": "deterministic",
-          "metadata": {},
-          "output": {
-            "ok": 1
-          },
-          "status": "accepted"
-        },
         "kind": "tool_result",
-        "metadata": {},
-        "privacy": "internal",
-        "redaction_state": "none",
-        "text": "{\n  \"artifact_refs\": [],\n  \"capability\": \"cap_full\",\n  \"error\": null,\n  \"kind\": \"deterministic\",\n  \"metadata\": {},\n  \"output\": {\n    \"ok\": 1\n  },\n  \"status\": \"accepted\"\n}"
+        "metadata": {}
       }
     ],
     "exception": null,

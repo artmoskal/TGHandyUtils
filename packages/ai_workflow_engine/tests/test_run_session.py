@@ -95,7 +95,12 @@ def test_concurrent_runs_share_no_per_run_state():
         by_run.setdefault(record.run_id, []).append(record)
     assert len(by_run) == 2
     for rid, records in by_run.items():
-        tags = {("A" if '"A"' in (r.text or "") else ("B" if '"B"' in (r.text or "") else None)) for r in records}
+        tags = {
+            "A" if '"A"' in r.model_dump_json() else (
+                "B" if '"B"' in r.model_dump_json() else None
+            )
+            for r in records
+        }
         tags.discard(None)
         assert len(tags) <= 1, f"detail records for run {rid} mix payload tags: {tags}"
 

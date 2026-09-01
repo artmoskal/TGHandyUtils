@@ -508,7 +508,7 @@ from ai_workflow_engine import (
     WorkflowBuilder,
     WorkflowEngineBuilder,
     WorkflowGoal,
-    load_bundle_meta_v3,
+    load_bundle_meta_v4,
 )
 from ai_workflow_engine.models import (
     CapabilityResult,
@@ -855,7 +855,7 @@ async def main():
         assert exc.args == ("installed-smoke",)
     else:
         raise AssertionError("caller cancellation was swallowed")
-    meta = load_bundle_meta_v3(cancel_root / "installed-cancel")
+    meta = load_bundle_meta_v4(cancel_root / "installed-cancel")
     assert meta.status == "cancelled" and meta.artifact_count == 1
     assert FileEventSource(cancel_root).read_group("installed-cancel").status == "cancelled"
 

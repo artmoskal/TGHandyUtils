@@ -7,17 +7,13 @@ from pathlib import Path
 from typing import Protocol
 
 from ai_workflow_engine import (
-    ObservationDetail,
-    WorkflowDefinition,
-    WorkflowTraceEvent,
-    WorkflowUsageEvent,
-    load_bundle_meta_v3,
+    ObservationReader,
+    load_bundle_meta_v4,
 )
 from ai_workflow_engine.observation_bundle import (
     ABANDON_MARKER_NAME as _ABANDON_MARKER,
     COMMIT_MARKER_NAME as _COMMIT_MARKER,
     assert_plain_identity,
-    resolve_child_dir,
 )
 from ai_workflow_engine.observation_integrity import validate_provider_invocation_links
 from ai_workflow_viewer.grouping import (
@@ -47,32 +43,24 @@ class FileEventSource:
 
     def read(self, run_id: str | None = None) -> ObservationRunData:
         run_path = self._run_path(run_id)
-        # ONE strict loader — pre-v3 or malformed meta fails here naming the
-        # historical tag route; the viewer never renders a plausible page from guesses.
-        meta = load_bundle_meta_v3(run_path)
+        # ONE strict v4 reader; the viewer never guesses a layout or opens referenced bodies.
+        reader = ObservationReader(run_path)
+        meta = reader.meta
         if run_id is not None and meta.run_id != run_id:
             raise FileNotFoundError(
                 f"Observation bundle at {run_path} belongs to run {meta.run_id!r}, "
                 f"not {run_id!r} — the meta identity is the truth, never the directory name"
             )
-        definition_path = _contained_file(run_path, meta.definition_path)
-        if not definition_path.exists():
-            raise FileNotFoundError(f"Observation bundle is missing workflow definition: {definition_path}")
-        definition = WorkflowDefinition.model_validate_json(definition_path.read_text(encoding="utf-8"))
-        # C2-2: the digest is verified on EVERY read surface, not only the grouped one — the
-        # same segment must never render through one door and refuse through another.
-        actual_digest = definition.definition_digest()
-        if actual_digest != meta.definition_digest:
-            raise ValueError(
-                f"Observation bundle at {run_path}: meta claims digest "
-                f"{meta.definition_digest!r} but definition.json recomputes {actual_digest!r} "
-                "— forged or stale metadata is rejected"
-            )
-        records = [
-            *_load_records(_contained_file(run_path, meta.trace_path), "trace", WorkflowTraceEvent),
-            *_load_records(_contained_file(run_path, meta.detail_path), "detail", ObservationDetail),
-            *_load_records(_contained_file(run_path, meta.usage_path), "usage", WorkflowUsageEvent),
-        ]
+        definition = reader.read_definition()
+        trace_records = list(_wrap_records(reader.iter_trace_events(), "trace"))
+        detail_records = list(_wrap_records(reader.iter_detail_envelopes(), "detail"))
+        usage_records = list(_wrap_records(reader.iter_usage_events(), "usage"))
+        reader.validate_record_counts(
+            trace_count=len(trace_records),
+            detail_count=len(detail_records),
+            usage_count=len(usage_records),
+        )
+        records = [*trace_records, *detail_records, *usage_records]
         records.sort(key=_record_sort_key)
         _assert_sequence_sane(records)
         _validate_provider_evidence(meta, records)
@@ -84,16 +72,7 @@ class FileEventSource:
         )
 
     def list_runs(self) -> list[dict]:
-        base = self.base_path
-        if _is_run_bundle(base):
-            return [_run_entry_or_corrupt(base)]
-        if not base.exists():
-            return []
-        entries = [
-            _run_entry_or_corrupt(path)
-            for path in base.iterdir()
-            if path.is_dir() and _is_run_bundle(path)
-        ]
+        entries = [_run_entry_or_corrupt(path) for path in _segment_paths(self.base_path)]
         entries.sort(key=lambda item: str(item.get("timestamp") or ""), reverse=True)
         return entries
 
@@ -108,14 +87,14 @@ class FileEventSource:
         half-true merge.
         """
 
-        root = self.base_path.parent if _is_run_bundle(self.base_path) else self.base_path
+        scan_root = self.base_path
+        if _is_run_bundle(scan_root):
+            scan_root = ObservationReader(scan_root).run_root
         entries: list[ObservationSegmentData] = []
         abandoned_segment_ids: set[str] = set()
-        for path in sorted(root.iterdir()) if root.exists() else []:
-            if not (path.is_dir() and _is_run_bundle(path)):
-                continue
+        for path in _segment_paths(scan_root):
             try:
-                meta = load_bundle_meta_v3(path)
+                meta = load_bundle_meta_v4(path)
             except Exception as contract_error:
                 if path.is_symlink():
                     raise
@@ -152,7 +131,8 @@ class FileEventSource:
             )
         if not entries:
             raise FileNotFoundError(
-                f"No finalized observation segments for logical run {logical_run_id!r} under {root}"
+                f"No finalized observation segments for logical run {logical_run_id!r} "
+                f"under {self.base_path}"
             )
         return assemble_observation_group(
             logical_run_id,
@@ -163,26 +143,22 @@ class FileEventSource:
     def list_groups(self, *, related_run_id: str | None = None) -> list[dict]:
         """One entry per LOGICAL run: segment count, newest status/timestamp (W4.3)."""
 
-        root = self.base_path.parent if _is_run_bundle(self.base_path) else self.base_path
-        if not root.exists():
-            return []
         grouped: dict[str, list[dict]] = {}
-        for path in root.iterdir():
-            if path.is_dir() and _is_run_bundle(path):
-                entry = _run_entry_or_corrupt(path)
-                attempt = entry.get("attempt")
-                entry["_row"] = {
-                    "id": entry["segment_id"],
-                    "index": entry["segment_index"],
-                    "attempt": attempt,
-                    "committed": attempt is None or (path / _COMMIT_MARKER).exists(),
-                    "abandoned": entry["status"] == "abandoned"
-                    or (path / _ABANDON_MARKER).exists(),
-                    "timestamp": entry["timestamp"],
-                    "correlation": entry.get("correlation_id"),
-                    "entry": entry,
-                }
-                grouped.setdefault(str(entry["run_id"]), []).append(entry)
+        for path in _segment_paths(self.base_path):
+            entry = _run_entry_or_corrupt(path)
+            attempt = entry.get("attempt")
+            entry["_row"] = {
+                "id": entry["segment_id"],
+                "index": entry["segment_index"],
+                "attempt": attempt,
+                "committed": attempt is None or (path / _COMMIT_MARKER).exists(),
+                "abandoned": entry["status"] == "abandoned"
+                or (path / _ABANDON_MARKER).exists(),
+                "timestamp": entry["timestamp"],
+                "correlation": entry.get("correlation_id"),
+                "entry": entry,
+            }
+            grouped.setdefault(str(entry["run_id"]), []).append(entry)
         return summarize_observation_groups(grouped, related_run_id=related_run_id)
 
     def _run_path(self, run_id: str | None) -> Path:
@@ -193,29 +169,36 @@ class FileEventSource:
         if run_id is not None:
             assert_plain_identity(str(run_id), what="run id")
         if _is_run_bundle(self.base_path):
-            if run_id is not None and run_id != self.base_path.name:
-                candidate = resolve_child_dir(
-                    self.base_path.parent, run_id, what="observation bundle directory"
+            if run_id is not None and load_bundle_meta_v4(self.base_path).run_id != run_id:
+                raise FileNotFoundError(
+                    f"observation segment {self.base_path} does not belong to run {run_id!r}"
                 )
-                if candidate.exists():
-                    return candidate
             return self.base_path
         if run_id is None:
-            runs = self.list_runs()
-            if len(runs) != 1:
+            logical_ids = {str(entry["run_id"]) for entry in self.list_runs()}
+            if len(logical_ids) != 1:
                 raise ValueError("Observation source contains multiple runs; pass run_id")
-            run_id = str(runs[0]["run_id"])
-        return resolve_child_dir(self.base_path, run_id, what="observation bundle directory")
+            run_id = logical_ids.pop()
+        candidates = [
+            path
+            for path in _segment_paths(self.base_path)
+            if _safe_segment_run_id(path) == run_id
+        ]
+        if not candidates:
+            raise FileNotFoundError(f"No finalized observation segments for run {run_id!r}")
+        return max(
+            candidates,
+            key=lambda path: (
+                load_bundle_meta_v4(path).segment_index,
+                load_bundle_meta_v4(path).timestamp,
+                path.name,
+            ),
+        )
 
 
-def _load_records(path: Path, kind: str, model: type) -> list[ObservationRecord]:
-    if not path.exists():
-        return []
+def _wrap_records(source, kind: str) -> list[ObservationRecord]:
     records = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        record = model.model_validate_json(line)
+    for record in source:
         event_id = _record_identity(kind, record)
         records.append(
             ObservationRecord(
@@ -261,25 +244,56 @@ def _is_run_bundle(path: Path) -> bool:
     return (path / "meta.json").exists()
 
 
-def _contained_file(run_path: Path, name: str) -> Path:
-    """C2-1: resolve one fixed-layout bundle file and require it to stay inside the bundle
-    directory — a symlink escaping the bundle is rejected, never followed."""
+def _segment_paths(base: Path) -> list[Path]:
+    if _is_run_bundle(base):
+        return [base]
+    if not base.exists():
+        return []
+    if (base / "segments").is_dir():
+        roots = [base]
+    else:
+        roots = []
+        for path in base.iterdir():
+            if path.is_symlink():
+                raise ValueError(
+                    f"observation logical-run directory {path} is a symlink — symlinked "
+                    "children of the configured root are rejected"
+                )
+            if path.is_dir():
+                roots.append(path)
+    segments: list[Path] = []
+    for run_root in roots:
+        segment_root = run_root / "segments"
+        if segment_root.is_symlink():
+            raise ValueError(
+                f"observation segments directory {segment_root} is a symlink — symlinked "
+                "storage owners are rejected"
+            )
+        if not segment_root.is_dir():
+            continue
+        for path in segment_root.iterdir():
+            if path.is_symlink():
+                raise ValueError(
+                    f"observation segment directory {path} is a symlink — symlinked "
+                    "children are rejected"
+                )
+            if path.is_dir() and _is_run_bundle(path):
+                segments.append(path)
+    return sorted(segments)
 
-    root = run_path.resolve()
-    candidate = root / name
-    if not candidate.resolve().is_relative_to(root):
-        raise ValueError(
-            f"bundle file {name!r} in {run_path} escapes its bundle directory — "
-            "symlinked evidence is rejected"
-        )
-    return candidate
+
+def _safe_segment_run_id(path: Path) -> str | None:
+    try:
+        return load_bundle_meta_v4(path).run_id
+    except Exception:
+        return _raw_logical_run_id(path)
 
 
 def _run_entry(path: Path) -> dict:
-    """Index-row dict built from the STRICT v3 meta — same key shape the writer
+    """Index-row dict built from the strict v4 meta — same key shape the writer
     persists, including absence-not-null for ``correlation_id``."""
 
-    meta = load_bundle_meta_v3(path)
+    meta = load_bundle_meta_v4(path)
     entry = json.loads(meta.model_dump_json())
     if entry.get("correlation_id") is None:
         entry.pop("correlation_id", None)
