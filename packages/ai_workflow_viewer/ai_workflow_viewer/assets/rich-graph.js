@@ -99,12 +99,20 @@
     const rawLink = detail.anchor
       ? `<a href="#${escapeHtml(detail.anchor)}" data-open-detail="${escapeHtml(detail.anchor)}">open in raw list</a>`
       : "";
+    const previewLink = detail.links?.page
+      ? `<a href="${escapeHtml(detail.links.page)}">bounded preview</a>`
+      : "";
+    const downloadLink = detail.links?.download
+      ? `<a href="${escapeHtml(detail.links.download)}" download>exact download</a>`
+      : "";
     return `
       <div class="detail-card">
         <div class="detail-card-header">
           <span class="detail-kind">${escapeHtml(detail.kind)}</span>
           <span class="muted">${escapeHtml(detail.storage || "detail")}</span>
           ${rawLink}
+          ${previewLink}
+          ${downloadLink}
         </div>
         <div class="detail-summary">${escapeHtml(detail.summary || "(no summary)")}</div>
         ${detail.digest ? `<div class="detail-digest">digest ${escapeHtml(detail.digest)}</div>` : ""}
@@ -241,6 +249,34 @@
     button.addEventListener("click", () => {
       const dialog = document.getElementById(button.dataset.openDialog);
       if (dialog && typeof dialog.showModal === "function") dialog.showModal();
+    });
+  });
+
+  document.querySelectorAll("[data-load-detail]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const target = document.getElementById(button.dataset.previewTarget);
+      const dialog = document.getElementById(button.dataset.dialogTarget);
+      const status = button.parentElement?.querySelector(".copy-status");
+      if (!target || !dialog) return;
+      if (button.dataset.loaded === "true") {
+        if (typeof dialog.showModal === "function") dialog.showModal();
+        return;
+      }
+      button.disabled = true;
+      if (status) status.textContent = "loading validated preview";
+      try {
+        const response = await fetch(button.dataset.loadDetail, { credentials: "same-origin" });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        target.textContent = await response.text();
+        button.dataset.loaded = "true";
+        button.textContent = "Open preview";
+        if (status) status.textContent = "";
+        if (typeof dialog.showModal === "function") dialog.showModal();
+      } catch (error) {
+        if (status) status.textContent = `preview unavailable: ${error.message}`;
+      } finally {
+        button.disabled = false;
+      }
     });
   });
 

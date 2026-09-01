@@ -11,11 +11,14 @@ import re
 from typing import Any, Mapping, Optional
 
 from ai_workflow_engine.models import WorkflowUsageEvent
-from ai_workflow_engine.models import ObservationDetail
-from ai_workflow_engine.observation_contract import ObservationDetailEnvelope
-from ai_workflow_engine.observation_values import render_observation_body_text
 from ai_workflow_engine.workflow import END, WorkflowDefinition
 from ai_workflow_viewer.assets import load_asset_text
+from ai_workflow_viewer.detail_presentation import (
+    DetailHrefFor,
+    ObservationDisplayDetail,
+    detail_row,
+    detail_view,
+)
 from ai_workflow_viewer.projection import (
     ObservationGraph,
     ObservationNode,
@@ -58,6 +61,7 @@ def observation_graph_to_html(
     *,
     title: Optional[str] = None,
     usage_events: Optional[list[WorkflowUsageEvent]] = None,
+    detail_href_for: DetailHrefFor | None = None,
 ) -> str:
     """Render a self-contained static runtime graph with Mermaid plus timeline/detail panes."""
 
@@ -65,10 +69,12 @@ def observation_graph_to_html(
 
     title_text = title or f"Workflow observation: {definition.workflow_id}"
     mermaid = workflow_to_mermaid(definition, observation_graph=graph)
-    rich_graph = _rich_graph_html(definition, graph)
+    rich_graph = _rich_graph_html(definition, graph, detail_href_for=detail_href_for)
     node_rows = "\n".join(_node_row(node) for node in graph.nodes.values())
     timeline_rows = "\n".join(_timeline_row(item, graph.details) for item in graph.timeline)
-    detail_rows = "\n".join(_detail_row(detail) for detail in graph.details.values()) or (
+    detail_rows = "\n".join(
+        detail_row(detail, detail_href_for) for detail in graph.details.values()
+    ) or (
         '<p class="muted">No detail records captured.</p>'
     )
     economics = _usage_pricing_html(usage_events or [])
@@ -304,6 +310,7 @@ def observation_group_to_html(
     *,
     title: Optional[str] = None,
     artifact_href_for: Optional[Any] = None,
+    detail_href_for: DetailHrefFor | None = None,
 ) -> str:
     """Render ONE logical run assembled from its segments (W4.5) — one truthful lifecycle.
 
@@ -327,6 +334,7 @@ def observation_group_to_html(
         graph,
         title=title or f"Workflow observation: {group.definition.workflow_id} (grouped run)",
         usage_events=group.usage_events,
+        detail_href_for=detail_href_for,
     )
     cards = "\n".join(
         (
@@ -518,8 +526,13 @@ def _rich_graph_css() -> str:
     return "\n" + load_asset_text("rich-graph.css")
 
 
-def _rich_graph_html(definition: WorkflowDefinition, graph: ObservationGraph) -> str:
-    data = _observation_view_data(definition, graph)
+def _rich_graph_html(
+    definition: WorkflowDefinition,
+    graph: ObservationGraph,
+    *,
+    detail_href_for: DetailHrefFor | None = None,
+) -> str:
+    data = _observation_view_data(definition, graph, detail_href_for=detail_href_for)
     nodes_html = "\n".join(_rich_node_card(node) for node in data["nodes"])
     external_legend = (
         '<div class="graph-hint external-legend">EXTERNAL cards are recorded activity outside '
@@ -587,7 +600,12 @@ def _rich_node_card(node: Mapping[str, Any]) -> str:
     )
 
 
-def _observation_view_data(definition: WorkflowDefinition, graph: ObservationGraph) -> dict[str, Any]:
+def _observation_view_data(
+    definition: WorkflowDefinition,
+    graph: ObservationGraph,
+    *,
+    detail_href_for: DetailHrefFor | None = None,
+) -> dict[str, Any]:
     definition_nodes = {node.id: node for node in definition.nodes}
     node_ids = _ordered_node_ids(definition, graph)
     positions, canvas = _layout_positions(definition, node_ids)
@@ -600,7 +618,7 @@ def _observation_view_data(definition: WorkflowDefinition, graph: ObservationGra
         observed = graph.nodes.get(node_id)
         defined = definition_nodes.get(node_id)
         details = [
-            _detail_view(graph.details[ref])
+            detail_view(graph.details[ref], detail_href_for)
             for ref in (observed.detail_refs if observed else [])
             if ref in graph.details
         ]
@@ -864,42 +882,6 @@ def _event_view(event: ObservationTimelineEntry) -> dict[str, Any]:
     }
 
 
-# v0.10.1: a hard ceiling on how much of any one detail body the PAGE renders. The full
-# (already engine-bounded) record stays in the bundle and remains extractable; the viewer must
-# not echo a multi-megabyte captured log into the HTML.
-_DETAIL_BODY_DISPLAY_LIMIT = 64 * 1024
-
-
-def _bounded_detail_body(body: str) -> str:
-    if len(body) <= _DETAIL_BODY_DISPLAY_LIMIT:
-        return body
-    head = _DETAIL_BODY_DISPLAY_LIMIT // 2
-    tail = _DETAIL_BODY_DISPLAY_LIMIT - head
-    dropped = len(body) - head - tail
-    return (
-        f"{body[:head]}\n"
-        f"...[{dropped} chars truncated in this view — full record in the bundle]...\n"
-        f"{body[-tail:]}"
-    )
-
-
-ObservationDisplayDetail = ObservationDetail | ObservationDetailEnvelope
-
-
-def _detail_view(detail: ObservationDisplayDetail) -> dict[str, Any]:
-    body = _bounded_detail_body(_detail_body(detail))
-    return {
-        "id": detail.detail_id,
-        "kind": detail.kind,
-        "storage": _detail_storage(detail),
-        "content_type": detail.content_type,
-        "digest": _detail_sha256(detail),
-        "summary": _detail_summary(detail, body),
-        "body": body,
-        "anchor": _dom_id("detail", detail.detail_id),
-    }
-
-
 def _ordered_node_ids(definition: WorkflowDefinition, graph: ObservationGraph) -> list[str]:
     ordered = [node.id for node in definition.nodes]
     if any(transition.target == END for transition in definition.transitions):
@@ -998,142 +980,8 @@ def _kind_label(kind: str) -> str:
     }.get(kind, kind or "node")
 
 
-def _detail_body(detail: ObservationDisplayDetail) -> str:
-    if detail.body.kind != "body_ref":
-        return render_observation_body_text(detail.body)
-    return (
-        f"Body stored out of line ({detail.body.byte_length} bytes, "
-        f"sha256 {detail.body.sha256}). Open it through the bounded detail reader."
-    )
-
-
-def _detail_storage(detail: ObservationDisplayDetail) -> str:
-    if detail.body.kind in {"json", "text"}:
-        return f"logical_{detail.body.kind}"
-    return detail.body.kind
-
-
-def _detail_sha256(detail: ObservationDisplayDetail) -> str:
-    return detail.digest if isinstance(detail, ObservationDetail) else detail.body.sha256
-
-
-def _detail_summary(detail: ObservationDisplayDetail, body: str) -> str:
-    if detail.body.kind in {"json", "inline_json"}:
-        highlights = _json_highlights(detail.body.value)
-        if highlights:
-            return "; ".join(highlights)
-    return _truncate(_single_line(body), 420)
-
-
-_INTERESTING_DETAIL_KEYS = (
-    "validation_error",
-    "error",
-    "decision",
-    "status",
-    "card_kind",
-    "count",
-    "strategy",
-    "image_role",
-    "rationale",
-    "accepted",
-    "repair_strategy",
-    "issues",
-    "guidance",
-    "fallback_used",
-    "fallback_reason",
-    "cleaned_content",
-    "source_content",
-    "question",
-    "answer",
-    "text",
-)
-
-
-def _json_highlights(value: Any) -> list[str]:
-    highlights: list[str] = []
-
-    def visit(item: Any, depth: int = 0) -> None:
-        if len(highlights) >= 8 or depth > 3:
-            return
-        if isinstance(item, dict):
-            for key in _INTERESTING_DETAIL_KEYS:
-                if key in item and len(highlights) < 8:
-                    rendered = _compact_value(item[key])
-                    if rendered:
-                        highlights.append(f"{key}: {rendered}")
-            for child in item.values():
-                if len(highlights) >= 8:
-                    break
-                if isinstance(child, (dict, list)):
-                    visit(child, depth + 1)
-        elif isinstance(item, list):
-            for child in item[:4]:
-                if len(highlights) >= 8:
-                    break
-                visit(child, depth + 1)
-
-    visit(value)
-    if highlights:
-        return _dedupe(highlights)
-    if isinstance(value, dict):
-        keys = ", ".join(list(value)[:8])
-        return [f"keys: {keys}"] if keys else []
-    if isinstance(value, list):
-        return [f"{len(value)} item{'s' if len(value) != 1 else ''}"]
-    return []
-
-
-def _compact_value(value: Any) -> str:
-    if value in (None, "", [], {}):
-        return ""
-    if isinstance(value, bool):
-        return "yes" if value else "no"
-    if isinstance(value, (int, float)):
-        return str(value)
-    if isinstance(value, str):
-        return _truncate(_single_line(value), 130)
-    if isinstance(value, list):
-        primitive = [item for item in value if not isinstance(item, (dict, list))]
-        if primitive:
-            return _truncate(", ".join(_single_line(str(item)) for item in primitive[:4]), 130)
-        return f"{len(value)} item{'s' if len(value) != 1 else ''}"
-    if isinstance(value, dict):
-        for key in _INTERESTING_DETAIL_KEYS:
-            if key in value:
-                rendered = _compact_value(value[key])
-                if rendered:
-                    return rendered
-        return f"keys {', '.join(list(value)[:4])}"
-    return _truncate(_single_line(str(value)), 130)
-
-
-def _single_line(value: str) -> str:
-    return re.sub(r"\s+", " ", value).strip()
-
-
-def _truncate(value: str, limit: int) -> str:
-    if len(value) <= limit:
-        return value
-    return value[: max(0, limit - 1)].rstrip() + "…"
-
-
-def _dedupe(values: list[str]) -> list[str]:
-    seen = set()
-    result = []
-    for value in values:
-        if value in seen:
-            continue
-        result.append(value)
-        seen.add(value)
-    return result
-
-
 def _css_token(value: str) -> str:
     return re.sub(r"[^0-9A-Za-z_-]+", "_", value or "unknown")
-
-
-def _dom_id(prefix: str, value: str) -> str:
-    return f"obs-{prefix}-{_css_token(value)}"
 
 
 def _json_script(value: Any) -> str:
@@ -1228,33 +1076,4 @@ def _timeline_row(
         f"<td>{item.elapsed_ms if item.elapsed_ms is not None else '-'}</td>"
         f"<td>{detail_html}</td>"
         "</tr>"
-    )
-
-
-def _detail_row(detail: ObservationDisplayDetail) -> str:
-    body = _bounded_detail_body(_detail_body(detail))
-    digest = f" digest={_detail_sha256(detail)}"
-    detail_dom_id = _dom_id("detail", detail.detail_id)
-    dialog_id = _dom_id("detail_dialog", detail.detail_id)
-    raw_id = _dom_id("detail_raw", detail.detail_id)
-    return (
-        f'<details class="observation-detail" id="{html.escape(detail_dom_id, quote=True)}">'
-        f"<summary><code>{html.escape(detail.detail_id)}</code> {html.escape(detail.kind)} "
-        f"({html.escape(_detail_storage(detail))}){html.escape(digest)}</summary>"
-        '<div class="detail-actions">'
-        f'<button type="button" data-open-dialog="{html.escape(dialog_id, quote=True)}">Expand</button>'
-        f'<button type="button" data-copy-target="{html.escape(raw_id, quote=True)}">Copy raw</button>'
-        '<span class="copy-status" aria-live="polite"></span>'
-        "</div>"
-        f"<pre>{html.escape(body)}</pre>"
-        f'<dialog class="observation-dialog" id="{html.escape(dialog_id, quote=True)}">'
-        '<div class="dialog-header">'
-        f'<div class="dialog-title">{html.escape(detail.kind)} · <code>{html.escape(detail.detail_id)}</code></div>'
-        '<button type="button" data-close-dialog>Close</button>'
-        "</div>"
-        '<div class="dialog-body">'
-        f'<pre id="{html.escape(raw_id, quote=True)}">{html.escape(body)}</pre>'
-        "</div>"
-        "</dialog>"
-        "</details>"
     )

@@ -503,12 +503,15 @@ from ai_workflow_engine import (
     DurableWaitPolicy,
     InMemoryWaitCoordinator,
     ObservationConfig,
+    ObservationDetail,
+    ObservationJsonBody,
     WaitEvent,
     WorkflowArtifact,
     WorkflowBuilder,
     WorkflowEngineBuilder,
     WorkflowGoal,
-    load_bundle_meta_v4,
+    WorkflowTraceEvent,
+    open_observation_run_bundle,
 )
 from ai_workflow_engine.models import (
     CapabilityResult,
@@ -518,6 +521,7 @@ from ai_workflow_engine.models import (
 )
 from ai_workflow_engine.llm_protocol import LLMRequest
 from ai_workflow_engine.usage_events import record_usage_event
+from ai_workflow_engine.observation_values import body_sha256
 from ai_workflow_engine.workflow import Retry
 from ai_workflow_tools.providers.openai_compatible import (
     NoAuth,
@@ -528,7 +532,12 @@ from ai_workflow_tools.testing.openai_compatible import (
     OpenAICompatibleTestServer,
     ProviderTestResponse,
 )
-from ai_workflow_viewer import FileEventSource
+from ai_workflow_viewer import (
+    FileEventSource,
+    export_observation_group,
+    observation_group_to_html,
+)
+from ai_workflow_viewer.detail_delivery import PREVIEW_BYTES, prepare_detail_delivery
 from pydantic import BaseModel
 import ai_workflow_tools
 import ai_workflow_viewer
@@ -664,6 +673,98 @@ async def main():
     assert ordinary.status == "completed"
     assert ordinary.output == {"value": 42}
     assert FileEventSource(ordinary_root).read_group("installed-ordinary").status == "completed"
+
+    # v4 viewer qualification from installed wheels: the initial page remains envelope-only,
+    # while preview, exact download, and static export cross the engine-owned integrity door.
+    viewer_root = root / "viewer-v4"
+    viewer_bundle = open_observation_run_bundle(viewer_root, "installed-viewer-v4")
+    viewer_body = ObservationJsonBody(
+        value={
+            "payload": "VIEWER-HEAD" + ("v" * (512 * 1024)) + "VIEWER-TAIL"
+        }
+    )
+    viewer_detail = ObservationDetail(
+        detail_id="installed-viewer-detail",
+        event_id="installed-viewer-event",
+        invocation_id="installed-viewer-invocation",
+        kind="llm_response",
+        content_type="application/json",
+        body=viewer_body,
+        digest=body_sha256(viewer_body),
+    )
+    viewer_bundle.trace_sink.record(
+        WorkflowTraceEvent(
+            event_id="installed-viewer-request",
+            node="inspect",
+            phase="llm:request",
+            invocation_id="installed-viewer-invocation",
+            detail_capture="capture_mode_off",
+        )
+    )
+    viewer_bundle.trace_sink.record(
+        WorkflowTraceEvent(
+            event_id="installed-viewer-event",
+            node="inspect",
+            phase="llm:response",
+            invocation_id="installed-viewer-invocation",
+            detail_capture="captured",
+            detail_refs=[viewer_detail.detail_id],
+        )
+    )
+    viewer_bundle.detail_sink.record(viewer_detail)
+    viewer_bundle.usage_sink.record(
+        WorkflowUsageEvent(
+            event_id="installed-viewer-usage",
+            node="inspect",
+            invocation_id="installed-viewer-invocation",
+            provider="installed-smoke",
+            operation="chat",
+            success=True,
+        )
+    )
+    viewer_definition = WorkflowBuilder("installed-viewer").step("inspect").build()
+    viewer_bundle.finalize(viewer_definition, status="completed")
+    viewer_source = FileEventSource(viewer_root)
+    viewer_group = viewer_source.read_group("installed-viewer-v4")
+    viewer_html = observation_group_to_html(viewer_group)
+    assert "installed-viewer-detail" in viewer_html
+    assert "VIEWER-HEAD" not in viewer_html and "VIEWER-TAIL" not in viewer_html
+
+    viewer_reader = viewer_source.reader_for_segment(
+        "installed-viewer-v4", viewer_bundle.path.name
+    )
+    persisted_viewer_detail = viewer_reader.get_detail(
+        "installed-viewer-detail",
+        invocation_id="installed-viewer-invocation",
+    )
+    expected_viewer_body = viewer_reader.read_body_bytes(
+        persisted_viewer_detail,
+        max_bytes=persisted_viewer_detail.body.byte_length,
+    )
+    preview_delivery = prepare_detail_delivery(
+        viewer_source,
+        run_id="installed-viewer-v4",
+        segment_id=viewer_bundle.path.name,
+        detail_id="installed-viewer-detail",
+        invocation_id="installed-viewer-invocation",
+        mode="preview",
+    )
+    preview_body = b"".join(preview_delivery.chunks)
+    assert preview_body == expected_viewer_body[:PREVIEW_BYTES]
+    assert b"VIEWER-HEAD" in preview_body and b"VIEWER-TAIL" not in preview_body
+    exact_delivery = prepare_detail_delivery(
+        viewer_source,
+        run_id="installed-viewer-v4",
+        segment_id=viewer_bundle.path.name,
+        detail_id="installed-viewer-detail",
+        invocation_id="installed-viewer-invocation",
+        mode="download",
+    )
+    assert b"".join(exact_delivery.chunks) == expected_viewer_body
+    export_root = root / "viewer-export"
+    export_observation_group(viewer_group, export_root)
+    [exported_body] = (export_root / "details").glob("body-*.bin")
+    assert exported_body.read_bytes() == expected_viewer_body
 
     # v0.11.18 child-window qualification from installed wheels. Both public child doors apply
     # one complete-workflow breaker, retries consume its shrinking published remainder, and
@@ -855,9 +956,10 @@ async def main():
         assert exc.args == ("installed-smoke",)
     else:
         raise AssertionError("caller cancellation was swallowed")
-    meta = load_bundle_meta_v4(cancel_root / "installed-cancel")
+    cancelled_group = FileEventSource(cancel_root).read_group("installed-cancel")
+    meta = cancelled_group.segments[-1].data.meta
     assert meta.status == "cancelled" and meta.artifact_count == 1
-    assert FileEventSource(cancel_root).read_group("installed-cancel").status == "cancelled"
+    assert cancelled_group.status == "cancelled"
 
     fixed_now = datetime(2036, 1, 1, tzinfo=timezone.utc)
     clock = lambda: fixed_now
@@ -1021,6 +1123,7 @@ import pathlib as _pathlib
 import pydantic as _pydantic
 
 assert "site-packages" in ai_workflow_tools.__file__, ai_workflow_tools.__file__
+assert "site-packages" in ai_workflow_viewer.__file__, ai_workflow_viewer.__file__
 assert codex_exec.prompt_delivery == "stdin"
 _argv, _stdin = codex_prompt_transport("X" * (256 * 1024))
 assert _argv == [CODEX_STDIN_MARKER] and len(_stdin) == 256 * 1024

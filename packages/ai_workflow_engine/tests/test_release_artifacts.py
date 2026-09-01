@@ -253,7 +253,13 @@ def test_installed_smoke_uses_fresh_venv_and_installs_declared_dependencies(
     smoke_program = calls[2][3]
     assert "OpenAICompatibleLLMClient" in smoke_program
     assert "codex_prompt_transport" in smoke_program
+    assert "open_observation_run_bundle" in smoke_program
+    assert "prepare_detail_delivery" in smoke_program
+    assert "export_observation_group" in smoke_program
     assert 'assert "site-packages" in ai_workflow_tools.__file__' in smoke_program
+    assert 'assert "site-packages" in ai_workflow_viewer.__file__' in smoke_program
+    assert 'assert "VIEWER-HEAD" not in viewer_html' in smoke_program
+    assert 'assert b"".join(exact_delivery.chunks) == expected_viewer_body' in smoke_program
     assert 'assert codex_exec.prompt_delivery == "stdin"' in smoke_program
     assert "_argv == [CODEX_STDIN_MARKER]" in smoke_program
     assert "len(_stdin) == 256 * 1024" in smoke_program

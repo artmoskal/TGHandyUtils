@@ -21,6 +21,7 @@ from ai_workflow_viewer.observability import (
     save_observation_html,
 )
 from ai_workflow_viewer.server import JsonlObservationViewer, serve_viewer
+from ai_workflow_viewer.static_export import export_observation_group
 from ai_workflow_viewer.viz import save_workflow_html, workflow_to_html, workflow_to_mermaid
 
 __all__ = [
@@ -36,6 +37,7 @@ __all__ = [
     "ObservationSegmentData",
     "ObservationTimelineEntry",
     "build_observation_graph",
+    "export_observation_group",
     "observation_graph_to_html",
     "observation_group_to_html",
     "render_runtime_timeline",

@@ -183,14 +183,17 @@ def test_viewer_truth_owners_have_one_way_dependencies():
         name: (root / name).read_text(encoding="utf-8")
         for name in (
             "assets.py",
+            "detail_presentation.py",
             "observation_data.py",
             "grouping.py",
+            "detail_delivery.py",
             "projection.py",
             "rendering.py",
             "view_models.py",
             "event_source.py",
             "observability.py",
             "server.py",
+            "static_export.py",
         )
     }
 
@@ -207,6 +210,9 @@ def test_viewer_truth_owners_have_one_way_dependencies():
     grouping_imports = imports(sources["grouping.py"])
     projection_imports = imports(sources["projection.py"])
     source_imports = imports(sources["event_source.py"])
+    detail_delivery_imports = imports(sources["detail_delivery.py"])
+    detail_presentation_imports = imports(sources["detail_presentation.py"])
+    static_export_imports = imports(sources["static_export.py"])
     asset_imports = imports(sources["assets.py"])
     view_model_imports = imports(sources["view_models.py"])
     server_imports = imports(sources["server.py"])
@@ -230,6 +236,10 @@ def test_viewer_truth_owners_have_one_way_dependencies():
     assert "ai_workflow_viewer.observability" not in grouping_imports
     assert "ai_workflow_viewer.observability" not in projection_imports
     assert "ai_workflow_viewer.server" not in source_imports
+    assert "ai_workflow_viewer.server" not in detail_delivery_imports
+    assert "ai_workflow_viewer.rendering" not in detail_delivery_imports
+    assert "ai_workflow_viewer.server" not in detail_presentation_imports
+    assert "ai_workflow_viewer.server" not in static_export_imports
     assert "html" not in server_imports, "HTTP transport must delegate HTML rendering"
 
     event_tree = ast.parse(sources["event_source.py"])
@@ -519,6 +529,389 @@ def test_compact_viewer_never_opens_referenced_detail_bodies(tmp_path, monkeypat
     assert "large-detail" in html
     assert detail.digest in html
     assert str(persisted.body.byte_length) in html
+    assert 'data-load-detail="/detail/compact-run/compact-run/large-detail' in html
+    assert "mode=preview" in html
+    assert "mode=download" in html
+    assert "x" * 10_000 not in html
+
+
+def test_static_observation_export_keeps_index_compact_and_detail_bodies_inert(tmp_path):
+    from ai_workflow_engine.observation_values import canonical_json_bytes
+    from ai_workflow_viewer import export_observation_group
+
+    definition = WorkflowBuilder("static-detail-export").step("inspect").build()
+    hostile = "</script><script>globalThis.owned=true</script>"
+    value = {"payload": hostile + ("MIDDLE" * 20_000) + "STATIC-TAIL"}
+    detail = _detail(
+        detail_id="static-large-detail",
+        event_id="static-event",
+        kind="tool_result",
+        content_type="application/json",
+        value=value,
+        run_id="static-run",
+        sequence=2,
+    )
+    _write_bundle(
+        tmp_path,
+        "static-run",
+        definition,
+        trace_events=[
+            WorkflowTraceEvent(
+                node="inspect",
+                event_id="static-event",
+                phase="tool:result",
+                detail_capture="captured",
+                detail_refs=["static-large-detail"],
+                run_id="static-run",
+                sequence=1,
+            )
+        ],
+        details=[detail],
+    )
+    target = tmp_path / "export"
+
+    index_path = export_observation_group(
+        FileEventSource(tmp_path).read_group("static-run"),
+        target,
+    )
+
+    index = index_path.read_text(encoding="utf-8")
+    preview_pages = list((target / "details").glob("detail-*.html"))
+    exact_bodies = list((target / "details").glob("body-*.bin"))
+    assert index_path == target / "index.html"
+    assert len(index.encode("utf-8")) < 300_000
+    assert hostile not in index and "STATIC-TAIL" not in index
+    assert len(preview_pages) == 1
+    assert len(exact_bodies) == 1
+    assert preview_pages[0].name in index
+    assert exact_bodies[0].name in index
+
+    preview_page = preview_pages[0].read_text(encoding="utf-8")
+    assert "&lt;/script&gt;&lt;script&gt;globalThis.owned=true&lt;/script&gt;" in preview_page
+    assert hostile not in preview_page
+    assert "STATIC-TAIL" not in preview_page
+    assert "Preview limited to 65536 of" in preview_page
+    expected = canonical_json_bytes(value)
+    assert exact_bodies[0].read_bytes() == expected
+    assert hashlib.sha256(expected).hexdigest() in exact_bodies[0].name
+
+
+def test_served_detail_endpoint_previews_and_downloads_one_validated_body(tmp_path):
+    import threading
+    import urllib.request
+
+    from ai_workflow_engine.observation_values import canonical_json_bytes
+    from ai_workflow_viewer import serve_viewer
+
+    definition = WorkflowBuilder("served-detail").step("inspect").build()
+    value = {"payload": "HEAD-SENTINEL" + ("x" * 100_000) + "TAIL-SENTINEL"}
+    detail = _detail(
+        detail_id="served-large-detail",
+        event_id="served-detail-event",
+        invocation_id="served-invocation",
+        kind="tool_result",
+        content_type="application/json",
+        value=value,
+        run_id="served-detail-run",
+        sequence=3,
+    )
+    run_path = _write_bundle(
+        tmp_path,
+        "served-detail-run",
+        definition,
+        trace_events=[
+            WorkflowTraceEvent(
+                node="inspect",
+                event_id="served-request-event",
+                phase="llm:request",
+                invocation_id="served-invocation",
+                detail_capture="capture_mode_off",
+                run_id="served-detail-run",
+                sequence=1,
+            ),
+            WorkflowTraceEvent(
+                node="inspect",
+                event_id="served-detail-event",
+                phase="llm:response",
+                invocation_id="served-invocation",
+                detail_capture="captured",
+                detail_refs=["served-large-detail"],
+                run_id="served-detail-run",
+                sequence=2,
+            )
+        ],
+        usage_events=[
+            WorkflowUsageEvent(
+                node="inspect",
+                invocation_id="served-invocation",
+                run_id="served-detail-run",
+                sequence=4,
+            )
+        ],
+        details=[detail],
+    )
+    persisted = ObservationReader(run_path).get_detail("served-large-detail")
+    expected = canonical_json_bytes(value)
+    assert persisted.body.kind == "body_ref"
+    assert len(expected) == persisted.body.byte_length
+
+    server = serve_viewer(JsonlObservationViewer(FileEventSource(tmp_path)), port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        root = f"http://127.0.0.1:{server.server_address[1]}"
+        route = (
+            f"{root}/detail/served-detail-run/{run_path.name}/served-large-detail"
+            "?invocation_id=served-invocation"
+        )
+        with urllib.request.urlopen(f"{route}&mode=preview", timeout=5) as response:
+            preview = response.read()
+            assert response.status == 200
+            assert response.headers["Content-Type"] == "text/plain; charset=utf-8"
+            assert response.headers["X-Content-Type-Options"] == "nosniff"
+            assert response.headers["X-Observation-SHA256"] == persisted.body.sha256
+            assert response.headers["X-Observation-Byte-Length"] == str(len(expected))
+            assert response.headers["X-Observation-Truncated"] == "true"
+        assert preview == expected[: 64 * 1024]
+        assert b"HEAD-SENTINEL" in preview
+        assert b"TAIL-SENTINEL" not in preview
+
+        with urllib.request.urlopen(f"{route}&mode=download", timeout=5) as response:
+            downloaded = response.read()
+            assert response.status == 200
+            assert response.headers["Content-Type"] == "application/octet-stream"
+            assert response.headers["Content-Disposition"].startswith("attachment;")
+            assert response.headers["Content-Security-Policy"] == "sandbox"
+        assert downloaded == expected
+        assert hashlib.sha256(downloaded).hexdigest() == persisted.body.sha256
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_detail_delivery_rejects_sources_without_the_segment_reader():
+    from ai_workflow_viewer.detail_delivery import prepare_detail_delivery
+
+    with pytest.raises(ValueError, match="does not support bounded detail delivery"):
+        prepare_detail_delivery(
+            object(),
+            run_id="run",
+            segment_id="segment",
+            detail_id="detail",
+            invocation_id=None,
+            mode="preview",
+        )
+
+
+def test_served_detail_endpoint_rejects_binding_paths_and_corruption_without_leak(tmp_path):
+    import threading
+    import urllib.error
+    import urllib.request
+
+    from ai_workflow_viewer import serve_viewer
+
+    definition = WorkflowBuilder("served-detail-attacks").step("inspect").build()
+    secret = "BODY-SECRET-NEVER-IN-ERROR"
+    detail = _detail(
+        detail_id="attack-detail",
+        event_id="attack-event",
+        invocation_id="correct-invocation",
+        kind="llm_response",
+        content_type="application/json",
+        value={"payload": secret + ("z" * 100_000)},
+        run_id="attack-run",
+        sequence=3,
+    )
+    run_path = _write_bundle(
+        tmp_path,
+        "attack-run",
+        definition,
+        trace_events=[
+            WorkflowTraceEvent(
+                node="inspect",
+                event_id="attack-request-event",
+                phase="llm:request",
+                invocation_id="correct-invocation",
+                detail_capture="capture_mode_off",
+                run_id="attack-run",
+                sequence=1,
+            ),
+            WorkflowTraceEvent(
+                node="inspect",
+                event_id="attack-event",
+                phase="llm:response",
+                invocation_id="correct-invocation",
+                detail_capture="captured",
+                detail_refs=["attack-detail"],
+                run_id="attack-run",
+                sequence=2,
+            ),
+        ],
+        usage_events=[
+            WorkflowUsageEvent(
+                node="inspect",
+                invocation_id="correct-invocation",
+                run_id="attack-run",
+                sequence=4,
+            )
+        ],
+        details=[detail],
+    )
+    reader = ObservationReader(run_path)
+    persisted = reader.get_detail("attack-detail")
+    assert persisted.body.kind == "body_ref"
+
+    server = serve_viewer(JsonlObservationViewer(FileEventSource(tmp_path)), port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        root = f"http://127.0.0.1:{server.server_address[1]}"
+        attacks = [
+            (
+                "/detail/attack-run/"
+                f"{run_path.name}/attack-detail?invocation_id=wrong&mode=download",
+                500,
+            ),
+            (
+                "/detail/attack-run/%2E%2E/attack-detail"
+                "?invocation_id=correct-invocation&mode=download",
+                500,
+            ),
+            (
+                "/detail/attack-run/"
+                f"{run_path.name}/missing-detail?invocation_id=correct-invocation&mode=download",
+                404,
+            ),
+        ]
+        for path, expected_status in attacks:
+            with pytest.raises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(root + path, timeout=5)
+            assert caught.value.code == expected_status
+            assert secret.encode() not in caught.value.read()
+
+        object_path = reader.value_store.object_path(persisted.body.sha256)
+        damaged = bytearray(object_path.read_bytes())
+        damaged[-1] ^= 0x01
+        object_path.write_bytes(damaged)
+
+        corrupt_route = (
+            f"{root}/detail/attack-run/{run_path.name}/attack-detail"
+            "?invocation_id=correct-invocation&mode=download"
+        )
+        with pytest.raises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(corrupt_route, timeout=5)
+        assert caught.value.code == 500
+        assert secret.encode() not in caught.value.read()
+
+        page = urllib.request.urlopen(f"{root}/?run_id=attack-run", timeout=5).read()
+        assert b"attack-detail" in page
+        assert secret.encode() not in page
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_v4_viewer_preview_memory_does_not_scale_with_referenced_body_bytes(tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    fixture_script = r'''
+import sys
+from pathlib import Path
+from ai_workflow_engine import (
+    ObservationDetail, ObservationJsonBody, WorkflowBuilder, WorkflowTraceEvent,
+    WorkflowUsageEvent,
+    open_observation_run_bundle,
+)
+from ai_workflow_engine.observation_values import body_sha256
+
+root, run_id, size = Path(sys.argv[1]), sys.argv[2], int(sys.argv[3])
+bundle = open_observation_run_bundle(root, run_id)
+body = ObservationJsonBody(value={"payload": "RSS-HEAD" + ("x" * size) + "RSS-TAIL"})
+detail = ObservationDetail(
+    detail_id="rss-detail", event_id="rss-event", invocation_id="rss-invocation",
+    kind="llm_response", content_type="application/json", body=body,
+    digest=body_sha256(body),
+)
+bundle.trace_sink.record(WorkflowTraceEvent(
+    event_id="rss-request", node="inspect", phase="llm:request",
+    invocation_id="rss-invocation", detail_capture="capture_mode_off",
+))
+bundle.trace_sink.record(WorkflowTraceEvent(
+    event_id="rss-event", node="inspect", phase="llm:response",
+    invocation_id="rss-invocation", detail_capture="captured",
+    detail_refs=["rss-detail"],
+))
+bundle.detail_sink.record(detail)
+bundle.usage_sink.record(WorkflowUsageEvent(
+    event_id="rss-usage", node="inspect", invocation_id="rss-invocation",
+    provider="rss-test", operation="chat", success=True,
+))
+bundle.finalize(WorkflowBuilder("rss-viewer").step("inspect").build(), status="completed")
+print(bundle.path.name)
+'''
+    measure_script = r'''
+import json
+import platform
+import resource
+import sys
+from pathlib import Path
+from ai_workflow_viewer import FileEventSource, observation_group_to_html
+from ai_workflow_viewer.detail_delivery import prepare_detail_delivery
+
+root, run_id, segment_id = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+source = FileEventSource(root)
+group = source.read_group(run_id)
+page = observation_group_to_html(group)
+assert "rss-detail" in page and "RSS-HEAD" not in page and "RSS-TAIL" not in page
+delivery = prepare_detail_delivery(
+    source, run_id=run_id, segment_id=segment_id, detail_id="rss-detail",
+    invocation_id="rss-invocation", mode="preview",
+)
+preview = b"".join(delivery.chunks)
+assert len(preview) == 64 * 1024 and b"RSS-HEAD" in preview and b"RSS-TAIL" not in preview
+after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+scale = 1 if platform.system() != "Darwin" else 1024
+print(json.dumps({"rss_growth_kib": max(0, after - before) // scale,
+                  "page_bytes": len(page.encode("utf-8")),
+                  "preview_bytes": len(preview)}))
+'''
+    child_env = {
+        key: value for key, value in os.environ.items() if not key.startswith("COVERAGE")
+    }
+    child_env["PYTHONHASHSEED"] = "0"
+
+    def measured(size: int, run_id: str) -> dict[str, int]:
+        root = tmp_path / run_id
+        created = subprocess.run(
+            [sys.executable, "-c", fixture_script, str(root), run_id, str(size)],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=child_env,
+        )
+        segment_id = created.stdout.strip().splitlines()[-1]
+        completed = subprocess.run(
+            [sys.executable, "-c", measure_script, str(root), run_id, segment_id],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=child_env,
+        )
+        return json.loads(completed.stdout.strip().splitlines()[-1])
+
+    small = measured(2 * 1024 * 1024, "rss-viewer-small")
+    large = measured(32 * 1024 * 1024, "rss-viewer-large")
+    assert small["preview_bytes"] == large["preview_bytes"] == 64 * 1024
+    assert large["page_bytes"] <= small["page_bytes"] + 4 * 1024
+    assert large["rss_growth_kib"] <= small["rss_growth_kib"] + 12 * 1024, (
+        "viewer RSS grew with referenced body bytes: "
+        f"small={small['rss_growth_kib']} KiB, large={large['rss_growth_kib']} KiB"
+    )
 
 
 def test_viewer_rejects_meta_record_count_drift(tmp_path):

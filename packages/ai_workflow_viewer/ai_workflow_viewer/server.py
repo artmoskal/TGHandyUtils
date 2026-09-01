@@ -5,9 +5,10 @@ from __future__ import annotations
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Iterable, Optional
-from urllib.parse import parse_qs, unquote, urlparse
+from typing import Iterable, Mapping, Optional
+from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 
+from ai_workflow_viewer.detail_delivery import prepare_detail_delivery
 from ai_workflow_viewer.event_source import EventSource, FileEventSource
 from ai_workflow_viewer.projection import build_observation_graph
 from ai_workflow_viewer.rendering import (
@@ -66,6 +67,7 @@ class JsonlObservationViewer:
                     "/artifact/"
                     + _encode_artifact_path(f"{run_key}/{Path(seg_path).name}")
                 ),
+                detail_href_for=_served_detail_hrefs(group),
             )
         run = self.source.read(selected_run_id)
         graph = build_observation_graph(
@@ -200,6 +202,14 @@ def serve_viewer(
                     return
                 _write_sse(self, viewer, run_id=run_id, initial=initial)
                 return
+            if parsed.path.startswith("/detail/"):
+                _write_detail_response(
+                    self,
+                    viewer.source,
+                    path=parsed.path,
+                    query=query,
+                )
+                return
             if parsed.path.startswith("/artifact/"):
                 # C2-3: artifact resolution shares the strict error door — absence is 404,
                 # contract violations (pre-v3, corrupt lineage, malformed meta) are the loud
@@ -254,6 +264,83 @@ def serve_viewer(
             return
 
     return ThreadingHTTPServer((host, port), Handler)
+
+
+def _write_detail_response(
+    handler: BaseHTTPRequestHandler,
+    source: object,
+    *,
+    path: str,
+    query: Mapping[str, list[str]],
+) -> None:
+    """Resolve, validate, and write one bounded detail response."""
+
+    try:
+        detail_run_id, segment_id, detail_id = _detail_route(path)
+        delivery = prepare_detail_delivery(
+            source,
+            run_id=detail_run_id,
+            segment_id=segment_id,
+            detail_id=detail_id,
+            invocation_id=(query.get("invocation_id") or [None])[0],
+            mode=(query.get("mode") or ["preview"])[0],
+        )
+    except FileNotFoundError as exc:
+        _write_plain_error(handler, 404, exc)
+        return
+    except ValueError as exc:
+        _write_plain_error(handler, 500, exc)
+        return
+
+    handler.send_response(200)
+    handler.send_header("Content-Type", delivery.content_type)
+    handler.send_header("Content-Disposition", delivery.content_disposition)
+    handler.send_header("Content-Security-Policy", "sandbox")
+    handler.send_header("X-Content-Type-Options", "nosniff")
+    handler.send_header("X-Observation-SHA256", delivery.sha256)
+    handler.send_header("X-Observation-Byte-Length", str(delivery.body_length))
+    handler.send_header(
+        "X-Observation-Truncated", "true" if delivery.truncated else "false"
+    )
+    handler.send_header("Content-Length", str(delivery.content_length))
+    handler.end_headers()
+    for chunk in delivery.chunks:
+        handler.wfile.write(chunk)
+
+
+def _detail_route(path: str) -> tuple[str, str, str]:
+    parts = path.split("/")
+    if len(parts) != 5 or parts[:2] != ["", "detail"] or not all(parts[2:]):
+        raise ValueError(
+            "observation detail route must be /detail/<run>/<segment>/<detail>"
+        )
+    return tuple(unquote(part) for part in parts[2:])
+
+
+def _served_detail_hrefs(group):
+    locations = {
+        detail.detail_id: (segment.segment_id, detail.invocation_id)
+        for segment in group.segments
+        for detail in segment.data.details
+    }
+
+    def hrefs(detail) -> dict[str, str]:
+        location = locations.get(detail.detail_id)
+        if location is None:
+            return {}
+        segment_id, invocation_id = location
+        path = "/detail/{}/{}/{}".format(
+            quote(str(group.run_id), safe=""),
+            quote(str(segment_id), safe=""),
+            quote(str(detail.detail_id), safe=""),
+        )
+        identity = {"invocation_id": invocation_id} if invocation_id is not None else {}
+        return {
+            mode: f"{path}?{urlencode({**identity, 'mode': mode})}"
+            for mode in ("preview", "download")
+        }
+
+    return hrefs
 
 
 def _write_plain_error(handler: BaseHTTPRequestHandler, status: int, exc: Exception) -> None:

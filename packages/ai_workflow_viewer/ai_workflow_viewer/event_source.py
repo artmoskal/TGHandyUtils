@@ -14,6 +14,7 @@ from ai_workflow_engine.observation_bundle import (
     ABANDON_MARKER_NAME as _ABANDON_MARKER,
     COMMIT_MARKER_NAME as _COMMIT_MARKER,
     assert_plain_identity,
+    resolve_child_dir,
 )
 from ai_workflow_engine.observation_integrity import validate_provider_invocation_links
 from ai_workflow_viewer.grouping import (
@@ -151,6 +152,41 @@ class FileEventSource:
             entries,
             abandoned_segment_ids=abandoned_segment_ids,
         )
+
+    def reader_for_segment(self, run_id: str, segment_id: str) -> ObservationReader:
+        """Open one exact segment without scanning or materializing its logical run."""
+
+        assert_plain_identity(run_id, what="observation run id")
+        assert_plain_identity(segment_id, what="observation segment id")
+        if _is_run_bundle(self.base_path):
+            segment_path = self.base_path
+        elif (self.base_path / "segments").is_dir():
+            segment_path = resolve_child_dir(
+                self.base_path / "segments",
+                segment_id,
+                what="observation segment",
+            )
+        else:
+            run_root = resolve_child_dir(
+                self.base_path,
+                run_id,
+                what="observation logical run",
+            )
+            segment_path = resolve_child_dir(
+                run_root / "segments",
+                segment_id,
+                what="observation segment",
+            )
+        if not (segment_path / "meta.json").is_file():
+            raise FileNotFoundError(
+                f"Observation segment {segment_id!r} for run {run_id!r} does not exist"
+            )
+        reader = ObservationReader(segment_path)
+        if reader.meta.run_id != run_id or reader.meta.segment_id != segment_id:
+            raise FileNotFoundError(
+                f"Observation segment {segment_id!r} does not belong to run {run_id!r}"
+            )
+        return reader
 
     def list_groups(self, *, related_run_id: str | None = None) -> list[dict]:
         """One entry per LOGICAL run: segment count, newest status/timestamp (W4.3)."""
