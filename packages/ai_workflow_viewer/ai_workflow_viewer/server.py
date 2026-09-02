@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 
 from ai_workflow_viewer.artifact_access import (
     encode_artifact_path as _encode_artifact_path,
+    read_verified_artifact,
     resolve_manifest_artifact,
 )
 from ai_workflow_viewer.detail_delivery import prepare_detail_delivery
@@ -162,7 +163,7 @@ def _artifact_response(
         artifact = resolve_manifest_artifact(seg_dir, bundle_path)
         if artifact is None:
             return None
-        return artifact.source_path.read_bytes(), artifact.media_type
+        return read_verified_artifact(artifact), artifact.media_type
     return None
 
 

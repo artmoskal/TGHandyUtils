@@ -263,6 +263,8 @@ def test_installed_smoke_uses_fresh_venv_and_installs_declared_dependencies(
     assert 'assert "file://" not in export_index.read_text' in smoke_program
     assert "shutil.rmtree(viewer_root)" in smoke_program
     assert "exported_artifact.read_bytes() == viewer_artifact_bytes" in smoke_program
+    assert "installed live viewer served a tampered artifact as success" in smoke_program
+    assert 'assert "manifest identity" in exc.read().decode' in smoke_program
     assert 'assert codex_exec.prompt_delivery == "stdin"' in smoke_program
     assert "_argv == [CODEX_STDIN_MARKER]" in smoke_program
     assert "len(_stdin) == 256 * 1024" in smoke_program

@@ -2071,10 +2071,12 @@ def test_served_artifact_links_resolve_over_real_http(tmp_path):
     (tmp_path / "outside.secret").write_bytes(b"NEVER SERVED")
     (bundle / "artifacts.json").write_text(_json.dumps([
         {"artifact_id": "sa-art", "bundle_path": "artifacts/frame.png", "copied": True,
-         "media_type": "image/png", "owner_node": "gate", "size_bytes": len(png)},
+         "media_type": "image/png", "owner_node": "gate", "size_bytes": len(png),
+         "sha256": hashlib.sha256(png).hexdigest()},
         # hostile manifest row: even a LISTED entry must not escape its segment dir
         {"artifact_id": "sa-evil", "bundle_path": "../outside.secret", "copied": True,
-         "media_type": "text/plain", "owner_node": "gate", "size_bytes": 12},
+         "media_type": "text/plain", "owner_node": "gate", "size_bytes": 12,
+         "sha256": hashlib.sha256(b"NEVER SERVED").hexdigest()},
     ]), encoding="utf-8")
 
     viewer = JsonlObservationViewer(FileEventSource(tmp_path))
@@ -2100,6 +2102,95 @@ def test_served_artifact_links_resolve_over_real_http(tmp_path):
                 raise AssertionError(f"{bad} must 404, not serve bundle internals")
             except HTTPError as err:
                 assert err.code == 404
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+@pytest.mark.parametrize(
+    ("tampered", "drift"),
+    [
+        (b"manifest-approved-B", "sha256"),
+        (b"manifest-approved-A-longer", "byte_length"),
+    ],
+)
+def test_live_artifact_route_rejects_manifest_identity_drift_before_success(
+    tmp_path,
+    tampered,
+    drift,
+):
+    """The HTTP artifact door must verify manifest identity before committing 2xx.
+
+    The same-length row is the SHA-256 fence: a size-only implementation serves it. The
+    second row independently fences byte-length enforcement.
+    """
+
+    import json as _json
+    import threading
+    import urllib.error
+    import urllib.request
+
+    from ai_workflow_engine import WorkflowBuilder
+    from ai_workflow_viewer import FileEventSource, JsonlObservationViewer, serve_viewer
+
+    run_id = f"served-artifact-{drift}"
+    definition = WorkflowBuilder("served-artifact-integrity").step("gate").build()
+    _write_bundle(
+        tmp_path,
+        run_id,
+        definition,
+        trace_events=[
+            WorkflowTraceEvent(
+                node="gate",
+                node_status="completed",
+                phase="node:result",
+                run_id=run_id,
+                sequence=1,
+                event_id=f"artifact-{drift}",
+            )
+        ],
+        meta_extra=_segment_meta(
+            run_id,
+            run_id,
+            0,
+            digest=definition.definition_digest(),
+        ),
+    )
+    bundle = _segment_path(tmp_path, run_id)
+    approved = b"manifest-approved-A"
+    artifact = bundle / "artifacts" / "evidence.bin"
+    artifact.parent.mkdir()
+    artifact.write_bytes(approved)
+    (bundle / "artifacts.json").write_text(
+        _json.dumps(
+            [
+                {
+                    "artifact_id": "served-integrity-artifact",
+                    "bundle_path": "artifacts/evidence.bin",
+                    "copied": True,
+                    "media_type": "application/octet-stream",
+                    "size_bytes": len(approved),
+                    "sha256": hashlib.sha256(approved).hexdigest(),
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    artifact.write_bytes(tampered)
+
+    server = serve_viewer(JsonlObservationViewer(FileEventSource(tmp_path)), port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        root = f"http://127.0.0.1:{server.server_address[1]}"
+        with pytest.raises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(
+                f"{root}/artifact/{run_id}/{run_id}/artifacts/evidence.bin",
+                timeout=5,
+            )
+        assert caught.value.code == 500, "integrity failure must happen before 2xx"
+        assert "manifest identity" in caught.value.read().decode("utf-8")
     finally:
         server.shutdown()
         server.server_close()
@@ -2205,9 +2296,11 @@ def test_served_artifacts_roundtrip_hostile_names_and_never_serve_active_content
     (bundle / "artifacts" / "evil.svg").write_bytes(svg)
     (bundle / "artifacts.json").write_text(_json.dumps([
         {"artifact_id": "h-png", "bundle_path": f"artifacts/{hostile_name}", "copied": True,
-         "media_type": "image/png", "owner_node": "gate", "size_bytes": len(png)},
+         "media_type": "image/png", "owner_node": "gate", "size_bytes": len(png),
+         "sha256": hashlib.sha256(png).hexdigest()},
         {"artifact_id": "h-svg", "bundle_path": "artifacts/evil.svg", "copied": True,
-         "media_type": "image/svg+xml", "owner_node": "gate", "size_bytes": len(svg)},
+         "media_type": "image/svg+xml", "owner_node": "gate", "size_bytes": len(svg),
+         "sha256": hashlib.sha256(svg).hexdigest()},
     ]), encoding="utf-8")
 
     viewer = JsonlObservationViewer(FileEventSource(tmp_path))

@@ -4,21 +4,17 @@ from __future__ import annotations
 
 import hashlib
 import html
-import re
 from pathlib import Path
 from typing import Any
 
 from ai_workflow_engine import ObservationReader
 from ai_workflow_viewer.artifact_access import (
+    copy_verified_artifact,
     encode_artifact_path,
     manifest_artifacts_for_export,
 )
 from ai_workflow_viewer.detail_delivery import PREVIEW_BYTES
 from ai_workflow_viewer.rendering import INLINE_SAFE_MEDIA_TYPES, observation_group_to_html
-
-
-_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-_COPY_CHUNK_BYTES = 1024 * 1024
 
 
 def export_observation_group(group: Any, target_dir: str | Path) -> Path:
@@ -82,7 +78,8 @@ def _export_artifacts(group: Any, target: Path) -> dict[tuple[str, str], str]:
         scope_root = artifact_root / scope
         copied: dict[str, tuple[str, int]] = {}
         for artifact in approved:
-            expected_sha256, expected_length = _artifact_identity(artifact.entry)
+            expected_sha256 = artifact.sha256
+            expected_length = artifact.byte_length
             prior = copied.get(artifact.bundle_path)
             if prior is not None:
                 if prior != (expected_sha256, expected_length):
@@ -96,12 +93,7 @@ def _export_artifacts(group: Any, target: Path) -> dict[tuple[str, str], str]:
                 artifact.media_type,
                 expected_sha256,
             )
-            _copy_artifact_exact(
-                artifact.source_path,
-                destination,
-                expected_sha256=expected_sha256,
-                expected_length=expected_length,
-            )
+            copy_verified_artifact(artifact, destination)
             copied[artifact.bundle_path] = (expected_sha256, expected_length)
             relative_href = destination.relative_to(target).as_posix()
             links[(str(Path(segment.path)), artifact.bundle_path)] = encode_artifact_path(
@@ -113,20 +105,6 @@ def _export_artifacts(group: Any, target: Path) -> dict[tuple[str, str], str]:
 def _segment_artifact_scope(segment: Any) -> str:
     identity = hashlib.sha256(str(segment.segment_id).encode("utf-8")).hexdigest()[:12]
     return f"segment-{int(segment.segment_index):06d}-{identity}"
-
-
-def _artifact_identity(entry: dict[str, Any]) -> tuple[str, int]:
-    expected_sha256 = entry.get("sha256")
-    expected_length = entry.get("size_bytes")
-    if not isinstance(expected_sha256, str) or not _SHA256_RE.fullmatch(expected_sha256):
-        raise ValueError(
-            f"copied artifact {entry.get('artifact_id')!r} has no valid SHA-256 identity"
-        )
-    if not isinstance(expected_length, int) or isinstance(expected_length, bool) or expected_length < 0:
-        raise ValueError(
-            f"copied artifact {entry.get('artifact_id')!r} has no valid byte length"
-        )
-    return expected_sha256, expected_length
 
 
 def _artifact_destination(
@@ -145,32 +123,6 @@ def _artifact_destination(
     if not destination.resolve().is_relative_to(scope_root.resolve()):
         raise ValueError(f"artifact path {bundle_path!r} escapes its export segment")
     return destination
-
-
-def _copy_artifact_exact(
-    source: Path,
-    destination: Path,
-    *,
-    expected_sha256: str,
-    expected_length: int,
-) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temp = destination.parent / f".artifact-{expected_sha256}.tmp"
-    digest = hashlib.sha256()
-    byte_length = 0
-    try:
-        with source.open("rb") as source_file, temp.open("xb") as target_file:
-            while chunk := source_file.read(_COPY_CHUNK_BYTES):
-                digest.update(chunk)
-                byte_length += len(chunk)
-                target_file.write(chunk)
-        if digest.hexdigest() != expected_sha256 or byte_length != expected_length:
-            raise ValueError(
-                f"artifact {str(source)!r} disagrees with its manifest identity"
-            )
-        temp.replace(destination)
-    finally:
-        temp.unlink(missing_ok=True)
 
 
 def _write_exact_body(reader: ObservationReader, detail, path: Path) -> bytes:

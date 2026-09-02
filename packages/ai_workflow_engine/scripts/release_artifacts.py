@@ -497,8 +497,12 @@ import importlib.metadata
 import json
 import shutil
 import sys
+import threading
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 from ai_workflow_engine import (
     DurableWaitPolicy,
@@ -535,8 +539,10 @@ from ai_workflow_tools.testing.openai_compatible import (
 )
 from ai_workflow_viewer import (
     FileEventSource,
+    JsonlObservationViewer,
     export_observation_group,
     observation_group_to_html,
+    serve_viewer,
 )
 from ai_workflow_viewer.detail_delivery import PREVIEW_BYTES, prepare_detail_delivery
 from pydantic import BaseModel
@@ -785,6 +791,37 @@ async def main():
     [exported_artifact] = export_root.glob("artifacts/segment-*/artifacts/*")
     assert exported_artifact.read_bytes() == viewer_artifact_bytes
     assert "file://" not in export_index.read_text(encoding="utf-8")
+    [viewer_artifact_row] = json.loads(
+        (viewer_bundle.path / "artifacts.json").read_text(encoding="utf-8")
+    )
+    archived_artifact = viewer_bundle.path / viewer_artifact_row["bundle_path"]
+    tampered_artifact = bytearray(viewer_artifact_bytes)
+    tampered_artifact[-1] ^= 0x01
+    archived_artifact.write_bytes(tampered_artifact)
+    viewer_server = serve_viewer(JsonlObservationViewer(viewer_source), port=0)
+    viewer_thread = threading.Thread(target=viewer_server.serve_forever, daemon=True)
+    viewer_thread.start()
+    encoded_artifact_path = "/".join(
+        quote(part, safe="") for part in viewer_artifact_row["bundle_path"].split("/")
+    )
+    artifact_url = (
+        f"http://127.0.0.1:{viewer_server.server_address[1]}/artifact/"
+        f"installed-viewer-v4/{quote(viewer_bundle.path.name, safe='')}/"
+        f"{encoded_artifact_path}"
+    )
+    try:
+        try:
+            response = urllib.request.urlopen(artifact_url, timeout=5)
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 500
+            assert "manifest identity" in exc.read().decode("utf-8")
+        else:
+            response.close()
+            raise AssertionError("installed live viewer served a tampered artifact as success")
+    finally:
+        viewer_server.shutdown()
+        viewer_server.server_close()
+        viewer_thread.join(timeout=5)
     shutil.rmtree(viewer_root)
     viewer_artifact_source.unlink()
     assert exported_body.read_bytes() == expected_viewer_body
