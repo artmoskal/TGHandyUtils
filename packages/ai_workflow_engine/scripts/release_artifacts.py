@@ -495,6 +495,7 @@ def run_installed_smoke(
 import asyncio
 import importlib.metadata
 import json
+import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -722,8 +723,24 @@ async def main():
             success=True,
         )
     )
+    viewer_artifact_source = root / "viewer-artifact-source.png"
+    viewer_artifact_bytes = b"\x89PNG\r\n\x1a\ninstalled-viewer-artifact"
+    viewer_artifact_source.write_bytes(viewer_artifact_bytes)
     viewer_definition = WorkflowBuilder("installed-viewer").step("inspect").build()
-    viewer_bundle.finalize(viewer_definition, status="completed")
+    viewer_bundle.finalize(
+        viewer_definition,
+        status="completed",
+        artifacts=[
+            WorkflowArtifact(
+                artifact_id="installed-viewer-artifact",
+                path=str(viewer_artifact_source),
+                kind="media",
+                source="installed-smoke",
+                owner_node="inspect",
+                metadata={"role": "screenshot", "media_type": "image/png"},
+            )
+        ],
+    )
     viewer_source = FileEventSource(viewer_root)
     viewer_group = viewer_source.read_group("installed-viewer-v4")
     viewer_html = observation_group_to_html(viewer_group)
@@ -762,9 +779,16 @@ async def main():
     )
     assert b"".join(exact_delivery.chunks) == expected_viewer_body
     export_root = root / "viewer-export"
-    export_observation_group(viewer_group, export_root)
+    export_index = export_observation_group(viewer_group, export_root)
     [exported_body] = (export_root / "details").glob("body-*.bin")
     assert exported_body.read_bytes() == expected_viewer_body
+    [exported_artifact] = export_root.glob("artifacts/segment-*/artifacts/*")
+    assert exported_artifact.read_bytes() == viewer_artifact_bytes
+    assert "file://" not in export_index.read_text(encoding="utf-8")
+    shutil.rmtree(viewer_root)
+    viewer_artifact_source.unlink()
+    assert exported_body.read_bytes() == expected_viewer_body
+    assert exported_artifact.read_bytes() == viewer_artifact_bytes
 
     # v0.11.18 child-window qualification from installed wheels. Both public child doors apply
     # one complete-workflow breaker, retries consume its shrinking published remainder, and

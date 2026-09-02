@@ -4,12 +4,21 @@ from __future__ import annotations
 
 import hashlib
 import html
+import re
 from pathlib import Path
 from typing import Any
 
 from ai_workflow_engine import ObservationReader
+from ai_workflow_viewer.artifact_access import (
+    encode_artifact_path,
+    manifest_artifacts_for_export,
+)
 from ai_workflow_viewer.detail_delivery import PREVIEW_BYTES
-from ai_workflow_viewer.rendering import observation_group_to_html
+from ai_workflow_viewer.rendering import INLINE_SAFE_MEDIA_TYPES, observation_group_to_html
+
+
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_COPY_CHUNK_BYTES = 1024 * 1024
 
 
 def export_observation_group(group: Any, target_dir: str | Path) -> Path:
@@ -19,6 +28,7 @@ def export_observation_group(group: Any, target_dir: str | Path) -> Path:
     if target.is_symlink() or (target.exists() and any(target.iterdir())):
         raise ValueError("static observation export target must be a new or empty real directory")
     target.mkdir(parents=True, exist_ok=True)
+    artifact_links = _export_artifacts(group, target)
     details_dir = target / "details"
     details_dir.mkdir()
     links: dict[str, dict[str, str]] = {}
@@ -50,11 +60,117 @@ def export_observation_group(group: Any, target_dir: str | Path) -> Path:
     index_path.write_text(
         observation_group_to_html(
             group,
+            artifact_href_for_entry=lambda segment_path, entry: artifact_links.get(
+                (str(Path(segment_path)), str(entry.get("bundle_path") or ""))
+            ),
             detail_href_for=lambda detail: links.get(detail.detail_id, {}),
         ),
         encoding="utf-8",
     )
     return index_path
+
+
+def _export_artifacts(group: Any, target: Path) -> dict[tuple[str, str], str]:
+    links: dict[tuple[str, str], str] = {}
+    artifact_root = target / "artifacts"
+    segments = [*group.segments, *getattr(group, "non_canonical", [])]
+    for segment in segments:
+        approved = manifest_artifacts_for_export(segment.path)
+        if not approved:
+            continue
+        scope = _segment_artifact_scope(segment)
+        scope_root = artifact_root / scope
+        copied: dict[str, tuple[str, int]] = {}
+        for artifact in approved:
+            expected_sha256, expected_length = _artifact_identity(artifact.entry)
+            prior = copied.get(artifact.bundle_path)
+            if prior is not None:
+                if prior != (expected_sha256, expected_length):
+                    raise ValueError(
+                        f"artifact path {artifact.bundle_path!r} has conflicting identities"
+                    )
+                continue
+            destination = _artifact_destination(
+                scope_root,
+                artifact.bundle_path,
+                artifact.media_type,
+                expected_sha256,
+            )
+            _copy_artifact_exact(
+                artifact.source_path,
+                destination,
+                expected_sha256=expected_sha256,
+                expected_length=expected_length,
+            )
+            copied[artifact.bundle_path] = (expected_sha256, expected_length)
+            relative_href = destination.relative_to(target).as_posix()
+            links[(str(Path(segment.path)), artifact.bundle_path)] = encode_artifact_path(
+                relative_href
+            )
+    return links
+
+
+def _segment_artifact_scope(segment: Any) -> str:
+    identity = hashlib.sha256(str(segment.segment_id).encode("utf-8")).hexdigest()[:12]
+    return f"segment-{int(segment.segment_index):06d}-{identity}"
+
+
+def _artifact_identity(entry: dict[str, Any]) -> tuple[str, int]:
+    expected_sha256 = entry.get("sha256")
+    expected_length = entry.get("size_bytes")
+    if not isinstance(expected_sha256, str) or not _SHA256_RE.fullmatch(expected_sha256):
+        raise ValueError(
+            f"copied artifact {entry.get('artifact_id')!r} has no valid SHA-256 identity"
+        )
+    if not isinstance(expected_length, int) or isinstance(expected_length, bool) or expected_length < 0:
+        raise ValueError(
+            f"copied artifact {entry.get('artifact_id')!r} has no valid byte length"
+        )
+    return expected_sha256, expected_length
+
+
+def _artifact_destination(
+    scope_root: Path,
+    bundle_path: str,
+    media_type: str,
+    sha256: str,
+) -> Path:
+    relative = Path(bundle_path)
+    if relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
+        raise ValueError(f"artifact path {bundle_path!r} is not a plain relative path")
+    if media_type in INLINE_SAFE_MEDIA_TYPES:
+        destination = scope_root.joinpath(*relative.parts)
+    else:
+        destination = scope_root / "downloads" / f"{sha256}.artifact.download"
+    if not destination.resolve().is_relative_to(scope_root.resolve()):
+        raise ValueError(f"artifact path {bundle_path!r} escapes its export segment")
+    return destination
+
+
+def _copy_artifact_exact(
+    source: Path,
+    destination: Path,
+    *,
+    expected_sha256: str,
+    expected_length: int,
+) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temp = destination.parent / f".artifact-{expected_sha256}.tmp"
+    digest = hashlib.sha256()
+    byte_length = 0
+    try:
+        with source.open("rb") as source_file, temp.open("xb") as target_file:
+            while chunk := source_file.read(_COPY_CHUNK_BYTES):
+                digest.update(chunk)
+                byte_length += len(chunk)
+                target_file.write(chunk)
+        if digest.hexdigest() != expected_sha256 or byte_length != expected_length:
+            raise ValueError(
+                f"artifact {str(source)!r} disagrees with its manifest identity"
+            )
+        temp.replace(destination)
+    finally:
+        temp.unlink(missing_ok=True)
 
 
 def _write_exact_body(reader: ObservationReader, detail, path: Path) -> bytes:

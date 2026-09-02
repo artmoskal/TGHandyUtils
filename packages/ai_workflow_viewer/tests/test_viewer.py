@@ -182,6 +182,7 @@ def test_viewer_truth_owners_have_one_way_dependencies():
     sources = {
         name: (root / name).read_text(encoding="utf-8")
         for name in (
+            "artifact_access.py",
             "assets.py",
             "detail_presentation.py",
             "observation_data.py",
@@ -207,6 +208,7 @@ def test_viewer_truth_owners_have_one_way_dependencies():
         return found
 
     data_imports = imports(sources["observation_data.py"])
+    artifact_access_imports = imports(sources["artifact_access.py"])
     grouping_imports = imports(sources["grouping.py"])
     projection_imports = imports(sources["projection.py"])
     source_imports = imports(sources["event_source.py"])
@@ -227,6 +229,8 @@ def test_viewer_truth_owners_have_one_way_dependencies():
         }
 
     assert not forbidden(data_imports)
+    assert "ai_workflow_viewer.rendering" not in artifact_access_imports
+    assert "ai_workflow_viewer.server" not in artifact_access_imports
     assert not forbidden(grouping_imports)
     assert not forbidden(projection_imports)
     assert not any(name.startswith("ai_workflow_engine") for name in asset_imports)
@@ -594,6 +598,194 @@ def test_static_observation_export_keeps_index_compact_and_detail_bodies_inert(t
     expected = canonical_json_bytes(value)
     assert exact_bodies[0].read_bytes() == expected
     assert hashlib.sha256(expected).hexdigest() in exact_bodies[0].name
+
+
+def test_static_export_owns_manifest_artifacts_after_source_deletion_and_segment_collisions(
+    tmp_path,
+):
+    import html
+    import re
+    import shutil
+    from urllib.parse import unquote
+
+    from ai_workflow_viewer import export_observation_group
+
+    run_id = "static-artifact-run"
+    definition = WorkflowBuilder("static-artifact-export").step("inspect").build()
+    segment_paths = [
+        _write_bundle(
+            tmp_path,
+            run_id,
+            definition,
+            dir_name=run_id,
+            meta_extra={"artifact_count": 1, "artifacts_copied": 1},
+        ),
+        _write_bundle(
+            tmp_path,
+            run_id,
+            definition,
+            dir_name=f"{run_id}--s001",
+            meta_extra={
+                "segment_id": f"{run_id}--s001",
+                "segment_index": 1,
+                "segment_kind": "resume",
+                "attempt": None,
+                "artifact_count": 1,
+                "artifacts_copied": 1,
+            },
+        ),
+    ]
+    same_name = 'same name # "quoted".png'
+    hostile_role = "</script><script>globalThis.artifactOwned=true</script>"
+    payloads = (
+        b"\x89PNG\r\n\x1a\nsegment-zero",
+        b"\x89PNG\r\n\x1a\nsegment-one",
+    )
+    expected_bytes = set(payloads)
+    for index, (segment_path, payload) in enumerate(zip(segment_paths, payloads)):
+        artifact_dir = segment_path / "artifacts"
+        artifact_dir.mkdir()
+        source = artifact_dir / same_name
+        source.write_bytes(payload)
+        (artifact_dir / "not-listed.txt").write_text("must not enter export", encoding="utf-8")
+        (segment_path / "artifacts.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "artifact_id": f"artifact-{index}",
+                        "bundle_path": f"artifacts/{same_name}",
+                        "copied": True,
+                        "size_bytes": len(payload),
+                        "sha256": hashlib.sha256(payload).hexdigest(),
+                        "media_type": "image/png",
+                        "role": hostile_role,
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+    export_root = tmp_path / "artifact-export"
+    index_path = export_observation_group(
+        FileEventSource(tmp_path).read_group(run_id),
+        export_root,
+    )
+    index = index_path.read_text(encoding="utf-8")
+    exported = sorted(export_root.glob("artifacts/segment-*/artifacts/*"))
+
+    assert len(exported) == 2
+    assert {path.name for path in exported} == {same_name}
+    assert {path.read_bytes() for path in exported} == expected_bytes
+    assert not list(export_root.rglob("not-listed.txt"))
+    assert "file://" not in index and str(tmp_path) not in index
+    assert index.count("artifacts/segment-") >= 4, "each artifact has a link and image preview"
+    assert "%20" in index and "%23" in index and "%22" in index
+    artifact_hrefs = set(re.findall(r'href="(artifacts/segment-[^"]+)"', index))
+    assert len(artifact_hrefs) == 2
+    assert hostile_role not in index
+    assert "&lt;/script&gt;&lt;script&gt;globalThis.artifactOwned=true&lt;/script&gt;" in index
+
+    for segment_path in segment_paths:
+        shutil.rmtree(segment_path)
+    assert index_path.is_file()
+    assert {path.read_bytes() for path in exported} == expected_bytes
+    assert {
+        (export_root / unquote(html.unescape(href))).read_bytes()
+        for href in artifact_hrefs
+    } == expected_bytes
+
+
+@pytest.mark.parametrize("attack", ["segment_escape", "identity_drift"])
+def test_static_export_rejects_artifacts_outside_the_manifest_identity(tmp_path, attack):
+    from ai_workflow_viewer import export_observation_group
+
+    run_id = f"static-artifact-{attack}"
+    definition = WorkflowBuilder("static-artifact-attacks").step("inspect").build()
+    segment = _write_bundle(
+        tmp_path,
+        run_id,
+        definition,
+        meta_extra={"artifact_count": 1, "artifacts_copied": 1},
+    )
+    expected = b"manifest-approved-bytes"
+    if attack == "segment_escape":
+        source = segment.parent / "outside.bin"
+        bundle_path = "../outside.bin"
+        source.write_bytes(expected)
+    else:
+        source = segment / "artifacts" / "inside.bin"
+        source.parent.mkdir()
+        bundle_path = "artifacts/inside.bin"
+        tampered = bytearray(expected)
+        tampered[-1] ^= 0x01
+        source.write_bytes(tampered)
+    (segment / "artifacts.json").write_text(
+        json.dumps(
+            [
+                {
+                    "artifact_id": f"artifact-{attack}",
+                    "bundle_path": bundle_path,
+                    "copied": True,
+                    "size_bytes": len(expected),
+                    "sha256": hashlib.sha256(expected).hexdigest(),
+                    "media_type": "application/octet-stream",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="manifest-approved|manifest identity"):
+        export_observation_group(
+            FileEventSource(tmp_path).read_group(run_id),
+            tmp_path / f"export-{attack}",
+        )
+    assert not (tmp_path / f"export-{attack}" / "index.html").exists()
+
+
+def test_static_export_keeps_hostile_artifact_bytes_inert_and_exact(tmp_path):
+    from ai_workflow_viewer import export_observation_group
+
+    run_id = "static-hostile-artifact"
+    definition = WorkflowBuilder("static-hostile-artifact").step("inspect").build()
+    segment = _write_bundle(
+        tmp_path,
+        run_id,
+        definition,
+        meta_extra={"artifact_count": 1, "artifacts_copied": 1},
+    )
+    hostile = b'<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'
+    source = segment / "artifacts" / "hostile.svg"
+    source.parent.mkdir()
+    source.write_bytes(hostile)
+    (segment / "artifacts.json").write_text(
+        json.dumps(
+            [
+                {
+                    "artifact_id": "hostile-svg",
+                    "bundle_path": "artifacts/hostile.svg",
+                    "copied": True,
+                    "size_bytes": len(hostile),
+                    "sha256": hashlib.sha256(hostile).hexdigest(),
+                    "media_type": "image/svg+xml",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    export_root = tmp_path / "hostile-export"
+    index_path = export_observation_group(
+        FileEventSource(tmp_path).read_group(run_id),
+        export_root,
+    )
+    index = index_path.read_text(encoding="utf-8")
+    [exported] = export_root.glob("artifacts/segment-*/downloads/*.artifact.download")
+
+    assert exported.read_bytes() == hostile
+    assert hostile.decode("utf-8") not in index
+    assert f'href="{exported.relative_to(export_root).as_posix()}" download' in index
+    assert "<img" not in index
 
 
 def test_served_detail_endpoint_previews_and_downloads_one_validated_body(tmp_path):

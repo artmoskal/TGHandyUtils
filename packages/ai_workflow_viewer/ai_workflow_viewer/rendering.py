@@ -12,6 +12,12 @@ from typing import Any, Mapping, Optional
 
 from ai_workflow_engine.models import WorkflowUsageEvent
 from ai_workflow_engine.workflow import END, WorkflowDefinition
+from ai_workflow_viewer.artifact_access import (
+    _MANIFEST_ABSENT,
+    _MANIFEST_UNREADABLE,
+    encode_artifact_path as _encode_artifact_path,
+    load_artifact_manifest,
+)
 from ai_workflow_viewer.assets import load_asset_text
 from ai_workflow_viewer.detail_presentation import (
     DetailHrefFor,
@@ -223,44 +229,11 @@ def _format_precise_usd(value: float | None) -> str:
 # content) — SVG/HTML are ACTIVE content and must never execute in the viewer context.
 INLINE_SAFE_MEDIA_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
 
-# C2-1: the manifest name is the ENGINE's fixed-layout fact (a Literal field of the v2 meta) —
-# one owner, no viewer-side duplicate that could drift.
-from ai_workflow_engine.observation_bundle import ARTIFACT_MANIFEST_NAME  # noqa: E402
-
-# A3: the manifest is UNTRUSTED input — the loader is the ONE place that proves it is a
-# list of dict rows. Sentinels distinguish "no manifest" (absent → no section) from
-# "manifest present but unreadable/malformed" (loud notice / 404), so no reader ever calls
-# ``.get`` on a non-dict.
-_MANIFEST_ABSENT = object()
-_MANIFEST_UNREADABLE = object()
-
-
-def load_artifact_manifest(bundle_dir: str | Path) -> Any:
-    """Return the manifest as a ``list[dict]``, or a sentinel (``_MANIFEST_ABSENT`` /
-    ``_MANIFEST_UNREADABLE``). Shared by the renderer and the served /artifact route so the
-    two surfaces cannot disagree on what a valid manifest is."""
-
-    manifest_path = Path(bundle_dir) / ARTIFACT_MANIFEST_NAME
-    if not manifest_path.exists():
-        return _MANIFEST_ABSENT
-    try:
-        entries = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return _MANIFEST_UNREADABLE
-    if not isinstance(entries, list) or not all(isinstance(e, dict) for e in entries):
-        return _MANIFEST_UNREADABLE
-    return entries
-
-
-def _encode_artifact_path(rel_path: str) -> str:
-    """A7: percent-encode each '/'-segment of a relative artifact path so spaces/#/%/unicode
-    round-trip through browsers AND the /artifact route's per-segment ``unquote``. The ONE
-    encoder shared by the renderer tail, the served-route href, and the exported-report base."""
-
-    return "/".join(quote(segment, safe="") for segment in rel_path.split("/"))
-
-
-def _artifact_section_html(bundle_dir: str, href_base: Optional[str] = None) -> str:
+def _artifact_section_html(
+    bundle_dir: str,
+    href_base: Optional[str] = None,
+    href_for_entry: Optional[Any] = None,
+) -> str:
     """Q4.2: resolve the bundle's artifact manifest into USER-FACING evidence — image
     previews and clickable bundle-local links, honest skip reasons for uncopied entries.
     ``href_base`` is the ALREADY-ENCODED link prefix from the page's location to the bundle
@@ -277,32 +250,71 @@ def _artifact_section_html(bundle_dir: str, href_base: Optional[str] = None) -> 
     # own encoding (the served lambda and the export harness both go through
     # _encode_artifact_path); only the local-viewing default is built here.
     base = href_base if href_base is not None else Path(bundle_dir).resolve().as_uri()
-    rows = []
-    for entry in entries:
-        name = str(entry.get("bundle_path") or entry.get("artifact_id") or "artifact")
-        label = html.escape(f"{entry.get('role') or entry.get('kind') or 'artifact'} · {name}")
-        if entry.get("copied") and entry.get("bundle_path"):
-            href = f"{base}/{_encode_artifact_path(str(entry['bundle_path']))}"
-            media = str(entry.get("media_type") or "")
-            preview = (
-                f'<br><a href="{html.escape(href)}"><img src="{html.escape(href)}" '
-                f'alt="{label}" style="max-width:320px;max-height:240px;border:1px solid #d9e2ec"></a>'
-                if media in INLINE_SAFE_MEDIA_TYPES
-                else ""
-            )
-            rows.append(
-                f'<li><a href="{html.escape(href)}">{label}</a> '
-                # A2: size_bytes is UNTRUSTED manifest data — escape it like every sibling field
-                f'<span class="muted">({html.escape(str(entry.get("size_bytes")))} bytes, '
-                f'{html.escape(media or "file")}, owner: '
-                f'{html.escape(str(entry.get("owner_node") or "-"))})</span>{preview}</li>'
-            )
-        else:
-            reason = html.escape(str(entry.get("skip_reason") or "not copied"))
-            rows.append(f'<li>{label} <span class="muted">— NOT archived: {reason}</span></li>')
+    rows = [
+        _artifact_row_html(
+            bundle_dir,
+            entry,
+            href_base=base,
+            href_for_entry=href_for_entry,
+        )
+        for entry in entries
+    ]
     return (
         '<section class="artifacts"><h3>Artifacts</h3><ul>' + "\n".join(rows) + "</ul></section>"
     )
+
+
+def _artifact_row_html(
+    bundle_dir: str,
+    entry: dict[str, Any],
+    *,
+    href_base: str,
+    href_for_entry: Optional[Any],
+) -> str:
+    name = str(entry.get("bundle_path") or entry.get("artifact_id") or "artifact")
+    label = html.escape(f"{entry.get('role') or entry.get('kind') or 'artifact'} · {name}")
+    if not entry.get("copied") or not entry.get("bundle_path"):
+        reason = html.escape(str(entry.get("skip_reason") or "not copied"))
+        return f'<li>{label} <span class="muted">— NOT archived: {reason}</span></li>'
+
+    media = str(entry.get("media_type") or "")
+    href = _artifact_entry_href(
+        bundle_dir,
+        entry,
+        href_base=href_base,
+        href_for_entry=href_for_entry,
+    )
+    escaped_href = html.escape(href)
+    download = "" if media in INLINE_SAFE_MEDIA_TYPES else " download"
+    preview = (
+        f'<br><a href="{escaped_href}"><img src="{escaped_href}" '
+        f'alt="{label}" style="max-width:320px;max-height:240px;border:1px solid #d9e2ec"></a>'
+        if media in INLINE_SAFE_MEDIA_TYPES
+        else ""
+    )
+    return (
+        f'<li><a href="{escaped_href}"{download}>{label}</a> '
+        f'<span class="muted">({html.escape(str(entry.get("size_bytes")))} bytes, '
+        f'{html.escape(media or "file")}, owner: '
+        f'{html.escape(str(entry.get("owner_node") or "-"))})</span>{preview}</li>'
+    )
+
+
+def _artifact_entry_href(
+    bundle_dir: str,
+    entry: dict[str, Any],
+    *,
+    href_base: str,
+    href_for_entry: Optional[Any],
+) -> str:
+    href = (
+        href_for_entry(bundle_dir, entry)
+        if href_for_entry is not None
+        else f"{href_base}/{_encode_artifact_path(str(entry['bundle_path']))}"
+    )
+    if not isinstance(href, str) or not href:
+        raise ValueError(f"artifact {entry.get('artifact_id')!r} has no export link")
+    return href
 
 
 def observation_group_to_html(
@@ -310,6 +322,7 @@ def observation_group_to_html(
     *,
     title: Optional[str] = None,
     artifact_href_for: Optional[Any] = None,
+    artifact_href_for_entry: Optional[Any] = None,
     detail_href_for: DetailHrefFor | None = None,
 ) -> str:
     """Render ONE logical run assembled from its segments (W4.5) — one truthful lifecycle.
@@ -378,6 +391,7 @@ def observation_group_to_html(
             section := _artifact_section_html(
                 segment.path,
                 artifact_href_for(segment.path) if artifact_href_for else None,
+                artifact_href_for_entry,
             )
         )
     )

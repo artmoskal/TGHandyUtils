@@ -1739,3 +1739,68 @@ def test_child_directory_symlinks_never_escape_the_bundle_root(tmp_path):
     assert load_bundle_meta_v4(bundle.path).run_id == "ok-run", (
         "a deliberately symlinked CONFIGURED base is supported configuration"
     )
+
+
+def test_abandoned_attemptless_segment_is_excluded_from_prior_cumulative_totals(tmp_path):
+    """An ATTEMPTLESS segment marked abandoned must not supply the cumulative baseline.
+
+    A durable attempt is already excluded by the commit-marker rule (`attempt is not None`
+    without `commit.json` is never canonical), so the `abandoned` signal in the candidate
+    builder is load-bearing ONLY for an attemptless segment demoted by `abandoned.json`
+    (or `status == "abandoned"`). Without this regression, replacing that signal with
+    `abandoned=False` leaves the full bundle+viewer gate green while a demoted attemptless
+    resume silently becomes the cumulative baseline.
+    """
+    from ai_workflow_engine.observation_writer import write_minimal_abandoned_meta
+
+    run_id = "probe-attemptless-abandoned"
+    definition = WorkflowBuilder("wf").step("s").build()
+    base = open_observation_run_bundle(tmp_path, run_id)
+    ev = WorkflowUsageEvent(node="provider", total_tokens=10)
+    base.usage_sink.record(ev)
+    base.finalize(definition, status="completed", usage=[ev])
+
+    # attemptless resume at a LATER prior index, finalized, then abandoned by marker
+    poisoned = open_observation_run_bundle(
+        tmp_path,
+        run_id,
+        segment=ObservationSegment(
+            segment_id=f"{run_id}--s001",
+            segment_index=1,
+            kind="resume",
+            definition_digest=definition.definition_digest(),
+            attempt=None,
+        ),
+    )
+    bad = WorkflowUsageEvent(node="provider", total_tokens=999)
+    poisoned.usage_sink.record(bad)
+    poisoned.finalize(definition, status="completed", usage=[bad])
+    (poisoned.path / "abandoned.json").write_text('{"reason":"superseded"}')
+
+    dead = open_observation_run_bundle(
+        tmp_path,
+        run_id,
+        segment=ObservationSegment(
+            segment_id=f"{run_id}--s002",
+            segment_index=2,
+            kind="resume",
+            definition_digest=definition.definition_digest(),
+            attempt=1,
+        ),
+    )
+    write_minimal_abandoned_meta(
+        dead.path,
+        run_id=run_id,
+        definition=definition,
+        segment_index=2,
+        definition_digest=definition.definition_digest(),
+        attempt=1,
+    )
+    import json as _j
+
+    total = _j.loads((dead.path / "meta.json").read_text())["total_tokens"]
+    print(f"\n[PROBE-E] cumulative={total} (canonical base=10, abandoned attemptless=999)")
+    assert total == 10, (
+        f"abandoned attemptless segment leaked into the cumulative baseline: got {total}, "
+        "expected 10 from the canonical base segment"
+    )

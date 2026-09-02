@@ -8,16 +8,18 @@ from pathlib import Path
 from typing import Iterable, Mapping, Optional
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 
+from ai_workflow_viewer.artifact_access import (
+    encode_artifact_path as _encode_artifact_path,
+    resolve_manifest_artifact,
+)
 from ai_workflow_viewer.detail_delivery import prepare_detail_delivery
 from ai_workflow_viewer.event_source import EventSource, FileEventSource
 from ai_workflow_viewer.projection import build_observation_graph
 from ai_workflow_viewer.rendering import (
     INLINE_SAFE_MEDIA_TYPES,
-    load_artifact_manifest,
     observation_graph_to_html,
     observation_group_to_html,
     observation_index_to_html,
-    _encode_artifact_path,
 )
 
 
@@ -157,20 +159,10 @@ def _artifact_response(
         seg_dir = Path(segment.path)
         if seg_dir.name != segment_name:
             continue
-        # A3: the shared loader is the ONE manifest contract — non-list/non-dict shapes
-        # return the unreadable sentinel (→ 404) instead of raising AttributeError here.
-        entries = load_artifact_manifest(seg_dir)
-        if not isinstance(entries, list):
+        artifact = resolve_manifest_artifact(seg_dir, bundle_path)
+        if artifact is None:
             return None
-        for entry in entries:
-            if entry.get("copied") and entry.get("bundle_path") == bundle_path:
-                target = (seg_dir / bundle_path).resolve()
-                if not target.is_relative_to(seg_dir.resolve()) or not target.is_file():
-                    return None
-                return target.read_bytes(), str(
-                    entry.get("media_type") or "application/octet-stream"
-                )
-        return None
+        return artifact.source_path.read_bytes(), artifact.media_type
     return None
 
 

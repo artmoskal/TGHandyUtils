@@ -396,6 +396,32 @@ python3 "$TOOL" assemble --repo "$BUILD_A" --tag "$TAG" \
 python3 "$TOOL" verify-bundle --dir "$OUT/bundle"
 ```
 
+For any release that changes observation storage, readers, viewer delivery, or static export,
+installed-wheel smoke alone is not the complete release gate. Run the repository-owned real-browser
+RSS qualification against the smoke venv and retain its JSON record beside the other release work.
+The qualifier creates small and large v4 runs with the installed engine, serves them with the installed
+viewer, drives the bounded-preview control in a real Chrome process, and compares both server and
+browser process-tree RSS. A manual screenshot or an in-source Python rendering test is not a substitute.
+Do not declare the release complete until this command passes from the detached tagged source:
+
+```bash
+BROWSER_PYTHON=/path/to/python-with-playwright-and-psutil
+CHROME=/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome
+VIEWER_QUALIFIER="$BUILD_A/packages/ai_workflow_viewer/scripts/qualify_browser_rss.py"
+
+"$BROWSER_PYTHON" "$VIEWER_QUALIFIER" \
+  --installed-python "$OUT/smoke-venv/bin/python" \
+  --chrome-executable "$CHROME" \
+  --work-dir "$OUT/viewer-browser-rss-work" \
+  --record "$OUT/viewer-browser-rss.json"
+```
+
+The default comparison is 2 MiB versus 64 MiB with 32 MiB RSS slack. The record is valid only when
+both packages report `site-packages` origins, the initial browser load requests no detail, exactly one
+64 KiB preview is fetched, no browser console error occurs, and neither server nor browser RSS grows
+with the retained body size beyond that fixed slack. This evidence is release-gated for the affected
+surface; it is not implied by an ordinary unit-tier pass.
+
 For a release that changes Codex prompt transport, run the repository-owned qualification from the
 same detached source tag with the exact installed-wheel smoke interpreter. The protected file is
 only how the release operator supplies retained evidence to this harness; the tools runtime reads

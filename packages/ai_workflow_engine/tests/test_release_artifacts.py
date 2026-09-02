@@ -260,11 +260,33 @@ def test_installed_smoke_uses_fresh_venv_and_installs_declared_dependencies(
     assert 'assert "site-packages" in ai_workflow_viewer.__file__' in smoke_program
     assert 'assert "VIEWER-HEAD" not in viewer_html' in smoke_program
     assert 'assert b"".join(exact_delivery.chunks) == expected_viewer_body' in smoke_program
+    assert 'assert "file://" not in export_index.read_text' in smoke_program
+    assert "shutil.rmtree(viewer_root)" in smoke_program
+    assert "exported_artifact.read_bytes() == viewer_artifact_bytes" in smoke_program
     assert 'assert codex_exec.prompt_delivery == "stdin"' in smoke_program
     assert "_argv == [CODEX_STDIN_MARKER]" in smoke_program
     assert "len(_stdin) == 256 * 1024" in smoke_program
     assert 'prompt_delivery="argv_last"' in smoke_program
     assert "argv_last must be rejected by the installed model" in smoke_program
+
+
+def test_release_runbook_requires_installed_real_browser_rss_for_viewer_changes():
+    repository = Path(__file__).parents[3]
+    operations = (
+        repository / "packages/ai_workflow_engine/docs/operations.md"
+    ).read_text(encoding="utf-8")
+    qualifier = (
+        repository / "packages/ai_workflow_viewer/scripts/qualify_browser_rss.py"
+    ).read_text(encoding="utf-8")
+
+    assert "changes observation storage, readers, viewer delivery, or static export" in operations
+    assert '--installed-python "$OUT/smoke-venv/bin/python"' in operations
+    assert '--record "$OUT/viewer-browser-rss.json"' in operations
+    assert '"site-packages" in value' in qualifier
+    assert 'page.locator("[data-load-detail]").first' in qualifier
+    assert '"server_peak_rss_kib"' in qualifier
+    assert '"browser_peak_rss_kib"' in qualifier
+    assert '"schema": "viewer-browser-rss-v1"' in qualifier
 
 
 def _sibling_checkout(repo: Path, destination: Path) -> Path:
