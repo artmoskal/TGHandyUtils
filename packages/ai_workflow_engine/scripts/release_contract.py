@@ -511,6 +511,13 @@ def _wheel_filename(path: Path) -> dict[str, str]:
     }
 
 
+def _wheel_generator(wheel_meta: Any, path: Path) -> str:
+    generators = wheel_meta.get_all("Generator", [])
+    if len(generators) != 1:
+        raise ReleaseError(f"{path.name}: WHEEL requires exactly one Generator")
+    return _strict_string(generators[0], "WHEEL.Generator")
+
+
 def inspect_wheel(path: Path) -> dict[str, Any]:
     """Validate wheel identity, controls, RECORD, and member hashes."""
 
@@ -614,13 +621,11 @@ def _inspect_open_wheel(
             f"{path.name}: dist-info owner {dist_info!r} disagrees with wheel identity"
         )
     wheel_versions = wheel_meta.get_all("Wheel-Version", [])
-    generators = wheel_meta.get_all("Generator", [])
     pure_flags = wheel_meta.get_all("Root-Is-Purelib", [])
     wheel_tags = wheel_meta.get_all("Tag", [])
     if len(wheel_versions) != 1 or not wheel_versions[0].startswith("1."):
         raise ReleaseError(f"{path.name}: unsupported or missing Wheel-Version")
-    if len(generators) != 1:
-        raise ReleaseError(f"{path.name}: WHEEL requires exactly one Generator")
+    generator = _wheel_generator(wheel_meta, path)
     if len(pure_flags) != 1 or pure_flags[0].lower() not in {"true", "false"}:
         raise ReleaseError(f"{path.name}: invalid Root-Is-Purelib")
     if not wheel_tags or filename["tag"] not in wheel_tags:
@@ -665,7 +670,7 @@ def _inspect_open_wheel(
     return {
         "package": package,
         "version": version,
-        "generator": _strict_string(generators[0], "WHEEL.Generator"),
+        "generator": generator,
     }
 
 
