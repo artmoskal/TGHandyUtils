@@ -155,6 +155,40 @@ def test_delivery_outcome_is_public_and_annotated():
     assert "executed" in str(kinds) and "duplicate" in str(kinds)
 
 
+def test_bulk_observation_body_reader_is_public_and_exactly_typed():
+    """Consumers select generic envelope kinds without importing reader internals."""
+
+    from collections.abc import Collection, Iterator
+    import typing
+
+    import ai_workflow_engine
+    from ai_workflow_engine import (
+        HydratedObservationDetail,
+        ObservationDetailKind,
+        ObservationReader,
+    )
+
+    assert {
+        "HydratedObservationDetail",
+        "ObservationDetailKind",
+        "ObservationReader",
+    } <= set(dir(ai_workflow_engine))
+    signature = inspect.signature(ObservationReader.iter_detail_bodies)
+    assert list(signature.parameters) == ["self", "kinds", "max_body_bytes"]
+    assert signature.parameters["kinds"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert signature.parameters["max_body_bytes"].kind is inspect.Parameter.KEYWORD_ONLY
+    hints = typing.get_type_hints(ObservationReader.iter_detail_bodies)
+    assert hints == {
+        "kinds": Collection[ObservationDetailKind],
+        "max_body_bytes": int,
+        "return": Iterator[HydratedObservationDetail],
+    }
+    assert HydratedObservationDetail.__dataclass_fields__.keys() == {
+        "envelope",
+        "body_bytes",
+    }
+
+
 def test_handoff_never_claims_coordinator_outbox_atomicity():
     """complete() carries no intent and is engine-invoked — co-commit is unexpressable."""
 

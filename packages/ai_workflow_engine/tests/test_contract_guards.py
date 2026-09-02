@@ -86,7 +86,7 @@ def test_engine_imports_no_product_code():
 def test_release_version_matches_current_pin():
     """Release guard: a pinned tag must not build a wheel that reports the previous version."""
 
-    expected = "0.12.0"
+    expected = "0.12.1"
     pyproject = tomllib.loads((PACKAGE_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert pyproject["project"]["version"] == expected
     assert ai_workflow_engine.__version__ == expected
@@ -157,6 +157,7 @@ def test_observation_bundle_owners_have_one_way_dependencies():
         "observation_integrity.py",
         "observation_finalization.py",
         "observation_retention.py",
+        "observation_streams.py",
         "observation_reader.py",
         "observation_writer.py",
         "observation_bundle.py",
@@ -186,6 +187,13 @@ def test_observation_bundle_owners_have_one_way_dependencies():
     assert "ai_workflow_engine.observation_contract" in values_imports
     assert not any(name.startswith("ai_workflow_viewer") for name in values_imports)
 
+    stream_imports = imports(modules["observation_streams.py"])
+    assert not {
+        name
+        for name in stream_imports
+        if name.startswith("ai_workflow_engine.") or name.startswith("ai_workflow_viewer")
+    }, "shared observation stream mechanics must stay dependency-light"
+
     finalization_imports = imports(modules["observation_finalization.py"])
     assert {
         "ai_workflow_engine.observation_contract",
@@ -196,6 +204,7 @@ def test_observation_bundle_owners_have_one_way_dependencies():
     reader_imports = imports(modules["observation_reader.py"])
     assert {
         "ai_workflow_engine.observation_contract",
+        "ai_workflow_engine.observation_streams",
         "ai_workflow_engine.observation_values",
     } <= reader_imports
     assert "ai_workflow_engine.observation_writer" not in reader_imports

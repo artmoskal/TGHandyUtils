@@ -452,8 +452,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
+import ai_workflow_engine
 from ai_workflow_engine import (
     DurableWaitPolicy,
+    HydratedObservationDetail,
     InMemoryWaitCoordinator,
     ObservationConfig,
     ObservationDetail,
@@ -708,10 +710,17 @@ async def main():
         "installed-viewer-detail",
         invocation_id="installed-viewer-invocation",
     )
+    [hydrated_viewer_detail] = viewer_reader.iter_detail_bodies(
+        kinds={"llm_response"},
+        max_body_bytes=persisted_viewer_detail.body.byte_length,
+    )
+    assert isinstance(hydrated_viewer_detail, HydratedObservationDetail)
+    assert hydrated_viewer_detail.envelope == persisted_viewer_detail
     expected_viewer_body = viewer_reader.read_body_bytes(
         persisted_viewer_detail,
         max_bytes=persisted_viewer_detail.body.byte_length,
     )
+    assert hydrated_viewer_detail.body_bytes == expected_viewer_body
     preview_delivery = prepare_detail_delivery(
         viewer_source,
         run_id="installed-viewer-v4",
@@ -1131,6 +1140,7 @@ from ai_workflow_tools.cli_agents.models import CliFlavor as _CliFlavor
 import pathlib as _pathlib
 import pydantic as _pydantic
 
+assert "site-packages" in ai_workflow_engine.__file__, ai_workflow_engine.__file__
 assert "site-packages" in ai_workflow_tools.__file__, ai_workflow_tools.__file__
 assert "site-packages" in ai_workflow_viewer.__file__, ai_workflow_viewer.__file__
 assert codex_exec.prompt_delivery == "stdin"

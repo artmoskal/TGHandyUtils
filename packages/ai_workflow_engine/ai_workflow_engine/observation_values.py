@@ -9,7 +9,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
-from typing import Any, Literal
+from typing import Any, BinaryIO, Literal
 
 from ai_workflow_engine.observation_contract import canonical_json_bytes, canonical_json_chunks
 
@@ -153,6 +153,32 @@ class RunValueStore:
         )
         return target
 
+    def iter_validated_bytes(
+        self,
+        sha256: str,
+        byte_length: int,
+        *,
+        chunk_bytes: int = _CHUNK_BYTES,
+    ) -> Iterator[bytes]:
+        """Validate a complete object, then emit it from the same open file."""
+
+        if chunk_bytes < 1:
+            raise ValueError("observation body chunk_bytes must be positive")
+        target = self.object_path(sha256)
+        if not target.is_file():
+            raise FileNotFoundError(f"observation body {sha256!r} is missing")
+        with target.open("rb") as raw:
+            self._validate_open_object(
+                raw,
+                expected_sha256=sha256,
+                expected_length=byte_length,
+                chunk_bytes=chunk_bytes,
+            )
+            raw.seek(0)
+            with gzip.GzipFile(fileobj=raw, mode="rb") as decoded:
+                while chunk := decoded.read(chunk_bytes):
+                    yield chunk
+
     @staticmethod
     def _validate_object(
         path: Path,
@@ -160,11 +186,27 @@ class RunValueStore:
         expected_sha256: str,
         expected_length: int,
     ) -> None:
+        with path.open("rb") as raw:
+            RunValueStore._validate_open_object(
+                raw,
+                expected_sha256=expected_sha256,
+                expected_length=expected_length,
+                chunk_bytes=_CHUNK_BYTES,
+            )
+
+    @staticmethod
+    def _validate_open_object(
+        raw: BinaryIO,
+        *,
+        expected_sha256: str,
+        expected_length: int,
+        chunk_bytes: int,
+    ) -> None:
         digest = hashlib.sha256()
         length = 0
         try:
-            with path.open("rb") as raw, gzip.GzipFile(fileobj=raw, mode="rb") as decoded:
-                while chunk := decoded.read(_CHUNK_BYTES):
+            with gzip.GzipFile(fileobj=raw, mode="rb") as decoded:
+                while chunk := decoded.read(chunk_bytes):
                     digest.update(chunk)
                     length += len(chunk)
         except (OSError, EOFError) as exc:

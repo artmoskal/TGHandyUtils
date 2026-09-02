@@ -1650,6 +1650,22 @@
    "reason": "Observation v4 makes the artifact-manifest SHA-256 a required metadata fact; list insertion shifts the sealed required-field indices.",
    "manifest_row": "OBS-V4-I3",
    "consumed_by_seal": "2026-09-02 observation-v4 release-candidate manifest-integrity seal"
+  },
+  {
+   "path_prefix": "public.exports.HydratedObservationDetail",
+   "match": "exact",
+   "status": "spent",
+   "reason": "Engine 0.12.1 exports the transport-neutral result contract for one validated bulk detail body.",
+   "manifest_row": "ENGINE-0.12.1-BULK-READER",
+   "consumed_by_seal": "2026-09-02 engine-v0.12.1 bulk detail-body reader"
+  },
+  {
+   "path_prefix": "public.exports.ObservationDetailKind",
+   "match": "exact",
+   "status": "spent",
+   "reason": "Engine 0.12.1 exports the closed generic kind selector used by the bulk detail-body reader.",
+   "manifest_row": "ENGINE-0.12.1-BULK-READER",
+   "consumed_by_seal": "2026-09-02 engine-v0.12.1 bulk detail-body reader"
   }
  ]
 }

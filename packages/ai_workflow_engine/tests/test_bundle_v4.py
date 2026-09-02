@@ -14,6 +14,7 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 import subprocess
 import sys
+import tracemalloc
 
 import pytest
 
@@ -45,15 +46,24 @@ from ai_workflow_engine.observation_values import (
 pytestmark = [pytest.mark.unit]
 
 
-def _logical_detail(value, *, detail_id: str = "detail-1", run_id: str = "run-v4"):
+def _logical_detail(
+    value,
+    *,
+    detail_id: str = "detail-1",
+    run_id: str = "run-v4",
+    sequence: int = 1,
+    kind: str = "tool_result",
+    event_id: str = "event-1",
+    invocation_id: str = "invocation-1",
+):
     body = ObservationJsonBody(value=value)
     return ObservationDetail(
         detail_id=detail_id,
-        event_id="event-1",
+        event_id=event_id,
         run_id=run_id,
-        sequence=1,
-        invocation_id="invocation-1",
-        kind="tool_result",
+        sequence=sequence,
+        invocation_id=invocation_id,
+        kind=kind,
         content_type="application/json",
         body=body,
         digest=body_sha256(body),
@@ -61,21 +71,39 @@ def _logical_detail(value, *, detail_id: str = "detail-1", run_id: str = "run-v4
 
 
 def _v4_segment(tmp_path: Path, detail: ObservationDetail) -> tuple[Path, ObservationDetailEnvelope]:
-    run_root = tmp_path / str(detail.run_id)
-    segment = run_root / "segments" / str(detail.run_id)
+    segment, envelopes = _v4_segment_many(tmp_path, [detail])
+    return segment, envelopes[0]
+
+
+def _v4_segment_many(
+    tmp_path: Path,
+    details: list[ObservationDetail],
+) -> tuple[Path, list[ObservationDetailEnvelope]]:
+    if not details:
+        raise ValueError("test segment needs at least one detail")
+    run_id = str(details[0].run_id)
+    if any(detail.run_id != run_id for detail in details):
+        raise ValueError("test segment details must share one run_id")
+    run_root = tmp_path / run_id
+    segment = run_root / "segments" / run_id
     segment.mkdir(parents=True)
     store = RunValueStore(run_root)
-    envelope = ObservationDetailEnvelope(
-        **detail.model_dump(exclude={"body", "digest"}),
-        body=persist_observation_body(store, detail.body),
+    envelopes = [
+        ObservationDetailEnvelope(
+            **detail.model_dump(exclude={"body", "digest"}),
+            body=persist_observation_body(store, detail.body),
+        )
+        for detail in details
+    ]
+    (segment / "details.jsonl").write_text(
+        "".join(envelope.model_dump_json() + "\n" for envelope in envelopes)
     )
-    (segment / "details.jsonl").write_text(envelope.model_dump_json() + "\n")
     (segment / "trace.jsonl").write_text("")
     (segment / "usage.jsonl").write_text("")
     (segment / "artifacts.json").write_text("[]")
     meta = ObservationBundleMetaV4(
         bundle_schema_version=4,
-        run_id=str(detail.run_id),
+        run_id=run_id,
         workflow_id="wf",
         status="completed",
         timestamp="2026-09-01T12:00:00Z",
@@ -92,7 +120,7 @@ def _v4_segment(tmp_path: Path, detail: ObservationDetail) -> tuple[Path, Observ
         artifact_count=0,
         artifacts_copied=0,
         trace_count=0,
-        detail_count=1,
+        detail_count=len(envelopes),
         usage_count=0,
         trace_sha256=hashlib.sha256((segment / "trace.jsonl").read_bytes()).hexdigest(),
         detail_sha256=hashlib.sha256((segment / "details.jsonl").read_bytes()).hexdigest(),
@@ -101,13 +129,27 @@ def _v4_segment(tmp_path: Path, detail: ObservationDetail) -> tuple[Path, Observ
         stream_diagnostic=None,
         usage_totals_scope="run_cumulative_at_finalize",
         total_tokens=0,
-        segment_id=str(detail.run_id),
+        segment_id=run_id,
         segment_index=0,
         segment_kind="initial",
         provider_evidence=ProviderEvidenceIntegrity(integrity="complete"),
     )
     (segment / "meta.json").write_text(meta.model_dump_json())
-    return segment, envelope
+    return segment, envelopes
+
+
+def _rewrite_detail_stream(
+    segment: Path,
+    envelopes: list[ObservationDetailEnvelope],
+) -> None:
+    detail_path = segment / "details.jsonl"
+    detail_path.write_text(
+        "".join(envelope.model_dump_json() + "\n" for envelope in envelopes)
+    )
+    raw_meta = json.loads((segment / "meta.json").read_text(encoding="utf-8"))
+    raw_meta["detail_sha256"] = hashlib.sha256(detail_path.read_bytes()).hexdigest()
+    raw_meta["detail_count"] = len(envelopes)
+    (segment / "meta.json").write_text(json.dumps(raw_meta))
 
 
 def test_v4_logical_detail_has_one_closed_canonical_body():
@@ -336,6 +378,206 @@ def test_v4_reader_enforces_body_bounds_and_bindings(tmp_path):
     altered = envelope.model_copy(update={"metadata": {"forged": True}})
     with pytest.raises(ValueError, match="disagrees with its persisted envelope"):
         list(reader.iter_body_bytes(altered))
+
+
+def test_v4_bulk_reader_validates_once_streams_selected_bodies_in_order(
+    tmp_path,
+    monkeypatch,
+):
+    selected_count = 50
+    payload = "x" * (64 * 1024)
+    selected = [
+        _logical_detail(
+            {"position": index, "payload": payload},
+            detail_id=f"selected-{index:03d}",
+            sequence=index + 1,
+            kind="planner_output" if index % 2 == 0 else "tool_result",
+        )
+        for index in range(selected_count)
+    ]
+    non_selected = [
+        _logical_detail(
+            {"position": selected_count + index, "payload": payload},
+            detail_id=f"ignored-{index:03d}",
+            sequence=selected_count + index + 1,
+            kind="artifact_preview",
+        )
+        for index in range(3)
+    ]
+    segment, envelopes = _v4_segment_many(tmp_path, selected + non_selected)
+    reader = ObservationReader(segment)
+    ignored_paths = {
+        reader.value_store.object_path(envelope.body.sha256)
+        for envelope in envelopes[selected_count:]
+    }
+    for path in ignored_paths:
+        path.write_bytes(b"corrupt but deliberately unselected")
+
+    digest_validations = 0
+    real_validate = reader._validate_stream_digest
+
+    def counted_validate(name, path, expected_sha256):
+        nonlocal digest_validations
+        if path == reader.detail_path:
+            digest_validations += 1
+        return real_validate(name, path, expected_sha256)
+
+    opened_body_paths: list[Path] = []
+    real_open = Path.open
+
+    def counted_open(path, *args, **kwargs):
+        if path.suffix == ".gz":
+            opened_body_paths.append(path)
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(reader, "_validate_stream_digest", counted_validate)
+    monkeypatch.setattr(Path, "open", counted_open)
+    detail_ids: list[str] = []
+    positions: list[int] = []
+    tracemalloc.start()
+    try:
+        for hydrated in reader.iter_detail_bodies(
+            kinds={"planner_output", "tool_result"},
+            max_body_bytes=128 * 1024,
+        ):
+            detail_ids.append(hydrated.envelope.detail_id)
+            positions.append(json.loads(hydrated.body_bytes)["position"])
+            del hydrated
+        _current_bytes, peak_bytes = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert digest_validations == 1
+    assert detail_ids == [detail.detail_id for detail in selected]
+    assert positions == list(range(selected_count))
+    assert positions[-1] == selected_count - 1
+    assert len(opened_body_paths) == selected_count
+    assert ignored_paths.isdisjoint(opened_body_paths)
+    largest_selected_body = max(envelope.body.byte_length for envelope in envelopes[:selected_count])
+    assert peak_bytes < largest_selected_body * 16, (
+        "bulk hydration must retain O(1) selected bodies, not the complete selected corpus"
+    )
+
+
+def test_v4_bulk_reader_rejects_compact_stream_tamper_before_opening_bodies(
+    tmp_path,
+    monkeypatch,
+):
+    segment, _envelope = _v4_segment(
+        tmp_path,
+        _logical_detail({"payload": "x" * 10_000}),
+    )
+    detail_path = segment / "details.jsonl"
+    detail_path.write_bytes(detail_path.read_bytes() + b"\n")
+    opened_body_paths: list[Path] = []
+    real_open = Path.open
+
+    def counted_open(path, *args, **kwargs):
+        if path.suffix == ".gz":
+            opened_body_paths.append(path)
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", counted_open)
+    with pytest.raises(ValueError, match="details.jsonl.*SHA-256"):
+        list(
+            ObservationReader(segment).iter_detail_bodies(
+                kinds={"tool_result"},
+                max_body_bytes=20_000,
+            )
+        )
+    assert opened_body_paths == []
+
+
+def test_v4_bulk_reader_rejects_selected_body_tamper_before_yield(tmp_path):
+    segment, envelope = _v4_segment(
+        tmp_path,
+        _logical_detail({"payload": "x" * 10_000}),
+    )
+    reader = ObservationReader(segment)
+    object_path = reader.value_store.object_path(envelope.body.sha256)
+    object_path.write_bytes(gzip.compress(b"y" * envelope.body.byte_length, mtime=0))
+    yielded = []
+
+    with pytest.raises(ValueError, match="digest/length"):
+        for hydrated in reader.iter_detail_bodies(
+            kinds={"tool_result"},
+            max_body_bytes=20_000,
+        ):
+            yielded.append(hydrated)
+    assert yielded == []
+
+
+@pytest.mark.parametrize("failure", ["duplicate", "run_identity", "lifecycle"])
+def test_v4_bulk_reader_refuses_envelope_and_lifecycle_failures(tmp_path, failure):
+    details = [
+        _logical_detail(
+            {"position": index, "payload": "x" * 10_000},
+            detail_id=f"detail-{index}",
+            sequence=index + 1,
+        )
+        for index in range(2)
+    ]
+    segment, envelopes = _v4_segment_many(tmp_path, details)
+    if failure == "duplicate":
+        envelopes[1] = envelopes[1].model_copy(
+            update={"detail_id": envelopes[0].detail_id}
+        )
+        _rewrite_detail_stream(segment, envelopes)
+        expected = "duplicate detail_id"
+    elif failure == "run_identity":
+        envelopes[0] = envelopes[0].model_copy(update={"run_id": "foreign-run"})
+        _rewrite_detail_stream(segment, envelopes)
+        expected = "belongs to run"
+    else:
+        raw_meta = json.loads((segment / "meta.json").read_text(encoding="utf-8"))
+        raw_meta.update(
+            {
+                "status": "abandoned",
+                "incomplete_streams": ["detail"],
+                "stream_diagnostic": "interrupted detail append",
+                "provider_evidence": {
+                    "integrity": "incomplete",
+                    "diagnostic": "interrupted detail append",
+                },
+            }
+        )
+        (segment / "meta.json").write_text(json.dumps(raw_meta))
+        expected = "detail stream is incomplete"
+
+    with pytest.raises(ValueError, match=expected):
+        list(
+            ObservationReader(segment).iter_detail_bodies(
+                kinds={"tool_result"},
+                max_body_bytes=20_000,
+            )
+        )
+
+
+def test_v4_bulk_reader_enforces_per_body_limit_before_open(tmp_path, monkeypatch):
+    segment, envelope = _v4_segment(
+        tmp_path,
+        _logical_detail({"payload": "x" * 10_000}),
+    )
+    reader = ObservationReader(segment)
+    object_path = reader.value_store.object_path(envelope.body.sha256)
+    body_open_count = 0
+    real_open = Path.open
+
+    def counted_open(path, *args, **kwargs):
+        nonlocal body_open_count
+        if path == object_path:
+            body_open_count += 1
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", counted_open)
+    with pytest.raises(ValueError, match="above explicit read limit"):
+        list(
+            reader.iter_detail_bodies(
+                kinds={"tool_result"},
+                max_body_bytes=100,
+            )
+        )
+    assert body_open_count == 0
 
 
 @pytest.mark.parametrize("kind", ["trace", "detail", "usage"])

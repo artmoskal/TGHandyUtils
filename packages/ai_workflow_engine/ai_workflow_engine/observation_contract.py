@@ -36,6 +36,15 @@ BundleStatus = Literal[
 ]
 _BUNDLE_STATUSES = get_args(BundleStatus)
 ObservationStreamName = Literal["trace", "detail", "usage"]
+ObservationDetailKind = Literal[
+    "rendered_prompt",
+    "llm_response",
+    "tool_payload",
+    "tool_result",
+    "artifact_preview",
+    "planner_output",
+    "memory_projection",
+]
 
 
 def canonical_json_chunks(value: Any) -> Iterator[bytes]:
@@ -209,15 +218,7 @@ class ObservationDetailEnvelope(BaseModel):
     run_id: str
     sequence: Optional[int] = Field(default=None, ge=1)
     invocation_id: Optional[str] = None
-    kind: Literal[
-        "rendered_prompt",
-        "llm_response",
-        "tool_payload",
-        "tool_result",
-        "artifact_preview",
-        "planner_output",
-        "memory_projection",
-    ]
+    kind: ObservationDetailKind
     content_type: str
     body: PersistedObservationBody
     artifact_id: Optional[str] = None
@@ -380,6 +381,7 @@ __all__ = [
     "DEFAULT_ARTIFACT_MAX_BYTES",
     "ObservationBundleMetaV4",
     "ObservationDetailEnvelope",
+    "ObservationDetailKind",
     "ObservationSegment",
     "ObservationStreamName",
     "PersistedObservationBody",

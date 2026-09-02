@@ -7,7 +7,7 @@
 from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
-__version__ = "0.12.0"
+__version__ = "0.12.1"
 
 
 # F-C1 (typed public surface): the SAME export map, statically visible. Type checkers
@@ -176,8 +176,10 @@ if TYPE_CHECKING:
     )
     from ai_workflow_engine.node_services import NodeExecutionServices, NodeSchedulingServices
     from ai_workflow_engine.observation_bundle import (
+        HydratedObservationDetail,
         ObservationBundleMetaV4,
         ObservationDetailEnvelope,
+        ObservationDetailKind,
         ObservationReader,
         ProviderEvidenceIntegrity,
         load_bundle_meta_v4,
@@ -337,6 +339,10 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "NodeResult": ("ai_workflow_engine.executor", "NodeResult"),
     "NodeSchedulingServices": ("ai_workflow_engine.node_services", "NodeSchedulingServices"),
     "ObservationConfig": ("ai_workflow_engine.config_loader", "ObservationConfig"),
+    "HydratedObservationDetail": (
+        "ai_workflow_engine.observation_bundle",
+        "HydratedObservationDetail",
+    ),
     "ObservationDetail": ("ai_workflow_engine.models", "ObservationDetail"),
     "ObservationJsonBody": ("ai_workflow_engine.models", "ObservationJsonBody"),
     "ObservationTextBody": ("ai_workflow_engine.models", "ObservationTextBody"),
@@ -344,6 +350,10 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "ObservationDetailEnvelope": (
         "ai_workflow_engine.observation_bundle",
         "ObservationDetailEnvelope",
+    ),
+    "ObservationDetailKind": (
+        "ai_workflow_engine.observation_bundle",
+        "ObservationDetailKind",
     ),
     "ObservationReader": ("ai_workflow_engine.observation_bundle", "ObservationReader"),
     "ProviderEvidenceIntegrity": (
@@ -576,11 +586,13 @@ __all__ = [
     "NotionalPricingResult",
     "NotionalRate",
     "ObservationConfig",
+    "HydratedObservationDetail",
     "ObservationDetail",
     "ObservationJsonBody",
     "ObservationTextBody",
     "ObservationBundleMetaV4",
     "ObservationDetailEnvelope",
+    "ObservationDetailKind",
     "ObservationReader",
     "ProviderEvidenceIntegrity",
     "ObservationRunBundle",

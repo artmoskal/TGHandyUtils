@@ -14,13 +14,14 @@ from ai_workflow_engine.observation_contract import (
     DEFAULT_ARTIFACT_MAX_BYTES,
     ObservationBundleMetaV4,
     ObservationDetailEnvelope,
+    ObservationDetailKind,
     ObservationSegment,
     ProviderEvidenceIntegrity,
     assert_plain_identity,
     load_bundle_meta_v4,
     resolve_child_dir,
 )
-from ai_workflow_engine.observation_reader import ObservationReader
+from ai_workflow_engine.observation_reader import HydratedObservationDetail, ObservationReader
 from ai_workflow_engine.observation_retention import prune_observation_bundles
 from ai_workflow_engine.observation_writer import (
     ObservationRunBundle,
@@ -41,8 +42,10 @@ __all__ = [
     "BundleStatus",
     "COMMIT_MARKER_NAME",
     "DEFAULT_ARTIFACT_MAX_BYTES",
+    "HydratedObservationDetail",
     "ObservationBundleMetaV4",
     "ObservationDetailEnvelope",
+    "ObservationDetailKind",
     "ObservationReader",
     "ObservationRunBundle",
     "ObservationSegment",

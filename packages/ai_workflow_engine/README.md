@@ -5,8 +5,8 @@ declare a workflow, register typed capabilities, and call one engine door. The e
 transitions, retries, fan-out, budgets, waits, trace, usage, and observation bundles; products own
 domain models, provider clients, storage adapters, clocks, and side-effect delivery.
 
-> **`engine-v0.12.0` is the release candidate.**
-> `engine-v0.11.19` remains the current release; do not re-pin until it is cut and its immutable
+> **`engine-v0.12.1` is the release candidate.**
+> `engine-v0.12.0` remains the current release; do not re-pin until it is cut and its immutable
 > release directory verifies.
 > The engine owner publishes wheels bound to
 > immutable tags; consumer
@@ -24,7 +24,14 @@ domain models, provider clients, storage adapters, clocks, and side-effect deliv
 > Adoption is fresh: new consumers start on the current contract; existing consumers re-adopt the
 > current surface rather than migrate state.
 >
-> **v0.12.0 candidate delta.** Observation bundle v4 stores one canonical body per detail: small
+> **v0.12.1 candidate delta.** `ObservationReader.iter_detail_bodies(...)` is the public,
+> transport-neutral bulk hydration door for selected detail kinds. It validates the sealed detail
+> stream once per pass, preserves persisted order and all envelope/body integrity checks, enforces
+> an explicit per-body bound, never opens non-selected bodies, and retains at most one hydrated body.
+> Existing single-body reads share the same value-store integrity implementation. Engine `0.12.1`
+> is the only bumped package; tools `0.7.0` and viewer `0.4.0` remain unchanged.
+>
+> **v0.12.0 release delta.** Observation bundle v4 stores one canonical body per detail: small
 > values remain inline and large values are referenced from a run-scoped SHA-256 value store.
 > Trace, detail-envelope, usage, and artifact-manifest streams are sealed and finalized
 > incrementally; `ObservationReader` owns bounded previews, exact body reads, manifest validation,
@@ -207,19 +214,19 @@ Consumers download the complete published release directory, obtain the verifier
 the tag (or another already trusted pin), verify the bundle before installation, and install only
 the packages their product needs. Building from source is a producer operation, not consumer
 verification. The exact producer and consumer commands are in
-[`docs/operations.md`](docs/operations.md#release-artifacts-and-verification-v0120).
+[`docs/operations.md`](docs/operations.md#release-artifacts-and-verification-v0121).
 The required pre-install door, once the candidate is published, is
-`python3 release_artifacts.py verify-bundle --dir /path/to/engine-v0.12.0`.
+`python3 release_artifacts.py verify-bundle --dir /path/to/engine-v0.12.1`.
 
 Candidate matrix:
 
 | Package | Install when |
 |---|---|
-| `ai-workflow-engine==0.12.0` | Always. Core builder, executor, memory, waits, observation writer. |
+| `ai-workflow-engine==0.12.1` | Always. Core builder, executor, memory, waits, observation writer. |
 | `ai-workflow-tools==0.7.0` | The product uses provider clients, CLI agents, the tool catalog, or media helpers. |
 | `ai-workflow-viewer==0.4.0` | A developer or product service renders observation bundles. |
 
-Do not install this matrix until `engine-v0.12.0` is cut. Until then, consumers remain on their
+Do not install this matrix until `engine-v0.12.1` is cut. Until then, consumers remain on their
 verified prior release.
 
 Record the engine tag, source commit, and wheel SHA-256 in the consumer repository. A tag already
@@ -286,7 +293,7 @@ minimal profile.
 
 `engine-v0.11.0` made the line **latest-only**: strict versioned persisted contracts,
 one strict viewer loader with typed status authority, a sealed current-contract oracle replacing
-old-wheel equality, and removal of every compatibility fallback. The v0.12.0 candidate keeps
+old-wheel equality, and removal of every compatibility fallback. The v0.12 line keeps
 MachineSnapshot `schema_version="v0.11"`, advances observation bundle meta to v4, and keeps wait
 records at `record_schema_version="wait-v2"` with required persisted registration-attempt
 identity. Old persisted data fails loudly naming its historical tag. Earlier lines added, and

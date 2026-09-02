@@ -2,21 +2,22 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-import gzip
+from collections.abc import Collection, Iterator
+from dataclasses import dataclass
 import hashlib
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 from ai_workflow_engine.models import WorkflowTraceEvent, WorkflowUsageEvent
 from ai_workflow_engine.observation_contract import (
     ObservationBundleMetaV4,
     ObservationDetailEnvelope,
-    ReferencedObservationBody,
+    ObservationDetailKind,
     assert_plain_identity,
     load_bundle_meta_v4,
 )
+from ai_workflow_engine.observation_streams import iter_jsonl_models, iter_jsonl_prefix
 from ai_workflow_engine.observation_values import (
     RunValueStore,
     canonical_json_chunks,
@@ -26,6 +27,15 @@ from ai_workflow_engine.workflow import WorkflowDefinition
 
 
 _CHUNK_BYTES = 64 * 1024
+_DETAIL_KINDS = frozenset(get_args(ObservationDetailKind))
+
+
+@dataclass(frozen=True)
+class HydratedObservationDetail:
+    """One persisted detail envelope with its validated canonical body bytes."""
+
+    envelope: ObservationDetailEnvelope
+    body_bytes: bytes
 
 
 class ObservationReader:
@@ -86,7 +96,7 @@ class ObservationReader:
     def iter_trace_events(self) -> Iterator[WorkflowTraceEvent]:
         path = _contained_file(self.segment_path, self.meta.trace_path)
         self._validate_compact_stream("trace", path, self.meta.trace_sha256)
-        yield from _iter_jsonl_models(
+        yield from iter_jsonl_models(
             path,
             WorkflowTraceEvent,
         )
@@ -94,7 +104,7 @@ class ObservationReader:
     def iter_usage_events(self) -> Iterator[WorkflowUsageEvent]:
         path = _contained_file(self.segment_path, self.meta.usage_path)
         self._validate_compact_stream("usage", path, self.meta.usage_sha256)
-        yield from _iter_jsonl_models(
+        yield from iter_jsonl_models(
             path,
             WorkflowUsageEvent,
         )
@@ -103,7 +113,7 @@ class ObservationReader:
         self._require_incomplete_prefix("trace")
         path = self._stream_path("trace")
         self._validate_prefix_stream("trace", path, self.meta.trace_sha256, self.meta.trace_count)
-        yield from _iter_jsonl_prefix(
+        yield from iter_jsonl_prefix(
             path, WorkflowTraceEvent, self.meta.trace_count,
             expected_sha256=self.meta.trace_sha256,
         )
@@ -112,7 +122,7 @@ class ObservationReader:
         self._require_incomplete_prefix("usage")
         path = self._stream_path("usage")
         self._validate_prefix_stream("usage", path, self.meta.usage_sha256, self.meta.usage_count)
-        yield from _iter_jsonl_prefix(
+        yield from iter_jsonl_prefix(
             path, WorkflowUsageEvent, self.meta.usage_count,
             expected_sha256=self.meta.usage_sha256,
         )
@@ -152,6 +162,42 @@ class ObservationReader:
 
     def iter_detail_envelopes(self) -> Iterator[ObservationDetailEnvelope]:
         self._validate_compact_stream("detail", self.detail_path, self.meta.detail_sha256)
+        yield from self._iter_validated_detail_envelopes()
+
+    def iter_detail_bodies(
+        self,
+        *,
+        kinds: Collection[ObservationDetailKind],
+        max_body_bytes: int,
+    ) -> Iterator[HydratedObservationDetail]:
+        """Hydrate selected kinds in persisted order after one detail-stream validation.
+
+        ``kinds`` is a declarative envelope filter, not a body callback. Non-selected bodies
+        are never opened. Each selected body must fit ``max_body_bytes`` and is fully validated
+        before one result is yielded, so the iterator retains at most one hydrated body.
+        """
+
+        selected_kinds = frozenset(kinds)
+        if not selected_kinds:
+            raise ValueError("observation detail kinds must not be empty")
+        unsupported = selected_kinds - _DETAIL_KINDS
+        if unsupported:
+            raise ValueError(f"unsupported observation detail kinds: {sorted(unsupported)!r}")
+        if max_body_bytes < 0:
+            raise ValueError("observation body max_body_bytes must be nonnegative")
+        self._validate_compact_stream("detail", self.detail_path, self.meta.detail_sha256)
+        for detail in self._iter_validated_detail_envelopes():
+            if detail.kind not in selected_kinds:
+                continue
+            yield HydratedObservationDetail(
+                envelope=detail,
+                body_bytes=self._read_persisted_body_bytes(
+                    detail,
+                    max_bytes=max_body_bytes,
+                ),
+            )
+
+    def _iter_validated_detail_envelopes(self) -> Iterator[ObservationDetailEnvelope]:
         if not self.detail_path.is_file():
             raise FileNotFoundError(
                 f"observation segment {self.meta.segment_id!r} is missing details.jsonl"
@@ -227,7 +273,15 @@ class ObservationReader:
 
         if chunk_bytes < 1:
             raise ValueError("observation body chunk_bytes must be positive")
-        self._require_persisted_detail(detail)
+        persisted = self._require_persisted_detail(detail)
+        yield from self._iter_persisted_body_bytes(persisted, chunk_bytes=chunk_bytes)
+
+    def _iter_persisted_body_bytes(
+        self,
+        detail: ObservationDetailEnvelope,
+        *,
+        chunk_bytes: int,
+    ) -> Iterator[bytes]:
         body = detail.body
         if body.kind == "inline_json":
             yield from canonical_json_chunks(body.value)
@@ -235,9 +289,22 @@ class ObservationReader:
         if body.kind == "inline_text":
             yield from canonical_text_chunks(body.value)
             return
-        yield from self._iter_referenced_body(body, chunk_bytes=chunk_bytes)
+        yield from self.value_store.iter_validated_bytes(
+            body.sha256,
+            body.byte_length,
+            chunk_bytes=chunk_bytes,
+        )
 
     def read_body_bytes(
+        self,
+        detail: ObservationDetailEnvelope,
+        *,
+        max_bytes: int,
+    ) -> bytes:
+        persisted = self._require_persisted_detail(detail)
+        return self._read_persisted_body_bytes(persisted, max_bytes=max_bytes)
+
+    def _read_persisted_body_bytes(
         self,
         detail: ObservationDetailEnvelope,
         *,
@@ -248,7 +315,9 @@ class ObservationReader:
                 f"observation body {detail.detail_id!r} is {detail.body.byte_length} bytes, "
                 f"above explicit read limit {max_bytes}"
             )
-        return b"".join(self.iter_body_bytes(detail))
+        return b"".join(
+            self._iter_persisted_body_bytes(detail, chunk_bytes=_CHUNK_BYTES)
+        )
 
     def preview_bytes(
         self,
@@ -345,7 +414,10 @@ class ObservationReader:
                 f"expected {expected_sha256!r}, got {actual!r}"
             )
 
-    def _require_persisted_detail(self, detail: ObservationDetailEnvelope) -> None:
+    def _require_persisted_detail(
+        self,
+        detail: ObservationDetailEnvelope,
+    ) -> ObservationDetailEnvelope:
         self._validate_binding(detail)
         matches = [
             persisted
@@ -362,35 +434,7 @@ class ObservationReader:
                 f"observation detail {detail.detail_id!r} disagrees with its persisted "
                 f"envelope in segment {self.meta.segment_id!r}"
             )
-
-    def _iter_referenced_body(
-        self,
-        body: ReferencedObservationBody,
-        *,
-        chunk_bytes: int,
-    ) -> Iterator[bytes]:
-        path = self.value_store.object_path(body.sha256)
-        if not path.is_file():
-            raise FileNotFoundError(f"observation body {body.sha256!r} is missing")
-        with path.open("rb") as raw:
-            digest = hashlib.sha256()
-            byte_length = 0
-            try:
-                with gzip.GzipFile(fileobj=raw, mode="rb") as decoded:
-                    while chunk := decoded.read(chunk_bytes):
-                        digest.update(chunk)
-                        byte_length += len(chunk)
-            except (OSError, EOFError) as exc:
-                raise ValueError(f"observation body {body.sha256!r} is corrupt: {exc}") from exc
-            if digest.hexdigest() != body.sha256 or byte_length != body.byte_length:
-                raise ValueError(
-                    f"observation body {body.sha256!r} failed digest/length validation: "
-                    f"got sha256={digest.hexdigest()!r}, bytes={byte_length}"
-                )
-            raw.seek(0)
-            with gzip.GzipFile(fileobj=raw, mode="rb") as decoded:
-                while chunk := decoded.read(chunk_bytes):
-                    yield chunk
+        return matches[0]
 
 
 def _resolve_run_root(segment_path: Path, meta: ObservationBundleMetaV4) -> Path:
@@ -419,58 +463,4 @@ def _contained_file(segment_path: Path, name: str) -> Path:
     return candidate
 
 
-def _iter_jsonl_models(path: Path, model: type[Any]) -> Iterator[Any]:
-    if not path.is_file():
-        raise FileNotFoundError(f"observation segment is missing {path.name}")
-    with path.open("r", encoding="utf-8") as source:
-        for line_number, line in enumerate(source, start=1):
-            if not line.strip():
-                continue
-            try:
-                yield model.model_validate_json(line)
-            except Exception as exc:
-                raise ValueError(
-                    f"invalid observation record in {path.name} at line {line_number}: {exc}"
-                ) from exc
-
-
-def _iter_jsonl_prefix(
-    path: Path,
-    model: type[Any],
-    count: int,
-    *,
-    expected_sha256: str,
-) -> Iterator[Any]:
-    if not path.is_file():
-        if count == 0:
-            return
-        raise FileNotFoundError(f"missing abandoned observation stream {path.name}")
-    digest_builder = hashlib.sha256()
-    with path.open("rb") as raw:
-        while chunk := raw.read(_CHUNK_BYTES):
-            digest_builder.update(chunk)
-    digest = digest_builder.hexdigest()
-    if digest != expected_sha256:
-        raise ValueError(
-            f"abandoned observation stream {path.name} digest mismatch before prefix read"
-        )
-    if count == 0:
-        return
-    yielded = 0
-    with path.open("rb") as source:
-        for line_number, line in enumerate(source, start=1):
-            if not line.strip():
-                continue
-            if yielded == count:
-                break
-            try:
-                record = model.model_validate_json(line)
-            except Exception as exc:
-                raise ValueError(f"invalid abandoned {path.name} prefix at line {line_number}: {exc}") from exc
-            yielded += 1
-            yield record
-    if yielded != count:
-        raise ValueError(f"{path.name} contains {yielded} valid records, expected prefix of {count}")
-
-
-__all__ = ["ObservationReader"]
+__all__ = ["HydratedObservationDetail", "ObservationReader"]

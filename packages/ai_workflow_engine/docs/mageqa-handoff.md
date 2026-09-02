@@ -1,26 +1,13 @@
 # MageQA Engine Adoption Guide
 
-Status: **`engine-v0.12.0` is the release candidate; `engine-v0.11.19` remains the published release.**
-The candidate advances observation to bundle v4: compact sealed streams, run-scoped large bodies,
-bounded engine-owned readers, and on-demand viewer detail access with no v3 compatibility path. It
-also retains bounded Codex stdin transport, so
-large curation prompts no longer enter process argv or hit the operating system's argument-size
-limit. It retains the generic OpenAI-compatible provider MageQA requested. Repin only the coherent
-`0.12.0 / 0.7.0 / 0.4.0` matrix only after publication, immutable-directory verification, and E0.
-MageQA's two durable-registration race canaries fail on `engine-v0.11.5`. MageQA must stay on its
-existing pin and keep its fork until its E0
-canaries pass against the current immutable tag. The five historical E0 blockers (planned
-`partial` rewritten to `done`, unenforced `RuntimeLimits.timeout_s`, hidden retrace provenance,
-the CLI 600s default, and the reused tools wheel identity) are addressed and carried forward;
-v0.11 additionally hardens every persisted contract (strict versioned snapshot, bundle meta v3,
-wait records) with NO migration layer. Until v0.12.0 is published, MageQA must pin tag
-`engine-v0.11.19`. It then verifies the complete published v0.12.0 release directory, installs the
-required wheels, and passes its E0 canaries before
-adopting; it stays on its existing pin until those canaries pass.
-Do not infer the actual MageQA pin from this document; the consumer repository's pin file is
-authoritative for deployed state.
+Status: **`engine-v0.12.1` is the release candidate; `engine-v0.12.0` remains the published release.**
+The patch adds the missing bounded bulk detail-body reader while retaining bundle v4, Codex stdin
+transport, the generic OpenAI-compatible provider, and prior E0 runtime corrections. Repin only the
+coherent `0.12.1 / 0.7.0 / 0.4.0` matrix after publication, immutable-directory verification, and
+MageQA's E0 canaries. Until then MageQA must pin tag `engine-v0.12.0`; its own pin file remains the
+authority for deployed state.
 
-`engine-v0.12.0` carries forward v0.11.18's grouped-evaluator runtime. A child
+`engine-v0.12.1` carries forward v0.12.0's bundle-v4 contract and v0.11.18's grouped-evaluator runtime. A child
 workflow's configured hard ceiling now bounds the complete retrying child through either engine
 door, while heterogeneous scenario soft targets remain descriptive and may share one fanout. A
 strictly tighter parent/run deadline keeps ownership. Completed siblings, artifacts, and
@@ -33,7 +20,7 @@ Read first: [getting started](getting-started.md), [framework concepts](concepts
 The line is **latest-only** — no migration guides exist. Adopt the current contract fresh; data
 written under older tags is rejected loudly and stays inspectable with its matching historical tag.
 The candidate viewer reads bundle v4 only. Inspect v3 evidence with `engine-v0.11.19`, inspect v2
-with `engine-v0.11.9`, and start v0.12.0 on a new empty observation root.
+with `engine-v0.11.9`, and start v0.12.1 on a new empty observation root.
 
 ## Product Outcome
 
@@ -63,18 +50,18 @@ a defect.
 
 | Package | MageQA use |
 |---|---|
-| `ai-workflow-engine==0.12.0` | Orchestration/runtime with bundle-v4 writing and complete-child ceilings |
+| `ai-workflow-engine==0.12.1` | Orchestration/runtime with bounded bulk bundle-v4 reading and complete-child ceilings |
 | `ai-workflow-tools==0.7.0` | Generic provider/CLI/tool companion |
 | `ai-workflow-viewer==0.4.0` | Bundle-v4 investigation companion |
 
-> **Candidate matrix:** `engine-v0.12.0` + `ai-workflow-tools==0.7.0` +
+> **Candidate matrix:** `engine-v0.12.1` + `ai-workflow-tools==0.7.0` +
 > `ai-workflow-viewer==0.4.0`.
 >
-> Do not install this matrix until `engine-v0.12.0` is cut.
+> Do not install this matrix until `engine-v0.12.1` is cut.
 
 ### Immutable release evidence
 
-- Artifact prefix after publication: `s3://artmoskal-artifact-cache/ai-workflow-engine/engine-v0.12.0/`
+- Artifact prefix after publication: `s3://artmoskal-artifact-cache/ai-workflow-engine/engine-v0.12.1/`
 - Verify `SHA256SUMS`, then run the bundled `release_artifacts.py verify-bundle` before installing.
 - Read the source commit, annotated tag object, package hashes, and producer gate evidence from the
   verified `release-manifest.json`; record those consumed values in MageQA's own adoption record.
@@ -105,6 +92,29 @@ it must not create a duplicate trace or workflow runtime.
 - target/finding/learned-flow storage and product dashboard;
 - report, pitch, video, and redesign domain workflows;
 - outreach approval and final external delivery.
+
+## Bulk Detail-Body Reading
+
+Engine 0.12.1 adds the public `ObservationReader.iter_detail_bodies(...)` operation for MageQA's
+observation-state reconstruction. Its selector is the closed, product-neutral detail-kind vocabulary:
+
+```python
+import json
+
+from ai_workflow_engine import ObservationReader
+
+for item in ObservationReader(segment_path).iter_detail_bodies(
+    kinds={"planner_output", "tool_result"}, max_body_bytes=8 * 1024 * 1024
+):
+    if item.envelope.content_type != "application/json":
+        raise ValueError(f"expected JSON detail, got {item.envelope.content_type!r}")
+    latest_by_key[item.envelope.detail_id] = json.loads(item.body_bytes)  # persisted last wins
+```
+
+The pass validates the detail stream once, validates each selected body before yield, enforces the
+bound per body, retains at most one body, and never opens non-selected bodies. Existing lifecycle,
+identity, duplicate, canonical-body, digest/length, and value-store-confinement checks remain. Check
+`content_type` before decoding. Do not replace this door with an envelope/per-body loop or callback.
 
 ## One Provider Door
 
@@ -295,11 +305,11 @@ with a scenario and acceptance proof. Upgrade via [`operations.md`](operations.m
 
 ## v0.12 Release Contract
 
-`engine-v0.12.0` is the next **latest-only** contract. It uses strict versioned persisted contracts
+`engine-v0.12.1` is the next **latest-only** contract. It uses strict versioned persisted contracts
 (snapshot `v0.11`, bundle meta v4, wait records `wait-v2`), one strict viewer loader, and NO
 migration layer. Old persisted data is rejected loudly naming its historical tag. After publication,
 adopt by re-pinning fresh (verify the published `release-manifest-v2` bundle, then install engine
-`0.12.0`, tools `0.7.0`, and viewer `0.4.0`) and
+`0.12.1`, tools `0.7.0`, and viewer `0.4.0`) and
 re-run your canaries before changing any deployed pin.
 `wait-v1` records written by v0.11.5 are non-current: settle or discard them under v0.11.5 and
 start a new coordinator namespace before v0.11.6 writes `wait-v2`.
