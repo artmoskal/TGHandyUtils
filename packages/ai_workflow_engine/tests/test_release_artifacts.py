@@ -10,6 +10,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tomllib
 import zipfile
 from pathlib import Path
 from typing import Callable
@@ -24,6 +25,7 @@ if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 
 import release_artifacts as cli  # noqa: E402
+import release_build as builder  # noqa: E402
 import release_contract as contract  # noqa: E402
 
 
@@ -75,7 +77,7 @@ def _real_wheel(
             if wheel_metadata is not None
             else (
                 b"Wheel-Version: 1.0\n"
-                b"Generator: release-contract-test\n"
+                b"Generator: setuptools (84.0.0)\n"
                 b"Root-Is-Purelib: true\n"
                 b"Tag: py3-none-any\n"
             )
@@ -100,7 +102,17 @@ def _real_wheel(
     return path
 
 
-def _write_package(repo: Path, relative_pyproject: str, name: str, version: str) -> None:
+def _write_package(
+    repo: Path,
+    relative_pyproject: str,
+    name: str,
+    version: str,
+    *,
+    build_requires: tuple[str, ...] = (
+        "setuptools==84.0.0",
+        "wheel==0.48.0",
+    ),
+) -> None:
     package_root = repo / relative_pyproject
     package_root.mkdir(parents=True, exist_ok=True)
     module_name = name.replace("-", "_")
@@ -114,7 +126,7 @@ def _write_package(repo: Path, relative_pyproject: str, name: str, version: str)
         "\n".join(
             [
                 "[build-system]",
-                'requires = ["setuptools"]',
+                f"requires = {json.dumps(list(build_requires))}",
                 'build-backend = "setuptools.build_meta"',
                 "",
                 "[project]",
@@ -138,12 +150,14 @@ def _scratch_tag_repo(
     versions: dict[str, str] | None = None,
     inspect_tag: bool = True,
     annotation: str | None = None,
+    build_requires: dict[str, tuple[str, ...]] | None = None,
 ) -> tuple[Path, dict]:
     versions = versions or {
         "ai-workflow-engine": "0.11.5",
         "ai-workflow-tools": "0.5.1",
         "ai-workflow-viewer": "0.3.1",
     }
+    build_requires = build_requires or {}
     repo = tmp_path / "tagged-source"
     repo.mkdir(parents=True)
     _write_package(
@@ -151,18 +165,27 @@ def _scratch_tag_repo(
         "packages/ai_workflow_engine",
         "ai-workflow-engine",
         versions["ai-workflow-engine"],
+        build_requires=build_requires.get(
+            "ai-workflow-engine", ("setuptools==84.0.0", "wheel==0.48.0")
+        ),
     )
     _write_package(
         repo,
         "packages/ai_workflow_tools",
         "ai-workflow-tools",
         versions["ai-workflow-tools"],
+        build_requires=build_requires.get(
+            "ai-workflow-tools", ("setuptools==84.0.0", "wheel==0.48.0")
+        ),
     )
     _write_package(
         repo,
         "packages/ai_workflow_viewer",
         "ai-workflow-viewer",
         versions["ai-workflow-viewer"],
+        build_requires=build_requires.get(
+            "ai-workflow-viewer", ("setuptools==84.0.0", "wheel==0.48.0")
+        ),
     )
     verifier_dir = repo / "packages/ai_workflow_engine/scripts"
     verifier_dir.mkdir(parents=True)
@@ -363,11 +386,12 @@ def _execute_evidence(
         build_fields={
             "python_implementation": "CPython",
             "python_version": "3.12.0",
-            "frontend": {"name": "pip", "version": "26.0"},
-            "backend": {"name": "setuptools.build_meta", "version": "80.0"},
+            "frontend": {"name": "release_build", "version": "1.0"},
+            "backend": {"name": "setuptools.build_meta", "version": "84.0.0"},
             "tool_versions": [
-                {"name": "pip", "version": "26.0"},
-                {"name": "setuptools", "version": "80.0"},
+                {"name": "pip", "version": "26.2.1"},
+                {"name": "setuptools", "version": "84.0.0"},
+                {"name": "wheel", "version": "0.48.0"},
             ],
             "source_commit": source["source_commit"],
             "source_date_epoch": source["source_date_epoch"],
@@ -377,7 +401,9 @@ def _execute_evidence(
             "built_artifacts": [
                 {
                     key: item[key]
-                    for key in ("package", "version", "filename", "size_bytes", "sha256")
+                    for key in (
+                        "package", "version", "filename", "size_bytes", "sha256", "generator"
+                    )
                 }
                 for item in sorted(inspected, key=lambda row: row["package"])
             ]
@@ -394,11 +420,12 @@ def _execute_evidence(
         build_fields={
             "python_implementation": "CPython",
             "python_version": "3.12.0",
-            "frontend": {"name": "pip", "version": "26.0"},
-            "backend": {"name": "setuptools.build_meta", "version": "80.0"},
+            "frontend": {"name": "release_build", "version": "1.0"},
+            "backend": {"name": "setuptools.build_meta", "version": "84.0.0"},
             "tool_versions": [
-                {"name": "pip", "version": "26.0"},
-                {"name": "setuptools", "version": "80.0"},
+                {"name": "pip", "version": "26.2.1"},
+                {"name": "setuptools", "version": "84.0.0"},
+                {"name": "wheel", "version": "0.48.0"},
             ],
             "source_commit": source["source_commit"],
             "source_date_epoch": source["source_date_epoch"],
@@ -408,7 +435,9 @@ def _execute_evidence(
             "built_artifacts": [
                 {
                     key: item[key]
-                    for key in ("package", "version", "filename", "size_bytes", "sha256")
+                    for key in (
+                        "package", "version", "filename", "size_bytes", "sha256", "generator"
+                    )
                 }
                 for item in sorted(inspected, key=lambda row: row["package"])
             ]
@@ -987,6 +1016,18 @@ def test_manifest_is_nested_closed_type_strict_and_time_ordered(
             lambda value: value["build"]["frontend"].update({"version": "not-run"}),
         ),
         (
+            "exact release build toolchain",
+            lambda value: value["build"]["tool_versions"][0].update(
+                {"version": "83.0.0"}
+            ),
+        ),
+        (
+            "pinned wheel generator",
+            lambda value: value["build"]["built_artifacts"][0].update(
+                {"generator": "setuptools (83.0.0)"}
+            ),
+        ),
+        (
             "test evidence source commit",
             lambda value: value["test_evidence"].update({"source_commit": "f" * 40}),
         ),
@@ -1049,7 +1090,12 @@ def test_manifest_binds_supplied_wheels_and_verifiers_to_build_and_tag(
         test_evidence_path=inputs["test"],
         smoke_evidence_path=inputs["smoke"],
         uri_base="file:///cache/",
-        verifier_paths=[inputs["verifiers"][0], changed_verifier],
+        verifier_paths=[
+            changed_verifier
+            if path.name == "release_contract.py"
+            else path
+            for path in inputs["verifiers"]
+        ],
         fragment="byte-match",
     )
     _expect_rejection(
@@ -1064,7 +1110,7 @@ def test_manifest_binds_supplied_wheels_and_verifiers_to_build_and_tag(
         smoke_evidence_path=inputs["smoke"],
         uri_base="file:///cache/",
         verifier_paths=inputs["verifiers"][:1],
-        fragment="both release verifier",
+        fragment="exact release verifier",
     )
 
 
@@ -1207,6 +1253,14 @@ def test_bundle_rejects_tampered_wheel_evidence_manifest_and_missing_file(
 def test_two_clean_tag_builds_are_byte_identical_and_recorded(
     tmp_path: Path,
 ) -> None:
+    try:
+        actual_toolchain = builder.installed_toolchain()
+    except contract.ReleaseError as exc:
+        pytest.skip(f"exact release toolchain unavailable: {exc}")
+    if actual_toolchain != builder.RELEASE_BUILD_TOOLS:
+        pytest.skip(
+            f"exact release toolchain unavailable: {actual_toolchain!r}"
+        )
     repo, source = _scratch_tag_repo(tmp_path / "source")
     first_dir = tmp_path / "first-wheels"
     first_record = tmp_path / "first-build.json"
@@ -1220,9 +1274,22 @@ def test_two_clean_tag_builds_are_byte_identical_and_recorded(
     )
     first = contract.load_evidence_record(first_record, "build", build=True)
     assert first["source_commit"] == source["source_commit"]
+    assert first["frontend"] == {"name": "release_build", "version": "1.0"}
+    assert first["backend"] == {
+        "name": "setuptools.build_meta",
+        "version": "84.0.0",
+    }
+    assert first["tool_versions"] == [
+        {"name": "pip", "version": "26.2.1"},
+        {"name": "setuptools", "version": "84.0.0"},
+        {"name": "wheel", "version": "0.48.0"},
+    ]
     assert {item["package"] for item in first["built_artifacts"]} == set(
         contract.EXPECTED_PACKAGES
     )
+    assert {
+        contract.inspect_wheel(path)["generator"] for path in first_dir.glob("*.whl")
+    } == {"setuptools (84.0.0)"}
 
     clone = tmp_path / "second-source"
     subprocess.run(["git", "clone", "-q", str(repo), str(clone)], check=True)
@@ -1248,6 +1315,57 @@ def test_two_clean_tag_builds_are_byte_identical_and_recorded(
     assert len(compared) == 3
 
 
+def test_tagged_source_rejects_incoherent_exact_build_requirements(tmp_path: Path) -> None:
+    repo, _ = _scratch_tag_repo(
+        tmp_path,
+        inspect_tag=False,
+        build_requires={
+            "ai-workflow-viewer": ("setuptools==83.0.0", "wheel==0.48.0"),
+        },
+    )
+
+    with pytest.raises(contract.ReleaseError, match="exact build toolchain"):
+        contract.tagged_source(repo, "engine-v0.11.5")
+
+
+def test_repository_packages_declare_the_closed_build_backend() -> None:
+    expected = ["setuptools==84.0.0", "wheel==0.48.0"]
+    for relative in contract.EXPECTED_PACKAGES.values():
+        pyproject = _PACKAGE_ROOT.parents[1] / relative
+        build_system = tomllib.loads(pyproject.read_text(encoding="utf-8"))["build-system"]
+        assert build_system == {
+            "requires": expected,
+            "build-backend": "setuptools.build_meta",
+        }
+
+
+def test_release_builder_rejects_installed_backend_mismatch_before_outputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, _ = _scratch_tag_repo(tmp_path / "source")
+    mismatched = dict(builder.RELEASE_BUILD_TOOLS)
+    mismatched["setuptools"] = "67.8.0"
+    monkeypatch.setattr(builder, "installed_toolchain", lambda: mismatched)
+    wheel_dir = tmp_path / "wheels"
+    record = tmp_path / "build.json"
+    log = tmp_path / "build.log"
+
+    with pytest.raises(cli.ReleaseError, match="setuptools.*67.8.0.*84.0.0"):
+        cli.run_reproducible_build(
+            repo=repo,
+            tag="engine-v0.11.5",
+            wheel_dir=wheel_dir,
+            record_path=record,
+            log_path=log,
+            timeout_s=120,
+        )
+
+    assert not record.exists()
+    assert not log.exists()
+    assert not wheel_dir.exists()
+
+
 def test_release_scripts_stay_outside_runtime_import_graph() -> None:
     engine_root = _PACKAGE_ROOT / "ai_workflow_engine"
     offenders = [
@@ -1255,6 +1373,8 @@ def test_release_scripts_stay_outside_runtime_import_graph() -> None:
         for path in engine_root.rglob("*.py")
         if "release_contract" in path.read_text(encoding="utf-8")
         or "release_artifacts" in path.read_text(encoding="utf-8")
+        or "release_build" in path.read_text(encoding="utf-8")
+        or "release_toolchain" in path.read_text(encoding="utf-8")
     ]
     assert offenders == []
     assert not (engine_root / "scripts").exists()
@@ -1264,6 +1384,7 @@ def test_consumer_verifier_import_does_not_require_producer_only_tomllib() -> No
     program = f"""
 import builtins
 import runpy
+import sys
 
 real_import = builtins.__import__
 
@@ -1273,6 +1394,7 @@ def guarded_import(name, *args, **kwargs):
     return real_import(name, *args, **kwargs)
 
 builtins.__import__ = guarded_import
+sys.path.insert(0, {str(_SCRIPTS)!r})
 surface = runpy.run_path({str(_SCRIPTS / "release_contract.py")!r})
 assert callable(surface["verify_bundle"])
 """

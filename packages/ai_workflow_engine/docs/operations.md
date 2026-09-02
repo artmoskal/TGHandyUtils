@@ -363,26 +363,33 @@ BUILD_B=/tmp/engine-build-b
 GATE=/tmp/engine-gate
 OUT=/tmp/engine-release-work
 TOOL="$BUILD_A/packages/ai_workflow_engine/scripts/release_artifacts.py"
+RELEASE_PYTHON=/path/to/cpython-3.11.4/bin/python
+BUILDER="$OUT/release-builder"
 
-python3 "$TOOL" run-build --repo "$BUILD_A" --tag "$TAG" \
+"$RELEASE_PYTHON" -m venv "$BUILDER"
+"$BUILDER/bin/python" -m pip install --disable-pip-version-check \
+  pip==26.2.1 setuptools==84.0.0 wheel==0.48.0
+BUILDER_PYTHON="$BUILDER/bin/python"
+
+"$BUILDER_PYTHON" "$TOOL" run-build --repo "$BUILD_A" --tag "$TAG" \
   --wheel-dir "$OUT/wheels-a" --record "$OUT/build.json" --log "$OUT/build.log"
-python3 "$BUILD_B/packages/ai_workflow_engine/scripts/release_artifacts.py" run-build \
+"$BUILDER_PYTHON" "$BUILD_B/packages/ai_workflow_engine/scripts/release_artifacts.py" run-build \
   --repo "$BUILD_B" --tag "$TAG" --wheel-dir "$OUT/wheels-b" \
   --record "$OUT/build-b.json" --log "$OUT/build-b.log"
-python3 "$TOOL" compare-builds --repo "$BUILD_A" --tag "$TAG" \
+"$BUILDER_PYTHON" "$TOOL" compare-builds --repo "$BUILD_A" --tag "$TAG" \
   --first "$OUT/wheels-a" --second "$OUT/wheels-b"
 
-python3 "$TOOL" run-gate --name test --record "$OUT/test.json" \
+"$BUILDER_PYTHON" "$TOOL" run-gate --name test --record "$OUT/test.json" \
   --log "$OUT/test.log" --cwd "$GATE" --timeout-s 7200 -- ./test.sh unit
-python3 "$TOOL" run-gate --name smoke --record "$OUT/smoke.json" \
+"$BUILDER_PYTHON" "$TOOL" run-gate --name smoke --record "$OUT/smoke.json" \
   --log "$OUT/smoke.log" --cwd "$GATE" --timeout-s 900 -- \
-  python3 "$TOOL" smoke-installed --venv-dir "$OUT/smoke-venv" \
+  "$BUILDER_PYTHON" "$TOOL" smoke-installed --venv-dir "$OUT/smoke-venv" \
   --work-dir "$OUT/smoke-work" \
   --wheel "$OUT/wheels-a/ai_workflow_engine-0.12.0-py3-none-any.whl" \
   --wheel "$OUT/wheels-a/ai_workflow_tools-0.7.0-py3-none-any.whl" \
   --wheel "$OUT/wheels-a/ai_workflow_viewer-0.4.0-py3-none-any.whl"
 
-python3 "$TOOL" assemble --repo "$BUILD_A" --tag "$TAG" \
+"$BUILDER_PYTHON" "$TOOL" assemble --repo "$BUILD_A" --tag "$TAG" \
   --bundle-dir "$OUT/bundle" --uri-base "file:///approved-cache/$TAG/" \
   --build-evidence "$OUT/build.json" --second-build-evidence "$OUT/build-b.json" \
   --test-evidence "$OUT/test.json" \
@@ -393,7 +400,7 @@ python3 "$TOOL" assemble --repo "$BUILD_A" --tag "$TAG" \
   --second-wheel "$OUT/wheels-b/ai_workflow_engine-0.12.0-py3-none-any.whl" \
   --second-wheel "$OUT/wheels-b/ai_workflow_tools-0.7.0-py3-none-any.whl" \
   --second-wheel "$OUT/wheels-b/ai_workflow_viewer-0.4.0-py3-none-any.whl"
-python3 "$TOOL" verify-bundle --dir "$OUT/bundle"
+"$BUILDER_PYTHON" "$TOOL" verify-bundle --dir "$OUT/bundle"
 ```
 
 For any release that changes observation storage, readers, viewer delivery, or static export,
@@ -490,8 +497,13 @@ subtree is byte-identical and the exact new wheel passes installed transport smo
 inheritance explicitly instead of silently deselecting the live suite. Prewarm local models before
 the bounded qualification request so model startup time is not misclassified as adapter failure.
 
-`run-build` derives `SOURCE_DATE_EPOCH` from the tagged commit, fixes the build umask, refuses a
-dirty/wrong checkout, executes the build itself, and records the exact three wheel identities.
+All three package `build-system` tables require the same exact backend pair:
+`setuptools==84.0.0` and `wheel==0.48.0`. `run-build` refuses any other installed backend pair
+before creating an output directory and records the observed Python implementation, patch version,
+and release-owned frontend as provenance. It then derives
+`SOURCE_DATE_EPOCH` from the tagged commit, fixes the build umask, refuses a dirty/wrong checkout,
+executes the pinned setuptools PEP 517 hook through `release_build.py`, verifies each wheel's
+embedded `Generator`, and records the exact three wheel identities.
 `run-gate` executes and records the real command, observed checkout commit, exit status,
 timestamps, bounded log, and log hash. `assemble` requires both independent build records plus
 both wheel matrices to be byte-identical, requires all gates to name the tagged source commit,
@@ -502,8 +514,8 @@ byte-match the tag. The closed
 
 ### Consumer
 
-Download the complete release directory. Obtain `release_artifacts.py` and
-`release_contract.py` independently from the pinned annotated tag or another previously trusted
+Download the complete release directory. Obtain `release_artifacts.py`, `release_contract.py`, and
+`release_toolchain.py` independently from the pinned annotated tag or another previously trusted
 source, place them together, and use that trusted verifier before invoking `pip`:
 
 ```bash

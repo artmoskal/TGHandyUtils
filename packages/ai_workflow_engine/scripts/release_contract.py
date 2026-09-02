@@ -24,13 +24,26 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping
 from urllib.parse import quote, urlsplit
 
+from release_toolchain import (
+    EXPECTED_PACKAGES,
+    GIT_ID_RE as _GIT_ID_RE,
+    RELEASE_BUILD_BACKEND,
+    RELEASE_BUILD_FRONTEND,
+    RELEASE_BUILD_TOOLS,
+    RELEASE_WHEEL_GENERATOR,
+    VERSION_RE as _VERSION_RE,
+    ReleaseError,
+    candidate_source,
+    canonical_package,
+    git_output as _git,
+)
+
 MANIFEST_SCHEMA_VERSION = "release-manifest-v2"
-EXPECTED_PACKAGES = {
-    "ai-workflow-engine": "packages/ai_workflow_engine/pyproject.toml",
-    "ai-workflow-tools": "packages/ai_workflow_tools/pyproject.toml",
-    "ai-workflow-viewer": "packages/ai_workflow_viewer/pyproject.toml",
+VERIFIER_FILENAMES = {
+    "release_artifacts.py",
+    "release_contract.py",
+    "release_toolchain.py",
 }
-VERIFIER_FILENAMES = {"release_artifacts.py", "release_contract.py"}
 MAX_CONTROL_MEMBER_BYTES = 1 << 20
 MAX_JSON_BYTES = 1 << 20
 MAX_CHECKSUM_BYTES = 1 << 20
@@ -40,9 +53,7 @@ MAX_WHEEL_TOTAL_BYTES = 512 << 20
 MAX_WHEEL_MEMBERS = 10_000
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-_GIT_ID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _TAG_RE = re.compile(r"^engine-v([0-9]+(?:\.[0-9]+){2}(?:[A-Za-z0-9.+_-]*)?)$")
-_VERSION_RE = re.compile(r"^[0-9]+(?:\.[0-9]+)+(?:[A-Za-z0-9.+_-]*)?$")
 
 _TOP_KEYS = {
     "manifest_schema_version",
@@ -109,16 +120,9 @@ _BUILT_ARTIFACT_KEYS = {
     "filename",
     "size_bytes",
     "sha256",
+    "generator",
 }
 _REPRODUCIBILITY_KEYS = {"second_build"}
-
-
-class ReleaseError(ValueError):
-    """A named release contract violation."""
-
-
-def canonical_package(name: str) -> str:
-    return re.sub(r"[-_.]+", "-", name).lower()
 
 
 def _exact_mapping(value: Any, keys: set[str], path: str) -> dict[str, Any]:
@@ -386,19 +390,6 @@ def _safe_json(
     return value
 
 
-def _git(repo: Path, *args: str) -> str:
-    try:
-        return subprocess.run(
-            ["git", "-C", str(repo), *args],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-    except subprocess.CalledProcessError as exc:
-        detail = exc.stderr.strip() or exc.stdout.strip() or str(exc)
-        raise ReleaseError(f"git {' '.join(args)} failed: {detail}") from exc
-
-
 def _git_bytes(repo: Path, *args: str) -> bytes:
     try:
         return subprocess.run(
@@ -448,8 +439,6 @@ def release_tag_annotation(
 
 
 def tagged_source(repo: Path, tag: str) -> dict[str, Any]:
-    import tomllib
-
     match = _TAG_RE.fullmatch(_strict_string(tag, "tag"))
     if match is None:
         raise ReleaseError("tag must have exact engine-vX.Y.Z form")
@@ -459,29 +448,10 @@ def tagged_source(repo: Path, tag: str) -> dict[str, Any]:
     source_commit = _git(repo, "rev-parse", f"{tag}^{{}}")
     if not _GIT_ID_RE.fullmatch(tag_object_id) or not _GIT_ID_RE.fullmatch(source_commit):
         raise ReleaseError("tag/source ids must be full Git object ids")
-    matrix: dict[str, str] = {}
-    backends: set[str] = set()
-    for expected_package, source_path in EXPECTED_PACKAGES.items():
-        raw = _git(repo, "show", f"{source_commit}:{source_path}")
-        try:
-            parsed = tomllib.loads(raw)
-            project = parsed["project"]
-            build_system = parsed["build-system"]
-            package = canonical_package(project["name"])
-            version = project["version"]
-            backend = build_system["build-backend"]
-        except (KeyError, TypeError, tomllib.TOMLDecodeError) as exc:
-            raise ReleaseError(f"tagged {source_path} lacks release package/build identity") from exc
-        if package != expected_package:
-            raise ReleaseError(
-                f"tagged {source_path} declares {package!r}, expected {expected_package!r}"
-            )
-        matrix[package] = _strict_version(version, f"tagged matrix.{package}")
-        backends.add(_strict_string(backend, f"tagged backend.{package}"))
+    source = candidate_source(repo, source_commit)
+    matrix = source["matrix"]
     if matrix["ai-workflow-engine"] != match.group(1):
         raise ReleaseError("tag suffix does not match tagged engine package version")
-    if len(backends) != 1:
-        raise ReleaseError(f"release packages use incoherent build backends: {sorted(backends)}")
     annotation = _git(
         repo,
         "for-each-ref",
@@ -495,20 +465,10 @@ def tagged_source(repo: Path, tag: str) -> dict[str, Any]:
             "the tagged package matrix; build, test, smoke, and wheel evidence belong "
             "only in the verified release directory"
         )
-    epoch_text = _git(repo, "log", "-1", "--format=%ct", source_commit)
-    if re.fullmatch(r"[0-9]+", epoch_text) is None:
-        raise ReleaseError("tagged source commit has an invalid timestamp")
     return {
+        **source,
         "tag": tag,
         "tag_object_id": tag_object_id,
-        "source_commit": source_commit,
-        "source_date_epoch": _strict_int(
-            int(epoch_text),
-            "source_date_epoch",
-            minimum=1,
-        ),
-        "matrix": matrix,
-        "backend_name": next(iter(backends)),
     }
 
 
@@ -654,10 +614,13 @@ def _inspect_open_wheel(
             f"{path.name}: dist-info owner {dist_info!r} disagrees with wheel identity"
         )
     wheel_versions = wheel_meta.get_all("Wheel-Version", [])
+    generators = wheel_meta.get_all("Generator", [])
     pure_flags = wheel_meta.get_all("Root-Is-Purelib", [])
     wheel_tags = wheel_meta.get_all("Tag", [])
     if len(wheel_versions) != 1 or not wheel_versions[0].startswith("1."):
         raise ReleaseError(f"{path.name}: unsupported or missing Wheel-Version")
+    if len(generators) != 1:
+        raise ReleaseError(f"{path.name}: WHEEL requires exactly one Generator")
     if len(pure_flags) != 1 or pure_flags[0].lower() not in {"true", "false"}:
         raise ReleaseError(f"{path.name}: invalid Root-Is-Purelib")
     if not wheel_tags or filename["tag"] not in wheel_tags:
@@ -702,6 +665,7 @@ def _inspect_open_wheel(
     return {
         "package": package,
         "version": version,
+        "generator": _strict_string(generators[0], "WHEEL.Generator"),
     }
 
 
@@ -877,13 +841,24 @@ def validate_gate_record(
             raise ReleaseError(f"{path}.tool_versions must be a nonempty list")
         parsed_tools = [_validate_tool(tool, f"{path}.tool_versions[{i}]") for i, tool in enumerate(tools)]
         names = [tool["name"] for tool in parsed_tools]
-        if len(names) != len(set(names)) or set(names) != {"pip", "setuptools"}:
+        if len(names) != len(set(names)) or set(names) != set(RELEASE_BUILD_TOOLS):
             raise ReleaseError(
-                f"{path}.tool_versions require exactly one pip and one setuptools record"
+                f"{path}.tool_versions must equal the exact release build toolchain"
+            )
+        actual_tools = {tool["name"]: tool["version"] for tool in parsed_tools}
+        if actual_tools != RELEASE_BUILD_TOOLS:
+            raise ReleaseError(
+                f"{path}.tool_versions disagree with the exact release build toolchain"
             )
         frontend = _validate_tool(record["frontend"], f"{path}.frontend")
-        if frontend["name"] != "pip":
-            raise ReleaseError(f"{path}.frontend.name must equal 'pip'")
+        if frontend != RELEASE_BUILD_FRONTEND:
+            raise ReleaseError(f"{path}.frontend must equal the release-owned build frontend")
+        backend = _validate_tool(record["backend"], f"{path}.backend")
+        if backend != {
+            "name": RELEASE_BUILD_BACKEND,
+            "version": RELEASE_BUILD_TOOLS["setuptools"],
+        }:
+            raise ReleaseError(f"{path}.backend must equal the pinned package backend")
         built_raw = record["built_artifacts"]
         if not isinstance(built_raw, list):
             raise ReleaseError(f"{path}.built_artifacts must be a list")
@@ -899,6 +874,16 @@ def validate_gate_record(
             raise ReleaseError(
                 f"{path}.built_artifacts must contain the exact three-package matrix"
             )
+        wrong_generators = {
+            package: item["generator"]
+            for package, item in built_by_package.items()
+            if item["generator"] != RELEASE_WHEEL_GENERATOR
+        }
+        if wrong_generators:
+            raise ReleaseError(
+                f"{path}.built_artifacts disagree with the pinned wheel generator: "
+                f"{wrong_generators}"
+            )
         built_names = [item["filename"] for item in built_artifacts]
         if len(built_names) != len(set(built_names)):
             raise ReleaseError(f"{path}.built_artifacts filenames must be unique")
@@ -913,8 +898,8 @@ def validate_gate_record(
                     pattern=_VERSION_RE,
                 ),
                 "frontend": frontend,
-                "backend": _validate_tool(record["backend"], f"{path}.backend"),
-                "tool_versions": parsed_tools,
+                "backend": backend,
+                "tool_versions": sorted(parsed_tools, key=lambda tool: tool["name"]),
                 "source_commit": _strict_string(
                     record["source_commit"], f"{path}.source_commit", pattern=_GIT_ID_RE
                 ),
@@ -973,6 +958,7 @@ def _validate_built_artifact(value: Any, index: int) -> dict[str, Any]:
             record["size_bytes"], f"{path}.size_bytes", minimum=1
         ),
         "sha256": _strict_sha(record["sha256"], f"{path}.sha256"),
+        "generator": _strict_string(record["generator"], f"{path}.generator"),
     }
 
 
@@ -1051,7 +1037,7 @@ def parse_manifest(value: Any) -> dict[str, Any]:
         for i, item in enumerate(tools_raw)
     ]
     if {item["filename"] for item in tools} != VERIFIER_FILENAMES:
-        raise ReleaseError("manifest must carry both release verifier source files")
+        raise ReleaseError("manifest must carry the exact release verifier source set")
     all_names = (
         [item["filename"] for item in artifacts]
         + [item["filename"] for item in tools]
@@ -1216,7 +1202,10 @@ def assemble_manifest(
     base = _uri_base(uri_base)
     artifacts = [
         {
-            **item,
+            **{
+                key: item[key]
+                for key in ("package", "version", "filename", "size_bytes", "sha256")
+            },
             "published": True,
             "uri": base + quote(item["filename"]),
         }

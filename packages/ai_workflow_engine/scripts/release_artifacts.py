@@ -9,11 +9,9 @@ before installing any wheel.
 from __future__ import annotations
 
 import argparse
-import importlib.metadata
 import json
 import math
 import os
-import platform
 import signal
 import subprocess
 import sys
@@ -33,8 +31,6 @@ if __name__ == "__main__":
     sys.dont_write_bytecode = True
 
 from release_contract import (  # noqa: E402
-    EXPECTED_PACKAGES,
-    ReleaseError,
     VERIFIER_FILENAMES,
     assemble_manifest,
     copy_regular_file,
@@ -47,6 +43,11 @@ from release_contract import (  # noqa: E402
     verify_bundle,
     write_sha256sums,
     _normalize_utc_now,
+)
+from release_toolchain import (  # noqa: E402
+    EXPECTED_PACKAGES,
+    ReleaseError,
+    candidate_source,
 )
 
 MAX_RETAINED_LOG_BYTES = 16 << 20
@@ -300,13 +301,6 @@ def _git(repo: Path, *args: str) -> str:
         raise ReleaseError(f"git {' '.join(args)} failed: {detail}") from exc
 
 
-def _distribution_version(name: str) -> str:
-    try:
-        return importlib.metadata.version(name)
-    except importlib.metadata.PackageNotFoundError as exc:
-        raise ReleaseError(f"required build tool is not installed: {name}") from exc
-
-
 def _inspect_wheel_directory(directory: Path, matrix: Mapping[str, str]) -> dict[str, dict[str, Any]]:
     root = directory.resolve(strict=True)
     if not root.is_dir():
@@ -329,111 +323,65 @@ def _inspect_wheel_directory(directory: Path, matrix: Mapping[str, str]) -> dict
 def run_reproducible_build(
     *,
     repo: Path,
-    tag: str,
+    tag: str | None = None,
+    source_commit: str | None = None,
     wheel_dir: Path,
     record_path: Path,
     log_path: Path,
     timeout_s: float,
 ) -> dict[str, Any]:
-    """Build all three wheels from a clean checkout exactly at the annotated tag."""
+    """Build all three wheels from an exact commit using the closed release toolchain."""
 
-    source = tagged_source(repo, tag)
-    repo = repo.resolve(strict=True)
-    if _git(repo, "rev-parse", "HEAD") != source["source_commit"]:
-        raise ReleaseError("build checkout HEAD does not equal the annotated tag's source commit")
-    dirty = _git(repo, "status", "--porcelain=v1", "--untracked-files=all")
-    if dirty:
-        raise ReleaseError("build checkout must be clean before release evidence is created")
-    for label, output in (
-        ("wheel directory", wheel_dir),
-        ("build record", record_path),
-        ("build log", log_path),
-    ):
-        candidate = output.resolve(strict=False)
-        if candidate == repo or repo in candidate.parents:
-            raise ReleaseError(f"{label} must live outside the clean tagged checkout")
-    wheel_dir.mkdir(parents=True, exist_ok=True)
-    if any(wheel_dir.iterdir()):
-        raise ReleaseError("wheel output directory must start empty")
-
-    pip_version = _distribution_version("pip")
-    backend_name = source["backend_name"]
-    backend_distribution = (
-        "setuptools"
-        if backend_name.startswith("setuptools")
-        else backend_name.split(".", 1)[0]
+    if (tag is None) == (source_commit is None):
+        raise ReleaseError("build requires exactly one of tag or source_commit")
+    source = (
+        tagged_source(repo, tag)
+        if tag is not None
+        else candidate_source(repo, str(source_commit))
     )
-    backend_version = _distribution_version(backend_distribution)
-    command = [
-        sys.executable,
-        "-m",
-        "pip",
-        "wheel",
-        "--no-deps",
-        "--no-build-isolation",
-        "--wheel-dir",
-        str(wheel_dir.resolve()),
-        *[
-            str((repo / source_path).parent)
-            for source_path in EXPECTED_PACKAGES.values()
-        ],
-    ]
-    environment = dict(os.environ)
-    environment.update(
-        {
-            "SOURCE_DATE_EPOCH": str(source["source_date_epoch"]),
-            "PYTHONHASHSEED": "0",
-        }
-    )
-    build_fields = {
-        "python_implementation": platform.python_implementation(),
-        "python_version": platform.python_version(),
-        "frontend": {"name": "pip", "version": pip_version},
-        "backend": {"name": backend_name, "version": backend_version},
-        "tool_versions": [
-            {"name": "pip", "version": pip_version},
-            {"name": "setuptools", "version": _distribution_version("setuptools")},
-        ],
-        "source_commit": source["source_commit"],
-        "source_date_epoch": source["source_date_epoch"],
-        "umask": "022",
-    }
+    from release_build import run_recorded_build
 
-    def inspect_built_artifacts() -> Mapping[str, Any]:
-        matrix = _inspect_wheel_directory(wheel_dir, source["matrix"])
-        return {
-            "built_artifacts": [
-                {
-                    key: item[key]
-                    for key in ("package", "version", "filename", "size_bytes", "sha256")
-                }
-                for item in sorted(matrix.values(), key=lambda row: row["package"])
-            ]
-        }
-
-    return execute_gate(
-        name="build",
-        command=command,
-        cwd=repo,
+    return run_recorded_build(
+        repo=repo,
+        source=source,
+        wheel_dir=wheel_dir,
         record_path=record_path,
         log_path=log_path,
         timeout_s=timeout_s,
-        environment=environment,
-        build_fields=build_fields,
-        child_umask=0o22,
-        post_success=inspect_built_artifacts,
+        execute_gate=execute_gate,
+        inspect_wheel_directory=_inspect_wheel_directory,
     )
 
 
-def compare_builds(*, repo: Path, tag: str, first: Path, second: Path) -> dict[str, str]:
-    source = tagged_source(repo, tag)
+def compare_builds(
+    *,
+    repo: Path,
+    first: Path,
+    second: Path,
+    tag: str | None = None,
+    source_commit: str | None = None,
+) -> dict[str, str]:
+    if (tag is None) == (source_commit is None):
+        raise ReleaseError("compare-builds requires exactly one of tag or source_commit")
+    source = (
+        tagged_source(repo, tag)
+        if tag is not None
+        else candidate_source(repo, str(source_commit))
+    )
     first_matrix = _inspect_wheel_directory(first, source["matrix"])
     second_matrix = _inspect_wheel_directory(second, source["matrix"])
     result: dict[str, str] = {}
     for package in sorted(EXPECTED_PACKAGES):
         left = first_matrix[package]
         right = second_matrix[package]
-        for field in ("package", "version", "filename", "size_bytes", "sha256"):
+        for field in (
+            "package",
+            "version",
+            "filename",
+            "size_bytes",
+            "sha256",
+            "generator",
+        ):
             if left[field] != right[field]:
                 raise ReleaseError(
                     f"reproducible build mismatch for {package}.{field}: "
@@ -1292,7 +1240,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     build = sub.add_parser("run-build")
     build.add_argument("--repo", default=".")
-    build.add_argument("--tag", required=True)
+    build_source = build.add_mutually_exclusive_group(required=True)
+    build_source.add_argument("--tag")
+    build_source.add_argument("--source-commit")
     build.add_argument("--wheel-dir", required=True)
     build.add_argument("--record", required=True)
     build.add_argument("--log", required=True)
@@ -1300,7 +1250,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     compare = sub.add_parser("compare-builds")
     compare.add_argument("--repo", default=".")
-    compare.add_argument("--tag", required=True)
+    compare_source = compare.add_mutually_exclusive_group(required=True)
+    compare_source.add_argument("--tag")
+    compare_source.add_argument("--source-commit")
     compare.add_argument("--first", required=True)
     compare.add_argument("--second", required=True)
 
@@ -1349,6 +1301,7 @@ def main(argv: list[str]) -> int:
             run_reproducible_build(
                 repo=Path(args.repo),
                 tag=args.tag,
+                source_commit=args.source_commit,
                 wheel_dir=Path(args.wheel_dir),
                 record_path=Path(args.record),
                 log_path=Path(args.log),
@@ -1359,6 +1312,7 @@ def main(argv: list[str]) -> int:
             result = compare_builds(
                 repo=Path(args.repo),
                 tag=args.tag,
+                source_commit=args.source_commit,
                 first=Path(args.first),
                 second=Path(args.second),
             )

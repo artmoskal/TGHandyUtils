@@ -4,7 +4,9 @@ channels:
   - conda-forge
 dependencies:
   - python=3.11
-  - pip
+  - pip=26.2.1
+  - setuptools=84.0.0
+  - wheel=0.48.0
   - sqlite
 
   # Optional packages for extended timezone and datetime support
