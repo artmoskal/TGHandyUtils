@@ -423,11 +423,14 @@ VIEWER_QUALIFIER="$BUILD_A/packages/ai_workflow_viewer/scripts/qualify_browser_r
   --record "$OUT/viewer-browser-rss.json"
 ```
 
-The default comparison is 2 MiB versus 64 MiB with 32 MiB RSS slack. The record is valid only when
-both packages report `site-packages` origins, the initial browser load requests no detail, exactly one
-64 KiB preview is fetched, no browser console error occurs, and neither server nor browser RSS grows
-with the retained body size beyond that fixed slack. This evidence is release-gated for the affected
-surface; it is not implied by an ordinary unit-tier pass.
+The default comparison is 2 MiB versus 64 MiB with 32 MiB RSS slack. Each trial first records a
+settled blank-browser/server baseline, then measures process-tree growth while loading the viewer and
+one preview; comparing absolute RSS from two independent Chrome launches is invalid because startup
+baselines vary. The record is valid only when both packages report `site-packages` origins, the
+initial browser load requests no detail, exactly one 64 KiB preview is fetched, no browser console
+error occurs, and neither server nor browser RSS growth scales with retained body size beyond that
+fixed slack. This evidence is release-gated for the affected surface; it is not implied by an ordinary
+unit-tier pass.
 
 For bundle-v4 releases, also create the deterministic full-corpus engine/viewer fixture with the
 installed candidate wheels. The qualifier writes the same generated corpus twice on fresh roots,

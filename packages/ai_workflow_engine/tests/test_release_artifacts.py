@@ -311,7 +311,10 @@ def test_release_runbook_requires_installed_real_browser_rss_for_viewer_changes(
     assert 'page.locator("[data-load-detail]").first' in qualifier
     assert '"server_peak_rss_kib"' in qualifier
     assert '"browser_peak_rss_kib"' in qualifier
-    assert '"schema": "viewer-browser-rss-v1"' in qualifier
+    assert '"server_baseline_rss_kib"' in qualifier
+    assert '"browser_baseline_rss_kib"' in qualifier
+    assert 'for key in ("server_growth_rss_kib", "browser_growth_rss_kib")' in qualifier
+    assert '"schema": "viewer-browser-rss-v2"' in qualifier
 
 
 def test_release_runbook_requires_installed_large_v4_qualification():

@@ -270,8 +270,9 @@ def _exercise_browser(
     profile: Path,
     chrome_executable: Path,
     server: subprocess.Popen,
-) -> tuple[Dict[str, int], List[str]]:
+) -> tuple[Dict[str, int], Dict[str, int], List[str]]:
     peaks = {"server": 0, "browser": 0}
+    baselines = {"server": 0, "browser": 0}
     browser_roots: List[psutil.Process] = []
     detail_requests: List[str] = []
     console_errors: List[str] = []
@@ -286,13 +287,19 @@ def _exercise_browser(
         )
         try:
             browser_roots[:] = _browser_roots(profile)
+            page = context.pages[0] if context.pages else context.new_page()
+            page.wait_for_timeout(500)
+            baselines["server"] = _process_tree_rss([psutil.Process(server.pid)])
+            baselines["browser"] = _process_tree_rss(browser_roots)
+            peaks.update(baselines)
+            if baselines["server"] <= 0 or baselines["browser"] <= 0:
+                raise RuntimeError(f"RSS sampler recorded no settled baseline: {baselines}")
             sampler = threading.Thread(
                 target=_sample_process_trees,
                 args=(stop, server, browser_roots, peaks, sampler_errors),
                 daemon=True,
             )
             sampler.start()
-            page = context.pages[0] if context.pages else context.new_page()
             page.on(
                 "request",
                 lambda request: detail_requests.append(request.url)
@@ -320,7 +327,7 @@ def _exercise_browser(
         raise RuntimeError(f"RSS sampler failed: {sampler_errors}")
     if peaks["server"] <= 0 or peaks["browser"] <= 0:
         raise RuntimeError(f"RSS sampler recorded no process-tree evidence: {peaks}")
-    return peaks, detail_requests
+    return baselines, peaks, detail_requests
 
 
 def _stop_server(server: subprocess.Popen) -> None:
@@ -356,7 +363,7 @@ def _trial(
     server, ready = _start_server(installed_python, helper, root, run_id)
     try:
         url = f"http://127.0.0.1:{ready['port']}/?run_id={run_id}"
-        peaks, detail_requests = _exercise_browser(
+        baselines, peaks, detail_requests = _exercise_browser(
             url=url,
             profile=profile,
             chrome_executable=chrome_executable,
@@ -367,6 +374,14 @@ def _trial(
             "segment_id": segment_id,
             "server_peak_rss_kib": peaks["server"] // 1024,
             "browser_peak_rss_kib": peaks["browser"] // 1024,
+            "server_baseline_rss_kib": baselines["server"] // 1024,
+            "browser_baseline_rss_kib": baselines["browser"] // 1024,
+            "server_growth_rss_kib": (
+                max(0, peaks["server"] - baselines["server"]) // 1024
+            ),
+            "browser_growth_rss_kib": (
+                max(0, peaks["browser"] - baselines["browser"]) // 1024
+            ),
             "preview_bytes": 64 * 1024,
             "detail_request_count": len(detail_requests),
             "origins": ready["origins"],
@@ -410,7 +425,7 @@ def main(argv: List[str]) -> int:
         helper=helper,
         work_dir=work_dir,
     )
-    for key in ("server_peak_rss_kib", "browser_peak_rss_kib"):
+    for key in ("server_growth_rss_kib", "browser_growth_rss_kib"):
         if large[key] > small[key] + args.rss_slack_kib:
             raise RuntimeError(
                 f"{key} scales with retained body bytes: "
@@ -424,7 +439,7 @@ def main(argv: List[str]) -> int:
         text=True,
     ).stdout.strip()
     result = {
-        "schema": "viewer-browser-rss-v1",
+        "schema": "viewer-browser-rss-v2",
         "passed": True,
         "installed_python": str(installed_python),
         "chrome_executable": str(chrome_executable),

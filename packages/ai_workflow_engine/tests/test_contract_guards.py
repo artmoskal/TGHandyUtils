@@ -241,6 +241,7 @@ def test_observation_and_release_hotspots_do_not_grow_into_new_god_objects():
         PACKAGE_ROOT / "scripts" / "release_build.py": 210,
         PACKAGE_ROOT / "scripts" / "release_toolchain.py": 125,
         PACKAGE_ROOT / "scripts" / "qualify_observation_v4.py": 350,
+        PACKAGE_ROOT.parent / "ai_workflow_viewer" / "scripts" / "qualify_browser_rss.py": 475,
     }
     oversized = {
         str(path.relative_to(REPO_ROOT)): (len(path.read_text(encoding="utf-8").splitlines()), limit)
