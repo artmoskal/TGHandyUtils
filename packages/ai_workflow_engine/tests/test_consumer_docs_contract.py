@@ -449,6 +449,35 @@ def test_documented_bundle_schema_version_is_the_engine_truth():
     )
 
 
+def test_current_observation_docs_require_v4_reader_without_physical_parsers():
+    current_docs = {
+        "concepts.md": (PACKAGE_ROOT / "docs" / "concepts.md").read_text(encoding="utf-8"),
+        "getting-started.md": (PACKAGE_ROOT / "docs" / "getting-started.md").read_text(
+            encoding="utf-8"
+        ),
+        "operations.md": (PACKAGE_ROOT / "docs" / "operations.md").read_text(encoding="utf-8"),
+        "observability-levels-feedback.md": (
+            PACKAGE_ROOT / "docs" / "observability-levels-feedback.md"
+        ).read_text(encoding="utf-8"),
+        **{
+            path.name: path.read_text(encoding="utf-8")
+            for path in (PACKAGE_ROOT / "docs").glob("*handoff.md")
+        },
+    }
+    combined = "\n".join(current_docs.values())
+    assert "bundle v4" in combined
+    assert "ObservationReader" in combined
+    for name, text in current_docs.items():
+        normalized = " ".join(text.lower().split())
+        assert "current viewer reads bundle v3" not in normalized, name
+        assert "advances observation metadata to strict bundle v3" not in normalized, name
+        assert "parse `details.jsonl`" not in normalized, name
+        assert "consumers parse physical jsonl" not in normalized, name
+    assert "they do not parse physical jsonl/value files" in " ".join(
+        current_docs["operations.md"].lower().split()
+    )
+
+
 def test_wait_conformance_docs_do_not_overclaim_process_atomicity():
     """The generic kit is in-process; durable adapters need a real-store process gate."""
 

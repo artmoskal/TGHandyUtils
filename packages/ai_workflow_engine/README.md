@@ -5,16 +5,17 @@ declare a workflow, register typed capabilities, and call one engine door. The e
 transitions, retries, fan-out, budgets, waits, trace, usage, and observation bundles; products own
 domain models, provider clients, storage adapters, clocks, and side-effect delivery.
 
-> **`engine-v0.11.19` is the current release.**
-> Install only from the immutable `engine-v0.11.19` tag and its verified release directory.
+> **`engine-v0.12.0` is the release candidate.**
+> `engine-v0.11.19` remains the current release; do not re-pin until it is cut and its immutable
+> release directory verifies.
 > The engine owner publishes wheels bound to
 > immutable tags; consumer
 > canaries still decide whether each product changes its deployed pin. Never depend on a live
 > branch. The binding contract is the repository-level
 > [`executable-workflow-engine-spec.md`](../../docs/executable-workflow-engine-spec.md).
 >
-> **v0.11 is a latest-only line.** The engine supports exactly one current contract: current code,
-> current persisted schemas (snapshot `v0.11`, observation bundle meta v3, wait records `wait-v2`),
+> **v0.12 is a latest-only line.** The engine supports exactly one current contract: current code,
+> current persisted schemas (snapshot `v0.11`, observation bundle meta v4, wait records `wait-v2`),
 > current docs. There are no importers, adapters, migration shims, or dual readers — data written
 > by older lines is REJECTED with an error naming the historical route: inspect it with its
 > matching historical tag (including `engine-v0.11.5` for `wait-v1` records). In particular,
@@ -22,6 +23,16 @@ domain models, provider clients, storage adapters, clocks, and side-effect deliv
 > `wait-v1` records under v0.11.5.
 > Adoption is fresh: new consumers start on the current contract; existing consumers re-adopt the
 > current surface rather than migrate state.
+>
+> **v0.12.0 candidate delta.** Observation bundle v4 stores one canonical body per detail: small
+> values remain inline and large values are referenced from a run-scoped SHA-256 value store.
+> Trace, detail-envelope, usage, and artifact-manifest streams are sealed and finalized
+> incrementally; `ObservationReader` owns bounded previews, exact body reads, manifest validation,
+> and corruption refusal. The viewer uses compact records, fetches detail bodies only on demand,
+> serves and exports artifacts through one manifest-identity owner, and emits portable static
+> exports. There is no v3 reader or migration bridge. Engine `0.12.0`, tools `0.7.0`, and viewer
+> `0.4.0` form one candidate matrix; products adopt only after immutable publication and their own
+> post-release canaries.
 >
 > **v0.11.19 release delta.** This fix-forward release corrects the MageQA adoption handoff and
 > adds a permanent guard against mixing a current package matrix with stale dynamic release
@@ -196,17 +207,20 @@ Consumers download the complete published release directory, obtain the verifier
 the tag (or another already trusted pin), verify the bundle before installation, and install only
 the packages their product needs. Building from source is a producer operation, not consumer
 verification. The exact producer and consumer commands are in
-[`docs/operations.md`](docs/operations.md#release-artifacts-and-verification-v01113).
-The required pre-install door is
-`python3 release_artifacts.py verify-bundle --dir /path/to/engine-v0.11.19`.
+[`docs/operations.md`](docs/operations.md#release-artifacts-and-verification-v0120).
+The required pre-install door, once the candidate is published, is
+`python3 release_artifacts.py verify-bundle --dir /path/to/engine-v0.12.0`.
 
-Current release matrix:
+Candidate matrix:
 
 | Package | Install when |
 |---|---|
-| `ai-workflow-engine==0.11.19` | Always. Core builder, executor, memory, waits, observation writer. |
-| `ai-workflow-tools==0.6.10` | The product uses provider clients, CLI agents, the tool catalog, or media helpers. |
-| `ai-workflow-viewer==0.3.12` | A developer or product service renders observation bundles. |
+| `ai-workflow-engine==0.12.0` | Always. Core builder, executor, memory, waits, observation writer. |
+| `ai-workflow-tools==0.7.0` | The product uses provider clients, CLI agents, the tool catalog, or media helpers. |
+| `ai-workflow-viewer==0.4.0` | A developer or product service renders observation bundles. |
+
+Do not install this matrix until `engine-v0.12.0` is cut. Until then, consumers remain on their
+verified prior release.
 
 Record the engine tag, source commit, and wheel SHA-256 in the consumer repository. A tag already
 consumed by another repository is frozen; fixes require a new tag.
@@ -272,11 +286,11 @@ minimal profile.
 
 `engine-v0.11.0` made the line **latest-only**: strict versioned persisted contracts,
 one strict viewer loader with typed status authority, a sealed current-contract oracle replacing
-old-wheel equality, and removal of every compatibility fallback. The current v0.11.19 release
-keeps MachineSnapshot `schema_version="v0.11"`, advances observation bundle meta to v3, and keeps wait
-records to `record_schema_version="wait-v2"` with required persisted registration-attempt
+old-wheel equality, and removal of every compatibility fallback. The v0.12.0 candidate keeps
+MachineSnapshot `schema_version="v0.11"`, advances observation bundle meta to v4, and keeps wait
+records at `record_schema_version="wait-v2"` with required persisted registration-attempt
 identity. Old persisted data fails loudly naming its historical tag. Earlier lines added, and
-v0.11 preserves behaviorally (sealed corpus: 0 behavior deltas vs v0.10.1):
+v0.12 preserves behaviorally except for the named observation contract break:
 
 - an engine-owned, **enforced** execution window (soft work deadline, hard timeout, completion
   reserve, named limiting sources/clamps) intersecting task request, capability limit, remaining run

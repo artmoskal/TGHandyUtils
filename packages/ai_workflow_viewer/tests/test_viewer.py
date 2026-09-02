@@ -14,9 +14,11 @@ from ai_workflow_engine import (
     ObservationJsonBody,
     ObservationReader,
     ObservationTextBody,
+    WorkflowArtifact,
     WorkflowBuilder,
     WorkflowTraceEvent,
     WorkflowUsageEvent,
+    open_observation_run_bundle,
 )
 from ai_workflow_engine.observation_contract import ObservationDetailEnvelope
 from ai_workflow_engine.observation_values import RunValueStore, body_sha256, persist_observation_body
@@ -347,6 +349,7 @@ def _write_bundle(
         "\n".join(event.model_dump_json() for event in (usage_events or [])) + "\n",
         encoding="utf-8",
     )
+    (run_path / "artifacts.json").write_text("[]", encoding="utf-8")
     stream_hashes = {
         name: hashlib.sha256((run_path / filename).read_bytes()).hexdigest()
         for name, filename in {
@@ -378,6 +381,7 @@ def _write_bundle(
                 "usage_path": "usage.jsonl",
                 "definition_digest": definition.definition_digest(),
                 "artifact_manifest_path": "artifacts.json",
+                "artifact_manifest_sha256": hashlib.sha256(b"[]").hexdigest(),
                 "artifact_root": "artifacts",
                 "value_store_layout": "run-scoped-sha256-gzip-v1",
                 "inline_body_max_bytes": 4096,
@@ -406,6 +410,500 @@ def _write_bundle(
         encoding="utf-8",
     )
     return run_path
+
+
+def _write_bundle_artifacts(run_path, entries):
+    """Write fixture artifact rows and keep the v4 metadata seal/counts coherent."""
+
+    manifest_path = run_path / "artifacts.json"
+    manifest_path.write_text(json.dumps(entries), encoding="utf-8")
+    meta_path = run_path / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["artifact_manifest_sha256"] = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    if isinstance(entries, list):
+        meta["artifact_count"] = len(entries)
+        meta["artifacts_copied"] = sum(
+            isinstance(entry, dict) and bool(entry.get("copied")) for entry in entries
+        )
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+
+_SEMANTIC_ALLOWED_STORAGE_DELTAS = frozenset(
+    {
+        "bundle timestamp is operational metadata, not a logical workflow fact",
+        "logical json/text bodies persist as inline_json/inline_text/body_ref",
+        "referenced bodies add gzip codec and run-scoped storage paths",
+        "artifact source and archived paths are physical locations",
+    }
+)
+
+
+def _semantic_detail(
+    *,
+    detail_id: str,
+    event_id: str,
+    invocation_id: str,
+    kind: str,
+    content_type: str,
+    body,
+    artifact_id: str | None = None,
+    metadata: dict | None = None,
+) -> ObservationDetail:
+    return ObservationDetail(
+        detail_id=detail_id,
+        event_id=event_id,
+        invocation_id=invocation_id,
+        kind=kind,
+        content_type=content_type,
+        body=body,
+        artifact_id=artifact_id,
+        digest=body_sha256(body),
+        metadata=metadata or {},
+    )
+
+
+def _write_semantic_v4_fixture(base: Path) -> tuple[Path, dict]:
+    """Write one deterministic, representation-complete fixture through production sinks."""
+
+    from ai_workflow_engine.observation_values import render_observation_body_text
+
+    base.mkdir(parents=True, exist_ok=True)
+    run_id = "semantic-v4-run"
+    definition = WorkflowBuilder("semantic-v4").step("agent").step("tool").build()
+    artifact_bytes = b"semantic-artifact-v1\x00exact"
+    artifact_source = base / "semantic-artifact.bin"
+    artifact_source.write_bytes(artifact_bytes)
+    artifact = WorkflowArtifact(
+        artifact_id="artifact-semantic",
+        path=str(artifact_source),
+        kind="file",
+        source="semantic-tool",
+        owner_node="tool",
+        cleanup_on_failure=False,
+        metadata={"media_type": "text/plain", "role": "evidence", "slot": 2},
+    )
+
+    normalized = NormalizedTokenUsage(
+        counter_schema="codex_inclusive",
+        uncached_input_tokens=100,
+        cache_read_input_tokens=20,
+        cache_creation_input_tokens=0,
+        non_reasoning_output_tokens=20,
+        reasoning_output_tokens=10,
+        raw_input_tokens=120,
+        raw_output_tokens=30,
+        raw_total_tokens=150,
+    )
+    rate = NotionalRate(
+        provider="codex_exec",
+        model_prefix="gpt-5.4",
+        rate_version="semantic-rate-v1",
+        source="configured_public_rate",
+        uncached_input_per_1m=2.5,
+        cached_input_per_1m=0.25,
+        cache_creation_input_per_1m=2.5,
+        output_per_1m=15.0,
+    )
+
+    prompt = _semantic_detail(
+        detail_id="detail-prompt",
+        event_id="trace-agent-request",
+        invocation_id="inv-agent-1",
+        kind="rendered_prompt",
+        content_type="application/json",
+        body=ObservationJsonBody(
+            value={"prompt": "Inspect the evidence", "retry_policy": {"max_attempts": 2}}
+        ),
+        metadata={"role": "user", "prompt_version": "p1"},
+    )
+    response = _semantic_detail(
+        detail_id="detail-response",
+        event_id="trace-agent-response",
+        invocation_id="inv-agent-1",
+        kind="llm_response",
+        content_type="text/plain",
+        body=ObservationTextBody(
+            value="MODEL_RESPONSE|" + ("response-body-" * 600) + "|TAIL"
+        ),
+        metadata={"finish_reason": "timeout", "candidate": 1},
+    )
+    tool_payload = _semantic_detail(
+        detail_id="detail-tool-payload",
+        event_id="trace-tool-request",
+        invocation_id="inv-tool-2",
+        kind="tool_payload",
+        content_type="application/json",
+        body=ObservationJsonBody(value={"tool": "inspect", "arguments": {"item": 7}}),
+        metadata={"schema": "tool-v1"},
+    )
+    tool_result = _semantic_detail(
+        detail_id="detail-tool-result",
+        event_id="trace-tool-result",
+        invocation_id="inv-tool-2",
+        kind="tool_result",
+        content_type="application/json",
+        body=ObservationJsonBody(
+            value={"status": "accepted", "result": {"score": 0.875, "facts": ["a", "b"]}}
+        ),
+        artifact_id=artifact.artifact_id,
+        metadata={"tool_latency_class": "bounded"},
+    )
+
+    traces = [
+        WorkflowTraceEvent(
+            event_id="trace-agent-request",
+            node="agent",
+            timestamp="2026-09-02T01:00:00Z",
+            attempt=1,
+            decision="attempt:start",
+            phase="llm:request",
+            severity="info",
+            invocation_id="inv-agent-1",
+            detail_capture="captured",
+            detail_refs=[prompt.detail_id],
+            metadata={"provider": "openai", "model": "gpt-semantic"},
+        ),
+        WorkflowTraceEvent(
+            event_id="trace-agent-response",
+            node="agent",
+            timestamp="2026-09-02T01:00:01Z",
+            attempt=1,
+            decision="provider:failed",
+            node_status="failed",
+            phase="llm:response",
+            severity="error",
+            error="provider timeout",
+            elapsed_ms=45,
+            invocation_id="inv-agent-1",
+            detail_capture="captured",
+            detail_refs=[response.detail_id],
+            metadata={"retryable": True, "provider_status": 504},
+        ),
+        WorkflowTraceEvent(
+            event_id="trace-tool-request",
+            node="tool",
+            timestamp="2026-09-02T01:00:02Z",
+            attempt=2,
+            decision="retry:attempt-2",
+            phase="tool:request",
+            severity="warning",
+            invocation_id="inv-tool-2",
+            detail_capture="captured",
+            detail_refs=[tool_payload.detail_id],
+            metadata={"tool": "inspect", "retry_of": "inv-agent-1"},
+        ),
+        WorkflowTraceEvent(
+            event_id="trace-tool-result",
+            node="tool",
+            timestamp="2026-09-02T01:00:03Z",
+            attempt=2,
+            decision="accepted",
+            node_status="accepted",
+            phase="tool:result",
+            severity="info",
+            artifacts=[artifact.artifact_id],
+            elapsed_ms=18,
+            invocation_id="inv-tool-2",
+            detail_capture="captured",
+            detail_refs=[tool_result.detail_id],
+            metadata={"provider": "codex_exec", "tool": "inspect"},
+        ),
+    ]
+    usage = [
+        WorkflowUsageEvent(
+            event_id="usage-agent-1",
+            provider="openai",
+            operation="chat",
+            cost_class="metered",
+            node="agent",
+            invocation_id="inv-agent-1",
+            model="gpt-semantic",
+            attempt=1,
+            input_tokens=10,
+            output_tokens=5,
+            total_tokens=15,
+            input_token_details={"cached_tokens": 2},
+            output_token_details={"reasoning_tokens": 1},
+            estimated_usd=0.001,
+            request_id="req-agent-1",
+            elapsed_ms=45,
+            success=False,
+            error="provider timeout",
+            metadata={"provider_region": "test", "retryable": True},
+        ),
+        WorkflowUsageEvent(
+            event_id="usage-tool-2",
+            provider="codex_exec",
+            operation="tool",
+            cost_class="subscription_notional",
+            node="tool",
+            invocation_id="inv-tool-2",
+            model="gpt-5.4-codex",
+            attempt=2,
+            input_tokens=120,
+            output_tokens=30,
+            total_tokens=150,
+            input_token_details={"cached_tokens": 20, "characters": 512},
+            output_token_details={"reasoning_tokens": 10},
+            normalized_usage=normalized,
+            notional_usd=0.000705,
+            notional_pricing=NotionalPricingResult(
+                source="configured_public_rate",
+                amount_usd=0.000705,
+                catalog_version="semantic-catalog-v1",
+                rate=rate,
+            ),
+            request_id="req-tool-2",
+            elapsed_ms=18,
+            success=True,
+            metadata={"tool_name": "inspect", "character_count": 512},
+        ),
+    ]
+
+    bundle = open_observation_run_bundle(base, run_id)
+    ordered = [
+        (bundle.trace_sink, traces[0]),
+        (bundle.detail_sink, prompt),
+        (bundle.trace_sink, traces[1]),
+        (bundle.detail_sink, response),
+        (bundle.usage_sink, usage[0]),
+        (bundle.trace_sink, traces[2]),
+        (bundle.detail_sink, tool_payload),
+        (bundle.trace_sink, traces[3]),
+        (bundle.detail_sink, tool_result),
+        (bundle.usage_sink, usage[1]),
+    ]
+    for sink, record in ordered:
+        sink.record(record)
+    bundle.finalize(definition, status="partial", usage=usage, artifacts=[artifact])
+
+    trace_sequences = (1, 3, 6, 8)
+    detail_sequences = (2, 4, 7, 9)
+    usage_sequences = (5, 10)
+
+    def expected_detail(detail: ObservationDetail, sequence: int) -> dict:
+        return {
+            **detail.model_copy(update={"run_id": run_id, "sequence": sequence}).model_dump(
+                mode="json", exclude={"body", "digest"}
+            ),
+            "body": detail.body.model_dump(mode="json"),
+            "digest": detail.digest,
+            "display_text": render_observation_body_text(detail.body),
+        }
+
+    expected = {
+        "trace": [
+            event.model_copy(update={"run_id": run_id, "sequence": sequence}).model_dump(mode="json")
+            for event, sequence in zip(traces, trace_sequences, strict=True)
+        ],
+        "details": [
+            expected_detail(detail, sequence)
+            for detail, sequence in zip(
+                (prompt, response, tool_payload, tool_result), detail_sequences, strict=True
+            )
+        ],
+        "usage": [
+            event.model_copy(
+                update={
+                    "run_id": run_id,
+                    "sequence": sequence,
+                    "metadata": {
+                        **event.metadata,
+                        "run_id": run_id,
+                        "workflow_id": run_id,
+                    },
+                }
+            ).model_dump(mode="json")
+            for event, sequence in zip(usage, usage_sequences, strict=True)
+        ],
+        "meta": {
+            "bundle_schema_version": 4,
+            "run_id": run_id,
+            "workflow_id": "semantic-v4",
+            "status": "partial",
+            "trace_count": 4,
+            "detail_count": 4,
+            "usage_count": 2,
+            "total_tokens": 165,
+            "metered_usd": 0.001,
+            "notional_usd": 0.000705,
+            "provider_evidence": {"integrity": "complete", "diagnostic": None},
+        },
+        "artifact": {
+            "artifact_id": artifact.artifact_id,
+            "source_name": artifact_source.name,
+            "kind": artifact.kind,
+            "source": artifact.source,
+            "owner_node": artifact.owner_node,
+            "cleanup_on_failure": artifact.cleanup_on_failure,
+            "metadata": artifact.metadata,
+            "copied": True,
+            "size_bytes": len(artifact_bytes),
+            "sha256": hashlib.sha256(artifact_bytes).hexdigest(),
+            "exact_bytes_sha256": hashlib.sha256(artifact_bytes).hexdigest(),
+        },
+        "viewer": {
+            "record_types": [
+                "trace", "detail", "trace", "detail", "usage",
+                "trace", "detail", "trace", "detail", "usage",
+            ],
+            "timeline_event_ids": [event.event_id for event in traces],
+            "detail_ids": [prompt.detail_id, response.detail_id, tool_payload.detail_id, tool_result.detail_id],
+            "usage_event_ids": [event.event_id for event in usage],
+            "nodes": {
+                "agent": {
+                    "status": "failed",
+                    "attempts": 1,
+                    "decisions": ["attempt:start", "provider:failed"],
+                    "errors": ["provider timeout"],
+                    "artifacts": [],
+                    "detail_refs": [prompt.detail_id, response.detail_id],
+                    "total_tokens": 15,
+                    "metered_usd": 0.001,
+                    "notional_usd": None,
+                },
+                "tool": {
+                    "status": "completed",
+                    "attempts": 2,
+                    "decisions": ["retry:attempt-2", "accepted"],
+                    "errors": [],
+                    "artifacts": [artifact.artifact_id],
+                    "detail_refs": [tool_payload.detail_id, tool_result.detail_id],
+                    "total_tokens": 150,
+                    "metered_usd": None,
+                    "notional_usd": 0.000705,
+                },
+            },
+        },
+    }
+    return bundle.path, expected
+
+
+def _read_semantic_v4_facts(run_path: Path) -> dict:
+    from ai_workflow_engine.observation_values import render_observation_body_text
+    from ai_workflow_viewer import build_observation_graph
+    from ai_workflow_viewer.artifact_access import (
+        load_artifact_manifest,
+        read_verified_artifact,
+        resolve_manifest_artifact,
+    )
+
+    reader = ObservationReader(run_path)
+    traces = list(reader.iter_trace_events())
+    envelopes = list(reader.iter_detail_envelopes())
+    usage = list(reader.iter_usage_events())
+
+    details = []
+    for envelope in envelopes:
+        raw = reader.read_body_bytes(envelope, max_bytes=envelope.body.byte_length)
+        if envelope.content_type == "application/json":
+            body = ObservationJsonBody(value=json.loads(raw))
+        else:
+            body = ObservationTextBody(value=raw.decode("utf-8"))
+        details.append(
+            {
+                **envelope.model_dump(mode="json", exclude={"body"}),
+                "body": body.model_dump(mode="json"),
+                "digest": envelope.body.sha256,
+                "display_text": render_observation_body_text(body),
+            }
+        )
+
+    manifest = load_artifact_manifest(run_path)
+    assert isinstance(manifest, list) and len(manifest) == 1
+    row = manifest[0]
+    approved = resolve_manifest_artifact(run_path, row["bundle_path"])
+    assert approved is not None
+    exact_bytes = read_verified_artifact(approved)
+
+    definition = reader.read_definition()
+    graph = build_observation_graph(
+        definition,
+        traces,
+        usage,
+        envelopes,
+        run_id=reader.meta.run_id,
+    )
+    nodes = {}
+    for node_id in ("agent", "tool"):
+        node = graph.nodes[node_id]
+        nodes[node_id] = {
+            "status": node.status,
+            "attempts": node.attempts,
+            "decisions": node.decisions,
+            "errors": node.errors,
+            "artifacts": node.artifacts,
+            "detail_refs": node.detail_refs,
+            "total_tokens": node.total_tokens,
+            "metered_usd": node.metered_usd,
+            "notional_usd": node.notional_usd,
+        }
+
+    source = FileEventSource(run_path)
+    records = source.read().records
+    return {
+        "trace": [event.model_dump(mode="json") for event in traces],
+        "details": details,
+        "usage": [event.model_dump(mode="json") for event in usage],
+        "meta": {
+            key: getattr(reader.meta, key)
+            for key in (
+                "bundle_schema_version", "run_id", "workflow_id", "status",
+                "trace_count", "detail_count", "usage_count", "total_tokens",
+                "metered_usd", "notional_usd",
+            )
+        }
+        | {"provider_evidence": reader.meta.provider_evidence.model_dump(mode="json")},
+        "artifact": {
+            "artifact_id": row["artifact_id"],
+            "source_name": Path(row["source_path"]).name,
+            "kind": row["kind"],
+            "source": row["source"],
+            "owner_node": row["owner_node"],
+            "cleanup_on_failure": row.get("cleanup_on_failure"),
+            "metadata": row["metadata"],
+            "copied": row["copied"],
+            "size_bytes": row["size_bytes"],
+            "sha256": row["sha256"],
+            "exact_bytes_sha256": hashlib.sha256(exact_bytes).hexdigest(),
+        },
+        "viewer": {
+            "record_types": [record.type for record in records],
+            "timeline_event_ids": [entry.event_id for entry in graph.timeline],
+            "detail_ids": list(graph.details),
+            "usage_event_ids": [event.event_id for event in graph.usage_events],
+            "nodes": nodes,
+        },
+    }
+
+
+def test_v4_representation_complete_semantic_differential_is_deterministic(tmp_path):
+    first_path, first_expected = _write_semantic_v4_fixture(tmp_path / "first")
+    second_path, second_expected = _write_semantic_v4_fixture(tmp_path / "second")
+
+    first = _read_semantic_v4_facts(first_path)
+    second = _read_semantic_v4_facts(second_path)
+
+    assert _SEMANTIC_ALLOWED_STORAGE_DELTAS == {
+        "bundle timestamp is operational metadata, not a logical workflow fact",
+        "logical json/text bodies persist as inline_json/inline_text/body_ref",
+        "referenced bodies add gzip codec and run-scoped storage paths",
+        "artifact source and archived paths are physical locations",
+    }
+    assert first == first_expected
+    assert second == second_expected
+    assert first == second, "same logical fixture produced representation-dependent facts"
+
+
+def test_v4_viewer_rejects_persisted_artifact_manifest_fact_tampering(tmp_path):
+    run_path, _expected = _write_semantic_v4_fixture(tmp_path)
+    manifest_path = run_path / "artifacts.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest[0]["owner_node"] = "evil"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="artifact manifest.*SHA-256|digest"):
+        JsonlObservationViewer.from_run_bundle(run_path).html()
 
 
 def test_jsonl_observation_viewer_renders_html_from_public_contracts(tmp_path):
@@ -648,21 +1146,19 @@ def test_static_export_owns_manifest_artifacts_after_source_deletion_and_segment
         source = artifact_dir / same_name
         source.write_bytes(payload)
         (artifact_dir / "not-listed.txt").write_text("must not enter export", encoding="utf-8")
-        (segment_path / "artifacts.json").write_text(
-            json.dumps(
-                [
-                    {
-                        "artifact_id": f"artifact-{index}",
-                        "bundle_path": f"artifacts/{same_name}",
-                        "copied": True,
-                        "size_bytes": len(payload),
-                        "sha256": hashlib.sha256(payload).hexdigest(),
-                        "media_type": "image/png",
-                        "role": hostile_role,
-                    }
-                ]
-            ),
-            encoding="utf-8",
+        _write_bundle_artifacts(
+            segment_path,
+            [
+                {
+                    "artifact_id": f"artifact-{index}",
+                    "bundle_path": f"artifacts/{same_name}",
+                    "copied": True,
+                    "size_bytes": len(payload),
+                    "sha256": hashlib.sha256(payload).hexdigest(),
+                    "media_type": "image/png",
+                    "role": hostile_role,
+                }
+            ],
         )
 
     export_root = tmp_path / "artifact-export"
@@ -719,20 +1215,18 @@ def test_static_export_rejects_artifacts_outside_the_manifest_identity(tmp_path,
         tampered = bytearray(expected)
         tampered[-1] ^= 0x01
         source.write_bytes(tampered)
-    (segment / "artifacts.json").write_text(
-        json.dumps(
-            [
-                {
-                    "artifact_id": f"artifact-{attack}",
-                    "bundle_path": bundle_path,
-                    "copied": True,
-                    "size_bytes": len(expected),
-                    "sha256": hashlib.sha256(expected).hexdigest(),
-                    "media_type": "application/octet-stream",
-                }
-            ]
-        ),
-        encoding="utf-8",
+    _write_bundle_artifacts(
+        segment,
+        [
+            {
+                "artifact_id": f"artifact-{attack}",
+                "bundle_path": bundle_path,
+                "copied": True,
+                "size_bytes": len(expected),
+                "sha256": hashlib.sha256(expected).hexdigest(),
+                "media_type": "application/octet-stream",
+            }
+        ],
     )
 
     with pytest.raises(ValueError, match="manifest-approved|manifest identity"):
@@ -758,20 +1252,18 @@ def test_static_export_keeps_hostile_artifact_bytes_inert_and_exact(tmp_path):
     source = segment / "artifacts" / "hostile.svg"
     source.parent.mkdir()
     source.write_bytes(hostile)
-    (segment / "artifacts.json").write_text(
-        json.dumps(
-            [
-                {
-                    "artifact_id": "hostile-svg",
-                    "bundle_path": "artifacts/hostile.svg",
-                    "copied": True,
-                    "size_bytes": len(hostile),
-                    "sha256": hashlib.sha256(hostile).hexdigest(),
-                    "media_type": "image/svg+xml",
-                }
-            ]
-        ),
-        encoding="utf-8",
+    _write_bundle_artifacts(
+        segment,
+        [
+            {
+                "artifact_id": "hostile-svg",
+                "bundle_path": "artifacts/hostile.svg",
+                "copied": True,
+                "size_bytes": len(hostile),
+                "sha256": hashlib.sha256(hostile).hexdigest(),
+                "media_type": "image/svg+xml",
+            }
+        ],
     )
 
     export_root = tmp_path / "hostile-export"
@@ -2025,14 +2517,14 @@ def test_group_html_resolves_artifacts_with_previews_and_skip_reasons(tmp_path):
     bundle = _segment_path(tmp_path, "art-run")
     (bundle / "artifacts").mkdir()
     (bundle / "artifacts" / "frame.png").write_bytes(b"\x89PNG fake")
-    (bundle / "artifacts.json").write_text(_json.dumps([
+    _write_bundle_artifacts(bundle, [
         {"artifact_id": "art-1", "bundle_path": "artifacts/frame.png", "copied": True,
          "kind": "media", "media_type": "image/png", "owner_node": "gate",
          "size_bytes": 9, "skip_reason": None},
         {"artifact_id": "art-2", "bundle_path": None, "copied": False,
          "kind": "media", "media_type": "image/png", "owner_node": "gate",
          "size_bytes": 999, "skip_reason": "exceeds artifact_max_bytes"},
-    ]), encoding="utf-8")
+    ])
 
     group = FileEventSource(tmp_path).read_group("art-run")
     page = observation_group_to_html(group, artifact_href_for=lambda p: "../rel/art-run")
@@ -2069,7 +2561,7 @@ def test_served_artifact_links_resolve_over_real_http(tmp_path):
     png = b"\x89PNG served"
     (bundle / "artifacts" / "frame.png").write_bytes(png)
     (tmp_path / "outside.secret").write_bytes(b"NEVER SERVED")
-    (bundle / "artifacts.json").write_text(_json.dumps([
+    _write_bundle_artifacts(bundle, [
         {"artifact_id": "sa-art", "bundle_path": "artifacts/frame.png", "copied": True,
          "media_type": "image/png", "owner_node": "gate", "size_bytes": len(png),
          "sha256": hashlib.sha256(png).hexdigest()},
@@ -2077,7 +2569,7 @@ def test_served_artifact_links_resolve_over_real_http(tmp_path):
         {"artifact_id": "sa-evil", "bundle_path": "../outside.secret", "copied": True,
          "media_type": "text/plain", "owner_node": "gate", "size_bytes": 12,
          "sha256": hashlib.sha256(b"NEVER SERVED").hexdigest()},
-    ]), encoding="utf-8")
+    ])
 
     viewer = JsonlObservationViewer(FileEventSource(tmp_path))
     server = serve_viewer(viewer, port=0)
@@ -2162,20 +2654,18 @@ def test_live_artifact_route_rejects_manifest_identity_drift_before_success(
     artifact = bundle / "artifacts" / "evidence.bin"
     artifact.parent.mkdir()
     artifact.write_bytes(approved)
-    (bundle / "artifacts.json").write_text(
-        _json.dumps(
-            [
-                {
-                    "artifact_id": "served-integrity-artifact",
-                    "bundle_path": "artifacts/evidence.bin",
-                    "copied": True,
-                    "media_type": "application/octet-stream",
-                    "size_bytes": len(approved),
-                    "sha256": hashlib.sha256(approved).hexdigest(),
-                }
-            ]
-        ),
-        encoding="utf-8",
+    _write_bundle_artifacts(
+        bundle,
+        [
+            {
+                "artifact_id": "served-integrity-artifact",
+                "bundle_path": "artifacts/evidence.bin",
+                "copied": True,
+                "media_type": "application/octet-stream",
+                "size_bytes": len(approved),
+                "sha256": hashlib.sha256(approved).hexdigest(),
+            }
+        ],
     )
     artifact.write_bytes(tampered)
 
@@ -2294,14 +2784,14 @@ def test_served_artifacts_roundtrip_hostile_names_and_never_serve_active_content
     (bundle / "artifacts" / hostile_name).write_bytes(png)
     svg = b'<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'
     (bundle / "artifacts" / "evil.svg").write_bytes(svg)
-    (bundle / "artifacts.json").write_text(_json.dumps([
+    _write_bundle_artifacts(bundle, [
         {"artifact_id": "h-png", "bundle_path": f"artifacts/{hostile_name}", "copied": True,
          "media_type": "image/png", "owner_node": "gate", "size_bytes": len(png),
          "sha256": hashlib.sha256(png).hexdigest()},
         {"artifact_id": "h-svg", "bundle_path": "artifacts/evil.svg", "copied": True,
          "media_type": "image/svg+xml", "owner_node": "gate", "size_bytes": len(svg),
          "sha256": hashlib.sha256(svg).hexdigest()},
-    ]), encoding="utf-8")
+    ])
 
     viewer = JsonlObservationViewer(FileEventSource(tmp_path))
     server = serve_viewer(viewer, port=0)
@@ -2472,9 +2962,8 @@ def test_artifact_section_is_robust_and_escapes_untrusted_manifest_fields(tmp_pa
     assert default_href.startswith("file://"), f"default base must be a file URL, got {default_href!r}"
 
 
-def test_served_route_404s_missing_but_stays_loud_on_malformed_and_corruption(tmp_path):
-    """A3/A6: the /artifact route returns 404 for a manifest-shape mismatch (via the shared
-    loader), but a corrupt group lineage must NOT be silently 404'd — it stays loud."""
+def test_served_route_stays_loud_on_sealed_manifest_shape_and_group_corruption(tmp_path):
+    """A3/A6: malformed finalized evidence and corrupt lineage stay loud over HTTP."""
 
     import json as _json
     import threading
@@ -2494,7 +2983,7 @@ def test_served_route_404s_missing_but_stays_loud_on_malformed_and_corruption(tm
     bundle = _segment_path(tmp_path, "rr-run")
     (bundle / "artifacts").mkdir()
     (bundle / "artifacts" / "a.png").write_bytes(b"x")
-    (bundle / "artifacts.json").write_text(_json.dumps({"artifacts": []}))  # wrong shape
+    _write_bundle_artifacts(bundle, {"artifacts": []})  # wrong shape
 
     viewer = JsonlObservationViewer(FileEventSource(tmp_path))
     server = serve_viewer(viewer, port=0)
@@ -2506,7 +2995,8 @@ def test_served_route_404s_missing_but_stays_loud_on_malformed_and_corruption(tm
             urllib.request.urlopen(f"{root}/artifact/rr-run/rr-run/artifacts/a.png", timeout=5)
             raise AssertionError("malformed manifest must 404, not serve or crash")
         except HTTPError as err:
-            assert err.code == 404
+            assert err.code == 500
+            assert "must be a row list" in err.read().decode("utf-8")
     finally:
         server.shutdown()
         server.server_close()

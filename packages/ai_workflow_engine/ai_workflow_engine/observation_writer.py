@@ -44,6 +44,7 @@ from ai_workflow_engine.observation_canonical import (
 from ai_workflow_engine.observation_finalization import (
     PersistedDetailSink,
     materialize_usage_events,
+    sha256_file,
     summarize_segment_evidence,
     sum_optional_cost,
 )
@@ -242,7 +243,8 @@ class ObservationRunBundle:
         (self.path / "definition.json").write_text(definition_json, encoding="utf-8")
         usage_events = materialize_usage_events(usage)
         manifest = self._archive_artifacts(list(artifacts or []))
-        (self.path / ARTIFACT_MANIFEST_NAME).write_text(
+        artifact_manifest_path = self.path / ARTIFACT_MANIFEST_NAME
+        artifact_manifest_path.write_text(
             json.dumps(manifest, sort_keys=True, indent=2),
             encoding="utf-8",
         )
@@ -258,6 +260,7 @@ class ObservationRunBundle:
             definition_path="definition.json",
             definition_digest=definition.definition_digest(),
             artifact_manifest_path=ARTIFACT_MANIFEST_NAME,
+            artifact_manifest_sha256=sha256_file(artifact_manifest_path),
             artifact_root=ARTIFACT_DIR_NAME,
             value_store_layout="run-scoped-sha256-gzip-v1",
             inline_body_max_bytes=4096,
@@ -314,6 +317,7 @@ class ObservationRunBundle:
                 "kind": artifact.kind,
                 "source": artifact.source,
                 "owner_node": artifact.owner_node,
+                "cleanup_on_failure": artifact.cleanup_on_failure,
                 "media_type": metadata.get("media_type"),
                 "role": metadata.get("role"),
                 "metadata": byte_free(metadata),
@@ -416,6 +420,8 @@ def write_minimal_abandoned_meta(
     prior = _prior_run_totals(path, run_id=run_id, segment_index=segment_index)
     definition_json = definition.model_dump_json()
     (path / "definition.json").write_text(definition_json, encoding="utf-8")
+    artifact_manifest_path = path / ARTIFACT_MANIFEST_NAME
+    _write_json_atomic(artifact_manifest_path, [])
     meta_model = ObservationBundleMetaV4(
         bundle_schema_version=BUNDLE_SCHEMA_VERSION,
         run_id=run_id,
@@ -428,6 +434,7 @@ def write_minimal_abandoned_meta(
         definition_path="definition.json",
         definition_digest=definition.definition_digest(),
         artifact_manifest_path=ARTIFACT_MANIFEST_NAME,
+        artifact_manifest_sha256=sha256_file(artifact_manifest_path),
         artifact_root=ARTIFACT_DIR_NAME,
         value_store_layout="run-scoped-sha256-gzip-v1",
         inline_body_max_bytes=4096,

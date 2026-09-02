@@ -296,7 +296,7 @@ An engine release is ready only when:
 - permanent docs describe tagged truth and consumer handoffs identify re-adoption risk (the line is latest-only — no migration layer exists);
 - **latest-only cutover procedure** (moving a deployment to a new line): stop writers; archive the
   old observation bundle root and START A NEW EMPTY bundle root (mixed roots expose historical
-  bundles as corrupt by design; the current reader never interprets a pre-v3 layout);
+  bundles as corrupt by design; the current reader interprets only bundle v4);
   use a NEW wait-coordinator namespace, and explicitly settle or discard pending waits/snapshots
   under the OLD tag first (the current engine rejects them); keep the historical viewer/tag around
   only for reading historical data;
@@ -305,7 +305,7 @@ An engine release is ready only when:
 Framework requests and post-adoption feedback close through
 [`extension-lifecycle.md`](extension-lifecycle.md).
 
-## Release Artifacts And Verification (v0.11.19)
+## Release Artifacts And Verification (v0.12.0)
 
 Two roles, two identities. A consumer NEVER rebuilds as verification: the **annotated tag identifies
 source**, while the **published release directory identifies artifact bytes**. A release tag
@@ -347,17 +347,17 @@ Create the annotated tag with the exact source-only format enforced by `tagged_s
 copy test counts, smoke results, wheel hashes, or other dynamic evidence into the annotation:
 
 ```bash
-TAG=engine-v0.11.19
+TAG=engine-v0.12.0
 SOURCE="$(git rev-parse HEAD)"
 git tag -a "$TAG" \
   -m "$TAG" \
   -m "Source: $SOURCE" \
-  -m "Matrix: ai-workflow-engine 0.11.19 / ai-workflow-tools 0.6.10 / ai-workflow-viewer 0.3.12" \
+  -m "Matrix: ai-workflow-engine 0.12.0 / ai-workflow-tools 0.7.0 / ai-workflow-viewer 0.4.0" \
   -m "Artifact bytes and gate evidence are identified only by the verified release directory."
 ```
 
 ```bash
-TAG=engine-v0.11.19
+TAG=engine-v0.12.0
 BUILD_A=/tmp/engine-build-a
 BUILD_B=/tmp/engine-build-b
 GATE=/tmp/engine-gate
@@ -378,21 +378,21 @@ python3 "$TOOL" run-gate --name smoke --record "$OUT/smoke.json" \
   --log "$OUT/smoke.log" --cwd "$GATE" --timeout-s 900 -- \
   python3 "$TOOL" smoke-installed --venv-dir "$OUT/smoke-venv" \
   --work-dir "$OUT/smoke-work" \
-  --wheel "$OUT/wheels-a/ai_workflow_engine-0.11.19-py3-none-any.whl" \
-  --wheel "$OUT/wheels-a/ai_workflow_tools-0.6.10-py3-none-any.whl" \
-  --wheel "$OUT/wheels-a/ai_workflow_viewer-0.3.12-py3-none-any.whl"
+  --wheel "$OUT/wheels-a/ai_workflow_engine-0.12.0-py3-none-any.whl" \
+  --wheel "$OUT/wheels-a/ai_workflow_tools-0.7.0-py3-none-any.whl" \
+  --wheel "$OUT/wheels-a/ai_workflow_viewer-0.4.0-py3-none-any.whl"
 
 python3 "$TOOL" assemble --repo "$BUILD_A" --tag "$TAG" \
   --bundle-dir "$OUT/bundle" --uri-base "file:///approved-cache/$TAG/" \
   --build-evidence "$OUT/build.json" --second-build-evidence "$OUT/build-b.json" \
   --test-evidence "$OUT/test.json" \
   --smoke-evidence "$OUT/smoke.json" \
-  --wheel "$OUT/wheels-a/ai_workflow_engine-0.11.19-py3-none-any.whl" \
-  --wheel "$OUT/wheels-a/ai_workflow_tools-0.6.10-py3-none-any.whl" \
-  --wheel "$OUT/wheels-a/ai_workflow_viewer-0.3.12-py3-none-any.whl" \
-  --second-wheel "$OUT/wheels-b/ai_workflow_engine-0.11.19-py3-none-any.whl" \
-  --second-wheel "$OUT/wheels-b/ai_workflow_tools-0.6.10-py3-none-any.whl" \
-  --second-wheel "$OUT/wheels-b/ai_workflow_viewer-0.3.12-py3-none-any.whl"
+  --wheel "$OUT/wheels-a/ai_workflow_engine-0.12.0-py3-none-any.whl" \
+  --wheel "$OUT/wheels-a/ai_workflow_tools-0.7.0-py3-none-any.whl" \
+  --wheel "$OUT/wheels-a/ai_workflow_viewer-0.4.0-py3-none-any.whl" \
+  --second-wheel "$OUT/wheels-b/ai_workflow_engine-0.12.0-py3-none-any.whl" \
+  --second-wheel "$OUT/wheels-b/ai_workflow_tools-0.7.0-py3-none-any.whl" \
+  --second-wheel "$OUT/wheels-b/ai_workflow_viewer-0.4.0-py3-none-any.whl"
 python3 "$TOOL" verify-bundle --dir "$OUT/bundle"
 ```
 
@@ -421,6 +421,27 @@ both packages report `site-packages` origins, the initial browser load requests 
 64 KiB preview is fetched, no browser console error occurs, and neither server nor browser RSS grows
 with the retained body size beyond that fixed slack. This evidence is release-gated for the affected
 surface; it is not implied by an ordinary unit-tier pass.
+
+For bundle-v4 releases, also create the deterministic full-corpus engine/viewer fixture with the
+installed candidate wheels. The qualifier writes the same generated corpus twice on fresh roots,
+requires equal semantic bundle fingerprints, reads one large body through the bounded preview and
+exact-body doors, renders the grouped viewer, and proves the static export survives deletion of the
+source artifact. Retain the generated fixture and JSON record for the later consumer-adoption gate:
+
+```bash
+V4_QUALIFIER="$BUILD_A/packages/ai_workflow_engine/scripts/qualify_observation_v4.py"
+
+"$OUT/smoke-venv/bin/python" -I "$V4_QUALIFIER" \
+  --work-dir "$OUT/observation-v4-qualification-work" \
+  --record "$OUT/observation-v4-qualification.json" \
+  --engine-version 0.12.0 \
+  --tools-version 0.7.0 \
+  --viewer-version 0.4.0
+```
+
+Do not substitute an editable install, repository `PYTHONPATH`, reduced `--record-count`, or an old
+consumer corpus for this release gate. The fixture qualifies the universal engine/viewer only; a
+consumer adopts it separately after the release is published and verified.
 
 For a release that changes Codex prompt transport, run the repository-owned qualification from the
 same detached source tag with the exact installed-wheel smoke interpreter. The protected file is
@@ -486,10 +507,10 @@ Download the complete release directory. Obtain `release_artifacts.py` and
 source, place them together, and use that trusted verifier before invoking `pip`:
 
 ```bash
-BUNDLE=/path/to/downloaded/engine-v0.11.19
-TRUSTED=/path/to/trusted/engine-v0.11.19-verifier
+BUNDLE=/path/to/downloaded/engine-v0.12.0
+TRUSTED=/path/to/trusted/engine-v0.12.0-verifier
 python3 "$TRUSTED/release_artifacts.py" verify-bundle --dir "$BUNDLE"
-python -m pip install "$BUNDLE/ai_workflow_engine-0.11.19-py3-none-any.whl"
+python -m pip install "$BUNDLE/ai_workflow_engine-0.12.0-py3-none-any.whl"
 ```
 
 The verifier requires the exact manifest inventory, safely refuses traversal/symlink/FIFO/device

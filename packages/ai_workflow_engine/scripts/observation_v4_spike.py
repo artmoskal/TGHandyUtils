@@ -122,6 +122,12 @@ def _body_records() -> list[tuple[str, Any, bytes, str]]:
     return records
 
 
+def qualification_body_records() -> list[tuple[str, Any, bytes, str]]:
+    """Return the deterministic logical bodies shared by spike and release qualification."""
+
+    return _body_records()
+
+
 def _trace_records() -> list[dict[str, Any]]:
     return [
         {

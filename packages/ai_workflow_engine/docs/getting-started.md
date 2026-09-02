@@ -17,7 +17,7 @@ engine-window timeout narrowing without adding provider code to engine core. See
 
 The current immutable release is `engine-v0.11.17`. Do not install packages from a branch. Consume
 the complete published directory, verify it with the tagged verifier as described in
-[operations](operations.md#release-artifacts-and-verification-v01113), then record the exact bytes
+[operations](operations.md#release-artifacts-and-verification-v0120), then record the exact bytes
 installed:
 
 ```text
@@ -156,6 +156,11 @@ or interprets node statuses.
 With `ObservationConfig(enabled=True)`, the engine opens and finalizes a bundle automatically. The
 product does not tee sinks or call bundle writers. See [`examples/observed_workflow.py`](examples/observed_workflow.py)
 and [`observability-levels-feedback.md`](observability-levels-feedback.md).
+
+Bundle v4 keeps compact trace/detail-envelope/usage records separate from canonical detail bodies.
+Use `ObservationReader` for iteration, bounded previews, exact body reads, and artifact-manifest
+validation; do not parse `*.jsonl` or the run-scoped value store directly. Start on a new empty
+observation root because the latest-only reader deliberately has no v3 compatibility path.
 
 ## 6. Add Waits Only When Needed
 

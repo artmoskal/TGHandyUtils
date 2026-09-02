@@ -1,16 +1,17 @@
 # GoPro Engine Adoption Guide
 
-Status: **`engine-v0.11.19` is the current immutable release.**
-This corrective release closes durable-wait exposure races and advances observation metadata to
-strict bundle v3. It retains the optional generic OpenAI-compatible provider without changing
-GoPro's direct-VLM workflow contract. GoPro may continue consuming only the engine wheel.
-GoPro should pin tag `engine-v0.11.19`, verify the complete release directory, record the source
+Status: **`engine-v0.12.0` is the release candidate; `engine-v0.11.19` remains the published release.**
+The candidate advances observation to strict bundle v4 with bounded engine-owned body readers and
+no v3 compatibility path. It retains the optional generic OpenAI-compatible provider without
+changing GoPro's direct-VLM workflow contract. GoPro may continue consuming only the engine wheel.
+Until the candidate is published, GoPro should pin tag `engine-v0.11.19`. After publication it must
+verify the complete v0.12.0 release directory, record the source
 commit and consumed wheel hash, and
 run its sidecar canary before changing the production image. Do not
 infer the actual GoPro pin from this document; the consumer repository's
 pin file is authoritative for deployed state.
 
-`engine-v0.11.19` carries forward v0.11.18's complete-child execution breaker shared by
+`engine-v0.12.0` carries forward v0.11.18's complete-child execution breaker shared by
 registered workflow capabilities and declared subworkflows; this is useful for bounded VLM or
 investigation subflows but does not require GoPro to adopt the optional tools/viewer packages.
 Verify the release directory and run GoPro's canaries before changing its deployed pin.
@@ -48,12 +49,14 @@ and delivery. Inventory may reuse the same mechanics later without changing the 
 
 | Package | GoPro use |
 |---|---|
-| `ai-workflow-engine==0.11.19` | Runtime for complete-child execution windows |
-| `ai-workflow-tools==0.6.10` | Add only for provider clients, CLI agents, or media helpers |
-| `ai-workflow-viewer==0.3.12` | Diagnostic companion; not required in the detector image |
+| `ai-workflow-engine==0.12.0` | Runtime for complete-child execution windows and bundle-v4 writing |
+| `ai-workflow-tools==0.7.0` | Add only for provider clients, CLI agents, or media helpers |
+| `ai-workflow-viewer==0.4.0` | Bundle-v4 diagnostic companion; not required in the detector image |
 
-> **Current matrix:** `engine-v0.11.19` + `ai-workflow-tools==0.6.10` +
-> `ai-workflow-viewer==0.3.12`.
+> **Candidate matrix:** `engine-v0.12.0` + `ai-workflow-tools==0.7.0` +
+> `ai-workflow-viewer==0.4.0`.
+>
+> Do not install this matrix until `engine-v0.12.0` is cut.
 
 
 Vendoring only the engine wheel is the correct lightweight configuration for the current direct-VLM
@@ -180,14 +183,13 @@ post-adoption evidence using [the framework request lifecycle](extension-lifecyc
 second memory, retry, or observation runtime into the sidecar.
 
 
-## v0.11 Release Contract
+## v0.12 Release Contract
 
-`engine-v0.11.19` is the current immutable release for the **latest-only** line. The line uses strict versioned persisted
-contracts (snapshot `v0.11`, bundle meta v3, wait records `wait-v2`), one strict viewer loader, and
-NO migration layer — the sealed current-contract corpus shows 0 behavior deltas vs v0.10.1, but old
-persisted data is rejected loudly naming its historical tag. Adopt by re-pinning fresh
-(pin tag `engine-v0.11.19`, verify the published `release-manifest-v2` directory, then
-install only the engine `0.11.19` wheel for the current sidecar) and
+`engine-v0.12.0` is the next **latest-only** contract. It uses strict versioned persisted contracts
+(snapshot `v0.11`, bundle meta v4, wait records `wait-v2`), one strict viewer loader, and NO
+migration layer. Old persisted data is rejected loudly naming its historical tag. After publication,
+adopt by re-pinning fresh (verify the published `release-manifest-v2` directory, then install only
+the engine `0.12.0` wheel for the current sidecar) and
 re-run your canaries before changing any deployed pin. The release makes node-context binding
 explicit for every node kind and adds native Codex image attachment in the optional tools wheel;
 the sealed behavior corpus is unchanged. `wait-v1` records written by v0.11.5 are non-current:

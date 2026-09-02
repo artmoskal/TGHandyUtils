@@ -53,6 +53,36 @@ class ObservationReader:
             )
         return definition
 
+    def read_artifact_manifest(self) -> list[dict[str, Any]]:
+        """Return the sealed artifact rows after validating persisted manifest identity."""
+
+        path = _contained_file(self.segment_path, self.meta.artifact_manifest_path)
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"observation segment {self.meta.segment_id!r} is missing artifacts.json"
+            )
+        self._validate_stream_digest(
+            "artifact manifest", path, self.meta.artifact_manifest_sha256
+        )
+        try:
+            entries = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                f"artifact manifest under segment {self.meta.segment_id!r} is unreadable"
+            ) from exc
+        if not isinstance(entries, list) or not all(isinstance(entry, dict) for entry in entries):
+            raise ValueError(
+                f"artifact manifest under segment {self.meta.segment_id!r} must be a row list"
+            )
+        copied = sum(bool(entry.get("copied")) for entry in entries)
+        if len(entries) != self.meta.artifact_count or copied != self.meta.artifacts_copied:
+            raise ValueError(
+                f"artifact manifest counts disagree with meta: rows={len(entries)}, "
+                f"copied={copied}, expected={self.meta.artifact_count}/"
+                f"{self.meta.artifacts_copied}"
+            )
+        return entries
+
     def iter_trace_events(self) -> Iterator[WorkflowTraceEvent]:
         path = _contained_file(self.segment_path, self.meta.trace_path)
         self._validate_compact_stream("trace", path, self.meta.trace_sha256)
@@ -311,7 +341,7 @@ class ObservationReader:
         actual = digest.hexdigest()
         if actual != expected_sha256:
             raise ValueError(
-                f"observation stream {path.name} failed SHA-256 validation: "
+                f"observation {name} {path.name} failed SHA-256 validation: "
                 f"expected {expected_sha256!r}, got {actual!r}"
             )
 

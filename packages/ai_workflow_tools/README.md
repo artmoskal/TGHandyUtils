@@ -245,9 +245,12 @@ from ai_workflow_tools.testing import run_openai_compatible_provider_conformance
 await run_openai_compatible_provider_conformance(make_client)
 ```
 
+Tools `0.7.0` carries the provider and CLI behavior of `0.6.10` unchanged, targets
+`ai-workflow-engine>=0.12.0,<0.13`, and belongs to the `engine-v0.12.0` candidate matrix. Do not
+install it until that immutable release is published and verified.
+
 The v0.6.4 release carries the v0.6.3 provider behavior unchanged under the corrected source-only
-release-evidence contract. Tools `0.6.10` targets `ai-workflow-engine>=0.11.19,<0.12` and belongs to
-the verified `engine-v0.11.19` release matrix.
+release-evidence contract.
 
 The v0.6.3 release carries the v0.6.2 behavior unchanged and gives the clean-checkout operational
 release a unique wheel identity. It targets `ai-workflow-engine>=0.11.12,<0.12`.

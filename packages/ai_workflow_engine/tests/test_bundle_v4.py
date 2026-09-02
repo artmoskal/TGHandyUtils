@@ -72,6 +72,7 @@ def _v4_segment(tmp_path: Path, detail: ObservationDetail) -> tuple[Path, Observ
     (segment / "details.jsonl").write_text(envelope.model_dump_json() + "\n")
     (segment / "trace.jsonl").write_text("")
     (segment / "usage.jsonl").write_text("")
+    (segment / "artifacts.json").write_text("[]")
     meta = ObservationBundleMetaV4(
         bundle_schema_version=4,
         run_id=str(detail.run_id),
@@ -84,6 +85,7 @@ def _v4_segment(tmp_path: Path, detail: ObservationDetail) -> tuple[Path, Observ
         definition_path="definition.json",
         definition_digest="d" * 64,
         artifact_manifest_path="artifacts.json",
+        artifact_manifest_sha256=hashlib.sha256(b"[]").hexdigest(),
         artifact_root="artifacts",
         value_store_layout="run-scoped-sha256-gzip-v1",
         inline_body_max_bytes=4096,
@@ -162,18 +164,21 @@ def test_v4_value_store_reuses_complete_bodies_without_clobber(tmp_path):
 
 def test_v4_inline_threshold_and_reference_keep_one_canonical_identity(tmp_path):
     store = RunValueStore(tmp_path / "run-v4")
-    inline_body = ObservationTextBody(value="x" * INLINE_BODY_MAX_BYTES)
+    inline_body = ObservationTextBody(value="x" * (INLINE_BODY_MAX_BYTES - 1))
     referenced_body = ObservationTextBody(value="x" * (INLINE_BODY_MAX_BYTES + 1))
 
-    inline = persist_observation_body(store, inline_body)
-    referenced = persist_observation_body(store, referenced_body)
+    inline = [persist_observation_body(store, inline_body) for _ in range(2)]
+    referenced = [persist_observation_body(store, referenced_body) for _ in range(2)]
 
-    assert inline.kind == "inline_text"
-    assert inline.byte_length == INLINE_BODY_MAX_BYTES
-    assert inline.sha256 == body_sha256(inline_body)
-    assert referenced.kind == "body_ref"
-    assert referenced.byte_length == INLINE_BODY_MAX_BYTES + 1
-    assert referenced.sha256 == body_sha256(referenced_body)
+    assert {body.kind for body in inline} == {"inline_text"}
+    assert {body.byte_length for body in inline} == {INLINE_BODY_MAX_BYTES - 1}
+    assert {body.sha256 for body in inline} == {body_sha256(inline_body)}
+    assert {body.kind for body in referenced} == {"body_ref"}
+    assert {body.byte_length for body in referenced} == {INLINE_BODY_MAX_BYTES + 1}
+    assert {body.sha256 for body in referenced} == {body_sha256(referenced_body)}
+    assert len(list(store.root.glob("*/*.body.gz"))) == 1, (
+        "sub-threshold repeats stay inline by contract; repeated referenced values publish once"
+    )
 
 
 def test_v4_value_store_rejects_corrupt_existing_objects(tmp_path):
@@ -876,7 +881,8 @@ def test_segment_identity_rules_hold_in_the_meta_model():
         bundle_schema_version=4, run_id="r", workflow_id="wf", status="completed",
         timestamp="2026-07-14T00:00:00Z", trace_path="trace.jsonl", detail_path="details.jsonl",
         usage_path="usage.jsonl", definition_path="definition.json", definition_digest="d" * 8,
-        artifact_manifest_path="artifacts.json", artifact_root="artifacts",
+        artifact_manifest_path="artifacts.json", artifact_manifest_sha256=hashlib.sha256(b"[]").hexdigest(),
+        artifact_root="artifacts",
         value_store_layout="run-scoped-sha256-gzip-v1", inline_body_max_bytes=4096,
         artifact_count=0, artifacts_copied=0, trace_count=0, detail_count=0, usage_count=0,
         trace_sha256=hashlib.sha256(b"").hexdigest(),

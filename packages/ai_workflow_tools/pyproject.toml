@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ai-workflow-tools"
-version = "0.6.10"
+version = "0.7.0"
 description = "Reusable provider, agent, and media adapters for ai-workflow-engine."
 requires-python = ">=3.10"
 dependencies = [
-    # The latest-only tools line targets the engine 0.11.x contract.
-    "ai-workflow-engine>=0.11.19,<0.12",
+    # The latest-only tools line targets the engine 0.12.x contract.
+    "ai-workflow-engine>=0.12.0,<0.13",
     "pydantic>=2.13.0",
 ]
 

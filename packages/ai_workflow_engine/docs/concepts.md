@@ -58,8 +58,10 @@ These are deliberately separate:
   directly mutate transitions, limits, or wait state.
 - **Evidence** points to externally inspectable facts/artifacts. Persist handles and fingerprints,
   not media bytes in state.
-- **Observation** records what happened: compact trace, full details when enabled, usage, artifacts,
-  and lifecycle status. A viewer reads it; execution never reads it back as control.
+- **Observation** records what happened: compact trace and detail envelopes, canonical bodies when
+  enabled, usage, artifacts, and lifecycle status. Bundle v4 stores small bodies inline and large
+  bodies once in the logical run's SHA-256 value store. `ObservationReader` is the only physical
+  read boundary; a viewer reads through it and execution never reads observation back as control.
 
 ## Run Identity
 

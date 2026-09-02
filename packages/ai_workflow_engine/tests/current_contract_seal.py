@@ -1,4 +1,4 @@
-"""Current-contract SEALER for the v0.11 clean-contract line (Phase 1A, manifest row M1).
+"""Current-contract SEALER for the latest-only clean-contract line (Phase 1A, manifest row M1).
 
 Replaces the retired v0.10.1 wheel-equality differential as the oracle's authority: the sealed
 fixture now records the CURRENT contract's canonical corpus + public surface, and integrity comes
@@ -251,7 +251,7 @@ def main() -> int:
     _FIXTURE.write_text(json.dumps(first, indent=2, sort_keys=True), encoding="utf-8")
     _PUBLIC_FIXTURE.write_text(json.dumps(public, indent=2, sort_keys=True), encoding="utf-8")
     provenance = {
-        "contract": "v0.11 current-contract seal",
+        "contract": "v0.12 current-contract seal",
         "fixture_sha256": sha256_file(_FIXTURE),
         "public_surface_sha256": sha256_file(_PUBLIC_FIXTURE),
         "corpus_sha256": sha256_file(_ORACLE),

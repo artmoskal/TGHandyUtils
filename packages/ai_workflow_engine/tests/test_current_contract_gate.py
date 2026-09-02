@@ -45,7 +45,7 @@ def test_current_contract_provenance_is_sealed_and_matches():
             pytest.fail(f"{f.name} missing; {_RESEAL_HINT}")
     prov = json.loads(_PROVENANCE.read_text(encoding="utf-8"))
 
-    assert prov["contract"] == "v0.11 current-contract seal"
+    assert prov["contract"] == "v0.12 current-contract seal"
     assert prov["determinism"] == "two-run-equal"
     mismatched = {
         name: (recorded, actual)

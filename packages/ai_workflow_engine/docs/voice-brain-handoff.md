@@ -1,16 +1,17 @@
 # Voice Brain Engine Integration Guide
 
-Status: **`engine-v0.11.19` is the current immutable release.**
-This corrective release hardens provider/CLI failure truth, cache-aware pricing, and observation
-bundle integrity. It retains the optional async OpenAI-compatible HTTP client and process-backed
+Status: **`engine-v0.12.0` is the release candidate; `engine-v0.11.19` remains the published release.**
+The candidate advances diagnostics to bundle v4 with bounded engine-owned body readers while
+retaining provider/CLI failure truth, cache-aware pricing, the optional async OpenAI-compatible
+HTTP client, and process-backed
 Claude/Codex usage accounting.
 It does not turn subscription CLI workers into a suitable low-latency voice hot path. Adopt only as
 the coherent current matrix below.
-The product must pin tag `engine-v0.11.19`, verify the complete release directory, then run its own
-latency/cancellation canary. This replaces
+Until publication, the product must remain on its verified prior tag. It adopts `engine-v0.12.0`
+only after verifying the complete release directory and running its own latency/cancellation canary. This replaces
 the historical June request/reply transcript.
 
-`engine-v0.11.19` carries forward v0.11.18's coarse breaker around complete child
+`engine-v0.12.0` carries forward v0.11.18's coarse breaker around complete child
 workflows without changing the voice streaming boundary; a voice product only benefits when it
 delegates bounded non-streaming work to a child workflow. Verify the release directory and run the
 product latency/cancellation canary before changing its pin.
@@ -35,15 +36,17 @@ transcript + session context
 
 ## Package Choice
 
-- `ai-workflow-engine==0.11.19` for the runtime and custom `LLMCallable`.
-- `ai-workflow-tools==0.6.10` for bounded non-streaming OpenAI-compatible calls or when using
+- `ai-workflow-engine==0.12.0` for the runtime and custom `LLMCallable`.
+- `ai-workflow-tools==0.7.0` for bounded non-streaming OpenAI-compatible calls or when using
   `CliAgentCapability`/console tools. Voice delta streaming still requires a product-injected
   streaming `LLMCallable`; CLI subscription
   workers are usually unsuitable for a low-latency conversational hot path.
-- `ai-workflow-viewer==0.3.12` in diagnostics, not the real-time audio path.
+- `ai-workflow-viewer==0.4.0` in diagnostics, not the real-time audio path.
 
-> **Current matrix:** `engine-v0.11.19` + `ai-workflow-tools==0.6.10` +
-> `ai-workflow-viewer==0.3.12`.
+> **Candidate matrix:** `engine-v0.12.0` + `ai-workflow-tools==0.7.0` +
+> `ai-workflow-viewer==0.4.0`.
+>
+> Do not install this matrix until `engine-v0.12.0` is cut.
 
 The release makes node-context binding explicit for every node kind and advances the optional
 tools wheel for native Codex image attachment. Persisted schemas and voice workflow behavior are

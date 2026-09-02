@@ -248,6 +248,7 @@ class ObservationBundleMetaV4(BaseModel):
     definition_path: Literal["definition.json"]
     definition_digest: str
     artifact_manifest_path: Literal["artifacts.json"]
+    artifact_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     artifact_root: Literal["artifacts"]
     value_store_layout: Literal["run-scoped-sha256-gzip-v1"]
     inline_body_max_bytes: Literal[4096]

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
 
+from ai_workflow_engine import ObservationReader
 from ai_workflow_engine.observation_bundle import ARTIFACT_MANIFEST_NAME
 
 
@@ -34,7 +35,10 @@ class ApprovedArtifact:
 def load_artifact_manifest(bundle_dir: str | Path) -> Any:
     """Return a validated row list or a sentinel for absent/unreadable manifests."""
 
-    manifest_path = Path(bundle_dir) / ARTIFACT_MANIFEST_NAME
+    bundle_path = Path(bundle_dir)
+    manifest_path = bundle_path / ARTIFACT_MANIFEST_NAME
+    if (bundle_path / "meta.json").is_file():
+        return ObservationReader(bundle_path).read_artifact_manifest()
     if not manifest_path.exists():
         return _MANIFEST_ABSENT
     try:

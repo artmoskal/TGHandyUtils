@@ -199,6 +199,38 @@ def test_enabled_observation_auto_opens_routes_and_finalizes(tmp_path):
     assert (bundle_dir / "definition.json").exists()
 
 
+@pytest.mark.parametrize("capture", ["full", "off"])
+def test_v4_capture_mode_is_truthful_in_the_finalized_bundle(tmp_path, capture):
+    from ai_workflow_engine import ObservationReader
+
+    def produce(_context, payload):
+        return {"small": payload["small"], "large": "large-value-" * 1_000}
+
+    engine = WorkflowEngine(
+        observation=ObservationConfig(
+            enabled=True,
+            bundle_dir=str(tmp_path / capture),
+            capture=capture,
+        ),
+    )
+    engine.register_capability("produce", produce, kind="tool")
+    engine.register_workflow(WorkflowBuilder(f"capture_{capture}").step("produce").build())
+
+    result = asyncio.run(engine.run(f"capture_{capture}", {"small": "inline"}))
+    reader = ObservationReader(result.observation_bundle_path)
+    details = list(reader.iter_detail_envelopes())
+    traces = list(reader.iter_trace_events())
+
+    if capture == "full":
+        assert details
+        assert {detail.body.kind for detail in details} >= {"inline_json", "body_ref"}
+        assert any(event.detail_refs for event in traces)
+    else:
+        assert details == []
+        assert any(event.detail_capture == "capture_mode_off" for event in traces)
+        assert all(not event.detail_refs for event in traces)
+
+
 def test_disabled_observation_opens_nothing(tmp_path):
     engine = WorkflowEngine(
         observation=ObservationConfig(enabled=False, bundle_dir=str(tmp_path)),

@@ -1,25 +1,26 @@
 # MageQA Engine Adoption Guide
 
-Status: **`engine-v0.11.19` is the current immutable release.**
-This corrective release closes durable-wait registration exposure races, makes observation
-provider-evidence integrity explicit in bundle schema v3, and hardens provider/CLI failure
-accounting. It also sends every rendered Codex CLI prompt exactly once through bounded stdin, so
+Status: **`engine-v0.12.0` is the release candidate; `engine-v0.11.19` remains the published release.**
+The candidate advances observation to bundle v4: compact sealed streams, run-scoped large bodies,
+bounded engine-owned readers, and on-demand viewer detail access with no v3 compatibility path. It
+also retains bounded Codex stdin transport, so
 large curation prompts no longer enter process argv or hit the operating system's argument-size
 limit. It retains the generic OpenAI-compatible provider MageQA requested. Repin only the coherent
-`0.11.19 / 0.6.10 / 0.3.12` matrix after verifying its immutable release directory and passing E0.
+`0.12.0 / 0.7.0 / 0.4.0` matrix only after publication, immutable-directory verification, and E0.
 MageQA's two durable-registration race canaries fail on `engine-v0.11.5`. MageQA must stay on its
 existing pin and keep its fork until its E0
 canaries pass against the current immutable tag. The five historical E0 blockers (planned
 `partial` rewritten to `done`, unenforced `RuntimeLimits.timeout_s`, hidden retrace provenance,
 the CLI 600s default, and the reused tools wheel identity) are addressed and carried forward;
 v0.11 additionally hardens every persisted contract (strict versioned snapshot, bundle meta v3,
-wait records) with NO migration layer. MageQA must pin tag `engine-v0.11.19`,
-verify the complete published release directory, install the required wheels, and pass its E0 canaries before
+wait records) with NO migration layer. Until v0.12.0 is published, MageQA must pin tag
+`engine-v0.11.19`. It then verifies the complete published v0.12.0 release directory, installs the
+required wheels, and passes its E0 canaries before
 adopting; it stays on its existing pin until those canaries pass.
 Do not infer the actual MageQA pin from this document; the consumer repository's pin file is
 authoritative for deployed state.
 
-`engine-v0.11.19` carries forward v0.11.18's grouped-evaluator runtime. A child
+`engine-v0.12.0` carries forward v0.11.18's grouped-evaluator runtime. A child
 workflow's configured hard ceiling now bounds the complete retrying child through either engine
 door, while heterogeneous scenario soft targets remain descriptive and may share one fanout. A
 strictly tighter parent/run deadline keeps ownership. Completed siblings, artifacts, and
@@ -31,8 +32,8 @@ Read first: [getting started](getting-started.md), [framework concepts](concepts
 
 The line is **latest-only** — no migration guides exist. Adopt the current contract fresh; data
 written under older tags is rejected loudly and stays inspectable with its matching historical tag.
-In particular, the current viewer reads bundle v3 only; inspect v2 evidence with
-`engine-v0.11.9` and start a new empty observation root for v0.11.13.
+The candidate viewer reads bundle v4 only. Inspect v3 evidence with `engine-v0.11.19`, inspect v2
+with `engine-v0.11.9`, and start v0.12.0 on a new empty observation root.
 
 ## Product Outcome
 
@@ -62,16 +63,18 @@ a defect.
 
 | Package | MageQA use |
 |---|---|
-| `ai-workflow-engine==0.11.19` | Orchestration/runtime with complete-child hard ceilings |
-| `ai-workflow-tools==0.6.10` | Generic provider/CLI/tool companion |
-| `ai-workflow-viewer==0.3.12` | Low-level bundle investigation companion |
+| `ai-workflow-engine==0.12.0` | Orchestration/runtime with bundle-v4 writing and complete-child ceilings |
+| `ai-workflow-tools==0.7.0` | Generic provider/CLI/tool companion |
+| `ai-workflow-viewer==0.4.0` | Bundle-v4 investigation companion |
 
-> **Current matrix:** `engine-v0.11.19` + `ai-workflow-tools==0.6.10` +
-> `ai-workflow-viewer==0.3.12`.
+> **Candidate matrix:** `engine-v0.12.0` + `ai-workflow-tools==0.7.0` +
+> `ai-workflow-viewer==0.4.0`.
+>
+> Do not install this matrix until `engine-v0.12.0` is cut.
 
 ### Immutable release evidence
 
-- Artifact prefix: `s3://artmoskal-artifact-cache/ai-workflow-engine/engine-v0.11.19/`
+- Artifact prefix after publication: `s3://artmoskal-artifact-cache/ai-workflow-engine/engine-v0.12.0/`
 - Verify `SHA256SUMS`, then run the bundled `release_artifacts.py verify-bundle` before installing.
 - Read the source commit, annotated tag object, package hashes, and producer gate evidence from the
   verified `release-manifest.json`; record those consumed values in MageQA's own adoption record.
@@ -290,14 +293,13 @@ If one of these blocks a concrete workflow, use [the framework request lifecycle
 with a scenario and acceptance proof. Upgrade via [`operations.md`](operations.md#upgrade-lifecycle).
 
 
-## v0.11 Release Contract
+## v0.12 Release Contract
 
-`engine-v0.11.19` is the current immutable release for the **latest-only** line. The line uses strict versioned persisted
-contracts (snapshot `v0.11`, bundle meta v3, wait records `wait-v2`), one strict viewer loader, and
-NO migration layer — the sealed current-contract corpus shows 0 behavior deltas vs v0.10.1, but old
-persisted data is rejected loudly naming its historical tag. Adopt by re-pinning fresh
-(pin tag `engine-v0.11.19`, verify the published `release-manifest-v2` bundle, then
-install engine `0.11.19`, tools `0.6.10`, and viewer `0.3.12`) and
+`engine-v0.12.0` is the next **latest-only** contract. It uses strict versioned persisted contracts
+(snapshot `v0.11`, bundle meta v4, wait records `wait-v2`), one strict viewer loader, and NO
+migration layer. Old persisted data is rejected loudly naming its historical tag. After publication,
+adopt by re-pinning fresh (verify the published `release-manifest-v2` bundle, then install engine
+`0.12.0`, tools `0.7.0`, and viewer `0.4.0`) and
 re-run your canaries before changing any deployed pin.
 `wait-v1` records written by v0.11.5 are non-current: settle or discard them under v0.11.5 and
 start a new coordinator namespace before v0.11.6 writes `wait-v2`.

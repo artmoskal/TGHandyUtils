@@ -892,7 +892,7 @@ def test_tools_wheel_identity_advanced_for_changed_code():
 
     import ai_workflow_tools
 
-    assert ai_workflow_tools.__version__ == "0.6.10", (
+    assert ai_workflow_tools.__version__ == "0.7.0", (
         "tools code changed since the last released wheel identity; the version must "
         f"advance (found {ai_workflow_tools.__version__})"
     )

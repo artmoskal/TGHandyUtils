@@ -291,6 +291,25 @@ def test_release_runbook_requires_installed_real_browser_rss_for_viewer_changes(
     assert '"schema": "viewer-browser-rss-v1"' in qualifier
 
 
+def test_release_runbook_requires_installed_large_v4_qualification():
+    repository = Path(__file__).parents[3]
+    operations = (
+        repository / "packages/ai_workflow_engine/docs/operations.md"
+    ).read_text(encoding="utf-8")
+    qualifier = (
+        repository / "packages/ai_workflow_engine/scripts/qualify_observation_v4.py"
+    ).read_text(encoding="utf-8")
+
+    assert 'V4_QUALIFIER="$BUILD_A/packages/ai_workflow_engine/scripts/qualify_observation_v4.py"' in operations
+    assert '"$OUT/smoke-venv/bin/python" -I "$V4_QUALIFIER"' in operations
+    assert '--record "$OUT/observation-v4-qualification.json"' in operations
+    assert '"schema": "observation-v4-installed-qualification-v1"' in qualifier
+    assert '"full_corpus": args.record_count == RECORD_COUNT' in qualifier
+    assert '"deterministic_second_generation": True' in qualifier
+    assert 'if not all("site-packages" in origin' in qualifier
+    assert 'first["artifact_source"].unlink()' in qualifier
+
+
 def _sibling_checkout(repo: Path, destination: Path) -> Path:
     """A second clean detached checkout of the same commit.
 

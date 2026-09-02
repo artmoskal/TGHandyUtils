@@ -86,7 +86,7 @@ def test_engine_imports_no_product_code():
 def test_release_version_matches_current_pin():
     """Release guard: a pinned tag must not build a wheel that reports the previous version."""
 
-    expected = "0.11.19"
+    expected = "0.12.0"
     pyproject = tomllib.loads((PACKAGE_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert pyproject["project"]["version"] == expected
     assert ai_workflow_engine.__version__ == expected
@@ -226,6 +226,26 @@ def test_observation_bundle_owners_have_one_way_dependencies():
         "canonical observation_bundle door must compose owners, not regrow implementations: "
         f"{implementations}"
     )
+
+
+def test_observation_and_release_hotspots_do_not_grow_into_new_god_objects():
+    """v0.12 keeps the focused owners and freezes inherited large renderer/release scripts."""
+
+    viewer_root = PACKAGE_ROOT.parent / "ai_workflow_viewer" / "ai_workflow_viewer"
+    limits = {
+        ENGINE_ROOT / "observation_writer.py": 576,
+        ENGINE_ROOT / "observation_reader.py": 476,
+        viewer_root / "rendering.py": 1093,
+        PACKAGE_ROOT / "scripts" / "release_artifacts.py": 1411,
+        PACKAGE_ROOT / "scripts" / "release_contract.py": 1423,
+        PACKAGE_ROOT / "scripts" / "qualify_observation_v4.py": 350,
+    }
+    oversized = {
+        str(path.relative_to(REPO_ROOT)): (len(path.read_text(encoding="utf-8").splitlines()), limit)
+        for path, limit in limits.items()
+        if len(path.read_text(encoding="utf-8").splitlines()) > limit
+    }
+    assert not oversized, f"focused-owner line-count ratchets exceeded: {oversized}"
 
 
 def test_executor_contains_no_compiler_implementation_twins():

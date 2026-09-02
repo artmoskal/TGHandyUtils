@@ -1,5 +1,5 @@
 {
- "comment": "v0.11 clean-contract intentional-break ledger. The ONLY paths on which the sealed current-contract fixture may change at reseal. Every entry names its removal-manifest row. The sealer prints and refuses any fixture delta whose path matches no entry; the provenance record hashes this file so ledger edits are tamper-evident.",
+ "comment": "Latest-only current-contract intentional-break ledger, introduced in v0.11 and carried into v0.12. The ONLY paths on which the sealed current-contract fixture may change at reseal. Every entry names its removal-manifest row. The sealer prints and refuses any fixture delta whose path matches no entry; the provenance record hashes this file so ledger edits are tamper-evident.",
  "entries": [
   {
    "path_prefix": "public.exports.parse_flow_node",
@@ -1634,6 +1634,22 @@
    "reason": "Observation v4 integrity repair makes exact compact-stream hashes and crash-incomplete stream truth required metadata.",
    "manifest_row": "OBS-V4-I1R",
    "consumed_by_seal": "2026-09-01 observation-v4 Iteration 1 integrity repair"
+  },
+  {
+   "path_prefix": "public.schemas.ObservationBundleMetaV4.properties.artifact_manifest_sha256",
+   "match": "exact",
+   "status": "spent",
+   "reason": "Observation v4 seals the artifact manifest alongside trace, detail-envelope, and usage streams.",
+   "manifest_row": "OBS-V4-I3",
+   "consumed_by_seal": "2026-09-02 observation-v4 release-candidate manifest-integrity seal"
+  },
+  {
+   "path_prefix": "public.schemas.ObservationBundleMetaV4.required",
+   "match": "prefix",
+   "status": "spent",
+   "reason": "Observation v4 makes the artifact-manifest SHA-256 a required metadata fact; list insertion shifts the sealed required-field indices.",
+   "manifest_row": "OBS-V4-I3",
+   "consumed_by_seal": "2026-09-02 observation-v4 release-candidate manifest-integrity seal"
   }
  ]
 }

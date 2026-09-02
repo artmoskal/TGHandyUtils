@@ -6781,6 +6781,11 @@
           "title": "Artifact Manifest Path",
           "type": "string"
         },
+        "artifact_manifest_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Artifact Manifest Sha256",
+          "type": "string"
+        },
         "artifact_root": {
           "const": "artifacts",
           "title": "Artifact Root",
@@ -7009,6 +7014,7 @@
         "definition_path",
         "definition_digest",
         "artifact_manifest_path",
+        "artifact_manifest_sha256",
         "artifact_root",
         "value_store_layout",
         "inline_body_max_bytes",
