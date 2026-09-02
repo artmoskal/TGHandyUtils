@@ -100,21 +100,23 @@ observation-state reconstruction. Its selector is the closed, product-neutral de
 
 ```python
 import json
-
 from ai_workflow_engine import ObservationReader
 
+staged_projection = {}
 for item in ObservationReader(segment_path).iter_detail_bodies(
     kinds={"planner_output", "tool_result"}, max_body_bytes=8 * 1024 * 1024
 ):
     if item.envelope.content_type != "application/json":
         raise ValueError(f"expected JSON detail, got {item.envelope.content_type!r}")
-    latest_by_key[item.envelope.detail_id] = json.loads(item.body_bytes)  # persisted last wins
+    update = json.loads(item.body_bytes)
+    apply_validated_product_state(staged_projection, item.envelope, update)
+publish_complete_projection(staged_projection)  # only after normal exhaustion
 ```
 
-The pass validates the detail stream once, validates each selected body before yield, enforces the
-bound per body, retains at most one body, and never opens non-selected bodies. Existing lifecycle,
-identity, duplicate, canonical-body, digest/length, and value-store-confinement checks remain. Check
-`content_type` before decoding. Do not replace this door with an envelope/per-body loop or callback.
+The engine uses one contract-owned kind vocabulary, validates the stream once, bounds and validates selected bodies, and never opens non-selected bodies.
+Each yield is body-valid but provisional until normal iterator exhaustion reconciles parsed rows with `meta.detail_count`; late malformed/duplicate rows still fail the pass.
+On error or cancellation, discard staged state: a consumer must not cache or publish the staged projection. Exact content-type and product-state validation remain consumer-owned.
+MageQA's current cache signature omits run-scoped referenced body bytes, so body-derived projections require a fresh pass; this consumer correction does not belong in the engine.
 
 ## One Provider Door
 

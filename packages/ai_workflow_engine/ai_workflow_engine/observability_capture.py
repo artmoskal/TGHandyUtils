@@ -16,11 +16,11 @@ from ai_workflow_engine._runtime_state import current_workflow_run_context
 from ai_workflow_engine.models import (
     DetailCaptureState,
     ObservationDetail,
-    ObservationDetailKind,
     ObservationJsonBody,
     WorkflowTraceEvent,
     WorkflowTraceSeverity,
 )
+from ai_workflow_engine.observation_contract import ObservationDetailKind
 
 logger = logging.getLogger(__name__)
 CaptureMode = Literal["off", "full"]

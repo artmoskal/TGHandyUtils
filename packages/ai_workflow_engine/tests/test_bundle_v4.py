@@ -142,13 +142,24 @@ def _rewrite_detail_stream(
     segment: Path,
     envelopes: list[ObservationDetailEnvelope],
 ) -> None:
-    detail_path = segment / "details.jsonl"
-    detail_path.write_text(
-        "".join(envelope.model_dump_json() + "\n" for envelope in envelopes)
+    _rewrite_detail_rows(
+        segment,
+        [envelope.model_dump_json() for envelope in envelopes],
+        detail_count=len(envelopes),
     )
+
+
+def _rewrite_detail_rows(
+    segment: Path,
+    rows: list[str],
+    *,
+    detail_count: int,
+) -> None:
+    detail_path = segment / "details.jsonl"
+    detail_path.write_text("".join(row + "\n" for row in rows))
     raw_meta = json.loads((segment / "meta.json").read_text(encoding="utf-8"))
     raw_meta["detail_sha256"] = hashlib.sha256(detail_path.read_bytes()).hexdigest()
-    raw_meta["detail_count"] = len(envelopes)
+    raw_meta["detail_count"] = detail_count
     (segment / "meta.json").write_text(json.dumps(raw_meta))
 
 
@@ -423,9 +434,12 @@ def test_v4_bulk_reader_validates_once_streams_selected_bodies_in_order(
         return real_validate(name, path, expected_sha256)
 
     opened_body_paths: list[Path] = []
+    detail_stream_modes: list[str] = []
     real_open = Path.open
 
     def counted_open(path, *args, **kwargs):
+        if path == reader.detail_path:
+            detail_stream_modes.append(args[0] if args else kwargs.get("mode", "r"))
         if path.suffix == ".gz":
             opened_body_paths.append(path)
         return real_open(path, *args, **kwargs)
@@ -448,6 +462,9 @@ def test_v4_bulk_reader_validates_once_streams_selected_bodies_in_order(
         tracemalloc.stop()
 
     assert digest_validations == 1
+    assert detail_stream_modes == ["rb", "r"], (
+        "bulk hydration must digest once and parse details.jsonl exactly once"
+    )
     assert detail_ids == [detail.detail_id for detail in selected]
     assert positions == list(range(selected_count))
     assert positions[-1] == selected_count - 1
@@ -457,6 +474,167 @@ def test_v4_bulk_reader_validates_once_streams_selected_bodies_in_order(
     assert peak_bytes < largest_selected_body * 16, (
         "bulk hydration must retain O(1) selected bodies, not the complete selected corpus"
     )
+
+
+@pytest.mark.parametrize(
+    ("persisted_count", "meta_count"),
+    [(1, 2), (2, 1)],
+)
+def test_v4_bulk_reader_rejects_resealed_detail_count_mismatch_at_exhaustion(
+    tmp_path,
+    persisted_count,
+    meta_count,
+):
+    details = [
+        _logical_detail(
+            {"position": index, "payload": "x" * 10_000},
+            detail_id=f"detail-{index}",
+            sequence=index + 1,
+        )
+        for index in range(2)
+    ]
+    segment, envelopes = _v4_segment_many(tmp_path, details)
+    _rewrite_detail_rows(
+        segment,
+        [envelope.model_dump_json() for envelope in envelopes[:persisted_count]],
+        detail_count=meta_count,
+    )
+    yielded: list[str] = []
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            rf"detail_count disagrees with meta: expected {meta_count}, "
+            rf"read {persisted_count}"
+        ),
+    ):
+        for item in ObservationReader(segment).iter_detail_bodies(
+            kinds={"tool_result"},
+            max_body_bytes=20_000,
+        ):
+            yielded.append(item.envelope.detail_id)
+
+    assert yielded == [envelope.detail_id for envelope in envelopes[:persisted_count]]
+
+
+@pytest.mark.parametrize("late_failure", ["duplicate", "malformed"])
+def test_v4_bulk_reader_late_failure_keeps_staged_projection_unpublished(
+    tmp_path,
+    late_failure,
+):
+    details = [
+        _logical_detail(
+            {"position": index, "payload": "x" * 10_000},
+            detail_id=f"detail-{index}",
+            sequence=index + 1,
+        )
+        for index in range(2)
+    ]
+    segment, envelopes = _v4_segment_many(tmp_path, details)
+    late_row = (
+        envelopes[1].model_copy(update={"detail_id": envelopes[0].detail_id}).model_dump_json()
+        if late_failure == "duplicate"
+        else '{"detail_id":"truncated"'
+    )
+    _rewrite_detail_rows(
+        segment,
+        [envelopes[0].model_dump_json(), late_row],
+        detail_count=2,
+    )
+    observed: list[str] = []
+    published: dict[str, tuple[str, ...]] = {}
+
+    def complete_projection() -> tuple[str, ...]:
+        staged: list[str] = []
+        for item in ObservationReader(segment).iter_detail_bodies(
+            kinds={"tool_result"},
+            max_body_bytes=20_000,
+        ):
+            observed.append(item.envelope.detail_id)
+            staged.append(item.envelope.detail_id)
+        return tuple(staged)
+
+    expected = "duplicate detail_id" if late_failure == "duplicate" else "invalid observation"
+    with pytest.raises(ValueError, match=expected):
+        published["complete"] = complete_projection()
+
+    assert observed == [envelopes[0].detail_id]
+    assert published == {}
+
+
+def test_v4_bulk_reader_early_cancellation_is_not_published_as_complete(
+    tmp_path,
+    monkeypatch,
+):
+    details = [
+        _logical_detail(
+            {"position": index, "payload": "x" * 10_000},
+            detail_id=f"detail-{index}",
+            sequence=index + 1,
+        )
+        for index in range(2)
+    ]
+    segment, envelopes = _v4_segment_many(tmp_path, details)
+    reader = ObservationReader(segment)
+    opened_body_paths: list[Path] = []
+    real_open = Path.open
+
+    def counted_open(path, *args, **kwargs):
+        if path.suffix == ".gz":
+            opened_body_paths.append(path)
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", counted_open)
+    published: dict[str, tuple[str, ...]] = {}
+
+    class ConsumerCancelled(Exception):
+        pass
+
+    def cancelled_projection() -> tuple[str, ...]:
+        staged: list[str] = []
+        items = reader.iter_detail_bodies(
+            kinds={"tool_result"},
+            max_body_bytes=20_000,
+        )
+        try:
+            for item in items:
+                staged.append(item.envelope.detail_id)
+                raise ConsumerCancelled
+        finally:
+            items.close()
+        return tuple(staged)
+
+    with pytest.raises(ConsumerCancelled):
+        published["complete"] = cancelled_projection()
+
+    assert published == {}
+    assert len(opened_body_paths) == 1
+    assert opened_body_paths[0] == reader.value_store.object_path(envelopes[0].body.sha256)
+
+
+def test_v4_bulk_reader_normal_exhaustion_publishes_complete_projection(tmp_path):
+    details = [
+        _logical_detail(
+            {"position": index, "payload": "x" * 10_000},
+            detail_id=f"detail-{index}",
+            sequence=index + 1,
+        )
+        for index in range(2)
+    ]
+    segment, envelopes = _v4_segment_many(tmp_path, details)
+    published = {
+        "complete": tuple(
+            item.envelope.detail_id
+            for item in ObservationReader(segment).iter_detail_bodies(
+                kinds={"tool_result"},
+                max_body_bytes=20_000,
+            )
+        )
+    }
+
+    assert published == {
+        "complete": tuple(envelope.detail_id for envelope in envelopes),
+    }
 
 
 def test_v4_bulk_reader_rejects_compact_stream_tamper_before_opening_bodies(

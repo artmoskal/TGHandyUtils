@@ -10,7 +10,7 @@ import ast
 import re
 from pathlib import Path
 import tomllib
-from typing import get_args
+from typing import get_args, get_type_hints
 
 import pytest
 
@@ -366,6 +366,49 @@ def test_capability_status_vocabulary_is_closed():
     """G-ext3: the run-state vocabulary is a closed set — widening it is a reviewed act."""
 
     assert set(get_args(CapabilityStatus)) == {"accepted", "failed", "partial", "rejected"}
+
+
+def test_observation_detail_kind_has_one_authority_for_writer_and_reader():
+    """The public detail-kind vocabulary has one definition shared by both persistence sides."""
+
+    from ai_workflow_engine import ObservationDetailKind
+    from ai_workflow_engine import models as engine_models
+    from ai_workflow_engine.models import ObservationDetail
+    from ai_workflow_engine.observation_contract import (
+        ObservationDetailEnvelope,
+        ObservationDetailKind as ContractObservationDetailKind,
+    )
+    from ai_workflow_engine.observation_reader import ObservationReader
+
+    authorities = []
+    for path in _python_files(ENGINE_ROOT):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if isinstance(node, ast.Assign):
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                targets = [node.target]
+            else:
+                continue
+            if any(
+                isinstance(target, ast.Name) and target.id == "ObservationDetailKind"
+                for target in targets
+            ):
+                authorities.append(path.name)
+
+    assert authorities == ["observation_contract.py"], (
+        f"ObservationDetailKind must have one definition, found {authorities}"
+    )
+    assert "ObservationDetailKind" not in vars(engine_models), (
+        "models.py must consume the contract authority privately, not preserve a second public home"
+    )
+    assert ObservationDetailKind is ContractObservationDetailKind
+    assert ObservationDetail.model_fields["kind"].annotation is ObservationDetailKind
+    assert ObservationDetailEnvelope.model_fields["kind"].annotation is ObservationDetailKind
+    reader_kind = get_args(
+        get_type_hints(ObservationReader.iter_detail_bodies)["kinds"]
+    )
+    assert reader_kind == (ObservationDetailKind,)
 
 
 def test_workflow_result_status_carries_suspension_semantics():

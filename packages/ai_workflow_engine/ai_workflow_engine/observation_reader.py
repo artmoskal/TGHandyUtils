@@ -174,7 +174,8 @@ class ObservationReader:
 
         ``kinds`` is a declarative envelope filter, not a body callback. Non-selected bodies
         are never opened. Each selected body must fit ``max_body_bytes`` and is fully validated
-        before one result is yielded, so the iterator retains at most one hydrated body.
+        before one result is yielded, so the iterator retains at most one hydrated body. A yielded
+        item remains provisional until normal exhaustion validates the final detail record count.
         """
 
         selected_kinds = frozenset(kinds)
@@ -203,6 +204,7 @@ class ObservationReader:
                 f"observation segment {self.meta.segment_id!r} is missing details.jsonl"
             )
         seen: set[str] = set()
+        parsed_count = 0
         with self.detail_path.open("r", encoding="utf-8") as source:
             for line_number, line in enumerate(source, start=1):
                 if not line.strip():
@@ -219,7 +221,13 @@ class ObservationReader:
                         f"observation segment contains duplicate detail_id {detail.detail_id!r}"
                     )
                 seen.add(detail.detail_id)
+                parsed_count += 1
                 yield detail
+        if parsed_count != self.meta.detail_count:
+            raise ValueError(
+                f"observation segment {self.meta.segment_id!r} detail_count disagrees with "
+                f"meta: expected {self.meta.detail_count}, read {parsed_count}"
+            )
 
     def _stream_is_complete(self, name: str) -> bool:
         if name not in {"trace", "detail", "usage"}:

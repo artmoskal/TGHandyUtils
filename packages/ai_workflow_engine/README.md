@@ -26,10 +26,13 @@ domain models, provider clients, storage adapters, clocks, and side-effect deliv
 >
 > **v0.12.1 candidate delta.** `ObservationReader.iter_detail_bodies(...)` is the public,
 > transport-neutral bulk hydration door for selected detail kinds. It validates the sealed detail
-> stream once per pass, preserves persisted order and all envelope/body integrity checks, enforces
-> an explicit per-body bound, never opens non-selected bodies, and retains at most one hydrated body.
-> Existing single-body reads share the same value-store integrity implementation. Engine `0.12.1`
-> is the only bumped package; tools `0.7.0` and viewer `0.4.0` remain unchanged.
+> stream once per pass, reconciles the parsed rows with sealed metadata at normal exhaustion,
+> preserves persisted order and all envelope/body integrity checks, enforces an explicit per-body
+> bound, never opens non-selected bodies, and retains at most one hydrated body. Yields are
+> provisional until normal exhaustion, so consumers stage projections and publish or cache only
+> after the loop completes without error. Writer and reader share one contract-owned detail-kind
+> vocabulary and one value-store integrity implementation. Engine `0.12.1` is the only bumped
+> package; tools `0.7.0` and viewer `0.4.0` remain unchanged.
 >
 > **v0.12.0 release delta.** Observation bundle v4 stores one canonical body per detail: small
 > values remain inline and large values are referenced from a run-scoped SHA-256 value store.

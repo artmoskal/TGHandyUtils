@@ -18,6 +18,7 @@ pytestmark = pytest.mark.unit
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 SLACKAZZ_DOC = (PACKAGE_ROOT / "docs" / "slackazz-handoff.md").read_text(encoding="utf-8")
+MAGEQA_DOC = (PACKAGE_ROOT / "docs" / "mageqa-handoff.md").read_text(encoding="utf-8")
 README = (PACKAGE_ROOT / "README.md").read_text(encoding="utf-8")
 
 
@@ -187,6 +188,17 @@ def test_bulk_observation_body_reader_is_public_and_exactly_typed():
         "envelope",
         "body_bytes",
     }
+
+
+def test_bulk_observation_body_docs_require_complete_exhaustion_before_publication():
+    """Streaming rows are provisional until the one pass proves its final record count."""
+
+    assert "provisional until normal iterator exhaustion" in MAGEQA_DOC
+    assert "publish_complete_projection(staged_projection)" in MAGEQA_DOC
+    assert "latest_by_key[item.envelope.detail_id]" not in MAGEQA_DOC
+    assert "must not cache or publish the staged projection" in MAGEQA_DOC
+    assert "run-scoped referenced body bytes" in MAGEQA_DOC
+    assert "does not belong in the engine" in MAGEQA_DOC
 
 
 def test_handoff_never_claims_coordinator_outbox_atomicity():

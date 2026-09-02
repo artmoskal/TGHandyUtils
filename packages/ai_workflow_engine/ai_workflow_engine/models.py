@@ -18,6 +18,9 @@ from pydantic import (
     model_validator,
 )
 
+from ai_workflow_engine.observation_contract import (
+    ObservationDetailKind as _ObservationDetailKind,
+)
 from ai_workflow_engine.usage_contract import (
     NormalizedTokenUsage,
     NotionalPricingResult,
@@ -54,15 +57,6 @@ WorkflowResultStatus = Literal[
     "external_tool_unavailable",
 ]
 WorkflowTraceSeverity = Literal["debug", "info", "warning", "error"]
-ObservationDetailKind = Literal[
-    "rendered_prompt",
-    "llm_response",
-    "tool_payload",
-    "tool_result",
-    "artifact_preview",
-    "planner_output",
-    "memory_projection",
-]
 DetailCaptureState = Literal[
     "captured",
     "capture_mode_off",
@@ -335,7 +329,7 @@ class ObservationDetail(BaseModel):
     run_id: Optional[str] = None
     sequence: Optional[int] = None
     invocation_id: Optional[ProviderInvocationId] = None
-    kind: ObservationDetailKind
+    kind: _ObservationDetailKind
     content_type: str = "text/plain"
     body: ObservationBody
     artifact_id: Optional[str] = None
