@@ -235,16 +235,19 @@ def _sample_process_trees(
         errors.append(f"{type(exc).__name__}: {exc}")
 
 
-def _assert_bounded_preview(
-    page,
-    detail_requests: List[str],
-    console_errors: List[str],
-) -> None:
+def _assert_lazy_index(page, detail_requests: List[str]) -> None:
     initial = page.content()
     if detail_requests:
         raise RuntimeError("initial viewer page loaded a detail body")
     if "BROWSER-RSS-HEAD" in initial or "BROWSER-RSS-TAIL" in initial:
         raise RuntimeError("initial viewer page embedded retained body content")
+
+
+def _load_bounded_preview(
+    page,
+    detail_requests: List[str],
+    console_errors: List[str],
+) -> None:
     page.locator("details.observation-detail summary").first.click()
     button = page.locator("[data-load-detail]").first
     target = button.get_attribute("data-preview-target")
@@ -288,18 +291,6 @@ def _exercise_browser(
         try:
             browser_roots[:] = _browser_roots(profile)
             page = context.pages[0] if context.pages else context.new_page()
-            page.wait_for_timeout(500)
-            baselines["server"] = _process_tree_rss([psutil.Process(server.pid)])
-            baselines["browser"] = _process_tree_rss(browser_roots)
-            peaks.update(baselines)
-            if baselines["server"] <= 0 or baselines["browser"] <= 0:
-                raise RuntimeError(f"RSS sampler recorded no settled baseline: {baselines}")
-            sampler = threading.Thread(
-                target=_sample_process_trees,
-                args=(stop, server, browser_roots, peaks, sampler_errors),
-                daemon=True,
-            )
-            sampler.start()
             page.on(
                 "request",
                 lambda request: detail_requests.append(request.url)
@@ -314,7 +305,19 @@ def _exercise_browser(
             )
             page.goto(url, wait_until="domcontentloaded")
             page.wait_for_timeout(500)
-            _assert_bounded_preview(page, detail_requests, console_errors)
+            _assert_lazy_index(page, detail_requests)
+            baselines["server"] = _process_tree_rss([psutil.Process(server.pid)])
+            baselines["browser"] = _process_tree_rss(browser_roots)
+            peaks.update(baselines)
+            if baselines["server"] <= 0 or baselines["browser"] <= 0:
+                raise RuntimeError(f"RSS sampler recorded no settled baseline: {baselines}")
+            sampler = threading.Thread(
+                target=_sample_process_trees,
+                args=(stop, server, browser_roots, peaks, sampler_errors),
+                daemon=True,
+            )
+            sampler.start()
+            _load_bounded_preview(page, detail_requests, console_errors)
         finally:
             stop.set()
             if sampler is not None:

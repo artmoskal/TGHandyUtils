@@ -314,6 +314,13 @@ def test_release_runbook_requires_installed_real_browser_rss_for_viewer_changes(
     assert '"server_baseline_rss_kib"' in qualifier
     assert '"browser_baseline_rss_kib"' in qualifier
     assert 'for key in ("server_growth_rss_kib", "browser_growth_rss_kib")' in qualifier
+    assert qualifier.index("page.goto(url") < qualifier.index('baselines["server"]')
+    assert qualifier.index("\n            _assert_lazy_index(page") < qualifier.index(
+        'baselines["server"]'
+    )
+    assert qualifier.index('baselines["browser"]') < qualifier.index(
+        "\n            _load_bounded_preview(page"
+    )
     assert '"schema": "viewer-browser-rss-v2"' in qualifier
 
 
