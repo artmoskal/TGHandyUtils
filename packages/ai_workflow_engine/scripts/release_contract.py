@@ -763,6 +763,89 @@ def _validate_smoked_wheel_bytes(
                 )
 
 
+def _validate_build_fields(record: Mapping[str, Any], path: str) -> dict[str, Any]:
+    tools = record["tool_versions"]
+    if not isinstance(tools, list) or not tools:
+        raise ReleaseError(f"{path}.tool_versions must be a nonempty list")
+    parsed_tools = [
+        _validate_tool(tool, f"{path}.tool_versions[{index}]")
+        for index, tool in enumerate(tools)
+    ]
+    names = [tool["name"] for tool in parsed_tools]
+    if len(names) != len(set(names)) or set(names) != set(RELEASE_BUILD_TOOLS):
+        raise ReleaseError(
+            f"{path}.tool_versions must equal the exact release build toolchain"
+        )
+    actual_tools = {tool["name"]: tool["version"] for tool in parsed_tools}
+    if actual_tools != RELEASE_BUILD_TOOLS:
+        raise ReleaseError(
+            f"{path}.tool_versions disagree with the exact release build toolchain"
+        )
+    frontend = _validate_tool(record["frontend"], f"{path}.frontend")
+    if frontend != RELEASE_BUILD_FRONTEND:
+        raise ReleaseError(f"{path}.frontend must equal the release-owned build frontend")
+    backend = _validate_tool(record["backend"], f"{path}.backend")
+    if backend != {
+        "name": RELEASE_BUILD_BACKEND,
+        "version": RELEASE_BUILD_TOOLS["setuptools"],
+    }:
+        raise ReleaseError(f"{path}.backend must equal the pinned package backend")
+    built_raw = record["built_artifacts"]
+    if not isinstance(built_raw, list):
+        raise ReleaseError(f"{path}.built_artifacts must be a list")
+    built_artifacts = [
+        _validate_built_artifact(item, index) for index, item in enumerate(built_raw)
+    ]
+    built_by_package = {item["package"]: item for item in built_artifacts}
+    if (
+        len(built_by_package) != len(built_artifacts)
+        or set(built_by_package) != set(EXPECTED_PACKAGES)
+    ):
+        raise ReleaseError(
+            f"{path}.built_artifacts must contain the exact three-package matrix"
+        )
+    wrong_generators = {
+        package: item["generator"]
+        for package, item in built_by_package.items()
+        if item["generator"] != RELEASE_WHEEL_GENERATOR
+    }
+    if wrong_generators:
+        raise ReleaseError(
+            f"{path}.built_artifacts disagree with the pinned wheel generator: "
+            f"{wrong_generators}"
+        )
+    built_names = [item["filename"] for item in built_artifacts]
+    if len(built_names) != len(set(built_names)):
+        raise ReleaseError(f"{path}.built_artifacts filenames must be unique")
+    umask = _strict_string(record["umask"], f"{path}.umask")
+    if umask != "022":
+        raise ReleaseError(f"{path}.umask must equal '022'")
+    return {
+        "python_implementation": _strict_string(
+            record["python_implementation"], f"{path}.python_implementation"
+        ),
+        "python_version": _strict_string(
+            record["python_version"],
+            f"{path}.python_version",
+            pattern=_VERSION_RE,
+        ),
+        "frontend": frontend,
+        "backend": backend,
+        "tool_versions": sorted(parsed_tools, key=lambda tool: tool["name"]),
+        "source_commit": _strict_string(
+            record["source_commit"], f"{path}.source_commit", pattern=_GIT_ID_RE
+        ),
+        "source_date_epoch": _strict_int(
+            record["source_date_epoch"], f"{path}.source_date_epoch", minimum=1
+        ),
+        "umask": umask,
+        "built_artifacts": sorted(
+            built_artifacts,
+            key=lambda item: item["package"],
+        ),
+    }
+
+
 def validate_gate_record(
     value: Any,
     *,
@@ -836,85 +919,7 @@ def validate_gate_record(
             }
         )
     if build:
-        tools = record["tool_versions"]
-        if not isinstance(tools, list) or not tools:
-            raise ReleaseError(f"{path}.tool_versions must be a nonempty list")
-        parsed_tools = [_validate_tool(tool, f"{path}.tool_versions[{i}]") for i, tool in enumerate(tools)]
-        names = [tool["name"] for tool in parsed_tools]
-        if len(names) != len(set(names)) or set(names) != set(RELEASE_BUILD_TOOLS):
-            raise ReleaseError(
-                f"{path}.tool_versions must equal the exact release build toolchain"
-            )
-        actual_tools = {tool["name"]: tool["version"] for tool in parsed_tools}
-        if actual_tools != RELEASE_BUILD_TOOLS:
-            raise ReleaseError(
-                f"{path}.tool_versions disagree with the exact release build toolchain"
-            )
-        frontend = _validate_tool(record["frontend"], f"{path}.frontend")
-        if frontend != RELEASE_BUILD_FRONTEND:
-            raise ReleaseError(f"{path}.frontend must equal the release-owned build frontend")
-        backend = _validate_tool(record["backend"], f"{path}.backend")
-        if backend != {
-            "name": RELEASE_BUILD_BACKEND,
-            "version": RELEASE_BUILD_TOOLS["setuptools"],
-        }:
-            raise ReleaseError(f"{path}.backend must equal the pinned package backend")
-        built_raw = record["built_artifacts"]
-        if not isinstance(built_raw, list):
-            raise ReleaseError(f"{path}.built_artifacts must be a list")
-        built_artifacts = [
-            _validate_built_artifact(item, index)
-            for index, item in enumerate(built_raw)
-        ]
-        built_by_package = {item["package"]: item for item in built_artifacts}
-        if (
-            len(built_by_package) != len(built_artifacts)
-            or set(built_by_package) != set(EXPECTED_PACKAGES)
-        ):
-            raise ReleaseError(
-                f"{path}.built_artifacts must contain the exact three-package matrix"
-            )
-        wrong_generators = {
-            package: item["generator"]
-            for package, item in built_by_package.items()
-            if item["generator"] != RELEASE_WHEEL_GENERATOR
-        }
-        if wrong_generators:
-            raise ReleaseError(
-                f"{path}.built_artifacts disagree with the pinned wheel generator: "
-                f"{wrong_generators}"
-            )
-        built_names = [item["filename"] for item in built_artifacts]
-        if len(built_names) != len(set(built_names)):
-            raise ReleaseError(f"{path}.built_artifacts filenames must be unique")
-        result.update(
-            {
-                "python_implementation": _strict_string(
-                    record["python_implementation"], f"{path}.python_implementation"
-                ),
-                "python_version": _strict_string(
-                    record["python_version"],
-                    f"{path}.python_version",
-                    pattern=_VERSION_RE,
-                ),
-                "frontend": frontend,
-                "backend": backend,
-                "tool_versions": sorted(parsed_tools, key=lambda tool: tool["name"]),
-                "source_commit": _strict_string(
-                    record["source_commit"], f"{path}.source_commit", pattern=_GIT_ID_RE
-                ),
-                "source_date_epoch": _strict_int(
-                    record["source_date_epoch"], f"{path}.source_date_epoch", minimum=1
-                ),
-                "umask": _strict_string(record["umask"], f"{path}.umask"),
-                "built_artifacts": sorted(
-                    built_artifacts,
-                    key=lambda item: item["package"],
-                ),
-            }
-        )
-        if result["umask"] != "022":
-            raise ReleaseError(f"{path}.umask must equal '022'")
+        result.update(_validate_build_fields(record, path))
     return result
 
 
