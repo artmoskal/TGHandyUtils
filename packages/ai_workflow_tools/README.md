@@ -245,9 +245,13 @@ from ai_workflow_tools.testing import run_openai_compatible_provider_conformance
 await run_openai_compatible_provider_conformance(make_client)
 ```
 
-Tools `0.7.0` carries the provider and CLI behavior of `0.6.10` unchanged, targets
-`ai-workflow-engine>=0.12.0,<0.13`, and belongs to the `engine-v0.12.0` candidate matrix. Do not
-install it until that immutable release is published and verified.
+Tools `0.7.1` adds bounded, redacted Codex JSONL failure diagnostics shared by console and agent
+capability callers, targets `ai-workflow-engine>=0.12.0,<0.13`, and belongs to the
+`engine-v0.12.2` candidate matrix. Do not install it until that immutable release is published and
+verified.
+
+Tools `0.7.0` carries the provider and CLI behavior of `0.6.10` unchanged and belongs to the
+`engine-v0.12.0` release matrix.
 
 The v0.6.4 release carries the v0.6.3 provider behavior unchanged under the corrected source-only
 release-evidence contract.

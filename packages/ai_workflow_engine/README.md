@@ -5,8 +5,8 @@ declare a workflow, register typed capabilities, and call one engine door. The e
 transitions, retries, fan-out, budgets, waits, trace, usage, and observation bundles; products own
 domain models, provider clients, storage adapters, clocks, and side-effect delivery.
 
-> **`engine-v0.12.1` is the release candidate.**
-> `engine-v0.12.0` remains the current release; do not re-pin until it is cut and its immutable
+> **`engine-v0.12.2` is the release candidate.**
+> `engine-v0.12.1` remains the current release; do not re-pin until it is cut and its immutable
 > release directory verifies.
 > The engine owner publishes wheels bound to
 > immutable tags; consumer
@@ -23,6 +23,13 @@ domain models, provider clients, storage adapters, clocks, and side-effect deliv
 > `wait-v1` records under v0.11.5.
 > Adoption is fresh: new consumers start on the current contract; existing consumers re-adopt the
 > current surface rather than migrate state.
+>
+> **v0.12.2 candidate delta.** Codex JSONL provider/turn failure records now produce one bounded,
+> redacted diagnostic shared by the console and agent capability paths while completed turns retain
+> honest usage and may supersede nonterminal notices. The release verifier rejects changed wheel
+> bytes under an unchanged predecessor package version. Engine `0.12.2`, tools `0.7.1`, and viewer
+> `0.4.1` form one coherent, distinguishable candidate matrix; the viewer change is release identity
+> only.
 >
 > **v0.12.1 candidate delta.** `ObservationReader.iter_detail_bodies(...)` is the public,
 > transport-neutral bulk hydration door for selected detail kinds. It validates the sealed detail
@@ -217,19 +224,19 @@ Consumers download the complete published release directory, obtain the verifier
 the tag (or another already trusted pin), verify the bundle before installation, and install only
 the packages their product needs. Building from source is a producer operation, not consumer
 verification. The exact producer and consumer commands are in
-[`docs/operations.md`](docs/operations.md#release-artifacts-and-verification-v0121).
+[`docs/operations.md`](docs/operations.md#release-artifacts-and-verification-v0122).
 The required pre-install door, once the candidate is published, is
-`python3 release_artifacts.py verify-bundle --dir /path/to/engine-v0.12.1`.
+`python3 release_artifacts.py verify-bundle --dir /path/to/engine-v0.12.2`.
 
 Candidate matrix:
 
 | Package | Install when |
 |---|---|
-| `ai-workflow-engine==0.12.1` | Always. Core builder, executor, memory, waits, observation writer. |
-| `ai-workflow-tools==0.7.0` | The product uses provider clients, CLI agents, the tool catalog, or media helpers. |
-| `ai-workflow-viewer==0.4.0` | A developer or product service renders observation bundles. |
+| `ai-workflow-engine==0.12.2` | Always. Core builder, executor, memory, waits, observation writer. |
+| `ai-workflow-tools==0.7.1` | The product uses provider clients, CLI agents, the tool catalog, or media helpers. |
+| `ai-workflow-viewer==0.4.1` | A developer or product service renders observation bundles. |
 
-Do not install this matrix until `engine-v0.12.1` is cut. Until then, consumers remain on their
+Do not install this matrix until `engine-v0.12.2` is cut. Until then, consumers remain on their
 verified prior release.
 
 Record the engine tag, source commit, and wheel SHA-256 in the consumer repository. A tag already

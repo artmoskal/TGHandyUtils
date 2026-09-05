@@ -1,6 +1,6 @@
 """Standalone consumers for ai_workflow_engine observability records."""
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 from ai_workflow_viewer.event_source import (
     EventSource,

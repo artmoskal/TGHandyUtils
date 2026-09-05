@@ -688,6 +688,67 @@ def test_tagged_source_rejects_copied_release_evidence_in_annotation(
     )
 
 
+def test_wheel_identity_transition_rejects_changed_hash_without_version_bump() -> None:
+    release_0120 = {
+        "ai-workflow-engine": {
+            "version": "0.12.0",
+            "sha256": "f571d6fca0aa016d0c502a6cc4d97c0beabedb5140bf7640a876f064b3f304cb",
+        },
+        "ai-workflow-tools": {
+            "version": "0.7.0",
+            "sha256": "c009b9fe20748db48c3e3ce5da7a91ca026faaca2795f7748cd87b5fc9237329",
+        },
+        "ai-workflow-viewer": {
+            "version": "0.4.0",
+            "sha256": "2893fa92edd99ce5addda7e6cd7c83955fd1ec680356b2cc906710b395c93285",
+        },
+    }
+    release_0121 = {
+        "ai-workflow-engine": {
+            "version": "0.12.1",
+            "sha256": "21593fe27cf85abab77209e4746101f3faedef4f1df51891e7b835388356544f",
+        },
+        "ai-workflow-tools": {
+            "version": "0.7.0",
+            "sha256": "320de2569c7ae7bfffb39b82592cd510086624d868142fc09191f793b85a3517",
+        },
+        "ai-workflow-viewer": {
+            "version": "0.4.0",
+            "sha256": "be9dbae8f4c484e6151e6770a442ca520d272a79e952d37efcbe258e52e6fc6b",
+        },
+    }
+
+    contract.validate_wheel_identity_transition(release_0120, release_0120)
+    rejected = _expect_rejection(
+        contract.validate_wheel_identity_transition,
+        release_0120,
+        release_0121,
+        fragment="ai-workflow-viewer",
+    )
+    assert "ai-workflow-tools" in str(rejected)
+
+    repo_root = _PACKAGE_ROOT.parents[1]
+    candidate_versions = {
+        package: tomllib.loads((repo_root / source).read_text(encoding="utf-8"))[
+            "project"
+        ]["version"]
+        for package, source in contract.EXPECTED_PACKAGES.items()
+    }
+    assert candidate_versions == {
+        "ai-workflow-engine": "0.12.2",
+        "ai-workflow-tools": "0.7.1",
+        "ai-workflow-viewer": "0.4.1",
+    }
+    release_0122 = {
+        package: {
+            "version": version,
+            "sha256": hashlib.sha256(f"{package}-candidate".encode()).hexdigest(),
+        }
+        for package, version in candidate_versions.items()
+    }
+    contract.validate_wheel_identity_transition(release_0121, release_0122)
+
+
 def test_manifest_binds_test_and_smoke_to_canonical_release_commands(tmp_path: Path) -> None:
     _bundle, manifest = _assemble(tmp_path)
 

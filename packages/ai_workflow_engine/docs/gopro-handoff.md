@@ -1,17 +1,18 @@
 # GoPro Engine Adoption Guide
 
-Status: **`engine-v0.12.1` is the release candidate; `engine-v0.12.0` remains the published release.**
-The candidate advances observation to strict bundle v4 with bounded engine-owned body readers and
-no v3 compatibility path. It retains the optional generic OpenAI-compatible provider without
-changing GoPro's direct-VLM workflow contract. GoPro may continue consuming only the engine wheel.
-Until the candidate is published, GoPro should pin tag `engine-v0.12.0`. After publication it must
-verify the complete v0.12.1 release directory, record the source
+Status: **`engine-v0.12.2` is the release candidate; `engine-v0.12.1` remains the published release.**
+The candidate retains strict bundle v4 and its bounded engine-owned readers, and makes Codex CLI
+failure diagnostics bounded and causal in the optional tools wheel. It does not change GoPro's
+direct-VLM workflow contract; GoPro may continue consuming only the engine wheel.
+Until the candidate is published, GoPro should pin tag `engine-v0.12.1`. After publication it must
+verify the complete v0.12.2 release directory, record the source
 commit and consumed wheel hash, and
 run its sidecar canary before changing the production image. Do not
 infer the actual GoPro pin from this document; the consumer repository's
 pin file is authoritative for deployed state.
 
-`engine-v0.12.1` carries forward v0.12.0's bundle-v4 contract and v0.11.18's complete-child
+`engine-v0.12.2` carries forward v0.12.1's bounded bulk reader, v0.12.0's bundle-v4 contract,
+and v0.11.18's complete-child
 execution breaker shared by
 registered workflow capabilities and declared subworkflows; this is useful for bounded VLM or
 investigation subflows but does not require GoPro to adopt the optional tools/viewer packages.
@@ -50,14 +51,14 @@ and delivery. Inventory may reuse the same mechanics later without changing the 
 
 | Package | GoPro use |
 |---|---|
-| `ai-workflow-engine==0.12.1` | Runtime for complete-child execution windows and bundle-v4 writing/reading |
-| `ai-workflow-tools==0.7.0` | Add only for provider clients, CLI agents, or media helpers |
-| `ai-workflow-viewer==0.4.0` | Bundle-v4 diagnostic companion; not required in the detector image |
+| `ai-workflow-engine==0.12.2` | Runtime for complete-child execution windows and bundle-v4 writing/reading |
+| `ai-workflow-tools==0.7.1` | Add only for provider clients, CLI agents, or media helpers |
+| `ai-workflow-viewer==0.4.1` | Bundle-v4 diagnostic companion; not required in the detector image |
 
-> **Candidate matrix:** `engine-v0.12.1` + `ai-workflow-tools==0.7.0` +
-> `ai-workflow-viewer==0.4.0`.
+> **Candidate matrix:** `engine-v0.12.2` + `ai-workflow-tools==0.7.1` +
+> `ai-workflow-viewer==0.4.1`.
 >
-> Do not install this matrix until `engine-v0.12.1` is cut.
+> Do not install this matrix until `engine-v0.12.2` is cut.
 
 
 Vendoring only the engine wheel is the correct lightweight configuration for the current direct-VLM
@@ -186,11 +187,11 @@ second memory, retry, or observation runtime into the sidecar.
 
 ## v0.12 Release Contract
 
-`engine-v0.12.1` is the next **latest-only** contract. It uses strict versioned persisted contracts
+`engine-v0.12.2` is the next **latest-only** contract. It uses strict versioned persisted contracts
 (snapshot `v0.11`, bundle meta v4, wait records `wait-v2`), one strict viewer loader, and NO
 migration layer. Old persisted data is rejected loudly naming its historical tag. After publication,
 adopt by re-pinning fresh (verify the published `release-manifest-v2` directory, then install only
-the engine `0.12.1` wheel for the current sidecar) and
+the engine `0.12.2` wheel for the current sidecar) and
 re-run your canaries before changing any deployed pin. The release makes node-context binding
 explicit for every node kind and adds native Codex image attachment in the optional tools wheel;
 the sealed behavior corpus is unchanged. `wait-v1` records written by v0.11.5 are non-current:

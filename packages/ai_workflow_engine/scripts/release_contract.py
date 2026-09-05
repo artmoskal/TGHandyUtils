@@ -195,6 +195,46 @@ def _strict_version(value: Any, path: str) -> str:
     return _strict_string(value, path, pattern=_VERSION_RE)
 
 
+def validate_wheel_identity_transition(
+    predecessor: Any,
+    candidate: Any,
+) -> None:
+    """Reject changed wheel bytes that reuse a predecessor package version."""
+
+    matrices: list[dict[str, dict[str, str]]] = []
+    for label, value in (("predecessor", predecessor), ("candidate", candidate)):
+        matrix = _exact_mapping(value, set(EXPECTED_PACKAGES), label)
+        identities: dict[str, dict[str, str]] = {}
+        for package in EXPECTED_PACKAGES:
+            identity = _exact_mapping(
+                matrix[package],
+                {"version", "sha256"},
+                f"{label}.{package}",
+            )
+            identities[package] = {
+                "version": _strict_version(
+                    identity["version"], f"{label}.{package}.version"
+                ),
+                "sha256": _strict_sha(
+                    identity["sha256"], f"{label}.{package}.sha256"
+                ),
+            }
+        matrices.append(identities)
+
+    previous, current = matrices
+    reused = [
+        package
+        for package in EXPECTED_PACKAGES
+        if previous[package]["version"] == current[package]["version"]
+        and previous[package]["sha256"] != current[package]["sha256"]
+    ]
+    if reused:
+        raise ReleaseError(
+            "wheel bytes changed under an unchanged package version: "
+            + ", ".join(reused)
+        )
+
+
 def _strict_uri(value: Any, path: str, *, expected_filename: str) -> str:
     uri = _strict_string(value, path)
     parsed = urlsplit(uri)
@@ -1416,6 +1456,7 @@ __all__ = [
     "parse_sha256sums",
     "tagged_source",
     "validate_gate_record",
+    "validate_wheel_identity_transition",
     "verify_bundle",
     "write_sha256sums",
     "_normalize_utc_now",
