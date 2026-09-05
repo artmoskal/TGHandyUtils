@@ -12,6 +12,7 @@ from typing import Sequence
 
 import logging
 import math
+import re
 from typing import Any
 
 from ai_workflow_engine.engine.external import ExternalProcessCapability, ExternalProcessRequest
@@ -29,6 +30,7 @@ from ai_workflow_engine.usage_contract import new_provider_invocation_id
 
 from .usage import (
     CliUsageAccumulator,
+    CodexProtocolState,
     parse_cli_process_output,
     parsed_cli_output_from_accumulator,
     usage_accumulator_for,
@@ -54,6 +56,12 @@ _TOOL_FLAGS = (
     "--allowed-tools",
     "--disallowedTools",
     "--disallowed-tools",
+)
+
+_STDERR_UNSAFE_RE = re.compile(
+    r"https?://[^\s\"'<>]+|\b(?:bearer\s+\S+|(?:[a-z0-9]+[_-])*"
+    r"(?:key|authorization|credential|password|prompt|secret|token)\s*[:=]).*$",
+    re.IGNORECASE,
 )
 
 
@@ -146,6 +154,7 @@ class ConsoleCliError(RuntimeError):
         normalized_usage: Any = None,
         usage_error: Any = None,
         usage_diagnostic: str | None = None,
+        provider_error_diagnostic: CodexProtocolState | None = None,
         invocation_id: str | None = None,
         elapsed_ms: int | None = None,
     ) -> None:
@@ -171,6 +180,7 @@ class ConsoleCliError(RuntimeError):
         self.normalized_usage = normalized_usage
         self.usage_error = usage_error
         self.usage_diagnostic = usage_diagnostic
+        self.provider_error_diagnostic = provider_error_diagnostic
         self.invocation_id = invocation_id
         self.elapsed_ms = elapsed_ms
 
@@ -364,7 +374,7 @@ class ConsoleLLMClient:
             if (
                 external.status != "accepted"
                 or output.get("returncode") != 0
-                or parsed.provider_error
+                or parsed.provider_failed
             ):
                 # ONE typed failure path (Q-R2): the runner marks nonzero exits failed but
                 # still hands us stdout — claude's ERROR envelope there carries the consumed
@@ -632,7 +642,7 @@ class ConsoleChatModel:
             if (
                 external.status != "accepted"
                 or output.get("returncode") != 0
-                or parsed.provider_error
+                or parsed.provider_failed
             ):
                 raise _console_failure(
                     self.flavor,
@@ -800,6 +810,34 @@ def _flatten_message(message: ChatMessage) -> list[str]:
     return parts
 
 
+def _console_failure_projection(
+    aborted: ParsedCliOutput,
+    external_status: str,
+    returncode: Any,
+    base: str,
+    consumed: str,
+    stderr: str,
+) -> tuple[CodexProtocolState | None, str, str]:
+    diagnostic = aborted.failure_diagnostic(
+        process_failed=external_status != "accepted" or returncode != 0
+    )
+    if diagnostic is not None:
+        message = f"{base}{consumed}: {diagnostic.render()}"
+        stderr_cause = _bounded_redacted_stderr(stderr)
+        if diagnostic.category in ("unknown", "malformed", "oversized") and stderr_cause:
+            message = f"{message}; stderr: {stderr_cause}"
+        return diagnostic, "", message
+    subtype = aborted.provider_error_subtype or ""
+    suffix = f" ({subtype})" if subtype else ""
+    return None, subtype, f"{base}{suffix}{consumed}: {stderr[-800:]}"
+
+
+def _bounded_redacted_stderr(stderr: str) -> str:
+    text = " ".join(stderr.replace("\x1b", "").split())
+    text = _STDERR_UNSAFE_RE.sub("[redacted]", text)
+    return text[-800:]
+
+
 def _console_failure(
     flavor: CliFlavor,
     external: Any,
@@ -818,7 +856,6 @@ def _console_failure(
         if usage_accumulator is not None
         else parse_cli_process_output(flavor, output)
     )
-    subtype = aborted.provider_error_subtype or ""
     returncode = output.get("returncode")
     stderr = str(output.get("stderr") or "")
     consumed = (
@@ -828,18 +865,24 @@ def _console_failure(
     )
     base = external.error or (
         "console CLI reported an error result"
-        if aborted.provider_error
+        if aborted.provider_failed
         else f"console CLI exited with status {external.status}"
     )
+    provider_diagnostic, subtype, message = _console_failure_projection(
+        aborted, external.status, returncode, base, consumed, stderr
+    )
     lowered = f"{base} {stderr}".lower()
-    if subtype == "error_max_budget_usd":
+    if subtype == "error_max_budget_usd" or (
+        provider_diagnostic is not None
+        and provider_diagnostic.category == "quota_capacity_rate_limit"
+    ):
         failure_kind = "cap"
     elif "timed out" in lowered or "timeout" in lowered:
         failure_kind = "timeout"
     else:
         failure_kind = "provider"
     return ConsoleCliError(
-        f"{base}{f' ({subtype})' if subtype else ''}{consumed}: {stderr[-800:]}",
+        message,
         cli_subtype=subtype,
         notional_usd=aborted.provider_reported_notional_usd,
         returncode=returncode if isinstance(returncode, int) else None,
@@ -852,6 +895,7 @@ def _console_failure(
         normalized_usage=aborted.normalized_usage,
         usage_error=aborted.usage_error,
         usage_diagnostic=aborted.usage_diagnostic,
+        provider_error_diagnostic=provider_diagnostic,
         invocation_id=invocation_id,
         elapsed_ms=elapsed_ms,
     )

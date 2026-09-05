@@ -63,6 +63,14 @@ def _configure_fake_cli(
     return record_path
 
 
+class _ObservationCaptureSpy:
+    def __init__(self) -> None:
+        self.records: list[dict] = []
+
+    def record(self, **record) -> None:
+        self.records.append(record)
+
+
 async def test_claude_flavor_happy_path_maps_envelope_usage_and_subscription_cost(
     capability_context,
     fake_cli_path,
@@ -474,6 +482,311 @@ async def test_codex_failure_and_timeout_keep_latest_structured_usage(
     assert usage.notional_pricing.source == "configured_public_rate"
 
 
+async def test_codex_agent_nonzero_exit_exposes_same_stdout_failure_diagnostic(
+    capability_context,
+    fake_cli_path,
+    monkeypatch,
+    tmp_path,
+):
+    workspace = tmp_path / "workspace-codex-provider-failure"
+    _configure_fake_cli(
+        monkeypatch,
+        tmp_path,
+        workspace,
+        mode="codex_failure",
+    )
+    monkeypatch.setenv(
+        "FAKE_CLI_STDOUT_OVERRIDE",
+        json.dumps(
+            {
+                "type": "error",
+                "message": 'Reconnecting... TOP SECRET {"prompt":"private body"}',
+                "prompt": "must-not-survive",
+            }
+        ),
+    )
+    cap = CliAgentCapability(
+        _fake_flavor(codex_exec, fake_cli_path),
+        name="codex_agent",
+    )
+    summary = WorkflowUsageSummary()
+
+    with workflow_usage_scope(
+        WorkflowUsageContext(
+            capability_context.run_context,
+            summary,
+            WorkflowBudget(),
+        )
+    ):
+        cap_result = await cap(
+            capability_context,
+            CliAgentRequest(
+                prompt="Inspect",
+                workspace_dir=str(workspace),
+                model="gpt-5.4-codex",
+                timeout_s=30,
+                invocation_id="inv-codex-agent-stdout-failure",
+            ),
+        )
+
+    assert cap_result.status == "failed"
+    assert cap_result.error == (
+        "external process exited 1: "
+        "codex error [connectivity]: Codex connection failed"
+    )
+    result = cap_result.output
+    assert result.status == "error"
+    assert result.text == '{"ok": true}'
+    assert result.returncode == 1
+    assert result.stderr_tail == ""
+    assert result.invocation_id == "inv-codex-agent-stdout-failure"
+    assert result.input_tokens == 0
+    assert result.output_tokens == 0
+    assert result.normalized_usage is None
+    assert result.usage_error == "usage_event_missing"
+    assert cap_result.metadata["process_execution_bound"]["work_timeout_s"] == 30
+    assert cap_result.metadata["provider_error_diagnostic"] == {
+        "provider": "codex",
+        "subtype": "error",
+        "category": "connectivity",
+        "message": "Codex connection failed",
+    }
+    assert len(summary.events) == 1
+    usage = summary.events[0]
+    assert usage.success is False
+    assert usage.input_tokens == 0
+    assert usage.output_tokens == 0
+    assert usage.notional_usd is None
+    assert usage.error == cap_result.error
+    assert "must-not-survive" not in (cap_result.error or "")
+    assert "TOP SECRET" not in (cap_result.error or "")
+    assert "TOP SECRET" not in (usage.error or "")
+    assert "private body" not in json.dumps(cap_result.metadata, sort_keys=True)
+
+
+async def test_codex_agent_reconnect_notices_then_completion_succeeds(
+    capability_context,
+    fake_cli_path,
+    monkeypatch,
+    tmp_path,
+):
+    workspace = tmp_path / "workspace-codex-reconnect-success"
+    _configure_fake_cli(
+        monkeypatch,
+        tmp_path,
+        workspace,
+        mode="codex_failure",
+        result="recovered answer",
+    )
+    completed = {
+        "type": "turn.completed",
+        "usage": {
+            "input_tokens": 12,
+            "cached_input_tokens": 2,
+            "output_tokens": 3,
+            "reasoning_output_tokens": 1,
+            "total_tokens": 15,
+        },
+    }
+    monkeypatch.setenv(
+        "FAKE_CLI_STDOUT_OVERRIDE",
+        "\n".join(
+            [
+                json.dumps({"type": "error", "message": "Reconnecting... 1/5"}),
+                json.dumps({"type": "error", "message": "Reconnecting... 2/5"}),
+                json.dumps(completed),
+            ]
+        ),
+    )
+    monkeypatch.setenv("FAKE_CLI_EXIT_CODE", "0")
+    cap = CliAgentCapability(
+        _fake_flavor(codex_exec, fake_cli_path), name="codex_agent"
+    )
+    summary = WorkflowUsageSummary()
+
+    with workflow_usage_scope(
+        WorkflowUsageContext(
+            capability_context.run_context,
+            summary,
+            WorkflowBudget(),
+        )
+    ):
+        cap_result = await cap(
+            capability_context,
+            CliAgentRequest(
+                prompt="Inspect",
+                workspace_dir=str(workspace),
+                model="gpt-5.4-codex",
+                timeout_s=30,
+            ),
+        )
+
+    assert cap_result.status == "accepted"
+    assert cap_result.error is None
+    assert cap_result.output.status == "completed"
+    assert cap_result.output.text == "recovered answer"
+    assert cap_result.output.input_tokens == 12
+    assert cap_result.metadata.get("provider_error_diagnostic") is None
+    assert len(summary.events) == 1
+    assert summary.events[0].success is True
+
+
+async def test_codex_terminal_provider_failure_is_not_a_process_failure_and_keeps_result(
+    capability_context,
+    fake_cli_path,
+    monkeypatch,
+    tmp_path,
+):
+    from ai_workflow_tools.cli_agents.usage import ParsedCliOutput
+
+    workspace = tmp_path / "workspace-codex-terminal-provider-failure"
+    _configure_fake_cli(
+        monkeypatch,
+        tmp_path,
+        workspace,
+        mode="codex_failure",
+        result='{"ok": true}',
+    )
+    completed = {
+        "type": "turn.completed",
+        "usage": {
+            "input_tokens": 12,
+            "cached_input_tokens": 2,
+            "output_tokens": 3,
+            "reasoning_output_tokens": 1,
+            "total_tokens": 15,
+        },
+    }
+    monkeypatch.setenv(
+        "FAKE_CLI_STDOUT_OVERRIDE",
+        "\n".join(
+            [
+                json.dumps(completed),
+                json.dumps(
+                    {
+                        "type": "turn.failed",
+                        "error": {"message": "model access denied"},
+                    }
+                ),
+            ]
+        ),
+    )
+    monkeypatch.setenv("FAKE_CLI_EXIT_CODE", "0")
+    observed_process_failed: list[bool] = []
+    original = ParsedCliOutput.failure_diagnostic
+
+    def observe_process_semantics(self, *, process_failed):
+        observed_process_failed.append(process_failed)
+        return original(self, process_failed=process_failed)
+
+    monkeypatch.setattr(ParsedCliOutput, "failure_diagnostic", observe_process_semantics)
+    cap = CliAgentCapability(
+        _fake_flavor(codex_exec, fake_cli_path), name="codex_agent"
+    )
+
+    cap_result = await cap(
+        capability_context,
+        CliAgentRequest(
+            prompt="Inspect",
+            workspace_dir=str(workspace),
+            model="gpt-5.4-codex",
+            timeout_s=30,
+            expect_json_result=True,
+        ),
+    )
+
+    assert cap_result.status == "failed"
+    assert cap_result.output.status == "error"
+    assert cap_result.output.returncode == 0
+    assert cap_result.output.text == '{"ok": true}'
+    assert cap_result.output.parsed == {"ok": True}
+    assert cap_result.output.input_tokens == 12
+    assert cap_result.metadata["provider_error_diagnostic"]["subtype"] == "turn.failed"
+    assert observed_process_failed == [False]
+
+
+async def test_codex_failure_observation_keeps_raw_process_evidence_separate(
+    fake_cli_path,
+    monkeypatch,
+    tmp_path,
+):
+    from ai_workflow_tools.toolsets import BASH_SIDE_EFFECTS
+
+    workspace = tmp_path / "workspace-codex-failure-observation"
+    bundle_root = tmp_path / "bundles-codex-failure"
+    _configure_fake_cli(
+        monkeypatch,
+        tmp_path,
+        workspace,
+        mode="codex_failure",
+    )
+    monkeypatch.setenv(
+        "FAKE_CLI_STDOUT_OVERRIDE",
+        json.dumps(
+            {
+                "type": "turn.failed",
+                "error": {"message": "model access denied"},
+                "prompt": "RAW-FAILURE-PROMPT-SENTINEL",
+                "credentials": {"token": "RAW-FAILURE-CREDENTIAL-SENTINEL"},
+                "arbitrary": {"payload": "RAW-FAILURE-PAYLOAD-SENTINEL"},
+            }
+        ),
+    )
+    cap = CliAgentCapability(
+        _fake_flavor(codex_exec, fake_cli_path),
+        name="codex_agent",
+    )
+    builder = WorkflowEngineBuilder().with_observation(
+        ObservationConfig(
+            enabled=True,
+            bundle_dir=str(bundle_root),
+            capture="full",
+        )
+    )
+    builder.register_capability_spec(cap.spec, cap)
+    builder.register_workflow(
+        WorkflowBuilder("codex_failure_observation").step("codex_agent").build(),
+        profile=WorkflowProfile(
+            workflow_type="codex_failure_observation",
+            safety=SafetyPolicy(allowed_side_effects=list(BASH_SIDE_EFFECTS)),
+        ),
+    )
+
+    run_result = await builder.build().run(
+        "codex_failure_observation",
+        CliAgentRequest(
+            prompt="Inspect",
+            workspace_dir=str(workspace),
+            model="gpt-5.4-codex",
+            timeout_s=30,
+            invocation_id="inv-codex-failure-observation",
+        ),
+        goal=WorkflowGoal(
+            workflow_type="codex_failure_observation",
+            objective="Prove bounded provider failure persistence.",
+        ),
+    )
+
+    assert run_result.status == "failed"
+    assert run_result.observation_bundle_path
+    reader = ObservationReader(run_result.observation_bundle_path)
+    tool_results = [
+        reader.parse_json(detail, max_bytes=64 * 1024)
+        for detail in reader.iter_detail_envelopes()
+        if detail.kind == "tool_result"
+    ]
+    persisted = json.dumps(tool_results, sort_keys=True)
+    assert "codex turn.failed [model_access]: Codex model access denied" in persisted
+    assert '"provider_error_diagnostic": {' in persisted
+    assert '"category": "model_access"' in persisted
+    assert '"stdout": "{\\"type\\": \\"turn.failed\\"' in persisted
+    assert '"result": "{\\"ok\\": true}"' in persisted
+    assert '"text": "{\\"ok\\": true}"' in persisted
+    assert persisted.count("RAW-FAILURE-PROMPT-SENTINEL") == 1
+    assert persisted.count("RAW-FAILURE-CREDENTIAL-SENTINEL") == 1
+    assert persisted.count("RAW-FAILURE-PAYLOAD-SENTINEL") == 1
+
+
 async def test_codex_cancellation_records_latest_usage_once_and_reaps_process(
     capability_context,
     fake_cli_path,
@@ -550,6 +863,51 @@ async def test_timeout_returns_partial_and_salvages_png(
     assert result.new_artifact_count == 1
     assert [artifact.role for artifact in result.artifacts] == ["screenshot"]
     assert cap_result.artifacts[0].kind == "media"
+
+
+async def test_codex_timeout_keeps_raw_partial_process_evidence(
+    capability_context,
+    fake_cli_path,
+    monkeypatch,
+    tmp_path,
+):
+    workspace = tmp_path / "workspace-codex-partial-evidence"
+    _configure_fake_cli(
+        monkeypatch,
+        tmp_path,
+        workspace,
+        mode="usage_then_sleep",
+        result="partial result evidence",
+        sleep_s="30",
+    )
+    capture = _ObservationCaptureSpy()
+    monkeypatch.setattr(
+        "ai_workflow_tools.cli_agents.capability.current_observation_capture",
+        lambda: capture,
+    )
+    cap = CliAgentCapability(
+        _fake_flavor(codex_exec, fake_cli_path), name="codex_agent"
+    )
+
+    cap_result = await cap(
+        capability_context,
+        CliAgentRequest(
+            prompt="Inspect",
+            workspace_dir=str(workspace),
+            model="gpt-5.4-codex",
+            timeout_s=0.5,
+        ),
+    )
+
+    response = next(
+        record for record in capture.records if record["phase"] == "provider:response"
+    )
+    process_result = response["payload"]["process_result"]
+    assert cap_result.status == "partial"
+    assert '"type": "turn.completed"' in process_result["stdout"]
+    assert process_result["result"] == "partial result evidence"
+    assert process_result["stderr"] == ""
+    assert process_result["returncode"] == -15
 
 
 async def test_lenient_json_parses_chatter_and_preserves_garbage(

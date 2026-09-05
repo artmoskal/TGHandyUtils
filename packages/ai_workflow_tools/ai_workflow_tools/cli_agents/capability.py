@@ -274,10 +274,12 @@ class CliAgentCapability:
             external, output, parsed_output
         )
         stderr = str(output.get("stderr") or "")
-        error = external.error if capability_status != "accepted" else None
-        if parsed_output.provider_error:
-            subtype = parsed_output.provider_error_subtype or "provider_error"
-            error = f"CLI provider reported an error result ({subtype})"
+        process_failed = external.status != "accepted" or output.get("returncode") != 0
+        error, failure_metadata = _agent_failure_projection(
+            external.error if process_failed else None,
+            parsed_output,
+            process_failed=process_failed,
+        )
         result = CliAgentResult(
             status=result_status,
             invocation_id=str(effective_request.invocation_id),
@@ -318,6 +320,7 @@ class CliAgentCapability:
         process_io = external.metadata.get("process_io") if external.metadata else None
         if isinstance(process_io, dict):
             agent_metadata["process_io"] = process_io
+        agent_metadata.update(failure_metadata)
         self._record_provider_result(
             effective_request,
             status=capability_status,
@@ -582,7 +585,7 @@ class CliAgentCapability:
         if (
             external.status == "accepted"
             and returncode == 0
-            and not parsed.provider_error
+            and not parsed.provider_failed
         ):
             return "completed", "accepted"
         return "error", "failed"
@@ -677,3 +680,21 @@ def _safe_int_or_none(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _agent_failure_projection(
+    external_error: str | None,
+    parsed: ParsedCliOutput,
+    *,
+    process_failed: bool,
+) -> tuple[str | None, dict[str, Any]]:
+    diagnostic = parsed.failure_diagnostic(process_failed=process_failed)
+    if diagnostic is not None:
+        base = external_error or "CLI provider reported an error result"
+        metadata = {"provider_error_diagnostic": diagnostic.metadata()}
+        return f"{base}: {diagnostic.render()}", metadata
+    if parsed.provider_failed:
+        # Preserve Claude's historical error wording exactly.
+        subtype = parsed.provider_error_subtype or "provider_error"
+        return f"CLI provider reported an error result ({subtype})", {}
+    return external_error, {}

@@ -1007,6 +1007,205 @@ async def test_console_zero_exit_error_envelope_is_still_a_typed_failure(
     assert excinfo.value.returncode == 0
 
 
+async def test_console_codex_nonzero_exit_exposes_stdout_failure_diagnostic(
+    fake_cli_path, monkeypatch, tmp_path
+):
+    event = {
+        "type": "error",
+        "message": 'Reconnecting... TOP SECRET {"prompt":"private body"}',
+        "prompt": "must-not-survive",
+        "credentials": {"token": "must-not-survive"},
+    }
+    _configure_fake_cli(monkeypatch, tmp_path, mode="codex_failure")
+    monkeypatch.setenv("FAKE_CLI_STDOUT_OVERRIDE", json.dumps(event))
+    client = ConsoleLLMClient(
+        _fake_flavor(codex_exec, fake_cli_path),
+        model="gpt-5.4-codex",
+        timeout_s=30,
+    )
+
+    with pytest.raises(ConsoleCliError) as excinfo:
+        await client(
+            LLMRequest(
+                user="classify",
+                invocation_id="inv-codex-stdout-failure",
+            )
+        )
+
+    error = excinfo.value
+    assert str(error) == (
+        "external process exited 1: "
+        "codex error [connectivity]: Codex connection failed"
+    )
+    # cli_subtype remains the Claude-envelope field. Codex event identity lives in
+    # provider_error_diagnostic instead of mixing two protocol vocabularies.
+    assert error.cli_subtype == ""
+    assert error.returncode == 1
+    assert error.invocation_id == "inv-codex-stdout-failure"
+    assert error.normalized_usage is None
+    assert error.usage_error == "usage_event_missing"
+    assert error.provider_error_diagnostic is not None
+    assert error.provider_error_diagnostic.category == "connectivity"
+    assert error.process_execution_bound["work_timeout_s"] == 30
+    assert "must-not-survive" not in str(error)
+    assert "TOP SECRET" not in str(error)
+    assert "private body" not in str(error)
+
+
+def test_console_stderr_cause_is_bounded_and_redacted():
+    from ai_workflow_tools.cli_agents.console import _bounded_redacted_stderr
+
+    raw = (
+        "\x1b[31m"
+        + ("startup detail " * 100)
+        + "at https://provider.invalid/private?sig=secret "
+        + "OPENAI_API_KEY=sk-must-not-survive private prompt"
+        + "\x1b[0m"
+    )
+
+    projected = _bounded_redacted_stderr(raw)
+
+    assert len(projected) <= 800
+    assert projected.count("[redacted]") == 2
+    assert "\x1b" not in projected
+    assert "provider.invalid" not in projected
+    assert "sk-must-not-survive" not in projected
+    assert "private prompt" not in projected
+
+
+async def test_console_codex_stderr_only_failure_preserves_cause(
+    fake_cli_path, monkeypatch, tmp_path
+):
+    from ai_workflow_engine.llm_protocol import LLMRequest
+
+    _configure_fake_cli(monkeypatch, tmp_path, mode="mcp_startup_failure")
+    client = ConsoleLLMClient(
+        _fake_flavor(codex_exec, fake_cli_path),
+        model="gpt-5.4-codex",
+    )
+
+    with pytest.raises(ConsoleCliError) as excinfo:
+        await client(LLMRequest(user="classify"))
+
+    error = excinfo.value
+    assert str(error) == (
+        "external process exited 1: "
+        "codex process [unknown]: Codex provider failure was not classified; "
+        "stderr: MCP server 'browser' failed to start: spawn npx ENOENT"
+    )
+    assert error.returncode == 1
+    assert error.cli_subtype == ""
+    assert error.provider_error_diagnostic is not None
+    assert error.provider_error_diagnostic.subtype == "process"
+
+
+async def test_console_codex_quota_category_uses_existing_cap_failure_kind(
+    fake_cli_path, monkeypatch, tmp_path
+):
+    from ai_workflow_engine.llm_protocol import LLMRequest
+
+    _configure_fake_cli(monkeypatch, tmp_path, mode="codex_failure")
+    monkeypatch.setenv(
+        "FAKE_CLI_STDOUT_OVERRIDE",
+        json.dumps({"type": "error", "message": "rate limit exceeded"}),
+    )
+    client = ConsoleLLMClient(
+        _fake_flavor(codex_exec, fake_cli_path),
+        model="gpt-5.4-codex",
+    )
+
+    with pytest.raises(ConsoleCliError) as excinfo:
+        await client(LLMRequest(user="classify"))
+
+    error = excinfo.value
+    assert error.failure_kind == "cap"
+    assert error.cli_subtype == ""
+    assert error.provider_error_diagnostic is not None
+    assert error.provider_error_diagnostic.category == "quota_capacity_rate_limit"
+
+
+async def test_console_codex_reconnect_notices_then_completion_succeeds(
+    fake_cli_path, monkeypatch, tmp_path
+):
+    completed = {
+        "type": "turn.completed",
+        "usage": {
+            "input_tokens": 12,
+            "cached_input_tokens": 2,
+            "output_tokens": 3,
+            "reasoning_output_tokens": 1,
+            "total_tokens": 15,
+        },
+    }
+    stdout = "\n".join(
+        [
+            json.dumps({"type": "error", "message": "Reconnecting... 1/5"}),
+            json.dumps({"type": "error", "message": "Reconnecting... 2/5"}),
+            json.dumps(completed),
+        ]
+    )
+    _configure_fake_cli(
+        monkeypatch,
+        tmp_path,
+        mode="codex_failure",
+        result="recovered answer",
+    )
+    monkeypatch.setenv("FAKE_CLI_STDOUT_OVERRIDE", stdout)
+    monkeypatch.setenv("FAKE_CLI_EXIT_CODE", "0")
+    client = ConsoleLLMClient(
+        _fake_flavor(codex_exec, fake_cli_path),
+        model="gpt-5.4-codex",
+    )
+
+    response = await client(LLMRequest(user="classify"))
+
+    assert response.text == "recovered answer"
+    assert response.input_tokens == 12
+    assert response.output_tokens == 3
+
+
+async def test_console_codex_failure_keeps_completed_usage_truth(
+    fake_cli_path, monkeypatch, tmp_path
+):
+    completed = {
+        "type": "turn.completed",
+        "usage": {
+            "input_tokens": 12,
+            "cached_input_tokens": 2,
+            "output_tokens": 3,
+            "reasoning_output_tokens": 1,
+            "total_tokens": 15,
+        },
+    }
+    failed = {
+        "type": "turn.failed",
+        "error": {"message": "model access denied TOP SECRET"},
+    }
+    _configure_fake_cli(monkeypatch, tmp_path, mode="codex_failure")
+    monkeypatch.setenv(
+        "FAKE_CLI_STDOUT_OVERRIDE",
+        f"{json.dumps(completed)}\n{json.dumps(failed)}",
+    )
+    client = ConsoleLLMClient(
+        _fake_flavor(codex_exec, fake_cli_path),
+        model="gpt-5.4-codex",
+    )
+
+    with pytest.raises(ConsoleCliError) as excinfo:
+        await client(LLMRequest(user="classify"))
+
+    error = excinfo.value
+    assert str(error) == (
+        "external process exited 1: "
+        "codex turn.failed [model_access]: Codex model access denied"
+    )
+    assert "TOP SECRET" not in str(error)
+    assert error.normalized_usage is not None
+    assert error.normalized_usage.raw_input_tokens == 12
+    assert error.normalized_usage.raw_output_tokens == 3
+    assert error.usage_error is None
+
+
 # --------------------------------------------------------------------------------------
 # v0.10 Phase 5R (codex finding 1): the console LLM doors consume the ENGINE window.
 # Inside a bounded engine invocation, the ambient soft-remaining clamps the console

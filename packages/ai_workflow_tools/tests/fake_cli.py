@@ -8,6 +8,7 @@ Modes are selected with FAKE_CLI_MODE:
 - result_file: write the final message to --output-last-message or FAKE_CLI_RESULT_FILE.
 - usage_then_sleep: emit complete usage, signal FAKE_CLI_READY_FILE, then sleep.
 - usage_then_fail: emit complete usage and exit nonzero.
+- codex_failure: emit caller-supplied Codex JSONL and use caller-supplied exit status.
 - garbage: print non-JSON output.
 """
 
@@ -108,6 +109,23 @@ def main() -> int:
             time.sleep(float(os.environ.get("FAKE_CLI_SLEEP_S", "30")))
             return 0
         return int(os.environ.get("FAKE_CLI_EXIT_CODE", "7"))
+    if mode == "codex_failure":
+        result_file = _result_file_from_args(argv) or os.environ.get("FAKE_CLI_RESULT_FILE")
+        if result_file is not None:
+            Path(result_file).write_text(result_text, encoding="utf-8")
+        payload = os.environ.get(
+            "FAKE_CLI_STDOUT_OVERRIDE",
+            json.dumps(
+                {
+                    "type": "error",
+                    "message": "provider temporarily unavailable",
+                }
+            ),
+        )
+        sys.stdout.write(payload)
+        if payload and not payload.endswith("\n"):
+            sys.stdout.write("\n")
+        return int(os.environ.get("FAKE_CLI_EXIT_CODE", "1"))
     if mode == "flood":
         # v0.10.1: emit far more stdout than any capture cap, to prove the door bounds it.
         sys.stdout.write("F" * int(os.environ.get("FAKE_CLI_FLOOD_BYTES", str(6 * 1024 * 1024))))

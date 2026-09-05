@@ -1,4 +1,4 @@
-"""Provider-protocol usage extraction for CLI-backed calls."""
+"""Provider-protocol output extraction for CLI-backed calls."""
 
 from __future__ import annotations
 
@@ -11,6 +11,81 @@ from pydantic import ValidationError
 from ai_workflow_engine.usage_contract import NormalizedTokenUsage, UsageError
 
 from .models import CliFlavor
+
+
+_CODEX_FAILURE_MESSAGE_MAX_BYTES = 500
+_CODEX_DIAGNOSTIC_MESSAGES = {
+    "none": "",
+    "authentication": "Codex authentication failed",
+    "model_access": "Codex model access denied",
+    "quota_capacity_rate_limit": "Codex quota, rate, or capacity limit reached",
+    "connectivity": "Codex connection failed",
+    "policy": "Codex policy rejected the request",
+    "unknown": "Codex provider failure was not classified",
+    "malformed": "Codex provider failure had a malformed diagnostic",
+    "oversized": "Codex provider failure diagnostic exceeded the safe bound",
+}
+_CODEX_CATEGORY_EVIDENCE = {
+    "authentication": ("authentication failed", "unauthorized", "invalid api key"),
+    "model_access": ("model access denied", "model not found", "unsupported model"),
+    "quota_capacity_rate_limit": (
+        "quota exceeded",
+        "rate limit",
+        "usage limit",
+        "too many requests",
+        "capacity unavailable",
+        "at capacity",
+        "server overloaded",
+    ),
+    "connectivity": (
+        "reconnecting",
+        "connection failed",
+        "connection reset",
+        "network error",
+        "network unavailable",
+        "stream disconnected",
+    ),
+    "policy": ("policy violation", "content policy", "content filter"),
+}
+
+
+@dataclass(frozen=True)
+class CodexProtocolState:
+    """Coherent Codex terminal state plus a closed, non-prose diagnostic."""
+
+    subtype: str = "none"
+    category: str = "none"
+
+    def __post_init__(self) -> None:
+        if self.subtype not in ("none", "error", "turn.completed", "turn.failed", "process"):
+            raise ValueError(f"unrecognized Codex protocol event: {self.subtype!r}")
+        diagnostic_event = self.subtype in ("error", "turn.failed", "process")
+        if diagnostic_event != (self.category != "none"):
+            raise ValueError(f"Codex {self.subtype} diagnostic shape is inconsistent")
+        if self.category not in _CODEX_DIAGNOSTIC_MESSAGES:
+            raise ValueError(f"unrecognized Codex diagnostic category: {self.category!r}")
+        if self.subtype == "process" and self.category != "unknown":
+            raise ValueError("process diagnostics cannot invent a provider category")
+
+    @property
+    def message(self) -> str:
+        return _CODEX_DIAGNOSTIC_MESSAGES[self.category]
+
+    def render(self) -> str:
+        return f"codex {self.subtype} [{self.category}]: {self.message}"
+
+    def metadata(self) -> dict[str, str]:
+        return {
+            "provider": "codex", "subtype": self.subtype, "category": self.category,
+            "message": self.message,
+        }
+
+    def failure_diagnostic(self, *, process_failed: bool) -> CodexProtocolState | None:
+        if self.subtype == "turn.failed":
+            return self
+        if not process_failed:
+            return None
+        return self if self.subtype == "error" else CodexProtocolState("process", "unknown")
 
 
 @dataclass(frozen=True)
@@ -27,8 +102,29 @@ class ParsedCliOutput:
     normalized_usage: NormalizedTokenUsage | None = None
     usage_error: UsageError | None = None
     usage_diagnostic: str | None = None
+    # Claude's established result-envelope contract remains unchanged.
     provider_error: bool = False
     provider_error_subtype: str | None = None
+    codex_protocol: CodexProtocolState | None = None
+
+    def __post_init__(self) -> None:
+        if not self.provider_error and self.provider_error_subtype is not None:
+            raise ValueError("provider_error_subtype requires provider_error")
+        if self.codex_protocol is not None and (
+            self.provider_error or self.provider_error_subtype is not None
+        ):
+            raise ValueError("Codex state cannot carry Claude provider-error fields")
+
+    @property
+    def provider_failed(self) -> bool:
+        return self.provider_error if self.codex_protocol is None else (
+            self.codex_protocol.subtype == "turn.failed"
+        )
+
+    def failure_diagnostic(self, *, process_failed: bool) -> CodexProtocolState | None:
+        if self.codex_protocol is None:
+            return None
+        return self.codex_protocol.failure_diagnostic(process_failed=process_failed)
 
 
 class CliUsageAccumulator(Protocol):
@@ -108,6 +204,7 @@ class CodexUsageAccumulator(_BoundedJsonLineAccumulator):
         self._latest_usage: NormalizedTokenUsage | None = None
         self._latest_error: UsageError | None = "usage_event_missing"
         self._latest_diagnostic: str | None = None
+        self._protocol = CodexProtocolState()
 
     def finish(self) -> ParsedCliOutput:
         self._finish_line()
@@ -122,6 +219,7 @@ class CodexUsageAccumulator(_BoundedJsonLineAccumulator):
             normalized_usage=usage,
             usage_error=self._latest_error,
             usage_diagnostic=self._latest_diagnostic,
+            codex_protocol=self._protocol,
         )
 
     def _record_oversized_line(self) -> None:
@@ -139,8 +237,15 @@ class CodexUsageAccumulator(_BoundedJsonLineAccumulator):
             event = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             return
-        if not isinstance(event, dict) or event.get("type") != "turn.completed":
+        if not isinstance(event, dict):
             return
+        event_type = event.get("type")
+        if event_type in ("error", "turn.failed"):
+            self._record_failure_event(event_type, event)
+            return
+        if event_type != "turn.completed" or self._protocol.subtype == "turn.failed":
+            return
+        self._protocol = CodexProtocolState(subtype="turn.completed")
         usage = event.get("usage")
         if not isinstance(usage, dict):
             self._latest_usage = None
@@ -158,6 +263,27 @@ class CodexUsageAccumulator(_BoundedJsonLineAccumulator):
         else:
             self._latest_error = None
             self._latest_diagnostic = None
+
+    def _record_failure_event(self, event_type: str, event: dict[str, Any]) -> None:
+        diagnostic = _codex_failure_diagnostic(event)
+        current = self._protocol
+        if event_type == "error":
+            if current.subtype == "none" or (
+                current.subtype == "error"
+                and current.category not in _CODEX_CATEGORY_EVIDENCE
+                and diagnostic.category in _CODEX_CATEGORY_EVIDENCE
+            ):
+                self._protocol = diagnostic
+            return
+        if current.subtype == "turn.failed":
+            return
+        if (
+            diagnostic.category not in _CODEX_CATEGORY_EVIDENCE
+            and current.subtype == "error"
+            and current.category in _CODEX_CATEGORY_EVIDENCE
+        ):
+            diagnostic = CodexProtocolState("turn.failed", current.category)
+        self._protocol = diagnostic
 
 
 class ClaudeEnvelopeAccumulator(_BoundedJsonLineAccumulator):
@@ -408,9 +534,33 @@ def _bounded_usage_diagnostic(provider: str, raw_usage: Any) -> str:
     return f"{provider} usage counters: {rendered}"[:500]
 
 
+def _codex_failure_diagnostic(event: dict[str, Any]) -> CodexProtocolState:
+    raw_subtype = event.get("type")
+    subtype = "error" if raw_subtype == "error" else "turn.failed"
+    owner = event if raw_subtype == "error" else event.get("error")
+    raw_message = owner.get("message") if isinstance(owner, dict) else None
+    if not isinstance(raw_message, str) or not raw_message.strip():
+        return CodexProtocolState(subtype=subtype, category="malformed")
+    try:
+        raw_size = len(raw_message.encode("utf-8"))
+    except UnicodeEncodeError:
+        return CodexProtocolState(subtype=subtype, category="malformed")
+    if raw_size > _CODEX_FAILURE_MESSAGE_MAX_BYTES:
+        return CodexProtocolState(subtype=subtype, category="oversized")
+    # Refuse to classify any JSON-shaped tail: it may be a quoted request body.
+    normalized = " ".join(raw_message.casefold().split()).split("{", 1)[0]
+    category = "unknown"
+    for candidate, phrases in _CODEX_CATEGORY_EVIDENCE.items():
+        if any(phrase in normalized for phrase in phrases):
+            category = candidate
+            break
+    return CodexProtocolState(subtype=subtype, category=category)
+
+
 __all__ = [
     "ClaudeEnvelopeAccumulator",
     "CliUsageAccumulator",
+    "CodexProtocolState",
     "CodexUsageAccumulator",
     "ParsedCliOutput",
     "parse_cli_process_output",

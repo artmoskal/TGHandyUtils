@@ -5,8 +5,11 @@ import json
 import pytest
 
 from ai_workflow_tools.cli_agents.usage import (
+    _BoundedJsonLineAccumulator,
     ClaudeEnvelopeAccumulator,
+    CodexProtocolState,
     CodexUsageAccumulator,
+    ParsedCliOutput,
     parse_cli_process_output,
 )
 from ai_workflow_tools.cli_agents.models import CliFlavor
@@ -16,6 +19,24 @@ pytestmark = pytest.mark.unit
 
 def _turn(**usage):
     return json.dumps({"type": "turn.completed", "usage": usage}).encode() + b"\n"
+
+
+def test_json_line_framer_consumes_each_complete_line_once():
+    class NonIdempotentProbe(_BoundedJsonLineAccumulator):
+        def __init__(self):
+            super().__init__(max_partial_line_bytes=64)
+            self.lines = []
+
+        def _consume_line(self, raw):
+            self.lines.append(raw)
+
+        def _record_oversized_line(self):
+            raise AssertionError("fixture line unexpectedly oversized")
+
+    parser = NonIdempotentProbe()
+    parser.feed(b'{"sequence":1}\n')
+
+    assert parser.lines == [b'{"sequence":1}']
 
 
 def test_codex_usage_accumulator_uses_final_cumulative_turn_across_chunks():
@@ -48,6 +69,223 @@ def test_codex_usage_accumulator_uses_final_cumulative_turn_across_chunks():
     assert usage.non_reasoning_output_tokens == 20
     assert usage.reasoning_output_tokens == 10
     assert usage.raw_total_tokens == 150
+    assert parsed.provider_failed is False
+    assert parsed.codex_protocol == CodexProtocolState(subtype="turn.completed")
+
+
+def test_codex_error_is_a_non_terminal_notice_until_the_process_fails():
+    parser = CodexUsageAccumulator()
+    encoded = json.dumps(
+        {"type": "error", "message": "Reconnecting... 2/5"}
+    ).encode() + b"\n"
+    for index in range(0, len(encoded), 3):
+        parser.feed(encoded[index : index + 3])
+
+    parsed = parser.finish()
+
+    assert parsed.provider_failed is False
+    assert parsed.codex_protocol is not None
+    assert parsed.codex_protocol.subtype == "error"
+    assert parsed.failure_diagnostic(process_failed=False) is None
+    diagnostic = parsed.failure_diagnostic(process_failed=True)
+    assert diagnostic is not None
+    assert diagnostic.subtype == "error"
+    assert diagnostic.category == "connectivity"
+    assert diagnostic.message == "Codex connection failed"
+    assert parsed.normalized_usage is None
+    assert parsed.input_tokens == 0
+    assert parsed.output_tokens == 0
+
+
+def test_codex_turn_failed_is_terminal_and_classified():
+    parser = CodexUsageAccumulator()
+    parser.feed(
+        b'{"type":"turn.failed","error":{"message":"model access denied"}}\n'
+    )
+
+    parsed = parser.finish()
+
+    assert parsed.provider_failed is True
+    diagnostic = parsed.failure_diagnostic(process_failed=False)
+    assert diagnostic is not None
+    assert diagnostic.subtype == "turn.failed"
+    assert diagnostic.category == "model_access"
+
+
+@pytest.mark.parametrize(
+    ("message", "category"),
+    [
+        ("authentication failed TOP SECRET", "authentication"),
+        ("model not found TOP SECRET", "model_access"),
+        ("rate limit exceeded TOP SECRET", "quota_capacity_rate_limit"),
+        ("network unavailable TOP SECRET", "connectivity"),
+        ("content policy violation TOP SECRET", "policy"),
+        ("invalid max_capacity parameter", "unknown"),
+        ("provider rejected opaque request TOP SECRET", "unknown"),
+    ],
+)
+def test_codex_failure_categories_are_closed(message, category):
+    parser = CodexUsageAccumulator()
+    parser.feed(
+        json.dumps({"type": "turn.failed", "error": {"message": message}}).encode()
+        + b"\n"
+    )
+
+    diagnostic = parser.finish().failure_diagnostic(process_failed=False)
+
+    assert diagnostic is not None
+    assert diagnostic.category == category
+    assert "TOP SECRET" not in diagnostic.message
+
+
+@pytest.mark.parametrize(
+    ("event", "terminal", "category"),
+    [
+        ({"type": "error", "message": {"secret": "value"}}, False, "malformed"),
+        ({"type": "turn.failed", "error": {}}, True, "malformed"),
+        ({"type": "error", "message": "x" * 501}, False, "oversized"),
+        (
+            {"type": "turn.failed", "error": {"message": "x" * 501}},
+            True,
+            "oversized",
+        ),
+    ],
+)
+def test_codex_failure_diagnostic_refuses_malformed_or_oversized_values(
+    event, terminal, category
+):
+    parser = CodexUsageAccumulator()
+    parser.feed(json.dumps(event).encode() + b"\n")
+
+    parsed = parser.finish()
+    diagnostic = parsed.failure_diagnostic(process_failed=True)
+
+    assert parsed.provider_failed is terminal
+    assert diagnostic is not None
+    assert diagnostic.category == category
+    assert len(diagnostic.message.encode("utf-8")) < 100
+    assert "secret" not in diagnostic.message
+    assert "x" * 20 not in diagnostic.message
+
+
+def test_codex_failure_diagnostic_is_closed_and_excludes_all_provider_prose():
+    parser = CodexUsageAccumulator()
+    secret = 'TOP SECRET MARKER {"prompt":"explain the rate limit"}'
+    parser.feed(
+        json.dumps(
+            {
+                "type": "error",
+                "message": secret,
+                "prompt": "SIBLING PRIVATE PROMPT",
+                "credentials": {"api_key": "SIBLING-SECRET"},
+                "arbitrary": {"payload": ["must", "not", "persist"]},
+            }
+        ).encode()
+        + b"\n"
+    )
+
+    diagnostic = parser.finish().failure_diagnostic(process_failed=True)
+
+    assert diagnostic is not None
+    assert diagnostic.category == "unknown"
+    published = json.dumps(diagnostic.metadata(), sort_keys=True)
+    assert published == (
+        '{"category": "unknown", "message": "Codex provider failure was not '
+        'classified", "provider": "codex", "subtype": "error"}'
+    )
+    assert secret not in published
+    assert "SIBLING" not in published
+
+
+def test_codex_malformed_json_has_no_cause_until_the_process_fails():
+    parser = CodexUsageAccumulator()
+    parser.feed(b'{"type":"error","message":\n')
+
+    parsed = parser.finish()
+
+    assert parsed.provider_failed is False
+    assert parsed.failure_diagnostic(process_failed=False) is None
+    diagnostic = parsed.failure_diagnostic(process_failed=True)
+    assert diagnostic is not None
+    assert diagnostic.subtype == "process"
+    assert diagnostic.category == "unknown"
+
+
+def test_codex_reconnect_notices_are_cleared_by_later_completed_turn():
+    parser = CodexUsageAccumulator()
+    parser.feed(b'{"type":"error","message":"Reconnecting... 1/5"}\n')
+    parser.feed(b'{"type":"error","message":"Reconnecting... 2/5"}\n')
+    parser.feed(
+        _turn(
+            input_tokens=12,
+            cached_input_tokens=2,
+            output_tokens=3,
+            reasoning_output_tokens=1,
+            total_tokens=15,
+        )
+    )
+
+    parsed = parser.finish()
+
+    assert parsed.provider_failed is False
+    assert parsed.codex_protocol == CodexProtocolState(subtype="turn.completed")
+    assert parsed.failure_diagnostic(process_failed=False) is None
+    assert parsed.normalized_usage is not None
+    assert parsed.input_tokens == 12
+    assert parsed.output_tokens == 3
+    assert parsed.usage_error is None
+
+
+def test_codex_generic_terminal_failure_retains_first_informative_notice():
+    parser = CodexUsageAccumulator()
+    parser.feed(b'{"type":"error","message":"quota exceeded"}\n')
+    parser.feed(b'{"type":"error","message":"Reconnecting... 1/5"}\n')
+    parser.feed(b'{"type":"turn.failed","error":{"message":"turn failed"}}\n')
+
+    diagnostic = parser.finish().failure_diagnostic(process_failed=False)
+
+    assert diagnostic is not None
+    assert diagnostic.subtype == "turn.failed"
+    assert diagnostic.category == "quota_capacity_rate_limit"
+    assert diagnostic.message == "Codex quota, rate, or capacity limit reached"
+
+
+def test_codex_informative_terminal_failure_overrides_earlier_notice():
+    parser = CodexUsageAccumulator()
+    parser.feed(b'{"type":"error","message":"Reconnecting... 1/5"}\n')
+    parser.feed(
+        b'{"type":"turn.failed","error":{"message":"authentication failed"}}\n'
+    )
+
+    diagnostic = parser.finish().failure_diagnostic(process_failed=False)
+
+    assert diagnostic is not None
+    assert diagnostic.subtype == "turn.failed"
+    assert diagnostic.category == "authentication"
+
+
+def test_codex_protocol_state_rejects_contradictory_direct_construction():
+    notice = CodexProtocolState(subtype="error", category="connectivity")
+    terminal = CodexProtocolState(subtype="turn.failed", category="unknown")
+    parsed_terminal = ParsedCliOutput(text="", codex_protocol=terminal)
+
+    assert parsed_terminal.provider_failed is True
+    assert parsed_terminal.failure_diagnostic(process_failed=False) is terminal
+    with pytest.raises(ValueError, match="completed"):
+        CodexProtocolState(subtype="turn.completed", category=notice.category)
+    with pytest.raises(ValueError, match="inconsistent"):
+        CodexProtocolState(subtype="turn.failed")
+    with pytest.raises(ValueError, match="inconsistent"):
+        CodexProtocolState(subtype="none", category=terminal.category)
+    with pytest.raises(ValueError, match="requires provider_error"):
+        ParsedCliOutput(text="", provider_error_subtype="error")
+    with pytest.raises(ValueError, match="Claude"):
+        ParsedCliOutput(
+            text="",
+            provider_error=True,
+            provider_error_subtype="error",
+            codex_protocol=CodexProtocolState(subtype="turn.completed"),
+        )
 
 
 @pytest.mark.parametrize(
