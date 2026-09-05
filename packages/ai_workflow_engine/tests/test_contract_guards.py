@@ -247,6 +247,7 @@ def test_observation_and_release_hotspots_do_not_grow_into_new_god_objects():
         viewer_root / "rendering.py": 1093,
         PACKAGE_ROOT / "scripts" / "release_artifacts.py": 1411,
         PACKAGE_ROOT / "scripts" / "release_contract.py": 1423,
+        PACKAGE_ROOT / "scripts" / "release_identity.py": 70,
         PACKAGE_ROOT / "scripts" / "release_build.py": 210,
         PACKAGE_ROOT / "scripts" / "release_toolchain.py": 125,
         PACKAGE_ROOT / "scripts" / "qualify_observation_v4.py": 350,

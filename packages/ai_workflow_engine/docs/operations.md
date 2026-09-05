@@ -363,6 +363,7 @@ BUILD_B=/tmp/engine-build-b
 GATE=/tmp/engine-gate
 OUT=/tmp/engine-release-work
 TOOL="$BUILD_A/packages/ai_workflow_engine/scripts/release_artifacts.py"
+IDENTITY="$BUILD_A/packages/ai_workflow_engine/scripts/release_identity.py"
 RELEASE_PYTHON=/path/to/cpython-3.11.4/bin/python
 BUILDER="$OUT/release-builder"
 
@@ -378,6 +379,14 @@ BUILDER_PYTHON="$BUILDER/bin/python"
   --record "$OUT/build-b.json" --log "$OUT/build-b.log"
 "$BUILDER_PYTHON" "$TOOL" compare-builds --repo "$BUILD_A" --tag "$TAG" \
   --first "$OUT/wheels-a" --second "$OUT/wheels-b"
+
+# Before assembly, load the verified predecessor manifest and inspected candidate wheels,
+# then call release_identity.validate_wheel_identity_transition directly. The function is
+# intentionally not re-exported from release_contract and is not an automatic assembly step.
+PREDECESSOR_MANIFEST=/path/to/verified/engine-v0.12.1/release-manifest.json
+PYTHONPATH="$(dirname "$IDENTITY")" "$BUILDER_PYTHON" -c \
+  'import json,sys; from pathlib import Path; from release_contract import inspect_wheel; from release_identity import validate_wheel_identity_transition; old=json.loads(Path(sys.argv[1]).read_text())["artifacts"]; previous={item["package"]:{"version":item["version"],"sha256":item["sha256"]} for item in old}; wheels=[inspect_wheel(path) for path in Path(sys.argv[2]).glob("*.whl")]; current={item["package"]:{"version":item["version"],"sha256":item["sha256"]} for item in wheels}; validate_wheel_identity_transition(previous,current)' \
+  "$PREDECESSOR_MANIFEST" "$OUT/wheels-a"
 
 "$BUILDER_PYTHON" "$TOOL" run-gate --name test --record "$OUT/test.json" \
   --log "$OUT/test.log" --cwd "$GATE" --timeout-s 7200 -- ./test.sh unit
@@ -512,14 +521,15 @@ timestamps, bounded log, and log hash. `assemble` requires both independent buil
 both wheel matrices to be byte-identical, requires all gates to name the tagged source commit,
 and accepts only passed records, genuine internally coherent wheels, and verifier sources that
 byte-match the tag. The closed
-`release-manifest-v2`, every evidence record/log, all three wheels, both verifier scripts, and
+`release-manifest-v2`, every evidence record/log, all three wheels, all four verifier scripts, and
 `SHA256SUMS` form one indivisible release directory.
 
 ### Consumer
 
-Download the complete release directory. Obtain `release_artifacts.py`, `release_contract.py`, and
-`release_toolchain.py` independently from the pinned annotated tag or another previously trusted
-source, place them together, and use that trusted verifier before invoking `pip`:
+Download the complete release directory. Obtain `release_artifacts.py`, `release_contract.py`,
+`release_identity.py`, and `release_toolchain.py` independently from the pinned annotated tag or
+another previously trusted source, place them together, and use that trusted verifier before
+invoking `pip`:
 
 ```bash
 BUNDLE=/path/to/downloaded/engine-v0.12.2

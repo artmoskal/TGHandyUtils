@@ -27,6 +27,7 @@ if str(_SCRIPTS) not in sys.path:
 import release_artifacts as cli  # noqa: E402
 import release_build as builder  # noqa: E402
 import release_contract as contract  # noqa: E402
+import release_identity as identity  # noqa: E402
 
 
 def _expect_rejection(callable_, *args, fragment: str, **kwargs) -> Exception:
@@ -718,9 +719,9 @@ def test_wheel_identity_transition_rejects_changed_hash_without_version_bump() -
         },
     }
 
-    contract.validate_wheel_identity_transition(release_0120, release_0120)
+    identity.validate_wheel_identity_transition(release_0120, release_0120)
     rejected = _expect_rejection(
-        contract.validate_wheel_identity_transition,
+        identity.validate_wheel_identity_transition,
         release_0120,
         release_0121,
         fragment="ai-workflow-viewer",
@@ -746,7 +747,57 @@ def test_wheel_identity_transition_rejects_changed_hash_without_version_bump() -
         }
         for package, version in candidate_versions.items()
     }
-    contract.validate_wheel_identity_transition(release_0121, release_0122)
+    identity.validate_wheel_identity_transition(release_0121, release_0122)
+
+
+def test_wheel_identity_transition_parser_is_closed_and_has_no_legacy_export() -> None:
+    valid = {
+        package: {"version": "1.0.0", "sha256": "0" * 64}
+        for package in contract.EXPECTED_PACKAGES
+    }
+    assert not hasattr(contract, "validate_wheel_identity_transition")
+    assert contract.VERIFIER_FILENAMES == {
+        "release_artifacts.py",
+        "release_contract.py",
+        "release_identity.py",
+        "release_toolchain.py",
+    }
+
+    malformed = []
+    missing_package = copy.deepcopy(valid)
+    missing_package.pop("ai-workflow-viewer")
+    malformed.append((missing_package, "missing required fields"))
+    extra_package = copy.deepcopy(valid)
+    extra_package["other"] = {"version": "1.0.0", "sha256": "0" * 64}
+    malformed.append((extra_package, "unknown fields"))
+    extra_identity_key = copy.deepcopy(valid)
+    extra_identity_key["ai-workflow-tools"]["uri"] = "file:///not-accepted"
+    malformed.append((extra_identity_key, "unknown fields"))
+    bad_version = copy.deepcopy(valid)
+    bad_version["ai-workflow-tools"]["version"] = "not a version"
+    malformed.append((bad_version, "version"))
+    bad_sha = copy.deepcopy(valid)
+    bad_sha["ai-workflow-tools"]["sha256"] = "0" * 65
+    malformed.append((bad_sha, "sha256"))
+
+    for candidate, fragment in malformed:
+        _expect_rejection(
+            identity.validate_wheel_identity_transition,
+            valid,
+            candidate,
+            fragment=fragment,
+        )
+
+    source = (_SCRIPTS / "release_identity.py").read_text(encoding="utf-8")
+    assert "release_contract" not in source
+
+
+def test_release_runbook_calls_identity_transition_before_assembly() -> None:
+    operations = (_PACKAGE_ROOT / "docs" / "operations.md").read_text(encoding="utf-8")
+    call = "from release_identity import validate_wheel_identity_transition"
+    assemble = '"$BUILDER_PYTHON" "$TOOL" assemble'
+    assert call in operations
+    assert operations.index(call) < operations.index(assemble)
 
 
 def test_manifest_binds_test_and_smoke_to_canonical_release_commands(tmp_path: Path) -> None:
@@ -1448,6 +1499,7 @@ def test_release_scripts_stay_outside_runtime_import_graph() -> None:
         if "release_contract" in path.read_text(encoding="utf-8")
         or "release_artifacts" in path.read_text(encoding="utf-8")
         or "release_build" in path.read_text(encoding="utf-8")
+        or "release_identity" in path.read_text(encoding="utf-8")
         or "release_toolchain" in path.read_text(encoding="utf-8")
     ]
     assert offenders == []
@@ -1471,6 +1523,8 @@ builtins.__import__ = guarded_import
 sys.path.insert(0, {str(_SCRIPTS)!r})
 surface = runpy.run_path({str(_SCRIPTS / "release_contract.py")!r})
 assert callable(surface["verify_bundle"])
+identity = runpy.run_path({str(_SCRIPTS / "release_identity.py")!r})
+assert callable(identity["validate_wheel_identity_transition"])
 """
     completed = subprocess.run(
         [sys.executable, "-c", program],

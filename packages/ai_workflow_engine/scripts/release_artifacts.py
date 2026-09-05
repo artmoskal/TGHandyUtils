@@ -1188,7 +1188,7 @@ def assemble_release_bundle(
     if any(bundle_dir.iterdir()):
         raise ReleaseError("release bundle directory must start empty")
     if {path.name for path in verifier_paths} != VERIFIER_FILENAMES:
-        raise ReleaseError("release bundle requires the exact two verifier source files")
+        raise ReleaseError("release bundle requires the exact verifier source set")
 
     manifest = assemble_manifest(
         repo=repo,
