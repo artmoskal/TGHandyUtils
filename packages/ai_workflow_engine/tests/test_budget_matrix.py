@@ -882,17 +882,20 @@ async def test_failed_call_records_the_burn_a_typed_transport_error_carries():
     class AbortingSubscriptionClient:
         provider_label = "claude_p"
         subscription_mode = True
+        calls = 0
 
         async def __call__(self, request: LLMRequest) -> LLMResponse:
+            self.calls += 1
             raise BudgetAbortError("console CLI exited 1 (error_max_budget_usd)")
 
+    client = AbortingSubscriptionClient()
     node = StructuredLLMNode(
         name="budget_abort",
         config=object(),
         output_model=Label,
         prompt_template="Classify {item}.",
         input_variables=["item"],
-        llm=AbortingSubscriptionClient(),
+        llm=client,
     )
     usage_context = WorkflowUsageContext(
         WorkflowRunContext(workflow_id="wf", workflow_type="budget"),
@@ -901,18 +904,18 @@ async def test_failed_call_records_the_burn_a_typed_transport_error_carries():
     )
 
     with workflow_usage_scope(usage_context):
-        with pytest.raises(Exception, match="error_max_budget_usd"):
+        with pytest.raises(BudgetAbortError, match="error_max_budget_usd"):
             await node.run({"item": "q"})
 
     failed = [e for e in usage_context.summary.events if e.success is False]
-    assert len(failed) == 2, "initial + retry attempts each leave an honest failed event"
+    assert client.calls == len(failed) == 1, "a transport budget abort must not trigger semantic repair"
     for event in failed:
         assert event.notional_usd == pytest.approx(0.112174), (
             "each aborted attempt's REAL burn must be recorded, not dropped"
         )
         assert event.metadata.get("cli_subtype") == "error_max_budget_usd"
         assert event.cost_class == "subscription_notional"
-    assert usage_context.summary.notional_usd == pytest.approx(2 * 0.112174), (
+    assert usage_context.summary.notional_usd == pytest.approx(0.112174), (
         "every aborted attempt's burn aggregates into the run's notional total"
     )
 

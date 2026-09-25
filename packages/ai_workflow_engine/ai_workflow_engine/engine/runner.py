@@ -178,11 +178,8 @@ async def _invoke_graph_task(
             task.cancel()
             note_unsettled_descendant(task)
             task.add_done_callback(_consume_background_task)
-        try:
-            await settle_descendants_until(cleanup_deadline)
-        except asyncio.CancelledError:
-            # Repeated caller cancellation cannot buy more grace or a clean seal.
-            pass
+        # Repeated caller cancellation propagates without buying more grace or a clean seal.
+        await settle_descendants_until(cleanup_deadline)
         raise
     if task in done:
         return task.result()

@@ -1,16 +1,16 @@
 # SlackAzzCovered Engine Adoption Guide
 
-Status: **`engine-v0.12.2` is the release candidate; `engine-v0.12.1` remains the published release.**
+Status: **`engine-v0.12.3` is the release candidate; `engine-v0.12.2` remains the published release.**
 The candidate keeps the `wait-v2` coordinator and strict bundle-v4 contracts, and adds bounded,
 causal Codex CLI failure diagnostics in the optional tools wheel. It retains the generic
 OpenAI-compatible provider and adds no compatibility path.
 `engine-v0.11.5` has a confirmed registration-exposure race. Do not start or update the Redis
 adapter against v0.11.5. Implement the v0.11.6 protocol and pass its conformance kit plus product
 transaction tests before enabling live effects.
-Start a new empty observation root when adopting v0.12.2; inspect bundle v3 with
+Start a new empty observation root when adopting v0.12.3; inspect bundle v3 with
 `engine-v0.11.19` and bundle v2 with `engine-v0.11.9`.
 
-`engine-v0.12.2` carries forward v0.12.1's bounded bulk reader, v0.12.0's bundle-v4 contract,
+`engine-v0.12.3` carries forward v0.12.1's bounded bulk reader, v0.12.0's bundle-v4 contract,
 and v0.11.18's complete-child
 execution breaker when a
 SlackAzz workflow delegates bounded classification or drafting to a registered/declarative child;
@@ -45,14 +45,14 @@ client event
 
 | Package | SlackAzzCovered use |
 |---|---|
-| `ai-workflow-engine==0.12.2` | Workflow/wait runtime with bundle-v4 reading/writing and complete-child ceilings |
-| `ai-workflow-tools==0.7.1` | Companion for provider clients, CLI agents, or tool catalog |
-| `ai-workflow-viewer==0.4.1` | Bundle-v4 diagnostics companion |
+| `ai-workflow-engine==0.12.3` | Workflow/wait runtime with bundle-v4 reading/writing and complete-child ceilings |
+| `ai-workflow-tools==0.7.2` | Companion for provider clients, CLI agents, or tool catalog |
+| `ai-workflow-viewer==0.4.2` | Bundle-v4 diagnostics companion |
 
-> **Candidate matrix:** `engine-v0.12.2` + `ai-workflow-tools==0.7.1` +
-> `ai-workflow-viewer==0.4.1`.
+> **Candidate matrix:** `engine-v0.12.3` + `ai-workflow-tools==0.7.2` +
+> `ai-workflow-viewer==0.4.2`.
 >
-> Do not install this matrix until `engine-v0.12.2` is cut.
+> Do not install this matrix until `engine-v0.12.3` is cut.
 
 
 Verify the complete published directory for the immutable tag and record commit/hash. Never copy
@@ -288,7 +288,7 @@ Follow [`operations.md`](operations.md) for production recovery. File missing me
 
 ## v0.12 Release Contract
 
-`engine-v0.12.2` is the next **latest-only** contract. It uses strict versioned persisted contracts
+`engine-v0.12.3` is the next **latest-only** contract. It uses strict versioned persisted contracts
 (snapshot `v0.11`, bundle meta v4, wait records `wait-v2`), one strict viewer loader, and NO
 migration layer. Old persisted data is rejected loudly naming its historical tag. After publication,
 adopt by re-pinning fresh (verify the published `release-manifest-v2` directory, then install the
