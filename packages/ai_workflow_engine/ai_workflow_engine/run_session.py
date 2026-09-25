@@ -187,6 +187,7 @@ class WorkflowRunSession:
         self.trace_events: List[WorkflowTraceEvent] = []
         self.run_context = self._derive_run_context(workflow_id, context)
         self._closed = False
+        self.observation_incomplete = False
         # v0.10 run execution window: the session owns the run's monotonic deadline and the
         # cumulative ACTIVE elapsed budget. `_clock` is a monotonic source (injectable for
         # tests). We store a DEADLINE for O(1) remaining-time reads plus `_active_elapsed_s`
@@ -324,7 +325,8 @@ class WorkflowRunSession:
                 )
             self.bundle.finalize(
                 self.definition,
-                status=status,
+                status="abandoned" if self.observation_incomplete else status,
                 usage=self.usage_summary,
                 artifacts=self.artifact_snapshot(),
+                **({"unsettled_writers": True} if self.observation_incomplete else {}),
             )

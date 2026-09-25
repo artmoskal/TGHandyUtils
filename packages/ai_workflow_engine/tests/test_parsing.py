@@ -166,3 +166,21 @@ async def test_default_repair_budget_unchanged():
     with pytest.raises(StructuredOutputError):
         await node.run({"topic": "x"})
     assert llm.calls == 2
+
+
+@pytest.mark.parametrize("error", [TimeoutError("transport timeout"), ValueError("provider refused")])
+async def test_blocking_provider_failure_does_not_spend_semantic_repair(error):
+    class BrokenClient:
+        calls = 0
+
+        def invoke(self, messages):
+            self.calls += 1
+            raise error
+
+    client = BrokenClient()
+    with pytest.raises(type(error)) as raised:
+        await _node(client).run({"topic": "x"})
+    # asyncio's thread bridge recreates built-in TimeoutError; preserve type/message,
+    # not Python object identity across the bridge.
+    assert str(raised.value) == str(error)
+    assert client.calls == 1

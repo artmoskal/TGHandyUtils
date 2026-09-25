@@ -19,7 +19,10 @@ from ai_workflow_engine.models import (
     WorkflowUsageSummary,
 )
 from ai_workflow_engine.budget import WorkflowUsageContext, budget_from_limits, workflow_usage_scope
-from ai_workflow_engine.engine.invocation_supervision import descendant_settlement_scope
+from ai_workflow_engine.engine.invocation_supervision import (
+    descendant_settlement_scope, note_unsettled_descendant,
+    settle_descendants_until, unsettled_descendants,
+)
 from ai_workflow_engine.usage_events import UsageSink
 
 logger = logging.getLogger(__name__)
@@ -53,7 +56,7 @@ def derive_workflow_result_status(state: Dict[str, Any]) -> WorkflowResultStatus
 class GraphFailsafeWindow:
     """Bound the graph work separately from cancellation containment."""
 
-    work_timeout_s: float
+    work_timeout_s: Optional[float]
     cancellation_grace_s: float
 
     def metadata(self, *, containment_failed: bool) -> Dict[str, Any]:
@@ -130,7 +133,7 @@ async def _invoke_graph_with_failsafe(
 ) -> Dict[str, Any]:
     """Run graph work, then contain cancellation for a bounded, observable grace period."""
 
-    if window.work_timeout_s <= 0:
+    if window.work_timeout_s is not None and window.work_timeout_s <= 0:
         # Do not schedule even one event-loop turn after an already-exhausted deadline. Runner
         # callers pass a coroutine; close it so refusal also produces no un-awaited warning.
         if inspect.iscoroutine(invocation):
@@ -143,7 +146,12 @@ async def _invoke_graph_with_failsafe(
     # un-settled detached descendants into this invocation's record. A descendant still running
     # after its grace is a containment failure the graph owner must not downgrade to a clean stop.
     with descendant_settlement_scope() as descendants_unsettled:
-        return await _invoke_graph_task(invocation, window, descendants_unsettled)
+        try:
+            return await _invoke_graph_task(invocation, window, descendants_unsettled)
+        finally:
+            session = current_run_session()
+            if session is not None and unsettled_descendants():
+                session.observation_incomplete = True
 
 
 async def _invoke_graph_task(
@@ -155,6 +163,7 @@ async def _invoke_graph_task(
     try:
         done, _ = await asyncio.wait({task}, timeout=window.work_timeout_s)
     except asyncio.CancelledError:
+        cleanup_deadline = time.monotonic() + window.cancellation_grace_s
         task.cancel()
         try:
             if window.cancellation_grace_s > 0:
@@ -167,7 +176,13 @@ async def _invoke_graph_task(
             logger.debug("graph task stopped while caller cancellation was propagating")
         if not task.done():
             task.cancel()
+            note_unsettled_descendant(task)
             task.add_done_callback(_consume_background_task)
+        try:
+            await settle_descendants_until(cleanup_deadline)
+        except asyncio.CancelledError:
+            # Repeated caller cancellation cannot buy more grace or a clean seal.
+            pass
         raise
     if task in done:
         return task.result()
@@ -186,6 +201,7 @@ async def _invoke_graph_task(
     except asyncio.CancelledError:
         if asyncio.current_task() is not None and asyncio.current_task().cancelling():
             task.cancel()
+            note_unsettled_descendant(task)
             task.add_done_callback(_consume_background_task)
             raise
         # The graph acknowledged the stop, but a nested capability may have detached work that
@@ -195,6 +211,7 @@ async def _invoke_graph_task(
         ) from None
     except asyncio.TimeoutError:
         task.cancel()
+        note_unsettled_descendant(task)
         task.add_done_callback(_consume_background_task)
         raise _GraphFailsafeExpired(window, containment_failed=True) from None
     except BaseException:
@@ -309,7 +326,10 @@ class WorkflowRunner:
                             failsafe,
                         )
                     else:
-                        result = await self._invoke_graph(graph, state, graph_config)
+                        result = await _invoke_graph_with_failsafe(
+                            self._invoke_graph(graph, state, graph_config),
+                            GraphFailsafeWindow(None, self._GRAPH_CANCELLATION_GRACE_S),
+                        )
                     outcome = derive_workflow_result_status(result)
                     fallback_error: Optional[Exception] = None
                 except _GraphFailsafeExpired as exc:

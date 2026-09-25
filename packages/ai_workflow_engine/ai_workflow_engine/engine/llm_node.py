@@ -383,6 +383,7 @@ class StructuredLLMNode:
         last_error = ""
         for attempt in range(1, 2 + self.max_repair_rounds):
             invocation_id = new_provider_invocation_id()
+            validating_response = False
             try:
                 if attempt == 1:
                     request = LLMRequest(
@@ -478,9 +479,11 @@ class StructuredLLMNode:
                     provider=getattr(client, "provider_label", None) or "custom",
                     invocation_id=invocation_id,
                 )
+                validating_response = True
                 parsed = self.parser.parse(self._apply_pre_parse(response.text, attempt, content_hash))
                 if self.validator:
                     self.validator(parsed)
+                validating_response = False
                 logger.info(
                     "structured_llm_node %s",
                     json.dumps(
@@ -498,6 +501,10 @@ class StructuredLLMNode:
             except WorkflowBudgetExceeded:
                 raise
             except Exception as exc:
+                if not validating_response:
+                    # No answer to repair: transport/provider/admission/observation errors
+                    # retain their identity and must not spend a semantic-repair attempt.
+                    raise
                 last_error = str(exc)
                 logger.warning(
                     "structured_llm_node_failed %s",
@@ -529,6 +536,7 @@ class StructuredLLMNode:
         last_error = ""
         for attempt in range(1, 2 + self.max_repair_rounds):
             invocation_id = new_provider_invocation_id()
+            validating_response = False
             try:
                 messages = self._messages_for_attempt(prompt_bundle, attempt, last_error)
                 if message_factory:
@@ -588,9 +596,11 @@ class StructuredLLMNode:
                     profile,
                     invocation_id=invocation_id,
                 )
+                validating_response = True
                 parsed = self.parser.parse(self._apply_pre_parse(raw_text, attempt, content_hash))
                 if self.validator:
                     self.validator(parsed)
+                validating_response = False
                 logger.info(
                     "structured_llm_node %s",
                     json.dumps(
@@ -607,6 +617,8 @@ class StructuredLLMNode:
             except WorkflowBudgetExceeded:
                 raise
             except Exception as exc:
+                if not validating_response:
+                    raise
                 last_error = str(exc)
                 logger.warning(
                     "structured_llm_node_failed %s",
@@ -804,7 +816,11 @@ class StructuredLLMNode:
             decision="llm:response",
             phase="llm:response",
             kind="llm_response",
-            payload={"error_type": exc.__class__.__name__, "error": error},
+            payload={
+                "error_type": exc.__class__.__name__, "error": error,
+                **{key: getattr(exc, key) for key in ("process_io", "cli_progress")
+                   if isinstance(getattr(exc, key, None), dict)},
+            },
             severity="error",
             error=error,
             metadata={

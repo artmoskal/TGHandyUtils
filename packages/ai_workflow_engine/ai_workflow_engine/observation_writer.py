@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -32,6 +32,7 @@ from ai_workflow_engine.observation_contract import (
     DEFAULT_ARTIFACT_MAX_BYTES,
     ObservationBundleMetaV4,
     ObservationSegment,
+    ProviderEvidenceIntegrity,
     BUNDLE_SCHEMA_VERSION,
     assert_plain_identity,
     load_bundle_meta_v4,
@@ -50,6 +51,7 @@ from ai_workflow_engine.observation_finalization import (
 )
 from ai_workflow_engine.observation_retention import prune_observation_bundles
 from ai_workflow_engine.observation_values import RunValueStore
+from ai_workflow_engine.observation_sequence import ObservationSequence, owned_run_updates
 from ai_workflow_engine.usage_events import JsonlUsageSink, UsageSink
 from ai_workflow_engine.workflow import WorkflowDefinition
 
@@ -61,41 +63,6 @@ def _utc_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-@dataclass
-class ObservationSequence:
-    """Run-local monotonic sequence shared by trace/detail/usage bundle writers."""
-
-    value: int = 0
-    claimed: set[int] = field(default_factory=set, repr=False)
-
-    def claim(self, supplied: int | None) -> int:
-        if supplied is None:
-            candidate = self.value + 1
-            while candidate in self.claimed:
-                candidate += 1
-        else:
-            if not isinstance(supplied, int) or isinstance(supplied, bool) or supplied < 1:
-                raise ValueError("observation sequence must be a positive integer")
-            candidate = supplied
-        if candidate in self.claimed:
-            raise ValueError(f"duplicate observation sequence {candidate}")
-        self.claimed.add(candidate)
-        self.value = max(self.value, candidate)
-        return candidate
-
-
-def _owned_run_updates(record: Any, *, run_id: str, sequence: ObservationSequence) -> dict:
-    supplied_run_id = getattr(record, "run_id", None)
-    if supplied_run_id not in (None, run_id):
-        raise ValueError(
-            f"observation record belongs to foreign run {supplied_run_id!r}, not {run_id!r}"
-        )
-    return {
-        "run_id": run_id,
-        "sequence": sequence.claim(getattr(record, "sequence", None)),
-    }
-
-
 class SequencedTraceSink:
     """Stamp run id and sequence before writing a trace event."""
 
@@ -105,11 +72,12 @@ class SequencedTraceSink:
         self.sequence = sequence
 
     def record(self, event: WorkflowTraceEvent) -> None:
-        self.inner.record(
-            event.model_copy(
-                update=_owned_run_updates(event, run_id=self.run_id, sequence=self.sequence)
+        with self.sequence.lock:
+            self.inner.record(
+                event.model_copy(
+                    update=owned_run_updates(event, run_id=self.run_id, sequence=self.sequence)
+                )
             )
-        )
 
 
 class SequencedDetailSink:
@@ -121,16 +89,20 @@ class SequencedDetailSink:
         self.sequence = sequence
 
     def record(self, detail: ObservationDetail) -> None:
-        self.inner.record(
-            detail.model_copy(
-                update=_owned_run_updates(detail, run_id=self.run_id, sequence=self.sequence)
+        with self.sequence.lock:
+            self.inner.record(
+                detail.model_copy(
+                    update=owned_run_updates(detail, run_id=self.run_id, sequence=self.sequence)
+                )
             )
-        )
 
     def clear(self) -> None:
-        clear = getattr(self.inner, "clear", None)
-        if callable(clear):
-            clear()
+        with self.sequence.lock:
+            if self.sequence.sealed:
+                raise RuntimeError("observation segment is sealed; clear refused")
+            clear = getattr(self.inner, "clear", None)
+            if callable(clear):
+                clear()
 
 
 class SequencedUsageSink:
@@ -145,9 +117,10 @@ class SequencedUsageSink:
         metadata = dict(event.metadata or {})
         metadata.setdefault("run_id", self.run_id)
         metadata.setdefault("workflow_id", self.run_id)
-        updates = _owned_run_updates(event, run_id=self.run_id, sequence=self.sequence)
-        updates["metadata"] = metadata
-        self.inner.record(event.model_copy(update=updates))
+        with self.sequence.lock:
+            updates = owned_run_updates(event, run_id=self.run_id, sequence=self.sequence)
+            updates["metadata"] = metadata
+            self.inner.record(event.model_copy(update=updates))
 
 
 @dataclass
@@ -224,7 +197,16 @@ class ObservationRunBundle:
         status: str,
         usage: WorkflowUsageSummary | Iterable[WorkflowUsageEvent] | None = None,
         artifacts: Iterable[WorkflowArtifact] | None = None,
+        unsettled_writers: bool = False,
     ) -> None:
+        if unsettled_writers and status != "abandoned":
+            raise ValueError("unsettled writers require abandoned observation status")
+        # Serialize with the ENTIRE write, not merely sequence allocation. Once this
+        # lock is released no writer can change the bytes whose hashes we now seal.
+        with self.sequence.lock:
+            if self.sequence.sealed:
+                raise RuntimeError("observation segment is sealed; finalization refused")
+            self.sequence.sealed = True
         if self.segment is None:
             raise RuntimeError(
                 "engine-owned observation lifecycle emits ONLY segmented v4 bundles — "
@@ -239,6 +221,14 @@ class ObservationRunBundle:
             status=status,
             expected_run_id=self.run_id,
         )
+        if unsettled_writers:
+            diagnostic = "cancellation grace expired with unsettled observation writers"
+            evidence = replace(
+                evidence,
+                incomplete_streams=("trace", "detail", "usage"),
+                stream_diagnostic=diagnostic,
+                provider_evidence=ProviderEvidenceIntegrity(integrity="incomplete", diagnostic=diagnostic),
+            )
         definition_json = definition.model_dump_json()
         (self.path / "definition.json").write_text(definition_json, encoding="utf-8")
         usage_events = materialize_usage_events(usage)
@@ -567,7 +557,6 @@ def _copy_with_digest(source: Path, target: Path) -> tuple[int, str]:
 
 __all__ = [
     "ObservationRunBundle",
-    "ObservationSequence",
     "SequencedDetailSink",
     "SequencedTraceSink",
     "SequencedUsageSink",

@@ -297,6 +297,34 @@ async def test_repair_round_reaches_callable_with_error_context():
     assert "previous structured-output response was invalid" in client.requests[1].user
 
 
+@pytest.mark.parametrize("failure", [TimeoutError("transport timeout"), ValueError("provider refused"), RuntimeError("auth failed")])
+async def test_provider_failure_is_not_a_structured_output_repair(failure):
+    class FailingClient(FakeOllamaClient):
+        async def __call__(self, request):
+            self.requests.append(request)
+            raise failure
+
+    client = FailingClient()
+    with pytest.raises(type(failure)) as raised:
+        await _node(client).run({"item": "a mug"})
+    assert raised.value is failure
+    assert len(client.requests) == 1
+
+
+async def test_validator_failure_still_uses_one_semantic_repair():
+    client = FakeOllamaClient()
+    seen = []
+
+    def validate(value):
+        seen.append(value)
+        if len(seen) == 1:
+            raise ValueError("answer needs evidence")
+
+    assert (await _node(client, validator=validate).run({"item": "a mug"})).label == "ok"
+    assert len(client.requests) == 2
+    assert "answer needs evidence" in client.requests[1].user
+
+
 async def test_vision_images_ride_on_the_llm_request():
     client = FakeOllamaClient(text='{"label": "seen"}')
     vision_node = StructuredVisionLLMNode(

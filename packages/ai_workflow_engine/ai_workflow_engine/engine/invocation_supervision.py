@@ -14,8 +14,7 @@ Ownership boundaries (deliberate):
   never records a trace event or detail, and never imports observation, executor, viewer, bundle,
   or product modules.
 
-Behavior is IDENTICAL to engine-v0.10.1 (proven by the sealed preservation oracle + the live
-two-wheel differential): timeout → honest PARTIAL, suppressed cancellation → containment FAILURE,
+Window contracts: timeout → honest PARTIAL, suppressed cancellation → containment FAILURE,
 caller cancellation propagates untranslated, unbounded calls gain no synthetic deadline, and the
 ambient scope is reset on success, failure, timeout, AND caller cancellation.
 """
@@ -259,12 +258,14 @@ _UNSETTLED_DESCENDANTS: "ContextVar[Optional[list]]" = ContextVar(
 def descendant_settlement_scope() -> Iterator[Any]:
     """Track descendants detached WITHOUT settling inside this scope.
 
-    Yields a predicate reporting whether any descendant was detached unsettled. The tracker is a
-    shared mutable list so tasks created inside the scope (which copy the context) report into the
-    same record.
+    Yields a predicate reporting whether any descendant was detached unsettled. The shared list
+    retains task identities, so the graph owner can spend its remaining grace on their actual
+    settlement. Nested graph scopes contribute to the same enclosing record.
     """
 
-    tracker: list = []
+    tracker = _UNSETTLED_DESCENDANTS.get()
+    if tracker is None:
+        tracker = []
     token = _UNSETTLED_DESCENDANTS.set(tracker)
     try:
         yield lambda: bool(tracker)
@@ -272,10 +273,23 @@ def descendant_settlement_scope() -> Iterator[Any]:
         _UNSETTLED_DESCENDANTS.reset(token)
 
 
-def _note_unsettled_descendant(reason: str) -> None:
+def note_unsettled_descendant(task: asyncio.Future[Any]) -> None:
     tracker = _UNSETTLED_DESCENDANTS.get()
-    if tracker is not None:
-        tracker.append(reason)
+    if tracker is not None and task not in tracker:
+        tracker.append(task)
+
+
+def unsettled_descendants() -> set[asyncio.Future[Any]]:
+    return {task for task in (_UNSETTLED_DESCENDANTS.get() or ()) if not task.done()}
+
+
+async def settle_descendants_until(deadline: float) -> None:
+    """Use only the outer owner's REMAINING cleanup grace, never a fresh allowance."""
+    while pending := unsettled_descendants():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        await asyncio.wait(pending, timeout=remaining)
 
 
 async def _settle_cancelled_inner(inner: "asyncio.Task[Any]", grace_s: float) -> None:
@@ -296,7 +310,7 @@ def _detach_cancelled_inner(inner: "asyncio.Task[Any]") -> None:
     # cancel-while-cancelling) leaves work that did not settle inside its represented grace. Record
     # it so an outer engine-deadline owner cannot report a clean bounded stop over live work.
     if not inner.done():
-        _note_unsettled_descendant("capability detached without settling in its grace")
+        note_unsettled_descendant(inner)
 
     def _consume(task: "asyncio.Task[Any]") -> None:
         if task.cancelled():

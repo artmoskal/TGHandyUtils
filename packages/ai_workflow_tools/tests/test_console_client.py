@@ -185,7 +185,7 @@ async def test_console_codex_failure_and_timeout_keep_latest_structured_usage(
             WorkflowBudget(),
         )
     ):
-        with pytest.raises(StructuredOutputError):
+        with pytest.raises(ConsoleCliError):
             await node.run({"item": "mug"})
 
     assert len(summary.events) == 1

@@ -86,7 +86,7 @@ def test_engine_imports_no_product_code():
 def test_release_version_matches_current_pin():
     """Release guard: a pinned tag must not build a wheel that reports the previous version."""
 
-    expected = "0.12.2"
+    expected = "0.12.3"
     pyproject = tomllib.loads((PACKAGE_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert pyproject["project"]["version"] == expected
     assert ai_workflow_engine.__version__ == expected
@@ -243,6 +243,7 @@ def test_observation_and_release_hotspots_do_not_grow_into_new_god_objects():
     viewer_root = PACKAGE_ROOT.parent / "ai_workflow_viewer" / "ai_workflow_viewer"
     limits = {
         ENGINE_ROOT / "observation_writer.py": 576,
+        ENGINE_ROOT / "observation_sequence.py": 60,
         ENGINE_ROOT / "observation_reader.py": 476,
         viewer_root / "rendering.py": 1093,
         PACKAGE_ROOT / "scripts" / "release_artifacts.py": 1411,

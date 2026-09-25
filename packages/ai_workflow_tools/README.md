@@ -245,10 +245,15 @@ from ai_workflow_tools.testing import run_openai_compatible_provider_conformance
 await run_openai_compatible_provider_conformance(make_client)
 ```
 
+Tools `0.7.2` is the `engine-v0.12.3` candidate, requiring engine `>=0.12.3,<0.13`.
+Console failures preserve bounded process capture facts and recognized CLI event/count/timing
+diagnostics through engine error details; raw stdout, result bodies and private identifiers are
+not copied. CLI started events are not provider acknowledgements. Do not adopt before the exact
+reviewed release verifies. No timeout increase or automatic transport repair is introduced.
+
 Tools `0.7.1` adds bounded, redacted Codex JSONL failure diagnostics shared by console and agent
 capability callers, targets `ai-workflow-engine>=0.12.0,<0.13`, and belongs to the
-`engine-v0.12.2` candidate matrix. Do not install it until that immutable release is published and
-verified.
+published `engine-v0.12.2` matrix.
 
 Tools `0.7.0` carries the provider and CLI behavior of `0.6.10` unchanged and belongs to the
 `engine-v0.12.0` release matrix.

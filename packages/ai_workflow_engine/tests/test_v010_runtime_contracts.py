@@ -889,11 +889,11 @@ def test_tools_wheel_identity_advanced_for_changed_code():
     engine floor to 0.11.11 because engine-v0.11.10 was never published; 0.6.3 gave the
     clean-checkout release a unique wheel identity; 0.6.4 carries the same provider behavior
     under the corrected source-only release-evidence contract and requires engine 0.11.13;
-    Codex JSONL failure diagnostics advance the current tools identity to 0.7.1."""
+    Bounded console progress/capture failure diagnostics advance the identity to 0.7.2."""
 
     import ai_workflow_tools
 
-    assert ai_workflow_tools.__version__ == "0.7.1", (
+    assert ai_workflow_tools.__version__ == "0.7.2", (
         "tools code changed since the last released wheel identity; the version must "
         f"advance (found {ai_workflow_tools.__version__})"
     )

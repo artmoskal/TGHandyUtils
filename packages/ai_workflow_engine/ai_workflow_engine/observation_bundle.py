@@ -25,13 +25,13 @@ from ai_workflow_engine.observation_reader import HydratedObservationDetail, Obs
 from ai_workflow_engine.observation_retention import prune_observation_bundles
 from ai_workflow_engine.observation_writer import (
     ObservationRunBundle,
-    ObservationSequence,
     SequencedDetailSink,
     SequencedTraceSink,
     SequencedUsageSink,
     open_observation_run_bundle,
     write_minimal_abandoned_meta,
 )
+from ai_workflow_engine.observation_sequence import ObservationSequence
 
 
 __all__ = [

@@ -157,6 +157,8 @@ class ConsoleCliError(RuntimeError):
         provider_error_diagnostic: CodexProtocolState | None = None,
         invocation_id: str | None = None,
         elapsed_ms: int | None = None,
+        process_io: dict[str, Any] | None = None,
+        cli_progress: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         # QRF.4: the classification vocabulary is CLOSED — a typo ("timeuot") is a loud
@@ -183,6 +185,8 @@ class ConsoleCliError(RuntimeError):
         self.provider_error_diagnostic = provider_error_diagnostic
         self.invocation_id = invocation_id
         self.elapsed_ms = elapsed_ms
+        self.process_io = dict(process_io or {})
+        self.cli_progress = dict(cli_progress or {})
 
 
 class ConsoleLLMClient:
@@ -829,7 +833,7 @@ def _console_failure_projection(
         return diagnostic, "", message
     subtype = aborted.provider_error_subtype or ""
     suffix = f" ({subtype})" if subtype else ""
-    return None, subtype, f"{base}{suffix}{consumed}: {stderr[-800:]}"
+    return None, subtype, f"{base}{suffix}{consumed}: {_bounded_redacted_stderr(stderr)}"
 
 
 def _bounded_redacted_stderr(stderr: str) -> str:
@@ -898,7 +902,30 @@ def _console_failure(
         provider_error_diagnostic=provider_diagnostic,
         invocation_id=invocation_id,
         elapsed_ms=elapsed_ms,
+        process_io=_failure_process_io(getattr(external, "metadata", {}).get("process_io", {})),
+        cli_progress=aborted.cli_progress,
     )
+
+
+def _failure_process_io(value: Any) -> dict[str, Any]:
+    """Keep capture facts, not stdout/stderr/result bodies, paths or OS-error prose."""
+    if not isinstance(value, dict):
+        return {}
+    result = {}
+    for stream in ("stdout", "stderr", "result_file"):
+        fields = value.get(stream)
+        if not isinstance(fields, dict):
+            continue
+        safe = {key: fields[key] for key in ("total_bytes", "retained_bytes", "limit_bytes")
+                if type(fields.get(key)) is int and fields[key] >= 0}
+        if type(fields.get("truncated")) is bool:
+            safe["truncated"] = fields["truncated"]
+        if fields.get("status") in ("ok", "missing", "unsafe", "oversize", "error", "not_requested"):
+            safe["status"] = fields["status"]
+        if fields.get("kind") in ("fifo", "socket", "char_device", "block_device", "directory", "symlink"):
+            safe["kind"] = fields["kind"]
+        result[stream] = safe
+    return result
 
 
 def _model_from_request(request: LLMRequest) -> str:

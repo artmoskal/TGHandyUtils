@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import time
 from typing import Any, Protocol
 
 from pydantic import ValidationError
@@ -106,6 +107,7 @@ class ParsedCliOutput:
     provider_error: bool = False
     provider_error_subtype: str | None = None
     codex_protocol: CodexProtocolState | None = None
+    cli_progress: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if not self.provider_error and self.provider_error_subtype is not None:
@@ -205,6 +207,10 @@ class CodexUsageAccumulator(_BoundedJsonLineAccumulator):
         self._latest_error: UsageError | None = "usage_event_missing"
         self._latest_diagnostic: str | None = None
         self._protocol = CodexProtocolState()
+        self._started = time.monotonic()
+        self._last_event: str | None = None
+        self._last_event_elapsed_ms: int | None = None
+        self._event_count = 0
 
     def finish(self) -> ParsedCliOutput:
         self._finish_line()
@@ -220,6 +226,12 @@ class CodexUsageAccumulator(_BoundedJsonLineAccumulator):
             usage_error=self._latest_error,
             usage_diagnostic=self._latest_diagnostic,
             codex_protocol=self._protocol,
+            cli_progress={
+                "source": "cli_jsonl",  # CLI progress, NOT remote-provider acknowledgement
+                "last_event": self._last_event,
+                "last_event_elapsed_ms": self._last_event_elapsed_ms,
+                "event_count": self._event_count,
+            },
         )
 
     def _record_oversized_line(self) -> None:
@@ -240,6 +252,10 @@ class CodexUsageAccumulator(_BoundedJsonLineAccumulator):
         if not isinstance(event, dict):
             return
         event_type = event.get("type")
+        if event_type in ("thread.started", "turn.started", "item.started", "item.updated", "item.completed", "turn.completed", "turn.failed", "error"):
+            self._last_event = event_type
+            self._last_event_elapsed_ms = int((time.monotonic() - self._started) * 1000)
+            self._event_count += 1
         if event_type in ("error", "turn.failed"):
             self._record_failure_event(event_type, event)
             return

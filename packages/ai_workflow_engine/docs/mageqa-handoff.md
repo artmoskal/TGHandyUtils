@@ -1,11 +1,17 @@
 # MageQA Engine Adoption Guide
 
-Status: **`engine-v0.12.2` is the release candidate; `engine-v0.12.1` remains the published release.**
-The patch makes Codex CLI failures bounded and causal while retaining the bulk detail-body reader,
-bundle v4, stdin transport, the generic OpenAI-compatible provider, and prior E0 corrections. Repin only the
-coherent `0.12.2 / 0.7.1 / 0.4.1` matrix after publication, immutable-directory verification, and
-MageQA's E0 canaries. Until then MageQA must pin tag `engine-v0.12.1`; its own pin file remains the
+Status: **`engine-v0.12.3` is the release candidate; `engine-v0.12.2` remains the published release.**
+The patch prevents transport failures from consuming semantic repair, settles cancellation before
+sealing observations (or marks an immutable incomplete prefix), and preserves bounded CLI failure
+diagnostics. Repin only the coherent `0.12.3 / 0.7.2 / 0.4.2` matrix after publication,
+immutable-directory verification, and MageQA's E0 canaries. Until then MageQA must pin tag
+`engine-v0.12.2`; its own pin file remains the
 authority for deployed state.
+
+At adoption, create a NEW cancelled recovery with a genuinely settling subprocess, then read its
+retained calls/candidate through MageQA's saved-view path. Keep the historical corrupt recovery
+refused and unchanged; this patch is not a hash repair or compatibility reader. CLI progress is not
+provider acknowledgement, and the original unexplained600s stall is not retrospectively diagnosed.
 
 `engine-v0.12.2` carries forward v0.12.1's bounded bulk reader, v0.12.0's bundle-v4 contract, and v0.11.18's grouped-evaluator runtime. A child
 workflow's configured hard ceiling now bounds the complete retrying child through either engine
@@ -50,18 +56,18 @@ a defect.
 
 | Package | MageQA use |
 |---|---|
-| `ai-workflow-engine==0.12.2` | Orchestration/runtime with bounded bulk bundle-v4 reading and complete-child ceilings |
-| `ai-workflow-tools==0.7.1` | Generic provider/CLI/tool companion |
-| `ai-workflow-viewer==0.4.1` | Bundle-v4 investigation companion |
+| `ai-workflow-engine==0.12.3` | Orchestration/runtime with bounded cancellation and immutable bundle-v4 sealing |
+| `ai-workflow-tools==0.7.2` | Generic provider/CLI/tool companion with bounded failure diagnostics |
+| `ai-workflow-viewer==0.4.2` | Bundle-v4 investigation companion; release identity only |
 
-> **Candidate matrix:** `engine-v0.12.2` + `ai-workflow-tools==0.7.1` +
-> `ai-workflow-viewer==0.4.1`.
+> **Candidate matrix:** `engine-v0.12.3` + `ai-workflow-tools==0.7.2` +
+> `ai-workflow-viewer==0.4.2`.
 >
-> Do not install this matrix until `engine-v0.12.2` is cut.
+> Do not install this matrix until `engine-v0.12.3` is cut.
 
 ### Immutable release evidence
 
-- Artifact prefix after publication: `s3://artmoskal-artifact-cache/ai-workflow-engine/engine-v0.12.2/`
+- Artifact prefix after publication: `https://github.com/artmoskal/TGHandyUtils/releases/download/engine-v0.12.3/`
 - Verify `SHA256SUMS`, then run the bundled `release_artifacts.py verify-bundle` before installing.
 - Read the source commit, annotated tag object, package hashes, and producer gate evidence from the
   verified `release-manifest.json`; record those consumed values in MageQA's own adoption record.
@@ -307,11 +313,11 @@ with a scenario and acceptance proof. Upgrade via [`operations.md`](operations.m
 
 ## v0.12 Release Contract
 
-`engine-v0.12.2` is the next **latest-only** contract. It uses strict versioned persisted contracts
+`engine-v0.12.3` is the next **latest-only** contract. It uses strict versioned persisted contracts
 (snapshot `v0.11`, bundle meta v4, wait records `wait-v2`), one strict viewer loader, and NO
 migration layer. Old persisted data is rejected loudly naming its historical tag. After publication,
 adopt by re-pinning fresh (verify the published `release-manifest-v2` bundle, then install engine
-`0.12.2`, tools `0.7.1`, and viewer `0.4.1`) and
+`0.12.3`, tools `0.7.2`, and viewer `0.4.2`) and
 re-run your canaries before changing any deployed pin.
 `wait-v1` records written by v0.11.5 are non-current: settle or discard them under v0.11.5 and
 start a new coordinator namespace before v0.11.6 writes `wait-v2`.
