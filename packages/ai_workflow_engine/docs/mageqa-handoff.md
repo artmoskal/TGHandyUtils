@@ -13,20 +13,15 @@ retained calls/candidate through MageQA's saved-view path. Keep the historical c
 refused and unchanged; this patch is not a hash repair or compatibility reader. CLI progress is not
 provider acknowledgement, and the original unexplained600s stall is not retrospectively diagnosed.
 
-`engine-v0.12.2` carries forward v0.12.1's bounded bulk reader, v0.12.0's bundle-v4 contract, and v0.11.18's grouped-evaluator runtime. A child
-workflow's configured hard ceiling now bounds the complete retrying child through either engine
-door, while heterogeneous scenario soft targets remain descriptive and may share one fanout. A
-strictly tighter parent/run deadline keeps ownership. Completed siblings, artifacts, and
-per-attempt usage survive a timed-out child. Verify the release directory, then rerun MageQA's
-child-window and E0 canaries before repinning.
+The candidate retains bounded bulk reading, bundle v4, complete-child limits, and preserved sibling
+evidence/usage. Tighter parent deadlines keep ownership; scenario soft targets remain descriptive.
+Verify the release directory and rerun MageQA's child-window and E0 canaries before repinning.
 
 Read first: [getting started](getting-started.md), [framework concepts](concepts.md),
 [operations](operations.md), and [misuse risks](misuse-risks.md).
 
-The line is **latest-only** — no migration guides exist. Adopt the current contract fresh; data
-written under older tags is rejected loudly and stays inspectable with its matching historical tag.
-The candidate viewer reads bundle v4 only. Inspect v3 evidence with `engine-v0.11.19`, inspect v2
-with `engine-v0.11.9`, and start v0.12.2 on a new empty observation root.
+The line is **latest-only**, with no migration bridge. The viewer reads bundle v4 only; inspect v3
+with `engine-v0.11.19` and v2 with `engine-v0.11.9`. Adoption uses a fresh observation root.
 
 ## Product Outcome
 
