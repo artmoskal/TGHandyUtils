@@ -312,8 +312,7 @@ with a scenario and acceptance proof. Upgrade via [`operations.md`](operations.m
 (snapshot `v0.11`, bundle meta v4, wait records `wait-v2`), one strict viewer loader, and NO
 migration layer. Old persisted data is rejected loudly naming its historical tag. After publication,
 adopt by re-pinning fresh (verify the published `release-manifest-v2` bundle, then install engine
-`0.12.3`, tools `0.7.2`, and viewer `0.4.2`) and
-re-run your canaries before changing any deployed pin.
+`0.12.3`, tools `0.7.2`, and viewer `0.4.2`) and re-run canaries before changing any deployed pin.
 `wait-v1` records written by v0.11.5 are non-current: settle or discard them under v0.11.5 and
 start a new coordinator namespace before v0.11.6 writes `wait-v2`.
 
@@ -323,8 +322,7 @@ the public `RunExecutionRequest`: callers can narrow one complete run without mu
 profiles, the effective limit survives local suspend/resume, retraces share the same monotonic
 deadline, and graph cleanup is contained inside the declared wall time. Terminal run status and
 errors now follow the latest attempt per node while preserving all attempts in history. Tools
-`0.5.1` attaches
-staged `ImageInput` files to `codex exec` with native `--image`; Claude keeps the separate
+`0.5.1` attaches staged `ImageInput` files to `codex exec` with native `--image`; Claude keeps the separate
 path-scoped `Read(./inputs/**)` transport. It also closes context-binding parity: human and fan-out
 capability invocations consume all four declared bindings, while subworkflows consume plan/machine
 cards and reject capability-only memory/model settings. The release additionally makes
