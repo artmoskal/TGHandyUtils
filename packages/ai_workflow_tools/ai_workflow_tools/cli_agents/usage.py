@@ -50,6 +50,40 @@ _CODEX_CATEGORY_EVIDENCE = {
 }
 
 
+_CLAUDE_QUOTA_MESSAGES = {
+    "session_limit": "Claude session limit reached",
+    "quota_capacity_rate_limit": "Claude quota, rate, or capacity limit reached",
+}
+
+
+@dataclass(frozen=True)
+class ClaudeQuotaDiagnostic:
+    """Closed failure reason; result prose cannot establish a reset timestamp."""
+
+    reason: str
+
+    def __post_init__(self) -> None:
+        if self.reason not in _CLAUDE_QUOTA_MESSAGES:
+            raise ValueError(f"unrecognized Claude quota reason: {self.reason!r}")
+
+    @property
+    def category(self) -> str:
+        return "quota_capacity_rate_limit"
+
+    @property
+    def message(self) -> str:
+        return _CLAUDE_QUOTA_MESSAGES[self.reason]
+
+    def render(self) -> str:
+        return f"claude result [{self.category}]: {self.message}"
+
+    def metadata(self) -> dict[str, Any]:
+        return {
+            "provider": "claude", "subtype": "result", "category": self.category,
+            "message": self.message, "reset_at": None,
+        }
+
+
 @dataclass(frozen=True)
 class CodexProtocolState:
     """Coherent Codex terminal state plus a closed, non-prose diagnostic."""
@@ -107,6 +141,7 @@ class ParsedCliOutput:
     provider_error: bool = False
     provider_error_subtype: str | None = None
     codex_protocol: CodexProtocolState | None = None
+    claude_quota_diagnostic: ClaudeQuotaDiagnostic | None = None
     cli_progress: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
@@ -114,6 +149,7 @@ class ParsedCliOutput:
             raise ValueError("provider_error_subtype requires provider_error")
         if self.codex_protocol is not None and (
             self.provider_error or self.provider_error_subtype is not None
+            or self.claude_quota_diagnostic is not None
         ):
             raise ValueError("Codex state cannot carry Claude provider-error fields")
 
@@ -123,7 +159,11 @@ class ParsedCliOutput:
             self.codex_protocol.subtype == "turn.failed"
         )
 
-    def failure_diagnostic(self, *, process_failed: bool) -> CodexProtocolState | None:
+    def failure_diagnostic(
+        self, *, process_failed: bool,
+    ) -> CodexProtocolState | ClaudeQuotaDiagnostic | None:
+        if self.claude_quota_diagnostic is not None and (process_failed or self.provider_error):
+            return self.claude_quota_diagnostic
         if self.codex_protocol is None:
             return None
         return self.codex_protocol.failure_diagnostic(process_failed=process_failed)
@@ -441,7 +481,34 @@ def _parse_claude_envelope_value(envelope: dict[str, Any]) -> ParsedCliOutput:
         usage_diagnostic=usage_diagnostic,
         provider_error=provider_error,
         provider_error_subtype=subtype if provider_error else None,
+        claude_quota_diagnostic=_claude_quota_diagnostic(envelope),
     )
+
+
+def _claude_quota_diagnostic(envelope: dict[str, Any]) -> ClaudeQuotaDiagnostic | None:
+    """Classify bounded result text without retaining prose, dates, URLs or secrets.
+
+    Parsing does not change success/failure authority: the process status or the
+    established error-envelope fields must fail before this diagnostic is exposed.
+    """
+    message = envelope.get("result")
+    if envelope.get("type") != "result" or not isinstance(message, str) or len(message) > 500:
+        return None
+    try:
+        if len(message.encode("utf-8")) > 500:
+            return None
+    except UnicodeEncodeError:
+        return None
+    normalized = " ".join(message.casefold().split()).split("{", 1)[0]
+    if normalized.startswith("you've hit your session limit"):
+        return ClaudeQuotaDiagnostic("session_limit")
+    if normalized.startswith((
+        "you've hit your weekly limit", "you've hit your usage limit",
+        "quota exceeded", "rate limit exceeded", "too many requests",
+        "capacity unavailable", "server overloaded",
+    )):
+        return ClaudeQuotaDiagnostic("quota_capacity_rate_limit")
+    return None
 
 
 def _normalize_codex_usage(usage: dict[str, Any]) -> NormalizedTokenUsage:
@@ -575,6 +642,7 @@ def _codex_failure_diagnostic(event: dict[str, Any]) -> CodexProtocolState:
 
 __all__ = [
     "ClaudeEnvelopeAccumulator",
+    "ClaudeQuotaDiagnostic",
     "CliUsageAccumulator",
     "CodexProtocolState",
     "CodexUsageAccumulator",

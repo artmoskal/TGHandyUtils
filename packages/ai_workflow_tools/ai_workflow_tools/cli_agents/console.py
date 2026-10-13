@@ -29,6 +29,7 @@ from ai_workflow_engine.llm_protocol import (
 from ai_workflow_engine.usage_contract import new_provider_invocation_id
 
 from .usage import (
+    ClaudeQuotaDiagnostic,
     CliUsageAccumulator,
     CodexProtocolState,
     parse_cli_process_output,
@@ -154,7 +155,7 @@ class ConsoleCliError(RuntimeError):
         normalized_usage: Any = None,
         usage_error: Any = None,
         usage_diagnostic: str | None = None,
-        provider_error_diagnostic: CodexProtocolState | None = None,
+        provider_error_diagnostic: CodexProtocolState | ClaudeQuotaDiagnostic | None = None,
         invocation_id: str | None = None,
         elapsed_ms: int | None = None,
         process_io: dict[str, Any] | None = None,
@@ -821,7 +822,7 @@ def _console_failure_projection(
     base: str,
     consumed: str,
     stderr: str,
-) -> tuple[CodexProtocolState | None, str, str]:
+) -> tuple[CodexProtocolState | ClaudeQuotaDiagnostic | None, str, str]:
     diagnostic = aborted.failure_diagnostic(
         process_failed=external_status != "accepted" or returncode != 0
     )
@@ -830,7 +831,11 @@ def _console_failure_projection(
         stderr_cause = _bounded_redacted_stderr(stderr)
         if diagnostic.category in ("unknown", "malformed", "oversized") and stderr_cause:
             message = f"{message}; stderr: {stderr_cause}"
-        return diagnostic, "", message
+        subtype = (
+            (aborted.provider_error_subtype or "")
+            if isinstance(diagnostic, ClaudeQuotaDiagnostic) else ""
+        )
+        return diagnostic, subtype, message
     subtype = aborted.provider_error_subtype or ""
     suffix = f" ({subtype})" if subtype else ""
     return None, subtype, f"{base}{suffix}{consumed}: {_bounded_redacted_stderr(stderr)}"
@@ -876,12 +881,15 @@ def _console_failure(
         aborted, external.status, returncode, base, consumed, stderr
     )
     lowered = f"{base} {stderr}".lower()
-    if subtype == "error_max_budget_usd" or (
+    timed_out = "timed out" in lowered or "timeout" in lowered
+    if isinstance(provider_diagnostic, ClaudeQuotaDiagnostic) and timed_out:
+        failure_kind = "timeout"
+    elif subtype == "error_max_budget_usd" or (
         provider_diagnostic is not None
         and provider_diagnostic.category == "quota_capacity_rate_limit"
     ):
         failure_kind = "cap"
-    elif "timed out" in lowered or "timeout" in lowered:
+    elif timed_out:
         failure_kind = "timeout"
     else:
         failure_kind = "provider"

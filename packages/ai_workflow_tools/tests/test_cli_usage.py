@@ -7,6 +7,7 @@ import pytest
 from ai_workflow_tools.cli_agents.usage import (
     _BoundedJsonLineAccumulator,
     ClaudeEnvelopeAccumulator,
+    ClaudeQuotaDiagnostic,
     CodexProtocolState,
     CodexUsageAccumulator,
     ParsedCliOutput,
@@ -490,6 +491,68 @@ def test_claude_envelope_accumulator_preserves_usage_and_provider_cost_across_ch
     assert parsed.normalized_usage.uncached_input_tokens == 11
     assert parsed.normalized_usage.cache_read_input_tokens == 3
     assert parsed.normalized_usage.cache_creation_input_tokens == 5
+
+
+@pytest.mark.parametrize(
+    ("message", "safe_message"),
+    [
+        ("You've hit your session limit · resets 6:50pm (UTC)", "Claude session limit reached"),
+        ("You've hit your weekly limit", "Claude quota, rate, or capacity limit reached"),
+        ("Quota exceeded", "Claude quota, rate, or capacity limit reached"),
+        ("Rate limit exceeded", "Claude quota, rate, or capacity limit reached"),
+        ("Capacity unavailable", "Claude quota, rate, or capacity limit reached"),
+        ("Server overloaded", "Claude quota, rate, or capacity limit reached"),
+    ],
+)
+def test_claude_quota_diagnostic_is_bounded_and_requires_failure_authority(message, safe_message):
+    envelope = {"type": "result", "subtype": "success", "is_error": False, "result": message}
+    parser = ClaudeEnvelopeAccumulator()
+    payload = json.dumps(envelope).encode()
+    for offset in range(0, len(payload), 3):
+        parser.feed(payload[offset:offset + 3])
+    parsed = parser.finish()
+
+    assert parsed.provider_failed is False
+    assert parsed.failure_diagnostic(process_failed=False) is None
+    diagnostic = parsed.failure_diagnostic(process_failed=True)
+    assert isinstance(diagnostic, ClaudeQuotaDiagnostic)
+    assert diagnostic.metadata() == {
+        "provider": "claude", "subtype": "result", "category": "quota_capacity_rate_limit",
+        "message": safe_message, "reset_at": None,
+    }
+
+
+@pytest.mark.parametrize("message", [
+    "Authentication failed: quota exceeded", "Unexpected provider failure",
+    "Quoted example: You've hit your session limit", "You've hit your session limit" + "x" * 500,
+    '{"prompt":"You\'ve hit your session limit"}',
+    {"message": "You've hit your session limit", "token": "PRIVATE_SECRET"}, None,
+    "You've hit your session limit\ud800",
+])
+def test_claude_unsupported_or_oversized_result_never_invents_capacity(message):
+    parser = ClaudeEnvelopeAccumulator()
+    parser.feed(json.dumps({"type": "result", "is_error": True, "result": message}).encode())
+    parsed = parser.finish()
+    assert parsed.provider_failed is True
+    assert parsed.failure_diagnostic(process_failed=True) is None
+
+
+def test_claude_diagnostic_does_not_parse_stderr_or_other_event_types():
+    flavor = CliFlavor(name="claude", prompt_delivery="stdin", result_source="stdout_json_envelope",
+                       base_argv=["offline-claude"])
+    parsed = parse_cli_process_output(flavor, {
+        "stdout": json.dumps({"type": "assistant", "result": "You've hit your session limit"}),
+        "stderr": "You've hit your session limit · resets 6:50pm (UTC)",
+    })
+    assert parsed.failure_diagnostic(process_failed=True) is None
+
+
+def test_claude_quota_reason_cannot_carry_arbitrary_provider_prose():
+    with pytest.raises(ValueError, match="unrecognized Claude quota reason"):
+        ClaudeQuotaDiagnostic("PRIVATE_SECRET")
+    with pytest.raises(ValueError, match="Claude"):
+        ParsedCliOutput(text="", codex_protocol=CodexProtocolState(),
+                        claude_quota_diagnostic=ClaudeQuotaDiagnostic("session_limit"))
 
 
 @pytest.mark.parametrize(

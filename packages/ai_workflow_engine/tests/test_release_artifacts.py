@@ -736,9 +736,9 @@ def test_wheel_identity_transition_rejects_changed_hash_without_version_bump() -
         for package, source in contract.EXPECTED_PACKAGES.items()
     }
     assert candidate_versions == {
-        "ai-workflow-engine": "0.12.3",
-        "ai-workflow-tools": "0.7.2",
-        "ai-workflow-viewer": "0.4.2",
+        "ai-workflow-engine": "0.12.4",
+        "ai-workflow-tools": "0.7.3",
+        "ai-workflow-viewer": "0.4.3",
     }
     release_0122 = {
         package: {

@@ -45,6 +45,16 @@ are provider- or CLI-specific:
   `input_fingerprints`, token fields, return code, and stderr tail.
 - Shipped flavors: `claude_p` (`claude -p`) and `codex_exec` (`codex exec`).
 
+Failed Claude result envelopes expose recognized session/quota/capacity reasons through
+`ConsoleCliError.provider_error_diagnostic.metadata()` with `provider="claude"` and
+`category="quota_capacity_rate_limit"`; console `failure_kind` is `cap`. The shared agent path
+projects the same diagnostic in capability metadata. Messages come from a fixed vocabulary;
+provider prose, credentials, URLs, and displayed reset times are not retained in the diagnostic.
+`reset_at` is explicitly `None`: a text-only clock message does not establish a resumable deadline.
+Successful replies remain successful, and existing authentication, unknown failure, timeout,
+cancellation, usage, and Codex semantics remain in force. This source change still needs the
+normal tested, independently reviewed package release before consumer adoption.
+
 Input and output provenance is fingerprinted, not stored as bytes. `input_assets` are materialized
 under `inputs/` in the workspace by a product-provided loader; salvage finds configured output files
 after the run and reports only refs plus counts.
@@ -245,7 +255,13 @@ from ai_workflow_tools.testing import run_openai_compatible_provider_conformance
 await run_openai_compatible_provider_conformance(make_client)
 ```
 
-Tools `0.7.2` is the `engine-v0.12.3` candidate, requiring engine `>=0.12.3,<0.13`.
+Tools `0.7.3` is the `engine-v0.12.4` candidate and adds the Claude quota diagnostic above.
+The coherent release matrix is engine `0.12.4`, tools `0.7.3`, viewer `0.4.3`;
+engine/viewer changes from the `0.12.3/0.7.2/0.4.2` baseline are release identity only.
+It retains the engine requirement `>=0.12.3,<0.13`. Do not re-pin before the exact reviewed
+release directory is published and independently verified.
+
+Tools `0.7.2` belongs to the `engine-v0.12.3` baseline, requiring engine `>=0.12.3,<0.13`.
 Console failures preserve bounded process capture facts and recognized CLI event/count/timing
 diagnostics through engine error details; raw stdout, result bodies and private identifiers are
 not copied. CLI started events are not provider acknowledgements. Do not adopt before the exact

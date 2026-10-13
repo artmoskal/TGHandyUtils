@@ -1,12 +1,13 @@
 # MageQA Engine Adoption Guide
 
-Status: **`engine-v0.12.3` is the release candidate; `engine-v0.12.2` remains the published release.**
-The patch prevents transport failures from consuming semantic repair, settles cancellation before
-sealing observations (or marks an immutable incomplete prefix), and preserves bounded CLI failure
-diagnostics. Repin only the coherent `0.12.3 / 0.7.2 / 0.4.2` matrix after publication,
-immutable-directory verification, and MageQA's E0 canaries. Until then MageQA must pin tag
-`engine-v0.12.2`; its own pin file remains the
-authority for deployed state.
+Status: **`engine-v0.12.4` is the release candidate; MageQA's pin file owns deployed identity.**
+Tools adds safe Claude session/quota/capacity diagnostics with `failure_kind=cap` and
+`reset_at=None`; products must not classify raw provider prose or infer reset eligibility.
+The `0.12.3` baseline's transport/cancellation/observation behavior remains unchanged.
+Repin only the coherent `0.12.4 / 0.7.3 / 0.4.3` matrix after publication,
+immutable-directory verification, and MageQA's installed quota/E0 canaries.
+Engine/viewer version changes are release identity only; keep the existing pin until then.
+Reference prior pin tag `engine-v0.12.2`; do not downgrade a newer verified consumer pin.
 
 At adoption, create a NEW cancelled recovery with a genuinely settling subprocess, then read its
 retained calls/candidate through MageQA's saved-view path. Keep the historical corrupt recovery
@@ -51,18 +52,18 @@ a defect.
 
 | Package | MageQA use |
 |---|---|
-| `ai-workflow-engine==0.12.3` | Orchestration/runtime with bounded cancellation and immutable bundle-v4 sealing |
-| `ai-workflow-tools==0.7.2` | Generic provider/CLI/tool companion with bounded failure diagnostics |
-| `ai-workflow-viewer==0.4.2` | Bundle-v4 investigation companion; release identity only |
+| `ai-workflow-engine==0.12.4` | Orchestration/runtime with bounded cancellation and immutable bundle-v4 sealing |
+| `ai-workflow-tools==0.7.3` | Generic provider/CLI/tool companion with bounded failure diagnostics |
+| `ai-workflow-viewer==0.4.3` | Bundle-v4 investigation companion; release identity only |
 
-> **Candidate matrix:** `engine-v0.12.3` + `ai-workflow-tools==0.7.2` +
-> `ai-workflow-viewer==0.4.2`.
+> **Candidate matrix:** `engine-v0.12.4` + `ai-workflow-tools==0.7.3` +
+> `ai-workflow-viewer==0.4.3`.
 >
-> Do not install this matrix until `engine-v0.12.3` is cut.
+> Do not install this matrix until `engine-v0.12.4` is cut.
 
 ### Immutable release evidence
 
-- Artifact prefix after publication: `https://github.com/artmoskal/TGHandyUtils/releases/download/engine-v0.12.3/`
+- Artifact prefix after publication: `https://github.com/artmoskal/TGHandyUtils/releases/download/engine-v0.12.4/`
 - Verify `SHA256SUMS`, then run the bundled `release_artifacts.py verify-bundle` before installing.
 - Read the source commit, annotated tag object, package hashes, and producer gate evidence from the
   verified `release-manifest.json`; record those consumed values in MageQA's own adoption record.
@@ -308,11 +309,11 @@ with a scenario and acceptance proof. Upgrade via [`operations.md`](operations.m
 
 ## v0.12 Release Contract
 
-`engine-v0.12.3` is the next **latest-only** contract. It uses strict versioned persisted contracts
+`engine-v0.12.4` is the next **latest-only** contract. It uses strict versioned persisted contracts
 (snapshot `v0.11`, bundle meta v4, wait records `wait-v2`), one strict viewer loader, and NO
 migration layer. Old persisted data is rejected loudly naming its historical tag. After publication,
 adopt by re-pinning fresh (verify the published `release-manifest-v2` bundle, then install engine
-`0.12.3`, tools `0.7.2`, and viewer `0.4.2`) and re-run canaries before changing any deployed pin.
+`0.12.4`, tools `0.7.3`, and viewer `0.4.3`) and re-run canaries before changing any deployed pin.
 `wait-v1` records written by v0.11.5 are non-current: settle or discard them under v0.11.5 and
 start a new coordinator namespace before v0.11.6 writes `wait-v2`.
 

@@ -5,7 +5,7 @@ declare a workflow, register typed capabilities, and call one engine door. The e
 transitions, retries, fan-out, budgets, waits, trace, usage, and observation bundles; products own
 domain models, provider clients, storage adapters, clocks, and side-effect delivery.
 
-> **`engine-v0.12.3` is the release candidate.**
+> **`engine-v0.12.4` is the release candidate.**
 > `engine-v0.12.2` remains the current release; do not re-pin until it is cut and its immutable
 > release directory verifies.
 > The engine owner publishes wheels bound to
@@ -24,13 +24,17 @@ domain models, provider clients, storage adapters, clocks, and side-effect deliv
 > Adoption is fresh: new consumers start on the current contract; existing consumers re-adopt the
 > current surface rather than migrate state.
 >
-> **v0.12.3 candidate delta.** Semantic repair applies only to parsing/validation of an answer,
+> **v0.12.4 candidate delta.** Tools recognizes bounded Claude quota/capacity failure diagnostics
+> without retaining provider prose or inferring reset timestamps. Engine `0.12.4`, tools `0.7.3`,
+> viewer `0.4.3` are the candidate matrix; engine/viewer bumps change release identity only.
+>
+> **v0.12.3 baseline delta.** Semantic repair applies only to parsing/validation of an answer,
 > never transport/provider failure. Cancellation settles descendants inside the existing graph
 > cleanup grace before sealing; unsettled writers yield an immutable `abandoned` incomplete
 > prefix, and every post-seal write fails. Console failures retain bounded capture facts and
 > recognized CLI progress (not proof of remote-provider acknowledgement). No reader/schema
 > compatibility bridge, timeout increase or retrospective seal repair. Engine `0.12.3`, tools
-> `0.7.2`, viewer `0.4.2` are the candidate matrix. The viewer bump is release identity only:
+> `0.7.2`, viewer `0.4.2` form the prior matrix. The viewer bump was release identity only:
 > rebuilding under the new source epoch must not change wheel bytes under an old version.
 >
 > **v0.12.2 released delta.** Codex JSONL provider/turn failure records now produce one bounded,
@@ -235,17 +239,17 @@ the packages their product needs. Building from source is a producer operation, 
 verification. The exact producer and consumer commands are in
 [`docs/operations.md`](docs/operations.md#release-artifacts-and-verification-v0122).
 The required pre-install door, once the candidate is published, is
-`python3 release_artifacts.py verify-bundle --dir /path/to/engine-v0.12.3`.
+`python3 release_artifacts.py verify-bundle --dir /path/to/engine-v0.12.4`.
 
 Candidate matrix:
 
 | Package | Install when |
 |---|---|
-| `ai-workflow-engine==0.12.3` | Always. Core builder, executor, memory, waits, observation writer. |
-| `ai-workflow-tools==0.7.2` | The product uses provider clients, CLI agents, the tool catalog, or media helpers. |
-| `ai-workflow-viewer==0.4.2` | A developer or product service renders observation bundles. |
+| `ai-workflow-engine==0.12.4` | Always. Core builder, executor, memory, waits, observation writer. |
+| `ai-workflow-tools==0.7.3` | The product uses provider clients, CLI agents, the tool catalog, or media helpers. |
+| `ai-workflow-viewer==0.4.3` | A developer or product service renders observation bundles. |
 
-Do not install this matrix until `engine-v0.12.3` is cut. Until then, consumers remain on their
+Do not install this matrix until `engine-v0.12.4` is cut. Until then, consumers remain on their
 verified prior release.
 
 Record the engine tag, source commit, and wheel SHA-256 in the consumer repository. A tag already

@@ -11,13 +11,172 @@ from pydantic import BaseModel
 from ai_workflow_engine import ObservationConfig, ObservationReader, StructuredLLMNode, WorkflowBuilder, WorkflowEngineBuilder
 from ai_workflow_engine.engine.external import ExternalProcessCapability
 from ai_workflow_engine.engine.process_io import ProcessIOLimits
-from ai_workflow_tools.cli_agents import ConsoleCliError, ConsoleLLMClient, codex_exec
+from ai_workflow_tools.cli_agents import ConsoleCliError, ConsoleLLMClient, claude_p, codex_exec
 
 pytestmark = pytest.mark.unit
 
 
 class Answer(BaseModel):
     ok: bool
+
+
+def _claude_result_client(
+    tmp_path, *, message, is_error, returncode=1, subtype="success", hold=False,
+):
+    """Constructed offline envelope; original native process stdout was not retained."""
+    envelope = {
+        "type": "result", "subtype": subtype, "is_error": is_error, "result": message,
+        "total_cost_usd": 0.031,
+        "usage": {"input_tokens": 11, "output_tokens": 7, "cache_read_input_tokens": 3},
+        "credentials": {"token": "PRIVATE_SECRET"},
+    }
+    executable = tmp_path / "fake_claude.py"
+    executable.write_text(
+        "import sys,time,os\n"
+        "from pathlib import Path\n"
+        "sys.stdin.read()\n"
+        f"sys.stdout.write({json.dumps(envelope)!r})\n"
+        "sys.stdout.flush()\n"
+        + (f"Path({str(tmp_path / 'ready')!r}).write_text(str(os.getpid()))\n"
+           "time.sleep(20)\n" if hold else "")
+        + f"raise SystemExit({returncode})\n",
+        encoding="utf-8",
+    )
+    return ConsoleLLMClient(
+        claude_p.model_copy(update={"base_argv": [sys.executable, str(executable)]}),
+        model="claude-offline-contract", timeout_s=5,
+    )
+
+
+@pytest.mark.parametrize(("returncode", "is_error"), [(0, True), (1, True), (1, False)])
+async def test_claude_session_limit_has_safe_tools_owned_capacity_diagnostic(
+    tmp_path, returncode, is_error,
+):
+    from ai_workflow_engine.llm_protocol import LLMRequest
+
+    client = _claude_result_client(
+        tmp_path, is_error=is_error, returncode=returncode,
+        message="You've hit your session limit · resets 6:50pm (UTC) PRIVATE_SECRET "
+                "https://private.invalid/?token=PRIVATE_SECRET",
+    )
+    with pytest.raises(ConsoleCliError) as excinfo:
+        await client(LLMRequest(user="Review retained evidence."))
+
+    error = excinfo.value
+    assert error.returncode == returncode
+    assert error.failure_kind == "cap"
+    assert error.cli_subtype == ("success" if is_error else "")
+    assert error.provider_error_diagnostic is not None
+    assert error.provider_error_diagnostic.metadata() == {
+        "provider": "claude", "subtype": "result",
+        "category": "quota_capacity_rate_limit", "message": "Claude session limit reached",
+        "reset_at": None,
+    }
+    assert "Claude session limit reached" in str(error)
+    assert "PRIVATE_SECRET" not in str(error)
+    assert "private.invalid" not in str(error)
+    assert "6:50" not in str(error)
+    assert error.notional_usd == pytest.approx(0.031)
+    assert error.normalized_usage.uncached_input_tokens == 11
+    assert error.normalized_usage.cache_read_input_tokens == 3
+    assert error.normalized_usage.non_reasoning_output_tokens == 7
+    assert error.usage_error is None
+
+
+@pytest.mark.parametrize("message", ["Authentication failed", "Unexpected provider failure"])
+async def test_claude_nonquota_failure_keeps_provider_classification(tmp_path, message):
+    from ai_workflow_engine.llm_protocol import LLMRequest
+
+    client = _claude_result_client(tmp_path, message=message, is_error=True)
+    with pytest.raises(ConsoleCliError) as excinfo:
+        await client(LLMRequest(user="Review retained evidence."))
+    assert excinfo.value.failure_kind == "provider"
+    assert excinfo.value.provider_error_diagnostic is None
+
+
+async def test_claude_successful_answer_mentioning_session_limit_stays_successful(tmp_path):
+    from ai_workflow_engine.llm_protocol import LLMRequest
+
+    message = "You've hit your session limit is the error being discussed, not this result."
+    reply = await _claude_result_client(
+        tmp_path, message=message, is_error=False, returncode=0,
+    )(LLMRequest(user="Explain the example error."))
+    assert reply.text == message
+
+
+async def test_claude_quota_before_process_timeout_does_not_replace_timeout(tmp_path):
+    from ai_workflow_engine.llm_protocol import LLMRequest
+
+    client = _claude_result_client(
+        tmp_path, message="You've hit your session limit", is_error=True, hold=True,
+    )
+    client.timeout_s = 0.25
+    with pytest.raises(ConsoleCliError) as excinfo:
+        await client(LLMRequest(user="Review retained evidence."))
+    assert excinfo.value.failure_kind == "timeout"
+    assert excinfo.value.provider_error_diagnostic.metadata()["reset_at"] is None
+    with pytest.raises(ProcessLookupError):
+        os.kill(int((tmp_path / "ready").read_text()), 0)
+
+
+async def test_claude_quota_before_cancellation_preserves_cancelled_error_and_reaps_process(tmp_path):
+    from ai_workflow_engine.llm_protocol import LLMRequest
+
+    client = _claude_result_client(
+        tmp_path, message="You've hit your session limit", is_error=True, hold=True,
+    )
+    task = asyncio.create_task(client(LLMRequest(user="Review retained evidence.")))
+    try:
+        for _ in range(200):
+            if (tmp_path / "ready").exists():
+                break
+            await asyncio.sleep(0.01)
+        assert (tmp_path / "ready").exists(), "fake Claude never reached cancellation barrier"
+        pid = int((tmp_path / "ready").read_text())
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=5)
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+def test_sync_claude_console_uses_same_quota_diagnostic(tmp_path):
+    from langchain_core.messages import HumanMessage
+    from ai_workflow_tools.cli_agents import ConsoleChatModel
+
+    client = _claude_result_client(
+        tmp_path, message="You've hit your session limit", is_error=True,
+    )
+    model = ConsoleChatModel(client.flavor, model="claude-offline-contract", timeout_s=5)
+    with pytest.raises(ConsoleCliError) as excinfo:
+        model.invoke([HumanMessage(content="Review retained evidence.")])
+    assert excinfo.value.failure_kind == "cap"
+    assert excinfo.value.provider_error_diagnostic.metadata()["provider"] == "claude"
+
+
+async def test_claude_agent_projects_same_safe_diagnostic_without_losing_failure(tmp_path, capability_context):
+    from ai_workflow_tools.cli_agents import CliAgentCapability, CliAgentRequest
+
+    client = _claude_result_client(
+        tmp_path, message="You've hit your session limit PRIVATE_SECRET", is_error=True,
+    )
+    result = await CliAgentCapability(client.flavor, name="claude_quota")(
+        capability_context,
+        CliAgentRequest(prompt="Review retained evidence.", workspace_dir=str(tmp_path),
+                        allowed_tools=[], timeout_s=5),
+    )
+    assert result.status == "failed"
+    assert result.output.status == "error"
+    assert result.output.returncode == 1
+    assert result.output.normalized_usage.uncached_input_tokens == 11
+    assert result.metadata["provider_error_diagnostic"] == {
+        "provider": "claude", "subtype": "result", "category": "quota_capacity_rate_limit",
+        "message": "Claude session limit reached", "reset_at": None,
+    }
+    assert "PRIVATE_SECRET" not in result.error
 
 
 @pytest.mark.parametrize("progress", [False, True])
